@@ -1,0 +1,214 @@
+'use client';
+
+import { useState, useEffect, useRef } from 'react';
+import { Role, ROLE_META, HOUR_OPTIONS, ShiftHours } from '@/types';
+import { hexToRgb } from './BoardClient';
+
+// ── Shared modal wrapper ─────────────────────────────────────────────────────
+function Modal({ title, children, onClose, onConfirm, confirmLabel }: {
+  title: string;
+  children: React.ReactNode;
+  onClose: () => void;
+  onConfirm: () => void;
+  confirmLabel: string;
+}) {
+  // Close on Escape key
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [onClose]);
+
+  return (
+    <div
+      style={{
+        position: 'fixed', inset: 0,
+        background: 'rgba(0,0,0,0.75)',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        zIndex: 200,
+      }}
+      onClick={onClose}
+    >
+      <div
+        className="modal-box"
+        style={{
+          background: 'var(--bg-surface)',
+          border: '1px solid var(--border)',
+          borderRadius: 16,
+          padding: 28,
+          width: 400,
+          boxShadow: '0 24px 64px rgba(0,0,0,0.65)',
+        }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div style={{ fontSize: 17, fontWeight: 800, color: '#f1f5f9', marginBottom: 22 }}>{title}</div>
+        {children}
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 12 }}>
+          <button
+            onClick={onClose}
+            style={{
+              padding: '9px 18px', borderRadius: 8, cursor: 'pointer',
+              background: 'transparent', color: 'var(--text-muted)',
+              border: '1px solid var(--border)', fontWeight: 600, fontSize: 13,
+            }}
+          >
+            Cancel
+          </button>
+          <button
+            onClick={onConfirm}
+            style={{
+              padding: '9px 20px', borderRadius: 8, cursor: 'pointer',
+              background: 'linear-gradient(135deg,#0ea5e9,#6366f1)',
+              color: '#fff', border: 'none', fontWeight: 700, fontSize: 13,
+            }}
+          >
+            {confirmLabel}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+const inputStyle: React.CSSProperties = {
+  width: '100%', padding: '10px 12px', borderRadius: 8,
+  border: '1px solid var(--border)', background: 'var(--bg-deep)',
+  color: 'var(--text)', fontSize: 14, marginBottom: 12,
+  outline: 'none', boxSizing: 'border-box',
+};
+
+const labelStyle: React.CSSProperties = {
+  fontSize: 11, color: 'var(--text-muted)', display: 'block',
+  marginBottom: 6, fontWeight: 600, letterSpacing: 0.5,
+};
+
+// ── Add Site Modal ────────────────────────────────────────────────────────────
+const SITE_ICONS = ['⚕', '◎', '⬡', '♥', '✦', '◈', '✚', '⬢', '⬟', '◆'];
+
+export function AddSiteModal({ onClose, onConfirm }: {
+  onClose: () => void;
+  onConfirm: (name: string, color: string, icon: string) => void;
+}) {
+  const [name,  setName]  = useState('');
+  const [color, setColor] = useState('#0ea5e9');
+  const [icon,  setIcon]  = useState('◈');
+  const ref = useRef<HTMLInputElement>(null);
+  useEffect(() => ref.current?.focus(), []);
+
+  const submit = () => { if (name.trim()) onConfirm(name.trim(), color, icon); };
+
+  return (
+    <Modal title="Add New Site" onClose={onClose} onConfirm={submit} confirmLabel="Add Site">
+      <input ref={ref} style={inputStyle} placeholder="Site name (e.g. Cardiac OR, PACU)"
+        value={name} onChange={(e) => setName(e.target.value)}
+        onKeyDown={(e) => e.key === 'Enter' && submit()} />
+
+      <label style={labelStyle}>Icon</label>
+      <div style={{ display: 'flex', gap: 6, marginBottom: 14, flexWrap: 'wrap' }}>
+        {SITE_ICONS.map((ic) => (
+          <button key={ic} onClick={() => setIcon(ic)}
+            style={{
+              width: 36, height: 36, borderRadius: 8, fontSize: 17, cursor: 'pointer',
+              border: `1px solid ${icon === ic ? color : 'var(--border)'}`,
+              background: icon === ic ? `rgba(${hexToRgb(color)},0.18)` : 'var(--bg-deep)',
+              color: icon === ic ? color : 'var(--text-muted)',
+              transition: 'all 0.12s',
+            }}>
+            {ic}
+          </button>
+        ))}
+      </div>
+
+      <label style={labelStyle}>Accent Color</label>
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 4 }}>
+        <input type="color" value={color} onChange={(e) => setColor(e.target.value)}
+          style={{ width: 48, height: 38, border: 'none', borderRadius: 8, cursor: 'pointer', background: 'none' }} />
+        <span style={{ fontSize: 12, color: 'var(--text-muted)', fontFamily: 'var(--font-mono), monospace' }}>{color}</span>
+      </div>
+    </Modal>
+  );
+}
+
+// ── Add Room Modal ────────────────────────────────────────────────────────────
+export function AddRoomModal({ onClose, onConfirm }: {
+  onClose: () => void;
+  onConfirm: (name: string) => void;
+}) {
+  const [name, setName] = useState('');
+  const ref = useRef<HTMLInputElement>(null);
+  useEffect(() => ref.current?.focus(), []);
+
+  const submit = () => { if (name.trim()) onConfirm(name.trim()); };
+
+  return (
+    <Modal title="Add Room" onClose={onClose} onConfirm={submit} confirmLabel="Add Room">
+      <input ref={ref} style={inputStyle} placeholder="Room name (e.g. OR 7, Suite 4, Cath Lab 1)"
+        value={name} onChange={(e) => setName(e.target.value)}
+        onKeyDown={(e) => e.key === 'Enter' && submit()} />
+    </Modal>
+  );
+}
+
+// ── Add Staff Modal ───────────────────────────────────────────────────────────
+export function AddStaffModal({ onClose, onConfirm }: {
+  onClose: () => void;
+  onConfirm: (name: string, role: Role, hours: ShiftHours) => void;
+}) {
+  const [name,  setName]  = useState('');
+  const [role,  setRole]  = useState<Role>('physician');
+  const [hours, setHours] = useState<ShiftHours>('8hr');
+  const ref = useRef<HTMLInputElement>(null);
+  useEffect(() => ref.current?.focus(), []);
+
+  const meta   = ROLE_META[role];
+  const submit = () => { if (name.trim()) onConfirm(name.trim(), role, hours); };
+
+  return (
+    <Modal title="Add Staff Member" onClose={onClose} onConfirm={submit} confirmLabel="Add Staff">
+      <input ref={ref} style={inputStyle} placeholder="Full name (e.g. Dr. Smith, Jane Doe CRNA)"
+        value={name} onChange={(e) => setName(e.target.value)}
+        onKeyDown={(e) => e.key === 'Enter' && submit()} />
+
+      <label style={labelStyle}>Role</label>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, marginBottom: 14 }}>
+        {(Object.entries(ROLE_META) as [Role, typeof ROLE_META[Role]][]).map(([r, m]) => (
+          <button key={r} onClick={() => setRole(r)}
+            style={{
+              padding: '8px 10px', borderRadius: 8, cursor: 'pointer',
+              border: `1px solid ${role === r ? m.color : 'var(--border)'}`,
+              background: role === r ? m.bg : 'transparent',
+              color: role === r ? m.color : 'var(--text-muted)',
+              fontWeight: 700, fontSize: 12,
+              display: 'flex', alignItems: 'center', gap: 6,
+              transition: 'all 0.12s',
+            }}>
+            <span style={{ width: 8, height: 8, borderRadius: 2, background: m.color, display: 'inline-block', flexShrink: 0 }} />
+            {m.label}
+          </button>
+        ))}
+      </div>
+
+      <label style={labelStyle}>Shift Length</label>
+      <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
+        {HOUR_OPTIONS.map((h) => {
+          const active = hours === h;
+          const is24   = h === '24hr';
+          const c      = is24 && active ? '#f87171' : (active ? meta.color : 'var(--text-muted)');
+          return (
+            <button key={h} onClick={() => setHours(h as ShiftHours)}
+              style={{
+                flex: 1, padding: '9px 0', borderRadius: 8, fontWeight: 800,
+                fontSize: 13, cursor: 'pointer',
+                border: `1px solid ${active ? c : 'var(--border)'}`,
+                background: active ? `rgba(${hexToRgb(c)},0.15)` : 'transparent',
+                color: c,
+                transition: 'all 0.12s',
+              }}>
+              {h}
+            </button>
+          );
+        })}
+      </div>
+    </Modal>
+  );
+}

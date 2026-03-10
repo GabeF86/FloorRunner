@@ -1,0 +1,59 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --bg-base:    #070d1a;
+  --bg-surface: #0d1b30;
+  --bg-deep:    #07111f;
+  --border:     #1e3a5f;
+  --text:       #e2e8f0;
+  --text-muted: #64748b;
+  --text-dim:   #334155;
+  --blue:       #0ea5e9;
+  --indigo:     #6366f1;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  background: var(--bg-base);
+  color: var(--text);
+  font-family: var(--font-sans), 'Segoe UI', sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Scrollbar */
+::-webkit-scrollbar       { width: 5px; height: 5px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #1e3a5f; border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: #2d4f7a; }
+
+/* Drag ghost opacity */
+[draggable='true']:active { opacity: 0.6; }
+
+/* Pulse animation for LIVE dot */
+@keyframes live-pulse {
+  0%, 100% { opacity: 1; box-shadow: 0 0 6px currentColor; }
+  50%       { opacity: 0.25; box-shadow: none; }
+}
+.live-dot { animation: live-pulse 1.5s ease-in-out infinite; }
+
+/* Fade-in for modals */
+@keyframes fade-up {
+  from { opacity: 0; transform: translateY(10px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.modal-box { animation: fade-up 0.18s ease-out; }
+
+/* Stagger site cards on load */
+@keyframes card-in {
+  from { opacity: 0; transform: translateY(14px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.site-card { animation: card-in 0.3s ease-out both; }
+
+@keyframes relief-flash {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.2; }
+}
