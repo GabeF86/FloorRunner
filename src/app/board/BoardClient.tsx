@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import { supabase } from '@/lib/supabase';
 import {
   Site, StaffMember, Assignment, Role, ShiftHours, DraggedPerson,
@@ -63,6 +63,9 @@ export default function BoardClient({ initialSites, initialStaff, initialAssignm
   const [showAddStaff,  setShowAddStaff]  = useState(false);
   const [showAddRoom,   setShowAddRoom]   = useState<string | null>(null);
   const [showPrint,     setShowPrint]     = useState(false);
+  const [siteHeights,   setSiteHeights]   = useState<Record<string, number>>(() => {
+    try { return JSON.parse(localStorage.getItem('siteHeights') || '{}'); } catch { return {}; }
+  });
 
   const [viewDate, setViewDate] = useState(today);
   const isToday    = viewDate === today;
@@ -200,7 +203,7 @@ export default function BoardClient({ initialSites, initialStaff, initialAssignm
   }, []);
 
   // ── Site reorder ──────────────────────────────────────────────────────────
-  const [dragOverSite, setDragOverSite] = useState<string | null>(null);
+  const draggingSiteId = useRef<string | null>(null);
   const handleReorderSite = useCallback((siteId: string, targetSiteId: string) => {
     setSites((prev) => {
       const arr     = [...prev];
@@ -308,6 +311,15 @@ export default function BoardClient({ initialSites, initialStaff, initialAssignm
     });
     await fetch('/api/breaks', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ staff_id: staffId, board_date: viewDate, break_type: breakType, taken }) });
   }, [viewDate]);
+
+  // ── Site height resize ────────────────────────────────────────────────────
+  const setSiteHeight = useCallback((siteId: string, height: number) => {
+    setSiteHeights((prev) => {
+      const next = { ...prev, [siteId]: height };
+      try { localStorage.setItem('siteHeights', JSON.stringify(next)); } catch {}
+      return next;
+    });
+  }, []);
 
   // ── Sites / Rooms / Staff CRUD ────────────────────────────────────────────
   const addSite = useCallback(async (name: string, color: string, icon: string) => {
@@ -485,18 +497,14 @@ export default function BoardClient({ initialSites, initialStaff, initialAssignm
             />
 
             {/* Sites — full width stacked */}
-            <div
-              onDragOver={(e) => {
-                const siteId = e.dataTransfer?.getData?.('siteId');
-                if (siteId) e.preventDefault();
-              }}
-            >
+            <div>
               {sites.map((site, i) => (
                 <div key={site.id}
                   draggable={!site.is_float}
-                  onDragStart={(e) => { if (!site.is_float) { e.dataTransfer.setData('siteId', site.id); } }}
+                  onDragStart={(e) => { if (!site.is_float) { draggingSiteId.current = site.id; e.dataTransfer.effectAllowed = 'move'; } }}
+                  onDragEnd={() => { draggingSiteId.current = null; }}
                   onDragOver={(e) => {
-                    const siteId = e.dataTransfer?.getData?.('siteId');
+                    const siteId = draggingSiteId.current;
                     if (siteId && siteId !== site.id && !site.is_float) { e.preventDefault(); handleReorderSite(siteId, site.id); }
                   }}
                 >
@@ -506,6 +514,7 @@ export default function BoardClient({ initialSites, initialStaff, initialAssignm
                     floatAssignments={site.is_float ? floatAssignments : []}
                     dragOver={dragOver} dragging={dragging}
                     alertLevels={alertLevels} dailyShifts={dailyShifts}
+                    roomsHeight={siteHeights[site.id]}
                     onDrop={handleDrop}
                     onDropFloat={handleDropFloat}
                     onDragOver={setDragOver}
@@ -515,6 +524,7 @@ export default function BoardClient({ initialSites, initialStaff, initialAssignm
                     onDeleteRoom={(roomId) => deleteRoom(site.id, roomId)}
                     onDeleteSite={() => deleteSite(site.id)}
                     onReorderRoom={handleReorderRoom}
+                    onResizeHeight={(h) => setSiteHeight(site.id, h)}
                   />
                 </div>
               ))}

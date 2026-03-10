@@ -14,6 +14,7 @@ interface Props {
   dragging:           DraggedPerson | null;
   alertLevels:        Record<string, 'none' | 'warning' | 'critical'>;
   dailyShifts:        Record<string, ShiftHours>;
+  roomsHeight?:       number;
   onDrop:             (roomId: string) => void;
   onDropFloat:        (siteId: string) => void;
   onDragOver:         (id: string) => void;
@@ -23,13 +24,34 @@ interface Props {
   onDeleteRoom:       (roomId: string) => void;
   onDeleteSite:       () => void;
   onReorderRoom:      (siteId: string, roomId: string, targetRoomId: string) => void;
+  onResizeHeight:     (h: number) => void;
 }
 
 export default function SiteCard(props: Props) {
-  const { site, roomAssignments, floatAssignments, dragOver, dragging, alertLevels, dailyShifts } = props;
+  const { site, roomAssignments, floatAssignments, dragOver, dragging, alertLevels, dailyShifts, roomsHeight, onResizeHeight } = props;
   const [hov, setHov] = useState(false);
   const rgb    = hexToRgb(site.color);
   const isFloat = !!site.is_float;
+  const resizeStartY = useRef<number | null>(null);
+  const resizeStartH = useRef<number>(roomsHeight ?? 110);
+
+  function onResizeMouseDown(e: React.MouseEvent) {
+    e.preventDefault();
+    resizeStartY.current = e.clientY;
+    resizeStartH.current = roomsHeight ?? 110;
+    function onMove(ev: MouseEvent) {
+      if (resizeStartY.current === null) return;
+      const delta = ev.clientY - resizeStartY.current;
+      onResizeHeight(Math.max(110, resizeStartH.current + delta));
+    }
+    function onUp() {
+      resizeStartY.current = null;
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    }
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+  }
 
   if (isFloat) return (
     <FloatSiteCard
@@ -65,8 +87,8 @@ export default function SiteCard(props: Props) {
         </div>
       </div>
 
-      {/* Rooms — horizontal row */}
-      <div style={{ display: 'flex', gap: 10, padding: '12px 14px', overflowX: 'auto', alignItems: 'stretch', minHeight: 110 }}>
+      {/* Rooms — horizontal scroll row */}
+      <div style={{ display: 'flex', gap: 10, padding: '12px 14px', overflowX: 'auto', overflowY: 'hidden', alignItems: 'stretch', height: roomsHeight ?? 110, minHeight: 110 }}>
         {site.rooms.map((room) => (
           <RoomCell
             key={room.id}
@@ -89,6 +111,14 @@ export default function SiteCard(props: Props) {
             No rooms yet — click + Room to add one
           </div>
         )}
+      </div>
+
+      {/* Resize handle */}
+      <div
+        onMouseDown={onResizeMouseDown}
+        style={{ height: 6, cursor: 'ns-resize', display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: '0 0 14px 14px', background: hov ? `rgba(${rgb},0.08)` : 'transparent', transition: 'background 0.15s' }}
+      >
+        <div style={{ width: 32, height: 3, borderRadius: 2, background: hov ? `rgba(${rgb},0.4)` : 'rgba(255,255,255,0.08)', transition: 'background 0.15s' }} />
       </div>
     </div>
   );

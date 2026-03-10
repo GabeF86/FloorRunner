@@ -33,20 +33,16 @@ export async function DELETE(req: NextRequest) {
 export async function PATCH(req: NextRequest) {
   const sb   = server();
   const body = await req.json();
+  const updates: Record<string, unknown> = {};
+  if (body.name      !== undefined) updates.name       = body.name;
+  if (body.sort_order !== undefined) updates.sort_order = body.sort_order;
   const { data, error } = await sb
     .from('rooms')
-    .update({ name: body.name })
+    .update(updates)
     .eq('id', body.id)
     .select()
     .single();
 
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-  return NextResponse.json(data);
-}
-
-export async function PATCH(req: NextRequest) {
-  const body = await req.json();
-  const { data, error } = await sb().from('rooms').update({ sort_order: body.sort_order }).eq('id', body.id).select().single();
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
   return NextResponse.json(data);
 }

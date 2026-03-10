@@ -43,8 +43,9 @@ export async function DELETE(req: NextRequest) {
 }
 
 export async function PATCH(req: NextRequest) {
+  const sb   = server();
   const body = await req.json();
-  const { data, error } = await sb().from('sites').update({ position: body.position }).eq('id', body.id).select().single();
+  const { data, error } = await sb.from('sites').update({ position: body.position }).eq('id', body.id).select().single();
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
   return NextResponse.json(data);
 }
