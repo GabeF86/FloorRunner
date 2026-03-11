@@ -61,10 +61,13 @@ export interface Room {
   position: number; sort_order?: number; created_at?: string;
 }
 
+export const HOSPITALS = ['Paoli Hospital', 'Bryn Mawr Hospital', 'Lankenau Hospital', 'Riddle Hospital'] as const;
+export type Hospital = typeof HOSPITALS[number];
+
 export interface Site {
   id: string; name: string; color: string; icon: string;
   position: number; sort_order?: number; rooms: Room[];
-  is_float?: boolean; created_at?: string;
+  is_float?: boolean; hospital?: string | null; created_at?: string;
 }
 
 export interface Assignment {

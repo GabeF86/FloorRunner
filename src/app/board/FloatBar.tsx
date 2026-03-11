@@ -5,20 +5,20 @@ import { StaffMember, ROLE_META, Role, ShiftHours, DraggedPerson, MDDesignation 
 import { hexToRgb } from './BoardClient';
 
 interface Props {
-  staff:        StaffMember[];
-  floatIds:     Set<string>;      // in float/breaks zone
-  assignedIds:  Set<string>;      // in a real room
-  dailyShifts:  Record<string, ShiftHours>;
-  designations: Record<string, MDDesignation>;
-  onDragStart:  (p: DraggedPerson) => void;
+  staff:         StaffMember[];
+  floatIds:      Set<string>;      // in float/breaks zone
+  assignedIds:   Set<string>;      // in a real room
+  activeStaffIds: Set<string>;     // checked in / working today
+  dailyShifts:   Record<string, ShiftHours>;
+  designations:  Record<string, MDDesignation>;
+  onDragStart:   (p: DraggedPerson) => void;
 }
 
-export default function FloatBar({ staff, floatIds, assignedIds, dailyShifts, designations, onDragStart }: Props) {
+export default function FloatBar({ staff, floatIds, assignedIds, activeStaffIds, dailyShifts, designations, onDragStart }: Props) {
   const [collapsed, setCollapsed] = useState(false);
 
-  // Available = not in a real room assignment
-  // Float staff ARE available (just giving breaks)
-  const available = staff.filter((p) => !assignedIds.has(p.id) || floatIds.has(p.id));
+  // Available = checked in today AND not in a real room (float staff are available — giving breaks)
+  const available = staff.filter((p) => activeStaffIds.has(p.id) && (!assignedIds.has(p.id) || floatIds.has(p.id)));
 
   const byRole = (role: Role) => available.filter((p) => p.role === role);
 

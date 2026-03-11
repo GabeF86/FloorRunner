@@ -25,7 +25,7 @@ export async function POST(req: NextRequest) {
   const body = await req.json();
   const { data, error } = await sb
     .from('sites')
-    .insert({ name: body.name, color: body.color, icon: body.icon || '◈', position: body.position || 99 })
+    .insert({ name: body.name, color: body.color, icon: body.icon || '◈', position: body.position || 99, hospital: body.hospital || null })
     .select()
     .single();
 

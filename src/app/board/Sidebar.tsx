@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useRef } from 'react';
 import {
   StaffMember, Role, ROLE_META, ShiftHours, HOUR_OPTIONS, DraggedPerson,
   SupervisionLoad, SUPERVISION_LIMITS, MDDesignation, MD_DESIGNATIONS,
@@ -34,58 +34,132 @@ export default function Sidebar(props: Props) {
   const { staff, assignedStaffIds, activeStaffIds, dragging, onDropSidebar, onAddStaff } = props;
   const isDragTarget = !!dragging && assignedStaffIds.has(dragging.id);
 
-  // Sidebar role order: physicians first, then rest
-  const roleOrder: Role[] = ['physician', 'crna', 'srna', 'resident', 'surgeon'];
   const byRole = (role: Role) => staff.filter((p) => p.role === role);
+
+  const [search, setSearch] = useState('');
+  const [mdPct, setMdPct] = useState<number>(() => {
+    try { return parseFloat(localStorage.getItem('sidebarMdPct') || '45'); } catch { return 45; }
+  });
+  const bodyRef = useRef<HTMLDivElement>(null);
+  const divStartY = useRef(0);
+  const divStartPct = useRef(0);
+
+  function onDividerMouseDown(e: React.MouseEvent) {
+    e.preventDefault();
+    divStartY.current = e.clientY;
+    divStartPct.current = mdPct;
+    function onMove(ev: MouseEvent) {
+      const el = bodyRef.current;
+      if (!el) return;
+      const totalH = el.getBoundingClientRect().height;
+      if (!totalH) return;
+      const deltaPct = ((ev.clientY - divStartY.current) / totalH) * 100;
+      const next = Math.max(15, Math.min(80, divStartPct.current + deltaPct));
+      setMdPct(next);
+      try { localStorage.setItem('sidebarMdPct', String(next)); } catch {}
+    }
+    function onUp() {
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    }
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+  }
+
+  const searchTerm = search.toLowerCase().trim();
+  const searchResults = searchTerm ? staff.filter((p) => p.name.toLowerCase().includes(searchTerm)) : null;
+
+  const renderRoleGroup = (role: Role) => {
+    const meta = ROLE_META[role];
+    const members = byRole(role);
+    const activeCount = members.filter((p) => activeStaffIds.has(p.id)).length;
+    if (!members.length) return null;
+    return (
+      <div key={role} style={{ marginBottom: 18 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 7, padding: '6px 3px', borderBottom: '1px solid rgba(' + hexToRgb(meta.color) + ',0.2)', marginBottom: 7 }}>
+          <span style={{ width: 9, height: 9, borderRadius: 2, background: meta.color, display: 'inline-block', flexShrink: 0 }} />
+          <span style={{ fontSize: 12, fontWeight: 800, letterSpacing: 1.2, textTransform: 'uppercase', color: meta.color }}>{meta.label}</span>
+          {role === 'physician' && (
+            <span style={{ fontSize: 10, color: 'var(--text-dim)' }}>
+              (max {SUPERVISION_LIMITS.crna} CRNA · {SUPERVISION_LIMITS.resident} Res)
+            </span>
+          )}
+          <span style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--text-dim)', fontWeight: 700 }}>
+            {activeCount}/{members.length} on
+          </span>
+        </div>
+        {members.map((person) => (
+          <StaffCard key={person.id} person={person} role={role}
+            isActive={activeStaffIds.has(person.id)}
+            {...props} />
+        ))}
+      </div>
+    );
+  };
 
   return (
     <aside
-      style={{ width: 290, minWidth: 290, background: '#0a1628', borderRight: '1px solid var(--border)', display: 'flex', flexDirection: 'column', overflow: 'hidden', transition: 'box-shadow 0.2s', boxShadow: isDragTarget ? 'inset -3px 0 12px rgba(14,165,233,0.1)' : 'none' }}
+      style={{ flex: 1, minWidth: 0, height: '100%', background: '#0a1628', display: 'flex', flexDirection: 'column', overflow: 'hidden', transition: 'box-shadow 0.2s', boxShadow: isDragTarget ? 'inset -3px 0 12px rgba(14,165,233,0.1)' : 'none' }}
       onDragOver={(e) => e.preventDefault()}
       onDrop={onDropSidebar}
     >
-      <div style={{ padding: '14px 16px 11px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: '1px solid var(--border)' }}>
+      {/* Header */}
+      <div style={{ padding: '14px 16px 11px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: '1px solid var(--border)', flexShrink: 0 }}>
         <span style={{ fontSize: 13, fontWeight: 800, letterSpacing: 1.5, color: 'var(--text-muted)', textTransform: 'uppercase' }}>Staff Roster</span>
         <button onClick={onAddStaff} style={{ background: 'rgba(14,165,233,0.12)', border: '1px solid rgba(14,165,233,0.3)', color: '#0ea5e9', borderRadius: 7, padding: '4px 13px', fontSize: 12, fontWeight: 800, cursor: 'pointer' }}>+ Add</button>
       </div>
 
+      {/* Search bar */}
+      <div style={{ padding: '8px 10px', borderBottom: '1px solid var(--border)', flexShrink: 0 }}>
+        <input
+          type="text"
+          placeholder="🔍  Search staff..."
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          style={{ width: '100%', boxSizing: 'border-box', background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 7, padding: '6px 10px', fontSize: 12, color: 'var(--text)', outline: 'none' }}
+        />
+      </div>
+
       {isDragTarget && (
-        <div style={{ margin: '8px 10px 0', padding: '8px 10px', borderRadius: 8, border: '1px dashed rgba(14,165,233,0.4)', background: 'rgba(14,165,233,0.06)', fontSize: 12, color: '#0ea5e9', textAlign: 'center', fontWeight: 600 }}>
+        <div style={{ margin: '8px 10px 0', padding: '8px 10px', borderRadius: 8, border: '1px dashed rgba(14,165,233,0.4)', background: 'rgba(14,165,233,0.06)', fontSize: 12, color: '#0ea5e9', textAlign: 'center', fontWeight: 600, flexShrink: 0 }}>
           ↩ Drop here to unassign
         </div>
       )}
 
-      <div style={{ overflowY: 'auto', flex: 1, padding: '8px 10px 20px' }}>
-        {roleOrder.map((role) => {
-          const meta    = ROLE_META[role];
-          const members = byRole(role);
-          const activeCount = members.filter((p) => activeStaffIds.has(p.id)).length;
-          if (!members.length) return null;
-          return (
-            <div key={role} style={{ marginBottom: 18 }}>
-              {/* Role header */}
-              <div style={{ display: 'flex', alignItems: 'center', gap: 7, padding: '6px 3px', borderBottom: '1px solid rgba(' + hexToRgb(meta.color) + ',0.2)', marginBottom: 7 }}>
-                <span style={{ width: 9, height: 9, borderRadius: 2, background: meta.color, display: 'inline-block', flexShrink: 0 }} />
-                <span style={{ fontSize: 12, fontWeight: 800, letterSpacing: 1.2, textTransform: 'uppercase', color: meta.color }}>{meta.label}</span>
-                {role === 'physician' && (
-                  <span style={{ fontSize: 10, color: 'var(--text-dim)' }}>
-                    (max {SUPERVISION_LIMITS.crna} CRNA · {SUPERVISION_LIMITS.resident} Res)
-                  </span>
-                )}
-                <span style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--text-dim)', fontWeight: 700 }}>
-                  {activeCount}/{members.length} on
-                </span>
-              </div>
-              {members.map((person) => (
-                <StaffCard key={person.id} person={person} role={role}
-                  isActive={activeStaffIds.has(person.id)}
-                  onToggleActive={props.onToggleActive}
-                  {...props} />
-              ))}
-            </div>
-          );
-        })}
-      </div>
+      {searchResults ? (
+        <div style={{ overflowY: 'auto', flex: 1, padding: '8px 10px 20px' }}>
+          {searchResults.length === 0 && (
+            <div style={{ color: 'var(--text-dim)', fontSize: 12, fontStyle: 'italic', padding: '12px 4px' }}>No staff found</div>
+          )}
+          {searchResults.map((person) => (
+            <StaffCard key={person.id} person={person} role={person.role as Role}
+              isActive={activeStaffIds.has(person.id)}
+              {...props} />
+          ))}
+        </div>
+      ) : (
+        <div ref={bodyRef} style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+          {/* MDs pane */}
+          <div style={{ height: mdPct + '%', overflowY: 'auto', minHeight: 0, padding: '8px 10px' }}>
+            {renderRoleGroup('physician')}
+          </div>
+
+          {/* Movable divider */}
+          <div
+            onMouseDown={onDividerMouseDown}
+            style={{ flexShrink: 0, height: 8, cursor: 'ns-resize', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(14,165,233,0.07)', borderTop: '1px solid rgba(14,165,233,0.25)', borderBottom: '1px solid rgba(14,165,233,0.25)', transition: 'background 0.15s' }}
+            onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(14,165,233,0.2)')}
+            onMouseLeave={(e) => (e.currentTarget.style.background = 'rgba(14,165,233,0.07)')}
+          >
+            <div style={{ width: 28, height: 3, borderRadius: 2, background: 'rgba(14,165,233,0.5)' }} />
+          </div>
+
+          {/* CRNAs + others pane */}
+          <div style={{ flex: 1, overflowY: 'auto', minHeight: 0, padding: '8px 10px 20px' }}>
+            {(['crna', 'srna', 'resident', 'surgeon'] as Role[]).map((role) => renderRoleGroup(role))}
+          </div>
+        </div>
+      )}
     </aside>
   );
 }
@@ -133,7 +207,7 @@ function StaffCard({ person, role, assignedStaffIds, supervisionLoads, designati
       onDragStart={() => { if (canDrag) onDragStart({ ...person, role }); }}
       onMouseEnter={() => setHov(true)}
       onMouseLeave={() => { setHov(false); setShowPicker(false); }}
-      style={{ borderRadius: 10, marginBottom: 5, border: '1px solid ' + borderColor, background: bgColor, opacity: isActive ? 1 : 0.45, transition: 'all 0.14s', position: 'relative', userSelect: 'none', cursor: canDrag ? 'grab' : 'default' }}
+      style={{ borderRadius: 10, marginBottom: 5, border: '1px solid ' + borderColor, background: bgColor, opacity: isActive ? 1 : 0.72, transition: 'all 0.14s', position: 'relative', userSelect: 'none', cursor: canDrag ? 'grab' : 'default' }}
     >
       {/* Alert flash */}
       {isActive && alert === 'critical' && <div style={{ position: 'absolute', inset: 0, borderRadius: 10, border: '2px solid rgba(239,68,68,0.6)', animation: 'relief-flash 1s ease-in-out infinite', pointerEvents: 'none' }} />}
@@ -158,7 +232,7 @@ function StaffCard({ person, role, assignedStaffIds, supervisionLoads, designati
 
         {/* Info */}
         <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ fontSize: 13, fontWeight: 700, color: isActive ? 'var(--text)' : '#475569', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: isActive ? 'var(--text)' : '#8899aa', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
             {person.name}
           </div>
 
@@ -285,11 +359,25 @@ function BreakCheckbox({ type, done, onChange }: { type: BreakType; done: boolea
   );
 }
 
+const LATE_SHIFT_COLORS: Record<string, string> = {
+  '10hr': '#f59e0b',  // amber
+  '12hr': '#f97316',  // orange
+  '16hr': '#ef4444',  // red-orange
+  '24hr': '#f87171',  // bright red
+};
+
 export function ShiftBadge({ hours, role }: { hours: string; role: Role }) {
-  const color = ROLE_META[role]?.color || '#94a3b8';
-  const is24  = hours === '24hr';
+  const lateColor = LATE_SHIFT_COLORS[hours];
+  const roleColor = ROLE_META[role]?.color || '#94a3b8';
+  const color     = lateColor ?? roleColor;
   return (
-    <span style={{ fontSize: 10, fontWeight: 800, padding: '2px 6px', borderRadius: 4, background: is24 ? 'rgba(239,68,68,0.2)' : 'rgba(' + hexToRgb(color) + ',0.12)', color: is24 ? '#f87171' : color, border: '1px solid ' + (is24 ? 'rgba(239,68,68,0.35)' : 'rgba(' + hexToRgb(color) + ',0.28)') }}>
+    <span style={{
+      fontSize: 10, fontWeight: 800, padding: '2px 6px', borderRadius: 4,
+      background: `rgba(${hexToRgb(color)},${lateColor ? 0.18 : 0.12})`,
+      color,
+      border: `1px solid rgba(${hexToRgb(color)},${lateColor ? 0.45 : 0.28})`,
+      letterSpacing: lateColor ? 0.3 : 0,
+    }}>
       {hours}
     </span>
   );

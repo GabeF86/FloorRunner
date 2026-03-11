@@ -7,7 +7,7 @@ import {
   SupervisionLoad, SUPERVISION_LIMITS,
   DailyDesignation, DailyShift, Break, ReliefEntry, MDDesignation,
   BreakType, getMinutesToRelief, getAlertLevel,
-  todayString, addDays, formatDateLabel,
+  addDays, formatDateLabel, HOSPITALS, Hospital,
 } from '@/types';
 import Sidebar from './Sidebar';
 import SiteCard from './SiteCard';
@@ -47,6 +47,16 @@ export function computeSupervisionLoads(
   return loads;
 }
 
+const HOSPITAL_BASELINES: Record<string, { name: string; color: string; icon: string; rooms: string[] }[]> = {
+  'Paoli Hospital': [
+    { name: 'Main OR', color: '#0ea5e9', icon: '🏥', rooms: Array.from({ length: 15 }, (_, i) => `OR ${i + 1}`) },
+    { name: 'Endoscopy', color: '#10b981', icon: '🔬', rooms: ['Endo 1', 'Endo 2'] },
+    { name: 'Neuro', color: '#a78bfa', icon: '🧠', rooms: ['Neuro 1'] },
+    { name: 'EP Lab', color: '#f59e0b', icon: '⚡', rooms: ['EP 1'] },
+    { name: 'OB', color: '#f472b6', icon: '👶', rooms: ['OB 1'] },
+  ],
+};
+
 export default function BoardClient({ initialSites, initialStaff, initialAssignments, today }: Props) {
   const [sites,         setSites]         = useState<Site[]>(initialSites);
   const [staff,         setStaff]         = useState<StaffMember[]>(initialStaff);
@@ -66,6 +76,13 @@ export default function BoardClient({ initialSites, initialStaff, initialAssignm
   const [siteHeights,   setSiteHeights]   = useState<Record<string, number>>(() => {
     try { return JSON.parse(localStorage.getItem('siteHeights') || '{}'); } catch { return {}; }
   });
+  const [hospital, setHospital] = useState<Hospital | ''>(() => {
+    try { return (localStorage.getItem('hospital') || '') as Hospital | ''; } catch { return ''; }
+  });
+  const [sidebarWidth, setSidebarWidth] = useState<number>(() => {
+    try { return parseInt(localStorage.getItem('sidebarWidth') || '290'); } catch { return 290; }
+  });
+  const sidebarResizing = useRef(false);
 
   const [viewDate, setViewDate] = useState(today);
   const isToday    = viewDate === today;
@@ -104,13 +121,27 @@ export default function BoardClient({ initialSites, initialStaff, initialAssignm
 
   useEffect(() => { loadDailyData(viewDate); }, [viewDate]);
 
+  // ── Load staff client-side on mount (server fetch can fail silently) ───────
+  useEffect(() => {
+    supabase.from('staff').select('*').order('role').order('name').then(({ data }) => {
+      if (data && data.length > 0) setStaff(data as StaffMember[]);
+    });
+  }, []);
+
   // ── Real-time ─────────────────────────────────────────────────────────────
   useEffect(() => {
     if (!isToday) return;
     const channel = supabase.channel('board-rt')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'assignments' }, async () => {
         const res = await supabase.from('assignments').select('*, staff(*)').eq('board_date', today);
-        if (res.data) setAssignments(res.data as Assignment[]);
+        if (res.data) {
+          setAssignments((prev) => {
+            // Keep any optimistic (unconfirmed) entries not yet reflected in DB
+            const confirmedPairs = new Set((res.data as Assignment[]).map((a) => `${a.room_id}:${a.staff_id}`));
+            const opts = prev.filter((a) => a.id.startsWith('opt-') && !confirmedPairs.has(`${a.room_id}:${a.staff_id}`));
+            return [...(res.data as Assignment[]), ...opts];
+          });
+        }
       })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'staff' }, async () => {
         const { data } = await supabase.from('staff').select('*').order('role').order('name');
@@ -312,6 +343,27 @@ export default function BoardClient({ initialSites, initialStaff, initialAssignm
     await fetch('/api/breaks', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ staff_id: staffId, board_date: viewDate, break_type: breakType, taken }) });
   }, [viewDate]);
 
+  // ── Sidebar resize ────────────────────────────────────────────────────────
+  function onSidebarResizeMouseDown(e: React.MouseEvent) {
+    e.preventDefault();
+    sidebarResizing.current = true;
+    const startX = e.clientX;
+    const startW = sidebarWidth;
+    function onMove(ev: MouseEvent) {
+      if (!sidebarResizing.current) return;
+      const next = Math.min(480, Math.max(200, startW + ev.clientX - startX));
+      setSidebarWidth(next);
+      try { localStorage.setItem('sidebarWidth', String(next)); } catch {}
+    }
+    function onUp() {
+      sidebarResizing.current = false;
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    }
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+  }
+
   // ── Site height resize ────────────────────────────────────────────────────
   const setSiteHeight = useCallback((siteId: string, height: number) => {
     setSiteHeights((prev) => {
@@ -323,19 +375,37 @@ export default function BoardClient({ initialSites, initialStaff, initialAssignm
 
   // ── Sites / Rooms / Staff CRUD ────────────────────────────────────────────
   const addSite = useCallback(async (name: string, color: string, icon: string) => {
-    const res  = await fetch('/api/sites', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, color, icon, position: sites.length + 1 }) });
+    const res  = await fetch('/api/sites', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, color, icon, position: sites.length + 1, hospital: hospital || null }) });
     const data = await res.json();
     setSites((prev) => [...prev, { ...data, rooms: [] }]);
     setShowAddSite(false);
-  }, [sites.length]);
+  }, [sites.length, hospital]);
 
   const deleteSite = useCallback(async (id: string) => {
     setSites((prev) => prev.filter((s) => s.id !== id));
     await fetch('/api/sites?id=' + id, { method: 'DELETE' });
   }, []);
 
+  const resetBoard = useCallback(async () => {
+    if (!hospital || !HOSPITAL_BASELINES[hospital]) return;
+    if (!confirm(`Reset ${hospital} board?\n\n• All today's assignments will be cleared\n• All sites/rooms will be restored to baseline`)) return;
+    setSaving(true);
+    const siteIdsToDelete = sites.filter((s) => !s.is_float && s.hospital === hospital).map((s) => s.id);
+    const res = await fetch('/api/reset', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ hospital, date: viewDate, siteIdsToDelete, baseline: HOSPITAL_BASELINES[hospital] }),
+    });
+    if (!res.ok) { setSaving(false); alert('Reset failed: ' + await res.text()); return; }
+    const { sites: newSites } = await res.json();
+    setAssignments([]);
+    setSites((prev) => [...prev.filter((s) => s.is_float), ...newSites]);
+    setSaving(false);
+  }, [hospital, sites, viewDate]);
+
   const addRoom = useCallback(async (siteId: string, name: string) => {
     const res  = await fetch('/api/rooms', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ site_id: siteId, name, position: 99 }) });
+    if (!res.ok) { const err = await res.text(); console.error('addRoom failed:', err); alert('Failed to add room: ' + err); return; }
     const data = await res.json();
     setSites((prev) => prev.map((s) => s.id === siteId ? { ...s, rooms: [...s.rooms, data] } : s));
     setShowAddRoom(null);
@@ -401,8 +471,18 @@ export default function BoardClient({ initialSites, initialStaff, initialAssignm
 
   const dateLabel = formatDateLabel(viewDate);
 
+  // Filter sites by selected hospital (float site always visible)
+  const isSmallSite = (name: string) => {
+    const n = name.toLowerCase();
+    return n.includes('neuro') || n.includes('ep') || n.includes('endo') || n.includes(' ob') || n === 'ob' || n.startsWith('ob ') || n.includes('labor') || n.includes('l&d');
+  };
+
+  const filteredSites = hospital
+    ? sites.filter((s) => s.is_float || s.hospital === hospital)
+    : sites;
+
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', minHeight: '100vh', background: 'var(--bg-base)', color: 'var(--text)' }}>
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', overflow: 'hidden', background: 'var(--bg-base)', color: 'var(--text)' }}>
 
       {/* HEADER */}
       <header style={{ background: 'linear-gradient(135deg,#0a1628,#0f1f3d)', borderBottom: '1px solid var(--border)', padding: '13px 26px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', boxShadow: '0 4px 24px rgba(0,0,0,0.4)', position: 'sticky', top: 0, zIndex: 40 }}>
@@ -412,6 +492,27 @@ export default function BoardClient({ initialSites, initialStaff, initialAssignm
             <div style={{ fontSize: 22, fontWeight: 800, letterSpacing: -0.5, color: '#f8fafc' }}>ORBoard</div>
             <div style={{ fontSize: 11, color: 'var(--text-muted)', letterSpacing: 2, textTransform: 'uppercase' }}>Anesthesia Command Center</div>
           </div>
+          {/* Hospital selector */}
+          <select
+            value={hospital}
+            onChange={(e) => {
+              const val = e.target.value as Hospital | '';
+              setHospital(val);
+              try { localStorage.setItem('hospital', val); } catch {}
+            }}
+            style={{ marginLeft: 16, padding: '6px 12px', borderRadius: 8, background: '#0f1f3d', border: '1px solid rgba(14,165,233,0.35)', color: hospital ? '#0ea5e9' : '#64748b', fontSize: 13, fontWeight: 700, cursor: 'pointer', outline: 'none' }}
+          >
+            <option value="">All Hospitals</option>
+            {HOSPITALS.map((h) => <option key={h} value={h}>{h}</option>)}
+          </select>
+          {hospital && HOSPITAL_BASELINES[hospital] && (
+            <button
+              onClick={resetBoard}
+              style={{ marginLeft: 8, padding: '6px 13px', borderRadius: 8, background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.3)', color: '#f87171', fontWeight: 800, fontSize: 12, cursor: 'pointer' }}
+            >
+              ↺ Reset Board
+            </button>
+          )}
         </div>
 
         {/* Date navigator */}
@@ -461,28 +562,41 @@ export default function BoardClient({ initialSites, initialStaff, initialAssignm
 
       {/* BODY */}
       <div style={{ display: 'flex', flex: 1, overflow: 'hidden', height: isPlanMode ? 'calc(100vh - 120px)' : 'calc(100vh - 72px)' }}>
-        <Sidebar
-          staff={activeStaff}
-          assignedStaffIds={realAssignedIds}
-          supervisionLoads={supervisionLoads}
-          designations={designations}
-          dailyShifts={dailyShifts}
-          breaksMap={breaksMap}
-          alertLevels={alertLevels}
-          activeStaffIds={activeStaffIds}
-          dragging={dragging}
-          today={viewDate}
-          onDragStart={handleDragStart}
-          onDropSidebar={handleDropSidebar}
-          onAddStaff={() => setShowAddStaff(true)}
-          onDeleteStaff={deleteStaff}
-          onUpdateHours={updateStaffHours}
-          onSetDesignation={setDesignation}
-          onSetDailyShift={setDailyShift}
-          onToggleBreak={toggleBreak}
-          onToggleActive={toggleActive}
+
+        {/* Sidebar — resizable */}
+        <div style={{ width: sidebarWidth, minWidth: sidebarWidth, flexShrink: 0, display: 'flex', overflow: 'hidden' }}>
+          <Sidebar
+            staff={activeStaff}
+            assignedStaffIds={realAssignedIds}
+            supervisionLoads={supervisionLoads}
+            designations={designations}
+            dailyShifts={dailyShifts}
+            breaksMap={breaksMap}
+            alertLevels={alertLevels}
+            activeStaffIds={activeStaffIds}
+            dragging={dragging}
+            today={viewDate}
+            onDragStart={handleDragStart}
+            onDropSidebar={handleDropSidebar}
+            onAddStaff={() => setShowAddStaff(true)}
+            onDeleteStaff={deleteStaff}
+            onUpdateHours={updateStaffHours}
+            onSetDesignation={setDesignation}
+            onSetDailyShift={setDailyShift}
+            onToggleBreak={toggleBreak}
+            onToggleActive={toggleActive}
+          />
+        </div>
+
+        {/* Sidebar resize handle */}
+        <div
+          onMouseDown={onSidebarResizeMouseDown}
+          style={{ width: 5, cursor: 'col-resize', background: 'transparent', flexShrink: 0, transition: 'background 0.15s', zIndex: 10 }}
+          onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(14,165,233,0.35)')}
+          onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
         />
 
+        {/* Main content */}
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
           <main style={{ flex: 1, overflowY: 'auto', padding: '18px 22px' }}>
             <StatsBar staff={activeStaff} assignments={assignments} assignedStaffIds={assignedStaffIds} supervisionLoads={supervisionLoads} sites={sites} />
@@ -491,17 +605,26 @@ export default function BoardClient({ initialSites, initialStaff, initialAssignm
               staff={activeStaff}
               floatIds={floatStaffIds}
               assignedIds={realAssignedIds}
+              activeStaffIds={activeStaffIds}
               dailyShifts={dailyShifts}
               designations={designations}
               onDragStart={handleDragStart}
             />
 
-            {/* Sites — full width stacked */}
-            <div>
-              {sites.map((site, i) => (
+            {/* Sites — 4-column grid: large OR sites full-width, small specialty sites half-width */}
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 14 }}>
+              {[
+                ...filteredSites.filter((s) => !s.is_float && !isSmallSite(s.name)),
+                ...filteredSites.filter((s) => !s.is_float && isSmallSite(s.name)),
+                ...filteredSites.filter((s) => s.is_float),
+              ].map((site, i) => (
                 <div key={site.id}
+                  style={{ gridColumn: site.is_float ? '1 / -1' : isSmallSite(site.name) ? 'span 2' : '1 / -1' }}
                   draggable={!site.is_float}
-                  onDragStart={(e) => { if (!site.is_float) { draggingSiteId.current = site.id; e.dataTransfer.effectAllowed = 'move'; } }}
+                  onDragStart={(e) => {
+                    if ((e.target as HTMLElement).closest('button,input,select,textarea')) { e.preventDefault(); return; }
+                    if (!site.is_float) { draggingSiteId.current = site.id; e.dataTransfer.effectAllowed = 'move'; }
+                  }}
                   onDragEnd={() => { draggingSiteId.current = null; }}
                   onDragOver={(e) => {
                     const siteId = draggingSiteId.current;
@@ -528,9 +651,9 @@ export default function BoardClient({ initialSites, initialStaff, initialAssignm
                   />
                 </div>
               ))}
-
-              {/* Add site button */}
-              <AddSiteTile onClick={() => setShowAddSite(true)} />
+              <div style={{ gridColumn: '1 / -1' }}>
+                <AddSiteTile onClick={() => setShowAddSite(true)} />
+              </div>
             </div>
           </main>
 

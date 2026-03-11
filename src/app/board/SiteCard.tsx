@@ -82,13 +82,13 @@ export default function SiteCard(props: Props) {
           </div>
         </div>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-          <button onClick={props.onAddRoom} style={{ background: 'rgba(' + rgb + ',0.1)', border: '1px solid rgba(' + rgb + ',0.25)', color: site.color, borderRadius: 7, padding: '5px 14px', fontSize: 12, fontWeight: 800, cursor: 'pointer' }}>+ Room</button>
-          {hov && <button onClick={props.onDeleteSite} style={{ background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.25)', color: '#f87171', borderRadius: 7, padding: '5px 12px', fontSize: 12, fontWeight: 800, cursor: 'pointer' }}>Delete Site</button>}
+          <button draggable={false} onClick={(e) => { e.stopPropagation(); props.onAddRoom(); }} style={{ background: 'rgba(' + rgb + ',0.1)', border: '1px solid rgba(' + rgb + ',0.25)', color: site.color, borderRadius: 7, padding: '5px 14px', fontSize: 12, fontWeight: 800, cursor: 'pointer' }}>+ Room</button>
+          {hov && <button draggable={false} onClick={(e) => { e.stopPropagation(); props.onDeleteSite(); }} style={{ background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.25)', color: '#f87171', borderRadius: 7, padding: '5px 12px', fontSize: 12, fontWeight: 800, cursor: 'pointer' }}>Delete Site</button>}
         </div>
       </div>
 
-      {/* Rooms — horizontal scroll row */}
-      <div style={{ display: 'flex', gap: 10, padding: '12px 14px', overflowX: 'auto', overflowY: 'hidden', alignItems: 'stretch', height: roomsHeight ?? 110, minHeight: 110 }}>
+      {/* Rooms — wrapping */}
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, padding: '12px 14px', overflowX: 'hidden', overflowY: 'auto', alignContent: 'flex-start', minHeight: 110, maxHeight: roomsHeight ?? undefined }}>
         {site.rooms.map((room) => (
           <RoomCell
             key={room.id}
@@ -160,6 +160,7 @@ function RoomCell({ room, site, people, isOver, dragging, alertLevels, dailyShif
       onDragLeave={onDragLeave}
       onDrop={(e) => {
         e.preventDefault();
+        e.stopPropagation();
         const roomId = e.dataTransfer.getData('roomId');
         if (roomId) return; // room reorder handled in onDragOver
         onDrop();
@@ -167,7 +168,7 @@ function RoomCell({ room, site, people, isOver, dragging, alertLevels, dailyShif
       onMouseEnter={() => setHov(true)}
       onMouseLeave={() => setHov(false)}
       style={{
-        flexShrink: 0, width: 200, minHeight: 120,
+        flexShrink: 0, width: 'auto', minWidth: 130, minHeight: 120,
         borderRadius: 10, border: '1px solid',
         borderColor: isOver ? site.color : needsMd ? 'rgba(251,191,36,0.4)' : draggingRoom ? site.color : 'rgba(255,255,255,0.07)',
         background: isOver ? 'rgba(' + rgb + ',0.09)' : draggingRoom ? 'rgba(' + rgb + ',0.04)' : 'var(--bg-deep)',
@@ -192,27 +193,27 @@ function RoomCell({ room, site, people, isOver, dragging, alertLevels, dailyShif
         </div>
       </div>
 
-      {/* Split: MD left | CRNA right */}
-      <div style={{ flex: 1, display: 'flex', gap: 0, padding: '6px 6px 6px' }}>
-        {/* Left — MD / Resident */}
-        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 4, paddingRight: (crnaPeople.length > 0 || mdPeople.length > 0) ? 5 : 0, borderRight: crnaPeople.length > 0 && mdPeople.length > 0 ? '1px solid rgba(255,255,255,0.05)' : 'none' }}>
-          {mdPeople.map((a) => a.staff ? <PersonChip key={a.id} assignment={a} person={a.staff} alertLevels={alertLevels} dailyShifts={dailyShifts} onRemove={() => onRemoveAssignment(a.id)} /> : null)}
-          {people.length === 0 && !isOver && (
-            <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 10, color: 'var(--text-dim)', fontStyle: 'italic' }}>
-              drop here
-            </div>
-          )}
-          {isOver && people.length === 0 && (
-            <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 11, color: site.color, fontWeight: 700 }}>
-              Release
-            </div>
-          )}
-        </div>
+      {/* Stacked: MD on top, CRNA below */}
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 3, padding: '6px 6px 6px' }}>
+        {/* MD / Resident */}
+        {mdPeople.map((a) => a.staff ? <PersonChip key={a.id} assignment={a} person={a.staff} alertLevels={alertLevels} dailyShifts={dailyShifts} onRemove={() => onRemoveAssignment(a.id)} /> : null)}
 
-        {/* Right — CRNA / SRNA */}
-        {(crnaPeople.length > 0 || (mdPeople.length > 0 && isOver)) && (
-          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 4, paddingLeft: 5 }}>
-            {crnaPeople.map((a) => a.staff ? <PersonChip key={a.id} assignment={a} person={a.staff} alertLevels={alertLevels} dailyShifts={dailyShifts} onRemove={() => onRemoveAssignment(a.id)} /> : null)}
+        {/* Divider between MD and CRNA when both present */}
+        {mdPeople.length > 0 && crnaPeople.length > 0 && (
+          <div style={{ height: 1, background: 'rgba(255,255,255,0.05)', margin: '1px 0' }} />
+        )}
+
+        {/* CRNA / SRNA */}
+        {crnaPeople.map((a) => a.staff ? <PersonChip key={a.id} assignment={a} person={a.staff} alertLevels={alertLevels} dailyShifts={dailyShifts} onRemove={() => onRemoveAssignment(a.id)} /> : null)}
+
+        {people.length === 0 && !isOver && (
+          <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 10, color: 'var(--text-dim)', fontStyle: 'italic' }}>
+            drop here
+          </div>
+        )}
+        {isOver && people.length === 0 && (
+          <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 11, color: site.color, fontWeight: 700 }}>
+            Release
           </div>
         )}
       </div>
