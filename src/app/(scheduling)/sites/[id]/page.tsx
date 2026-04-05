@@ -27,6 +27,9 @@ interface ShiftType {
   can_auto_assign: boolean;
   manual_only: boolean;
   is_active: boolean;
+  call_type: string | null;
+  call_coverage_type: string | null;
+  early_out_post_call: boolean;
 }
 
 interface ShiftTemplate {
@@ -162,11 +165,11 @@ export default function SiteDetailPage({ params }: { params: { id: string } }) {
 
   const tc = SITE_TYPE_COLORS[site.site_type] || SITE_TYPE_COLORS.hospital;
 
-  const TABS: { key: Tab; label: string }[] = [
-    { key: 'general', label: 'General' },
-    { key: 'shift-types', label: 'Shift Types' },
-    { key: 'templates', label: 'Shift Templates' },
-    { key: 'holidays', label: 'Holidays' },
+  const TABS: { key: Tab; label: string; info: string }[] = [
+    { key: 'general', label: 'General', info: 'Basic site information — name, address, timezone, and which days this site operates.' },
+    { key: 'shift-types', label: 'Shift Types', info: 'Define all possible shifts at this site (e.g. C1, C2, D1-D8, 8hr, 10hr). Each shift type has a name, code, category, times, and scheduling rules.' },
+    { key: 'templates', label: 'Shift Templates', info: 'Configure how many of each shift type are needed on each day type (weekday, friday, weekend, holiday). The scheduler uses these to know how many slots to create.' },
+    { key: 'holidays', label: 'Holidays', info: 'Manage the holiday calendar for this site. Holidays affect which shift templates apply and how call burden is tracked.' },
   ];
 
   return (
@@ -212,7 +215,11 @@ export default function SiteDetailPage({ params }: { params: { id: string } }) {
             padding: '10px 18px', fontSize: 13, fontWeight: 700, cursor: 'pointer',
             background: 'none', border: 'none', borderBottom: `2px solid ${tab === t.key ? '#0ea5e9' : 'transparent'}`,
             color: tab === t.key ? '#0ea5e9' : 'var(--text-muted)', transition: 'all 0.15s',
-          }}>{t.label}</button>
+            display: 'flex', alignItems: 'center', gap: 5,
+          }}>
+            {t.label}
+            {tab === t.key && <InfoTip text={t.info} />}
+          </button>
         ))}
       </div>
 
@@ -368,10 +375,26 @@ function ShiftTypesTab({ site, onReload }: { site: SiteDetail; onReload: () => v
                   <td style={{ padding: '10px 14px', fontWeight: 700, color: 'var(--text)' }}>{st.name}</td>
                   <td style={{ padding: '10px 14px', color: 'var(--text-muted)', fontFamily: 'monospace', fontSize: 12 }}>{st.code}</td>
                   <td style={{ padding: '10px 14px' }}>
-                    <span style={{
-                      fontSize: 11, fontWeight: 700, padding: '3px 8px', borderRadius: 6,
-                      background: cat.bg, color: cat.color,
-                    }}>{cat.label}</span>
+                    <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+                      <span style={{
+                        fontSize: 11, fontWeight: 700, padding: '3px 8px', borderRadius: 6,
+                        background: cat.bg, color: cat.color,
+                      }}>{cat.label}</span>
+                      {st.call_type && (
+                        <span style={{
+                          fontSize: 10, fontWeight: 600, padding: '2px 6px', borderRadius: 5,
+                          background: 'rgba(255,255,255,0.06)', color: 'var(--text-muted)',
+                          border: '1px solid rgba(255,255,255,0.08)',
+                        }}>{st.call_type}</span>
+                      )}
+                      {st.call_coverage_type && (
+                        <span style={{
+                          fontSize: 10, fontWeight: 600, padding: '2px 6px', borderRadius: 5,
+                          background: st.call_coverage_type === 'full_beeper' ? 'rgba(248,113,113,0.12)' : 'rgba(251,146,60,0.12)',
+                          color: st.call_coverage_type === 'full_beeper' ? '#f87171' : '#fb923c',
+                        }}>{st.call_coverage_type === 'full_beeper' ? 'Full Beeper' : 'Partial Beeper'}</span>
+                      )}
+                    </div>
                   </td>
                   <td style={{ padding: '10px 14px', fontSize: 12, color: 'var(--text-muted)', textTransform: 'capitalize' }}>
                     {st.provider_group}
@@ -391,6 +414,7 @@ function ShiftTypesTab({ site, onReload }: { site: SiteDetail; onReload: () => v
                       {st.counts_as_weekend_burden && <FlagBadge label="Wknd" />}
                       {st.counts_as_holiday_burden && <FlagBadge label="Hol" />}
                       {st.requires_post_call_rule && <FlagBadge label="Post" />}
+                      {st.early_out_post_call && <FlagBadge label="Early Out" />}
                       {st.manual_only && <FlagBadge label="Manual" />}
                     </div>
                   </td>
@@ -444,6 +468,9 @@ function ShiftTypeModal({ siteId, existing, onClose, onSaved }: {
   const [name, setName] = useState(existing?.name || '');
   const [code, setCode] = useState(existing?.code || '');
   const [category, setCategory] = useState(existing?.category || 'regular');
+  const [callType, setCallType] = useState(existing?.call_type || '');
+  const [callCoverageType, setCallCoverageType] = useState(existing?.call_coverage_type || '');
+  const [earlyOutPostCall, setEarlyOutPostCall] = useState(existing?.early_out_post_call ?? false);
   const [providerGroup, setProviderGroup] = useState(existing?.provider_group || 'both');
   const [startTime, setStartTime] = useState(existing?.start_time?.slice(0, 5) || '');
   const [endTime, setEndTime] = useState(existing?.end_time?.slice(0, 5) || '');
@@ -468,6 +495,9 @@ function ShiftTypeModal({ siteId, existing, onClose, onSaved }: {
       name: name.trim(),
       code: code.trim(),
       category,
+      call_type: category === 'call' && callType ? callType : null,
+      call_coverage_type: category === 'call' && callCoverageType ? callCoverageType : null,
+      early_out_post_call: earlyOutPostCall,
       provider_group: providerGroup,
       start_time: startTime || null,
       end_time: endTime || null,
@@ -529,6 +559,54 @@ function ShiftTypeModal({ siteId, existing, onClose, onSaved }: {
             }}>{style.label}</button>
           ))}
         </div>
+
+        {category === 'call' && (
+          <>
+            <label style={modalLabelStyle}>Call Type</label>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 6, marginBottom: 14 }}>
+              {[
+                { value: 'weekday', label: 'Weekday', color: '#0ea5e9' },
+                { value: 'weekend', label: 'Weekend', color: '#a78bfa' },
+                { value: 'holiday', label: 'Holiday', color: '#fbbf24' },
+                { value: 'additional', label: 'Additional', color: '#10b981' },
+              ].map(ct => (
+                <button key={ct.value} onClick={() => setCallType(ct.value)} style={{
+                  padding: '8px 10px', borderRadius: 8, cursor: 'pointer', fontSize: 11, fontWeight: 700,
+                  border: `1px solid ${callType === ct.value ? ct.color : 'var(--border)'}`,
+                  background: callType === ct.value ? `${ct.color}20` : 'transparent',
+                  color: callType === ct.value ? ct.color : 'var(--text-muted)',
+                  transition: 'all 0.15s',
+                }}>{ct.label}</button>
+              ))}
+            </div>
+
+            <label style={modalLabelStyle}>Call Coverage</label>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 6, marginBottom: 14 }}>
+              {[
+                { value: 'partial_beeper', label: 'Partial Beeper', desc: 'In-hospital shift then on-call from home', color: '#fb923c' },
+                { value: 'full_beeper', label: 'Full Beeper', desc: 'On-call from home entire shift', color: '#f87171' },
+              ].map(cc => (
+                <button key={cc.value} onClick={() => setCallCoverageType(callCoverageType === cc.value ? '' : cc.value)} style={{
+                  padding: '10px 12px', borderRadius: 8, cursor: 'pointer', fontSize: 12, fontWeight: 700,
+                  border: `1px solid ${callCoverageType === cc.value ? cc.color : 'var(--border)'}`,
+                  background: callCoverageType === cc.value ? `${cc.color}20` : 'transparent',
+                  color: callCoverageType === cc.value ? cc.color : 'var(--text-muted)',
+                  transition: 'all 0.15s', textAlign: 'left',
+                }}>
+                  <div>{cc.label}</div>
+                  <div style={{ fontSize: 10, fontWeight: 500, opacity: 0.7, marginTop: 2 }}>{cc.desc}</div>
+                </button>
+              ))}
+            </div>
+
+            <div style={{ marginBottom: 14 }}>
+              <Toggle label="Early Out Post-Call" checked={earlyOutPostCall} onChange={setEarlyOutPostCall} />
+              <div style={{ fontSize: 10, color: 'var(--text-dim)', marginLeft: 23, marginTop: 2 }}>
+                Provider leaves early the next day after this call shift
+              </div>
+            </div>
+          </>
+        )}
 
         <label style={modalLabelStyle}>Provider Group</label>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 6, marginBottom: 14 }}>
@@ -1027,6 +1105,33 @@ function Field({ label, value, onChange, type }: { label: string; value: string;
       <label style={fieldLabelStyle}>{label}</label>
       <input type={type || 'text'} value={value} onChange={e => onChange(e.target.value)} style={fieldInputStyle} />
     </div>
+  );
+}
+
+function InfoTip({ text }: { text: string }) {
+  const [show, setShow] = useState(false);
+  return (
+    <span style={{ position: 'relative', display: 'inline-flex' }}
+      onMouseEnter={() => setShow(true)} onMouseLeave={() => setShow(false)}
+      onClick={(e) => { e.stopPropagation(); setShow(v => !v); }}>
+      <span style={{
+        width: 16, height: 16, borderRadius: '50%', display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+        fontSize: 10, fontWeight: 800, cursor: 'pointer',
+        background: 'rgba(14,165,233,0.15)', color: '#0ea5e9', border: '1px solid rgba(14,165,233,0.3)',
+        flexShrink: 0,
+      }}>i</span>
+      {show && (
+        <div style={{
+          position: 'absolute', top: '100%', left: '50%', transform: 'translateX(-50%)',
+          marginTop: 8, padding: '10px 14px', borderRadius: 8, fontSize: 12, lineHeight: 1.5,
+          background: '#1e293b', color: '#e2e8f0', border: '1px solid #334155',
+          boxShadow: '0 8px 24px rgba(0,0,0,0.5)', width: 280, zIndex: 300,
+          fontWeight: 500, whiteSpace: 'normal',
+        }}>
+          {text}
+        </div>
+      )}
+    </span>
   );
 }
 

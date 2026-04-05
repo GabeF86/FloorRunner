@@ -116,12 +116,12 @@ export default function ProviderDetailPage({ params }: { params: Promise<{ id: s
   const prof = provider.provider_employment_profiles?.[0] || null;
   const tc = TYPE_COLORS[provider.provider_type] || TYPE_COLORS.other;
 
-  const TABS: { key: Tab; label: string }[] = [
-    { key: 'profile', label: 'Profile' },
-    { key: 'scheduling', label: 'Employment & Scheduling' },
-    { key: 'sites', label: 'Sites & Credentials' },
-    { key: 'availability', label: 'Availability' },
-    { key: 'history', label: 'Assignment History' },
+  const TABS: { key: Tab; label: string; info: string }[] = [
+    { key: 'profile', label: 'Profile', info: 'Basic provider information — name, contact details, NPI, employee ID, and admin notes.' },
+    { key: 'scheduling', label: 'Employment & Scheduling', info: 'Employment status, FTE, call eligibility, specialty capabilities, and scheduling constraints. These settings determine what shifts this provider can be assigned to.' },
+    { key: 'sites', label: 'Sites & Credentials', info: 'Which hospitals and surgery centers this provider is credentialed at, and site-specific call eligibility overrides.' },
+    { key: 'availability', label: 'Availability', info: 'PTO, blocked dates, recurring unavailability, and leave status. The scheduler checks this before assigning shifts.' },
+    { key: 'history', label: 'Assignment History', info: 'Past shift and call assignments for this provider, including burden tracking and fairness metrics.' },
   ];
 
   return (
@@ -167,7 +167,11 @@ export default function ProviderDetailPage({ params }: { params: Promise<{ id: s
             padding: '10px 18px', fontSize: 13, fontWeight: 700, cursor: 'pointer',
             background: 'none', border: 'none', borderBottom: `2px solid ${tab === t.key ? '#0ea5e9' : 'transparent'}`,
             color: tab === t.key ? '#0ea5e9' : 'var(--text-muted)', transition: 'all 0.15s',
-          }}>{t.label}</button>
+            display: 'flex', alignItems: 'center', gap: 5,
+          }}>
+            {t.label}
+            {tab === t.key && <InfoTip text={t.info} />}
+          </button>
         ))}
       </div>
 
@@ -402,6 +406,33 @@ function Toggle({ label, checked, onChange }: { label: string; checked: boolean;
       <input type="checkbox" checked={checked} onChange={e => onChange(e.target.checked)} style={{ accentColor: '#0ea5e9', width: 15, height: 15 }} />
       {label}
     </label>
+  );
+}
+
+function InfoTip({ text }: { text: string }) {
+  const [show, setShow] = useState(false);
+  return (
+    <span style={{ position: 'relative', display: 'inline-flex' }}
+      onMouseEnter={() => setShow(true)} onMouseLeave={() => setShow(false)}
+      onClick={(e) => { e.stopPropagation(); setShow(v => !v); }}>
+      <span style={{
+        width: 16, height: 16, borderRadius: '50%', display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+        fontSize: 10, fontWeight: 800, cursor: 'pointer',
+        background: 'rgba(14,165,233,0.15)', color: '#0ea5e9', border: '1px solid rgba(14,165,233,0.3)',
+        flexShrink: 0,
+      }}>i</span>
+      {show && (
+        <div style={{
+          position: 'absolute', top: '100%', left: '50%', transform: 'translateX(-50%)',
+          marginTop: 8, padding: '10px 14px', borderRadius: 8, fontSize: 12, lineHeight: 1.5,
+          background: '#1e293b', color: '#e2e8f0', border: '1px solid #334155',
+          boxShadow: '0 8px 24px rgba(0,0,0,0.5)', width: 280, zIndex: 300,
+          fontWeight: 500, whiteSpace: 'normal',
+        }}>
+          {text}
+        </div>
+      )}
+    </span>
   );
 }
 
