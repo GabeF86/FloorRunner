@@ -13,7 +13,7 @@ interface Props {
 }
 
 export default function RelievedBox({ reliefLog, today, dragging, onDropRelieved, onUndoRelief }: Props) {
-  const [collapsed,  setCollapsed]  = useState(false);
+  const [collapsed,  setCollapsed]  = useState(true);
   const [tab,        setTab]        = useState<'today' | 'history'>('today');
   const [dragOver,   setDragOver]   = useState(false);
   const [history,    setHistory]    = useState<ReliefEntry[]>([]);

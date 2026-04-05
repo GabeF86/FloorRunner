@@ -53,7 +53,7 @@ export interface SupervisionLoad {
 
 export interface StaffMember {
   id: string; name: string; initials: string;
-  role: Role; hours: ShiftHours; created_at?: string;
+  role: Role; hours: ShiftHours; hospital?: string | null; created_at?: string;
 }
 
 export interface Room {

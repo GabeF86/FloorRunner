@@ -8,14 +8,15 @@ function server() {
   );
 }
 
-export async function GET() {
+export async function GET(req: NextRequest) {
   const sb = server();
-  const { data, error } = await sb
-    .from('staff')
-    .select('*')
-    .order('role')
-    .order('name');
+  const { searchParams } = new URL(req.url);
+  const hospital = searchParams.get('hospital');
 
+  let query = sb.from('staff').select('*').order('role').order('name');
+  if (hospital) query = query.eq('hospital', hospital);
+
+  const { data, error } = await query;
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
   return NextResponse.json(data);
 }
@@ -23,9 +24,11 @@ export async function GET() {
 export async function POST(req: NextRequest) {
   const sb   = server();
   const body = await req.json();
+  const row: Record<string, unknown> = { name: body.name, initials: body.initials, role: body.role, hours: body.hours };
+  if (body.hospital) row.hospital = body.hospital;
   const { data, error } = await sb
     .from('staff')
-    .insert({ name: body.name, initials: body.initials, role: body.role, hours: body.hours })
+    .insert(row)
     .select()
     .single();
 
@@ -36,9 +39,12 @@ export async function POST(req: NextRequest) {
 export async function PATCH(req: NextRequest) {
   const sb   = server();
   const body = await req.json();
+  const updates: Record<string, unknown> = {};
+  if (body.hours !== undefined) updates.hours = body.hours;
+  if (body.hospital) updates.hospital = body.hospital;
   const { data, error } = await sb
     .from('staff')
-    .update({ hours: body.hours })
+    .update(updates)
     .eq('id', body.id)
     .select()
     .single();

@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect, useRef } from 'react';
-import { Role, ROLE_META, HOUR_OPTIONS, ShiftHours } from '@/types';
+import { Role, ROLE_META, HOUR_OPTIONS, ShiftHours, HOSPITALS } from '@/types';
 import { hexToRgb } from './BoardClient';
 
 // ── Shared modal wrapper ─────────────────────────────────────────────────────
@@ -152,16 +152,18 @@ export function AddRoomModal({ onClose, onConfirm }: {
 // ── Add Staff Modal ───────────────────────────────────────────────────────────
 export function AddStaffModal({ onClose, onConfirm }: {
   onClose: () => void;
-  onConfirm: (name: string, role: Role, hours: ShiftHours) => void;
+  onConfirm: (name: string, role: Role, hours: ShiftHours, homeHospital: string | null) => void;
 }) {
-  const [name,  setName]  = useState('');
-  const [role,  setRole]  = useState<Role>('physician');
-  const [hours, setHours] = useState<ShiftHours>('8hr');
+  const [name,         setName]         = useState('');
+  const [role,         setRole]         = useState<Role>('physician');
+  const [hours,        setHours]        = useState<ShiftHours>('8hr');
+  const [homeHospital, setHomeHospital] = useState<string>('');
   const ref = useRef<HTMLInputElement>(null);
   useEffect(() => ref.current?.focus(), []);
 
-  const meta   = ROLE_META[role];
-  const submit = () => { if (name.trim()) onConfirm(name.trim(), role, hours); };
+  const meta          = ROLE_META[role];
+  const needsHospital = role === 'physician' || role === 'crna';
+  const submit        = () => { if (name.trim()) onConfirm(name.trim(), role, hours, needsHospital && homeHospital ? homeHospital : null); };
 
   return (
     <Modal title="Add Staff Member" onClose={onClose} onConfirm={submit} confirmLabel="Add Staff">
@@ -188,27 +190,55 @@ export function AddStaffModal({ onClose, onConfirm }: {
         ))}
       </div>
 
-      <label style={labelStyle}>Shift Length</label>
-      <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
-        {HOUR_OPTIONS.map((h) => {
-          const active = hours === h;
-          const is24   = h === '24hr';
-          const c      = is24 && active ? '#f87171' : (active ? meta.color : 'var(--text-muted)');
-          return (
-            <button key={h} onClick={() => setHours(h as ShiftHours)}
-              style={{
-                flex: 1, padding: '9px 0', borderRadius: 8, fontWeight: 800,
-                fontSize: 13, cursor: 'pointer',
-                border: `1px solid ${active ? c : 'var(--border)'}`,
-                background: active ? `rgba(${hexToRgb(c)},0.15)` : 'transparent',
-                color: c,
-                transition: 'all 0.12s',
-              }}>
-              {h}
-            </button>
-          );
-        })}
-      </div>
+      {needsHospital && (
+        <>
+          <label style={labelStyle}>Home Hospital</label>
+          <div style={{ display: 'flex', gap: 6, marginBottom: 14, flexWrap: 'wrap' }}>
+            {HOSPITALS.map((h) => {
+              const active = homeHospital === h;
+              return (
+                <button key={h} onClick={() => setHomeHospital(active ? '' : h)}
+                  style={{
+                    padding: '7px 12px', borderRadius: 8, cursor: 'pointer',
+                    border: `1px solid ${active ? meta.color : 'var(--border)'}`,
+                    background: active ? meta.bg : 'transparent',
+                    color: active ? meta.color : 'var(--text-muted)',
+                    fontWeight: 700, fontSize: 12,
+                    transition: 'all 0.12s',
+                  }}>
+                  {h}
+                </button>
+              );
+            })}
+          </div>
+        </>
+      )}
+
+      {role !== 'surgeon' && (
+        <>
+          <label style={labelStyle}>Shift Length</label>
+          <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
+            {HOUR_OPTIONS.map((h) => {
+              const active = hours === h;
+              const is24   = h === '24hr';
+              const c      = is24 && active ? '#f87171' : (active ? meta.color : 'var(--text-muted)');
+              return (
+                <button key={h} onClick={() => setHours(h as ShiftHours)}
+                  style={{
+                    flex: 1, padding: '9px 0', borderRadius: 8, fontWeight: 800,
+                    fontSize: 13, cursor: 'pointer',
+                    border: `1px solid ${active ? c : 'var(--border)'}`,
+                    background: active ? `rgba(${hexToRgb(c)},0.15)` : 'transparent',
+                    color: c,
+                    transition: 'all 0.12s',
+                  }}>
+                  {h}
+                </button>
+              );
+            })}
+          </div>
+        </>
+      )}
     </Modal>
   );
 }

@@ -9,7 +9,7 @@ interface Props {
 }
 
 export default function OutListPanel({ staff, designations }: Props) {
-  const [collapsed, setCollapsed] = useState(false);
+  const [collapsed, setCollapsed] = useState(true);
 
   // Only physicians with D/C designations
   const physicians = staff.filter((p) => p.role === 'physician');

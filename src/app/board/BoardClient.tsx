@@ -73,15 +73,16 @@ export default function BoardClient({ initialSites, initialStaff, initialAssignm
   const [showAddStaff,  setShowAddStaff]  = useState(false);
   const [showAddRoom,   setShowAddRoom]   = useState<string | null>(null);
   const [showPrint,     setShowPrint]     = useState(false);
-  const [siteHeights,   setSiteHeights]   = useState<Record<string, number>>(() => {
-    try { return JSON.parse(localStorage.getItem('siteHeights') || '{}'); } catch { return {}; }
-  });
-  const [hospital, setHospital] = useState<Hospital | ''>(() => {
-    try { return (localStorage.getItem('hospital') || '') as Hospital | ''; } catch { return ''; }
-  });
-  const [sidebarWidth, setSidebarWidth] = useState<number>(() => {
-    try { return parseInt(localStorage.getItem('sidebarWidth') || '290'); } catch { return 290; }
-  });
+  const [siteHeights,   setSiteHeights]   = useState<Record<string, number>>({});
+  const [hospital, setHospital] = useState<Hospital | ''>('');
+  const [sidebarWidth, setSidebarWidth] = useState<number>(290);
+
+  // Hydrate from localStorage after mount to avoid SSR mismatch
+  useEffect(() => {
+    try { const v = localStorage.getItem('siteHeights'); if (v) setSiteHeights(JSON.parse(v)); } catch {}
+    try { const v = localStorage.getItem('hospital'); if (v) setHospital(v as Hospital); } catch {}
+    try { const v = localStorage.getItem('sidebarWidth'); if (v) setSidebarWidth(parseInt(v)); } catch {}
+  }, []);
   const sidebarResizing = useRef(false);
 
   const [viewDate, setViewDate] = useState(today);
@@ -121,12 +122,12 @@ export default function BoardClient({ initialSites, initialStaff, initialAssignm
 
   useEffect(() => { loadDailyData(viewDate); }, [viewDate]);
 
-  // ── Load staff client-side on mount (server fetch can fail silently) ───────
+  // ── Load staff client-side (re-fetch when hospital changes) ───────────────
   useEffect(() => {
     supabase.from('staff').select('*').order('role').order('name').then(({ data }) => {
-      if (data && data.length > 0) setStaff(data as StaffMember[]);
+      if (data) setStaff(data as StaffMember[]);
     });
-  }, []);
+  }, [hospital]);
 
   // ── Real-time ─────────────────────────────────────────────────────────────
   useEffect(() => {
@@ -417,13 +418,14 @@ export default function BoardClient({ initialSites, initialStaff, initialAssignm
     await fetch('/api/rooms?id=' + roomId, { method: 'DELETE' });
   }, []);
 
-  const addStaff = useCallback(async (name: string, role: Role, hours: ShiftHours) => {
+  const addStaff = useCallback(async (name: string, role: Role, hours: ShiftHours, homeHospital: string | null) => {
     const initials = name.split(' ').map((w: string) => w[0]).join('').toUpperCase().slice(0, 2);
-    const res  = await fetch('/api/staff', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, initials, role, hours }) });
+    const staffHospital = homeHospital || hospital || null;
+    const res  = await fetch('/api/staff', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, initials, role, hours, hospital: staffHospital }) });
     const data = await res.json();
     setStaff((prev) => [...prev, data]);
     setShowAddStaff(false);
-  }, []);
+  }, [hospital]);
 
   const deleteStaff = useCallback(async (id: string) => {
     setStaff((prev) => prev.filter((p) => p.id !== id));
@@ -438,7 +440,8 @@ export default function BoardClient({ initialSites, initialStaff, initialAssignm
 
   // ── Derived ───────────────────────────────────────────────────────────────
   const relievedIds      = new Set(reliefLog.map((r) => r.staff_id));
-  const activeStaff      = staff.filter((p) => !relievedIds.has(p.id));
+  const hospitalStaff    = hospital ? staff.filter((p) => p.hospital === hospital || !p.hospital) : staff;
+  const activeStaff      = hospitalStaff.filter((p) => !relievedIds.has(p.id));
   const realRoomIds      = new Set(sites.filter((s) => !s.is_float).flatMap((s) => s.rooms.map((r) => r.id)));
   const realAssignedIds  = new Set(assignments.filter((a) => realRoomIds.has(a.room_id)).map((a) => a.staff_id));
   const assignedStaffIds = new Set(assignments.map((a) => a.staff_id));
@@ -567,6 +570,8 @@ export default function BoardClient({ initialSites, initialStaff, initialAssignm
         <div style={{ width: sidebarWidth, minWidth: sidebarWidth, flexShrink: 0, display: 'flex', overflow: 'hidden' }}>
           <Sidebar
             staff={activeStaff}
+            allStaff={staff}
+            currentHospital={hospital}
             assignedStaffIds={realAssignedIds}
             supervisionLoads={supervisionLoads}
             designations={designations}

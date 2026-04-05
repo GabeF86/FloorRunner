@@ -10,6 +10,8 @@ import { hexToRgb } from './BoardClient';
 
 interface Props {
   staff:            StaffMember[];
+  allStaff:         StaffMember[];
+  currentHospital:  string;
   assignedStaffIds: Set<string>;
   supervisionLoads: Record<string, SupervisionLoad>;
   designations:     Record<string, MDDesignation>;
@@ -40,7 +42,11 @@ export default function Sidebar(props: Props) {
   const [mdPct, setMdPct] = useState<number>(() => {
     try { return parseFloat(localStorage.getItem('sidebarMdPct') || '45'); } catch { return 45; }
   });
+  const [srnaSurgeonPct, setSrnaSurgeonPct] = useState<number>(() => {
+    try { return parseFloat(localStorage.getItem('sidebarSrnaSurgeonPct') || '60'); } catch { return 60; }
+  });
   const bodyRef = useRef<HTMLDivElement>(null);
+  const bottomRef = useRef<HTMLDivElement>(null);
   const divStartY = useRef(0);
   const divStartPct = useRef(0);
 
@@ -66,8 +72,30 @@ export default function Sidebar(props: Props) {
     window.addEventListener('mouseup', onUp);
   }
 
+  function onBottomDividerMouseDown(e: React.MouseEvent) {
+    e.preventDefault();
+    divStartY.current = e.clientY;
+    divStartPct.current = srnaSurgeonPct;
+    function onMove(ev: MouseEvent) {
+      const el = bottomRef.current;
+      if (!el) return;
+      const totalH = el.getBoundingClientRect().height;
+      if (!totalH) return;
+      const deltaPct = ((ev.clientY - divStartY.current) / totalH) * 100;
+      const next = Math.max(15, Math.min(85, divStartPct.current + deltaPct));
+      setSrnaSurgeonPct(next);
+      try { localStorage.setItem('sidebarSrnaSurgeonPct', String(next)); } catch {}
+    }
+    function onUp() {
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    }
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+  }
+
   const searchTerm = search.toLowerCase().trim();
-  const searchResults = searchTerm ? staff.filter((p) => p.name.toLowerCase().includes(searchTerm)) : null;
+  const searchResults = searchTerm ? props.allStaff.filter((p) => p.name.toLowerCase().includes(searchTerm)) : null;
 
   const renderRoleGroup = (role: Role) => {
     const meta = ROLE_META[role];
@@ -154,9 +182,25 @@ export default function Sidebar(props: Props) {
             <div style={{ width: 28, height: 3, borderRadius: 2, background: 'rgba(14,165,233,0.5)' }} />
           </div>
 
-          {/* CRNAs + others pane */}
-          <div style={{ flex: 1, overflowY: 'auto', minHeight: 0, padding: '8px 10px 20px' }}>
-            {(['crna', 'srna', 'resident', 'surgeon'] as Role[]).map((role) => renderRoleGroup(role))}
+          {/* CRNAs + SRNAs + Residents / Surgeons split pane */}
+          <div ref={bottomRef} style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', minHeight: 0 }}>
+            <div style={{ height: srnaSurgeonPct + '%', overflowY: 'auto', minHeight: 0, padding: '8px 10px' }}>
+              {(['crna', 'srna', 'resident'] as Role[]).map((role) => renderRoleGroup(role))}
+            </div>
+
+            {/* Divider between SRNA/Resident and Surgeon */}
+            <div
+              onMouseDown={onBottomDividerMouseDown}
+              style={{ flexShrink: 0, height: 8, cursor: 'ns-resize', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(14,165,233,0.07)', borderTop: '1px solid rgba(14,165,233,0.25)', borderBottom: '1px solid rgba(14,165,233,0.25)', transition: 'background 0.15s' }}
+              onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(14,165,233,0.2)')}
+              onMouseLeave={(e) => (e.currentTarget.style.background = 'rgba(14,165,233,0.07)')}
+            >
+              <div style={{ width: 28, height: 3, borderRadius: 2, background: 'rgba(14,165,233,0.5)' }} />
+            </div>
+
+            <div style={{ flex: 1, overflowY: 'auto', minHeight: 0, padding: '8px 10px 20px' }}>
+              {renderRoleGroup('surgeon')}
+            </div>
           </div>
         </div>
       )}
@@ -165,7 +209,8 @@ export default function Sidebar(props: Props) {
 }
 
 // ── Staff Card ────────────────────────────────────────────────────────────────
-function StaffCard({ person, role, assignedStaffIds, supervisionLoads, designations, dailyShifts, breaksMap, alertLevels, isActive, onDragStart, onDeleteStaff, onSetDesignation, onSetDailyShift, onToggleBreak, onToggleActive }: Props & { person: StaffMember; role: Role; isActive: boolean }) {
+function StaffCard({ person, role, assignedStaffIds, currentHospital, supervisionLoads, designations, dailyShifts, breaksMap, alertLevels, isActive, onDragStart, onDeleteStaff, onSetDesignation, onSetDailyShift, onToggleBreak, onToggleActive }: Props & { person: StaffMember; role: Role; isActive: boolean }) {
+  const isVisiting = currentHospital && person.hospital && person.hospital !== currentHospital;
   const [hov,        setHov]        = useState(false);
   const [showPicker, setShowPicker] = useState(false);
 
@@ -235,6 +280,11 @@ function StaffCard({ person, role, assignedStaffIds, supervisionLoads, designati
           <div style={{ fontSize: 13, fontWeight: 700, color: isActive ? 'var(--text)' : '#8899aa', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
             {person.name}
           </div>
+          {isVisiting && (
+            <div style={{ fontSize: 9, color: '#fb923c', fontWeight: 700, marginTop: 1 }}>
+              visiting from {person.hospital}
+            </div>
+          )}
 
           {/* Physician badges */}
           {isPhys && isActive && (

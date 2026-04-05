@@ -23,9 +23,11 @@ export async function GET() {
 export async function POST(req: NextRequest) {
   const sb   = server();
   const body = await req.json();
+  const row: Record<string, unknown> = { name: body.name, color: body.color, icon: body.icon || '◈', position: body.position || 99 };
+  if (body.hospital) row.hospital = body.hospital;
   const { data, error } = await sb
     .from('sites')
-    .insert({ name: body.name, color: body.color, icon: body.icon || '◈', position: body.position || 99, hospital: body.hospital || null })
+    .insert(row)
     .select()
     .single();
 

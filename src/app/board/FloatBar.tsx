@@ -18,7 +18,8 @@ export default function FloatBar({ staff, floatIds, assignedIds, activeStaffIds,
   const [collapsed, setCollapsed] = useState(false);
 
   // Available = checked in today AND not in a real room (float staff are available — giving breaks)
-  const available = staff.filter((p) => activeStaffIds.has(p.id) && (!assignedIds.has(p.id) || floatIds.has(p.id)));
+  // Surgeons are excluded — they don't float for break coverage
+  const available = staff.filter((p) => p.role !== 'surgeon' && activeStaffIds.has(p.id) && (!assignedIds.has(p.id) || floatIds.has(p.id)));
 
   const byRole = (role: Role) => available.filter((p) => p.role === role);
 
@@ -43,7 +44,7 @@ export default function FloatBar({ staff, floatIds, assignedIds, activeStaffIds,
       >
         <span style={{ fontSize: 13 }}>🟢</span>
         <span style={{ fontSize: 11, fontWeight: 800, letterSpacing: 1.5, textTransform: 'uppercase', color: '#10b981' }}>
-          Available Float
+          Available
         </span>
         <span style={{
           fontSize: 10, fontWeight: 700, color: 'var(--text-dim)',
