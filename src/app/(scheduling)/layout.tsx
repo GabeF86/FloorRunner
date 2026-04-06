@@ -8,6 +8,7 @@ const NAV_ITEMS = [
   { href: '/providers',  label: 'Providers',    icon: '◆' },
   { href: '/sites',      label: 'Sites',        icon: '⬡' },
   { href: '/schedules',  label: 'Schedules',    icon: '▦' },
+  { href: '/rules',      label: 'Rules',        icon: '\u2696' },
   { href: '/requests',   label: 'Requests',     icon: '✉' },
   { href: '/board',      label: 'Floor Runner', icon: '⚡' },
   { href: '/reports',    label: 'Reports',      icon: '▤' },
