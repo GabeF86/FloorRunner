@@ -182,7 +182,7 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch(`/api/scheduling/schedules/${id}/grid`);
+      const res = await fetch(`/api/scheduling/schedules/${id}/grid`, { cache: 'no-store' });
       if (!res.ok) throw new Error(`Failed to load schedule (${res.status})`);
       const data: GridData = await res.json();
       setGrid(data);
@@ -312,12 +312,15 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ schedule_slot_id: slotId, provider_id: providerId }),
       });
-      if (!res.ok) throw new Error('Failed to assign');
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.error || 'Failed to assign');
+      }
       // Reload to get real IDs
       await loadGrid();
-    } catch {
+    } catch (e) {
       setGrid({ ...grid, slots: prevSlots });
-      setActionError('Failed to assign provider');
+      setActionError(e instanceof Error ? e.message : 'Failed to assign provider');
     }
   };
 
@@ -368,27 +371,11 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
     }
   };
 
-  /* ── Render: Loading / Error ────────────────────────────────────────────── */
-
-  if (loading && !grid) {
-    return <div style={{ padding: 40, color: 'var(--text-muted)' }}>Loading schedule...</div>;
-  }
-  if (error) {
-    return <div style={{ padding: 40, color: '#f87171' }}>{error}</div>;
-  }
-  if (!grid) return null;
-
-  const { schedule, version } = grid;
-  const sc = STATUS_COLORS[schedule.status] || STATUS_COLORS.draft;
-  const colCount = visibleDates.length;
-
-  /* ── Find the active slot for the picker ────────────────────────────────── */
-
-  const activeSlot = activeCell ? grid.slots.find(s => s.id === activeCell.slotId) : null;
-  const activeAssignment = activeCell?.assignmentId ? activeSlot?.assignments.find(a => a.id === activeCell.assignmentId) : null;
-  const isAssignedCell = !!activeAssignment?.provider_id;
-
   /* ── Provider list for picker ───────────────────────────────────────────── */
+
+  const activeSlot = activeCell && grid ? grid.slots.find(s => s.id === activeCell.slotId) ?? null : null;
+  const activeAssignment = activeCell?.assignmentId && activeSlot ? activeSlot.assignments.find(a => a.id === activeCell.assignmentId) ?? null : null;
+  const isAssignedCell = !!activeAssignment?.provider_id;
 
   const filteredProviders = useMemo(() => {
     if (!grid || !activeSlot) return [];
@@ -409,6 +396,15 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
   const assignedOnActiveDate = assignedOnDate[activeSlotDate] ?? new Set<string>();
 
   /* ── Render ─────────────────────────────────────────────────────────────── */
+
+  if (error) {
+    return <div style={{ padding: 40, color: '#f87171' }}>{error}</div>;
+  }
+  if (!grid) return <div style={{ padding: 40, color: 'var(--text-muted)' }}>Loading schedule...</div>;
+
+  const { schedule, version } = grid;
+  const sc = STATUS_COLORS[schedule.status] || STATUS_COLORS.draft;
+  const colCount = visibleDates.length;
 
   return (
     <div style={{ padding: '24px 32px', height: '100%', display: 'flex', flexDirection: 'column' }}>
@@ -661,22 +657,14 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
                     }}
                   >
                     {!slot ? null : isAssigned ? (
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 4, whiteSpace: 'nowrap' }}>
-                        <span style={{
-                          fontSize: 11, fontWeight: 600, padding: '2px 8px', borderRadius: 4,
-                          background: colorWithAlpha(st.color_hex, 0.15),
-                          color: st.color_hex || 'var(--text)',
-                        }}>
-                          {provider!.short_display_name}
-                        </span>
-                        <span style={{
-                          fontSize: 9, fontWeight: 700, padding: '1px 4px', borderRadius: 3,
-                          background: 'rgba(100,116,139,0.2)', color: 'var(--text-dim)',
-                          textTransform: 'uppercase',
-                        }}>
-                          {provider!.provider_type}
-                        </span>
-                      </div>
+                      <span style={{
+                        fontSize: 11, fontWeight: 600, padding: '2px 8px', borderRadius: 4,
+                        background: colorWithAlpha(st.color_hex, 0.15),
+                        color: st.color_hex || 'var(--text)',
+                        whiteSpace: 'nowrap',
+                      }}>
+                        {provider!.short_display_name}
+                      </span>
                     ) : isOpenCall ? (
                       <span style={{
                         fontSize: 11, fontWeight: 600, color: '#f87171',
@@ -789,14 +777,18 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
                   return (
                     <div
                       key={p.id}
-                      onClick={() => activeSlot && assignProvider(activeSlot.id, p.id)}
+                      onClick={() => {
+                        if (alreadyAssigned) return;
+                        if (activeSlot) assignProvider(activeSlot.id, p.id);
+                      }}
                       style={{
                         display: 'flex', alignItems: 'center', gap: 8,
-                        padding: '7px 14px', cursor: 'pointer',
-                        opacity: alreadyAssigned ? 0.5 : 1,
+                        padding: '7px 14px',
+                        cursor: alreadyAssigned ? 'not-allowed' : 'pointer',
+                        opacity: alreadyAssigned ? 0.35 : 1,
                         transition: 'background 0.1s',
                       }}
-                      onMouseEnter={e => (e.currentTarget.style.background = 'rgba(14,165,233,0.08)')}
+                      onMouseEnter={e => { if (!alreadyAssigned) e.currentTarget.style.background = 'rgba(14,165,233,0.08)'; }}
                       onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
                     >
                       {/* Initials avatar */}

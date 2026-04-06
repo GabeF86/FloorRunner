@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { sbSchedulingServer } from '@/lib/supabaseScheduling';
 
+export const dynamic = 'force-dynamic';
+export const revalidate = 0;
+
 export async function GET(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -69,5 +72,7 @@ export async function GET(
     slots: slots || [],
     providers: providers || [],
     holidays: holidays || [],
+  }, {
+    headers: { 'Cache-Control': 'no-store, no-cache, must-revalidate' },
   });
 }

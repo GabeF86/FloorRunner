@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, use } from 'react';
+import { useState, useEffect } from 'react';
 import Link from 'next/link';
 
 interface ProviderDetail {
@@ -91,8 +91,8 @@ const EMPLOYMENT_OPTIONS = [
   { value: 'contract', label: 'Contract' },
 ];
 
-export default function ProviderDetailPage({ params }: { params: Promise<{ id: string }> }) {
-  const { id } = use(params);
+export default function ProviderDetailPage({ params }: { params: { id: string } }) {
+  const { id } = params;
   const [provider, setProvider] = useState<ProviderDetail | null>(null);
   const [tab, setTab] = useState<Tab>('profile');
   const [saving, setSaving] = useState(false);

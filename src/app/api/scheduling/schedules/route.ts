@@ -44,8 +44,7 @@ export async function POST(req: NextRequest) {
 
   const startDate = new Date(body.date_start + 'T12:00:00');
   const monthYear = startDate.toLocaleString('en-US', { month: 'long', year: 'numeric' });
-  const typeName = body.schedule_type.charAt(0).toUpperCase() + body.schedule_type.slice(1);
-  const scheduleName = `${site.name} - ${typeName} Schedule - ${monthYear}`;
+  const scheduleName = `${site.name} - Schedule - ${monthYear}`;
 
   // 2. Insert schedule
   const { data: schedule, error: schedErr } = await sb
@@ -76,13 +75,11 @@ export async function POST(req: NextRequest) {
     .single();
   if (verErr) return NextResponse.json({ error: verErr.message }, { status: 500 });
 
-  // 4. Fetch shift templates for site matching schedule_type
-  const scheduleLayer = body.schedule_type === 'call' ? 'call' : 'shifts';
+  // 4. Fetch ALL active shift templates for site (call + shifts combined)
   const { data: templates, error: tmplErr } = await sb
     .from('shift_templates')
-    .select('*, shift_types(name)')
+    .select('*, shift_types(name, display_order)')
     .eq('site_id', body.site_id)
-    .eq('schedule_layer', scheduleLayer)
     .eq('is_active', true);
   if (tmplErr) return NextResponse.json({ error: tmplErr.message }, { status: 500 });
 
@@ -110,8 +107,10 @@ export async function POST(req: NextRequest) {
     const holiday = holidayMap.get(dateStr);
 
     let dayType: string;
-    if (holiday && (holiday.is_major_holiday || holiday.holiday_type === 'federal_holiday')) {
-      dayType = 'holiday';
+    if (holiday && holiday.is_major_holiday) {
+      dayType = 'major_holiday';
+    } else if (holiday) {
+      dayType = 'federal_holiday';
     } else {
       const dow = current.getDay();
       if (dow === 0) dayType = 'sunday';
@@ -120,15 +119,21 @@ export async function POST(req: NextRequest) {
       else dayType = 'weekday';
     }
 
-    const matching = (templates || []).filter((t: Record<string, unknown>) => t.day_type === dayType);
+    // Match templates for this day type, falling back to weekday if no specific templates exist
+    let matching = (templates || []).filter((t: Record<string, unknown>) => t.day_type === dayType);
+    if (matching.length === 0 && dayType === 'friday') {
+      matching = (templates || []).filter((t: Record<string, unknown>) => t.day_type === 'weekday');
+    }
     for (const tmpl of matching) {
       const count = (tmpl.required_count as number) || 1;
       for (let i = 0; i < count; i++) {
         slotRows.push({
           schedule_version_id: version.id,
+          site_id: body.site_id,
           slot_date: dateStr,
           shift_type_id: tmpl.shift_type_id,
           slot_index: i,
+          derived_day_type: dayType,
           locked: false,
         });
       }

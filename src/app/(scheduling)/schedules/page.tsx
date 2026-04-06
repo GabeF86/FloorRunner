@@ -32,8 +32,9 @@ const STATUS_COLORS: Record<string, { color: string; bg: string; label: string }
 };
 
 const TYPE_COLORS: Record<string, { color: string; bg: string; label: string }> = {
-  call:   { color: '#f87171', bg: 'rgba(248,113,113,0.15)', label: 'Call' },
-  shifts: { color: '#0ea5e9', bg: 'rgba(14,165,233,0.15)', label: 'Shifts' },
+  combined: { color: '#8b5cf6', bg: 'rgba(139,92,246,0.15)', label: 'Combined' },
+  call:     { color: '#f87171', bg: 'rgba(248,113,113,0.15)', label: 'Call' },
+  shifts:   { color: '#0ea5e9', bg: 'rgba(14,165,233,0.15)', label: 'Shifts' },
 };
 
 const GROUP_OPTIONS: { value: string; label: string }[] = [
@@ -85,6 +86,12 @@ export default function SchedulesPage() {
   useEffect(() => { loadSchedules(); }, [loadSchedules]);
   useEffect(() => { loadSites(); }, [loadSites]);
 
+  const handleDelete = async (id: string, name: string) => {
+    if (!confirm(`Delete "${name}"? This will archive the schedule.`)) return;
+    await fetch(`/api/scheduling/schedules/${id}`, { method: 'DELETE' });
+    loadSchedules();
+  };
+
   const formatDate = (d: string) => {
     const date = new Date(d + 'T12:00:00');
     return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
@@ -125,6 +132,7 @@ export default function SchedulesPage() {
         </select>
         <select value={typeFilter} onChange={(e) => setTypeFilter(e.target.value)} style={selectStyle}>
           <option value="">All Types</option>
+          <option value="combined">Combined</option>
           <option value="call">Call</option>
           <option value="shifts">Shifts</option>
         </select>
@@ -186,9 +194,15 @@ export default function SchedulesPage() {
                     }}>{sc.label}</span>
                   </td>
                   <td style={{ padding: '10px 14px' }}>
-                    <Link href={`/schedules/${s.id}`} style={{
-                      fontSize: 11, fontWeight: 700, color: '#0ea5e9', textDecoration: 'none',
-                    }}>Open</Link>
+                    <div style={{ display: 'flex', gap: 8 }}>
+                      <Link href={`/schedules/${s.id}`} style={{
+                        fontSize: 11, fontWeight: 700, color: '#0ea5e9', textDecoration: 'none',
+                      }}>Open</Link>
+                      <button onClick={(e) => { e.stopPropagation(); handleDelete(s.id, s.schedule_name); }} style={{
+                        fontSize: 11, fontWeight: 600, color: '#f87171', background: 'none',
+                        border: 'none', cursor: 'pointer', padding: 0,
+                      }}>Delete</button>
+                    </div>
                   </td>
                 </tr>
               );
@@ -213,8 +227,7 @@ const selectStyle: React.CSSProperties = {
 // ── Create Schedule Modal ────────────────────────────────────────────────────
 function CreateScheduleModal({ orgId, sites, onClose, onCreated }: { orgId: string; sites: Site[]; onClose: () => void; onCreated: () => void }) {
   const [siteId, setSiteId] = useState('');
-  const [scheduleType, setScheduleType] = useState('call');
-  const [providerGroup, setProviderGroup] = useState('physician');
+  const [providerGroup, setProviderGroup] = useState('both');
   const [dateStart, setDateStart] = useState('');
   const [dateEnd, setDateEnd] = useState('');
   const [saving, setSaving] = useState(false);
@@ -227,7 +240,7 @@ function CreateScheduleModal({ orgId, sites, onClose, onCreated }: { orgId: stri
       body: JSON.stringify({
         organization_id: orgId,
         site_id: siteId,
-        schedule_type: scheduleType,
+        schedule_type: 'combined',
         provider_group: providerGroup,
         date_start: dateStart,
         date_end: dateEnd,
@@ -249,11 +262,6 @@ function CreateScheduleModal({ orgId, sites, onClose, onCreated }: { orgId: stri
   };
   const labelStyle: React.CSSProperties = { fontSize: 11, color: 'var(--text-muted)', display: 'block', marginBottom: 5, fontWeight: 600, letterSpacing: 0.5 };
 
-  const typeOptions = [
-    { value: 'call', label: 'Call Schedule', color: '#f87171' },
-    { value: 'shifts', label: 'Shift Schedule', color: '#0ea5e9' },
-  ];
-
   const groupOptions = [
     { value: 'physician', label: 'Physicians', color: '#f59e0b' },
     { value: 'crna', label: 'CRNAs', color: '#0ea5e9' },
@@ -270,18 +278,6 @@ function CreateScheduleModal({ orgId, sites, onClose, onCreated }: { orgId: stri
           <option value="">— Select Site —</option>
           {sites.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
         </select>
-
-        <label style={labelStyle}>Schedule Type *</label>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 14 }}>
-          {typeOptions.map(t => (
-            <button key={t.value} onClick={() => setScheduleType(t.value)} style={{
-              padding: '9px 12px', borderRadius: 8, cursor: 'pointer', fontSize: 12, fontWeight: 700,
-              border: `1px solid ${scheduleType === t.value ? t.color : 'var(--border)'}`,
-              background: scheduleType === t.value ? `${t.color}20` : 'transparent',
-              color: scheduleType === t.value ? t.color : 'var(--text-muted)',
-            }}>{t.label}</button>
-          ))}
-        </div>
 
         <label style={labelStyle}>Provider Group *</label>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8, marginBottom: 14 }}>
