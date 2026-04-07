@@ -140,6 +140,7 @@ CREATE TABLE scheduling.provider_employment_profiles (
   employment_status       scheduling.employment_status NOT NULL DEFAULT 'full_time',
   fte_value               numeric(3,2) DEFAULT 1.00,
   is_shareholder          boolean NOT NULL DEFAULT false,
+  is_partner_track        boolean NOT NULL DEFAULT false,
   pto_weeks               integer DEFAULT 0,
   max_weekly_hours        integer,
   max_monthly_calls       integer,

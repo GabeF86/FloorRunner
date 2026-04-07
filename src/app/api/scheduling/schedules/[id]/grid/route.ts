@@ -33,7 +33,7 @@ export async function GET(
   const { data: slots, error: slotErr } = await sb
     .from('schedule_slots')
     .select(
-      '*, shift_types(id, code, name, color_hex, category, call_type, display_order, provider_group), assignments(id, provider_id, assignment_status, is_open_call, manually_overridden, source_type, notes, providers(id, short_display_name, initials, provider_type))'
+      '*, shift_types(id, code, name, color_hex, category, call_type, display_order, provider_group), assignments(id, provider_id, assignment_status, is_open_call, manually_overridden, source_type, notes, validation_flags, providers(id, short_display_name, initials, provider_type))'
     )
     .eq('schedule_version_id', version.id)
     .order('slot_date')

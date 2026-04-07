@@ -87,8 +87,14 @@ export default function SchedulesPage() {
   useEffect(() => { loadSites(); }, [loadSites]);
 
   const handleDelete = async (id: string, name: string) => {
-    if (!confirm(`Delete "${name}"? This will archive the schedule.`)) return;
+    if (!confirm(`Permanently delete "${name}"? This cannot be undone — all versions, slots, and assignments will be removed.`)) return;
     await fetch(`/api/scheduling/schedules/${id}`, { method: 'DELETE' });
+    loadSchedules();
+  };
+
+  const handleArchive = async (id: string, name: string) => {
+    if (!confirm(`Archive "${name}"? It will be hidden from the active list but kept in the database.`)) return;
+    await fetch(`/api/scheduling/schedules/${id}?archive=true`, { method: 'DELETE' });
     loadSchedules();
   };
 
@@ -198,6 +204,12 @@ export default function SchedulesPage() {
                       <Link href={`/schedules/${s.id}`} style={{
                         fontSize: 11, fontWeight: 700, color: '#0ea5e9', textDecoration: 'none',
                       }}>Open</Link>
+                      {s.status !== 'archived' && (
+                        <button onClick={(e) => { e.stopPropagation(); handleArchive(s.id, s.schedule_name); }} style={{
+                          fontSize: 11, fontWeight: 600, color: '#94a3b8', background: 'none',
+                          border: 'none', cursor: 'pointer', padding: 0,
+                        }}>Archive</button>
+                      )}
                       <button onClick={(e) => { e.stopPropagation(); handleDelete(s.id, s.schedule_name); }} style={{
                         fontSize: 11, fontWeight: 600, color: '#f87171', background: 'none',
                         border: 'none', cursor: 'pointer', padding: 0,

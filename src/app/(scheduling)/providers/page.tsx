@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import Link from 'next/link';
 
 interface Provider {
@@ -17,6 +17,8 @@ interface Provider {
     fte_value: number;
     call_taker: boolean;
     partial_call_taker: boolean;
+    is_shareholder: boolean;
+    is_partner_track: boolean;
     home_site_id: string | null;
     weekend_call_eligible: boolean;
     holiday_call_eligible: boolean;
@@ -43,7 +45,6 @@ const TYPE_COLORS: Record<string, { color: string; bg: string; label: string }> 
 const EMPLOYMENT_OPTIONS = [
   { value: 'full_time', label: 'Full Time' },
   { value: 'part_time', label: 'Part Time' },
-  { value: 'employed', label: 'Employed' },
   { value: 'per_diem', label: 'Per Diem' },
   { value: 'locums', label: 'Locums' },
   { value: 'contract', label: 'Contract' },
@@ -63,6 +64,8 @@ export default function ProvidersPage() {
   const [search, setSearch] = useState('');
   const [typeFilter, setTypeFilter] = useState('');
   const [statusFilter, setStatusFilter] = useState('active');
+  const [credentialedSiteFilter, setCredentialedSiteFilter] = useState('');
+  const [roleFilter, setRoleFilter] = useState('');
   const [showAdd, setShowAdd] = useState(false);
 
   // Load org, then providers
@@ -83,9 +86,10 @@ export default function ProvidersPage() {
     if (statusFilter) params.set('status', statusFilter);
     if (typeFilter) params.set('provider_type', typeFilter);
     if (search) params.set('search', search);
+    if (credentialedSiteFilter) params.set('credentialed_site_id', credentialedSiteFilter);
     const res = await fetch('/api/scheduling/providers?' + params);
     setProviders(await res.json());
-  }, [orgId, statusFilter, typeFilter, search]);
+  }, [orgId, statusFilter, typeFilter, search, credentialedSiteFilter]);
 
   const loadSites = useCallback(async () => {
     if (!orgId) return;
@@ -96,8 +100,43 @@ export default function ProvidersPage() {
   useEffect(() => { loadProviders(); }, [loadProviders]);
   useEffect(() => { loadSites(); }, [loadSites]);
 
+  const handleDelete = async (id: string, name: string) => {
+    if (!confirm(`Permanently delete "${name}"? This cannot be undone — their employment profile, credentials, and assignment history will be removed.`)) return;
+    const res = await fetch(`/api/scheduling/providers/${id}`, { method: 'DELETE' });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      alert(`Failed to delete: ${err.error || res.statusText}`);
+      return;
+    }
+    loadProviders();
+  };
+
   const profile = (p: Provider) => p.provider_employment_profiles?.[0] || null;
   const siteName = (id: string | null) => sites.find(s => s.id === id)?.name || '—';
+
+  // Client-side role filter — relies on employment profile fields already loaded.
+  // "Call Taker" matches both full call_taker and partial_call_taker.
+  const filteredProviders = useMemo(() => {
+    if (!roleFilter) return providers;
+    return providers.filter(p => {
+      const prof = profile(p);
+      if (!prof) return false;
+      switch (roleFilter) {
+        case 'call_taker':   return prof.call_taker || prof.partial_call_taker;
+        case 'per_diem':     return prof.employment_status === 'per_diem';
+        // "Employed" = W-2 salaried staff that work hourly shifts and do NOT
+        // take call. Derived from employment_status + call flags rather than
+        // a dedicated column.
+        case 'employed':
+          return (prof.employment_status === 'full_time' || prof.employment_status === 'part_time')
+            && !prof.call_taker
+            && !prof.partial_call_taker;
+        case 'partner':      return prof.is_shareholder;
+        case 'partner_track':return prof.is_partner_track;
+        default:             return true;
+      }
+    });
+  }, [providers, roleFilter]);
 
   if (loading) return <div style={{ padding: 40, color: 'var(--text-muted)' }}>Loading...</div>;
 
@@ -111,7 +150,7 @@ export default function ProvidersPage() {
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24 }}>
         <div>
           <h1 style={{ fontSize: 22, fontWeight: 800, color: 'var(--text)' }}>Providers</h1>
-          <p style={{ fontSize: 13, color: 'var(--text-muted)', marginTop: 2 }}>{providers.length} provider{providers.length !== 1 ? 's' : ''}</p>
+          <p style={{ fontSize: 13, color: 'var(--text-muted)', marginTop: 2 }}>{filteredProviders.length} provider{filteredProviders.length !== 1 ? 's' : ''}{roleFilter && providers.length !== filteredProviders.length ? ` of ${providers.length}` : ''}</p>
         </div>
         <button onClick={() => setShowAdd(true)} style={{
           padding: '10px 20px', borderRadius: 8, cursor: 'pointer', fontWeight: 700, fontSize: 13,
@@ -142,6 +181,24 @@ export default function ProvidersPage() {
           <option value="inactive">Inactive</option>
           <option value="on_leave">On Leave</option>
         </select>
+        <select
+          value={credentialedSiteFilter}
+          onChange={(e) => setCredentialedSiteFilter(e.target.value)}
+          style={selectStyle}
+        >
+          <option value="">Credentialed at — Any Site</option>
+          {sites.map(s => (
+            <option key={s.id} value={s.id}>Credentialed at {s.short_name || s.name}</option>
+          ))}
+        </select>
+        <select value={roleFilter} onChange={(e) => setRoleFilter(e.target.value)} style={selectStyle}>
+          <option value="">All Roles</option>
+          <option value="call_taker">Call Taker</option>
+          <option value="per_diem">Per Diem</option>
+          <option value="employed">Employed</option>
+          <option value="partner">Partner</option>
+          <option value="partner_track">Partner Track</option>
+        </select>
       </div>
 
       {/* Table */}
@@ -149,13 +206,13 @@ export default function ProvidersPage() {
         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
           <thead>
             <tr style={{ borderBottom: '1px solid var(--border)', background: 'rgba(14,165,233,0.04)' }}>
-              {['Name', 'Type', 'Status', 'Employment', 'FTE', 'Home Site', 'Call Taker', 'Fellowship'].map(h => (
-                <th key={h} style={{ padding: '10px 14px', textAlign: 'left', fontSize: 10, fontWeight: 800, color: 'var(--text-dim)', letterSpacing: 1, textTransform: 'uppercase' }}>{h}</th>
+              {['Name', 'Type', 'Status', 'Employment', 'FTE', 'Home Site', 'Call Taker', 'Fellowship', 'Actions'].map(h => (
+                <th key={h} style={{ padding: '10px 14px', textAlign: 'left', fontSize: 10, fontWeight: 800, color: 'var(--text-dim)', letterSpacing: 1, textTransform: 'uppercase' }}>{h === 'Actions' ? '' : h}</th>
               ))}
             </tr>
           </thead>
           <tbody>
-            {providers.map((p) => {
+            {filteredProviders.map((p) => {
               const prof = profile(p);
               const tc = TYPE_COLORS[p.provider_type] || TYPE_COLORS.other;
               return (
@@ -205,11 +262,27 @@ export default function ProvidersPage() {
                   <td style={{ padding: '10px 14px', fontSize: 12, color: 'var(--text-muted)' }}>
                     {prof?.fellowship_primary || '—'}
                   </td>
+                  <td style={{ padding: '10px 14px', textAlign: 'right' }}>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleDelete(p.id, `${p.first_name} ${p.last_name}`);
+                      }}
+                      title="Delete provider"
+                      style={{
+                        fontSize: 11, fontWeight: 600, color: '#f87171', background: 'none',
+                        border: '1px solid rgba(248,113,113,0.3)', borderRadius: 6,
+                        padding: '4px 10px', cursor: 'pointer',
+                      }}
+                    >
+                      Delete
+                    </button>
+                  </td>
                 </tr>
               );
             })}
-            {providers.length === 0 && (
-              <tr><td colSpan={8} style={{ padding: '40px 14px', textAlign: 'center', color: 'var(--text-dim)', fontStyle: 'italic' }}>No providers found</td></tr>
+            {filteredProviders.length === 0 && (
+              <tr><td colSpan={9} style={{ padding: '40px 14px', textAlign: 'center', color: 'var(--text-dim)', fontStyle: 'italic' }}>No providers found</td></tr>
             )}
           </tbody>
         </table>

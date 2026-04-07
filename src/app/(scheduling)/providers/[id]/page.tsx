@@ -5,6 +5,7 @@ import Link from 'next/link';
 
 interface ProviderDetail {
   id: string;
+  organization_id: string;
   first_name: string;
   last_name: string;
   preferred_display_name: string;
@@ -82,10 +83,46 @@ const TYPE_COLORS: Record<string, { color: string; bg: string; label: string }> 
   other:     { color: '#94a3b8', bg: 'rgba(148,163,184,0.15)', label: 'Other' },
 };
 
+// Default profile used when a provider has no employment profile row yet.
+// On first save, the API will INSERT a row for them.
+const EMPTY_PROFILE: EmploymentProfile = {
+  employment_status: 'full_time',
+  fte_value: 1.0,
+  is_shareholder: false,
+  is_partner_track: false,
+  pto_weeks: 0,
+  max_weekly_hours: null,
+  max_monthly_calls: null,
+  call_taker: false,
+  partial_call_taker: false,
+  holiday_call_eligible: true,
+  weekend_call_eligible: true,
+  night_call_eligible: true,
+  backup_call_eligible: true,
+  late_shift_eligible: true,
+  can_supervise_crnas: false,
+  can_work_solo: false,
+  can_cover_offsite: false,
+  home_site_id: null,
+  fellowship_primary: null,
+  fellowships: [],
+  float_eligible: true,
+  trauma_eligible: false,
+  ob_eligible: false,
+  cardiac_eligible: false,
+  neuro_eligible: false,
+  endo_eligible: false,
+  ep_eligible: false,
+  max_consecutive_calls: null,
+  weekend_frequency_target: null,
+  holiday_frequency_target: null,
+  friday_frequency_target: null,
+  scheduling_notes: null,
+};
+
 const EMPLOYMENT_OPTIONS = [
   { value: 'full_time', label: 'Full Time' },
   { value: 'part_time', label: 'Part Time' },
-  { value: 'employed', label: 'Employed' },
   { value: 'per_diem', label: 'Per Diem' },
   { value: 'locums', label: 'Locums' },
   { value: 'contract', label: 'Contract' },
@@ -94,21 +131,52 @@ const EMPLOYMENT_OPTIONS = [
 export default function ProviderDetailPage({ params }: { params: { id: string } }) {
   const { id } = params;
   const [provider, setProvider] = useState<ProviderDetail | null>(null);
+  const [sites, setSites] = useState<Array<{ id: string; name: string; short_name: string | null }>>([]);
   const [tab, setTab] = useState<Tab>('profile');
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
-    fetch(`/api/scheduling/providers/${id}`).then(r => r.json()).then(setProvider);
+    fetch(`/api/scheduling/providers/${id}`, { cache: 'no-store' })
+      .then(r => r.json())
+      .then(setProvider);
   }, [id]);
+
+  // Load all sites for the provider's org so we can offer them in dropdowns.
+  useEffect(() => {
+    if (!provider?.organization_id) return;
+    fetch(`/api/scheduling/sites?org_id=${provider.organization_id}`)
+      .then(r => r.json())
+      .then(setSites);
+  }, [provider?.organization_id]);
+
+  const reload = async () => {
+    try {
+      const res = await fetch(`/api/scheduling/providers/${id}`, { cache: 'no-store' });
+      if (!res.ok) return;
+      setProvider(await res.json());
+    } catch {
+      // Silent: keep showing the last-known provider data rather than wiping it.
+    }
+  };
 
   const save = async (updates: Record<string, unknown>) => {
     setSaving(true);
-    const res = await fetch(`/api/scheduling/providers/${id}`, {
-      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(updates),
-    });
-    setProvider(await res.json());
-    setSaving(false);
+    try {
+      const res = await fetch(`/api/scheduling/providers/${id}`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(updates),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        alert(`Save failed: ${data.error || res.statusText}`);
+        return;
+      }
+      setProvider(data);
+    } catch (e) {
+      alert(`Save failed: ${e instanceof Error ? e.message : 'network error'}`);
+    } finally {
+      setSaving(false);
+    }
   };
 
   if (!provider) return <div style={{ padding: 40, color: 'var(--text-muted)' }}>Loading...</div>;
@@ -177,8 +245,8 @@ export default function ProviderDetailPage({ params }: { params: { id: string } 
 
       {/* Tab content */}
       {tab === 'profile' && <ProfileTab provider={provider} onSave={save} />}
-      {tab === 'scheduling' && prof && <SchedulingTab profile={prof} onSave={save} />}
-      {tab === 'sites' && <SitesTab credentials={provider.provider_site_credentials || []} />}
+      {tab === 'scheduling' && <SchedulingTab profile={prof || EMPTY_PROFILE} sites={sites} onSave={save} />}
+      {tab === 'sites' && <SitesTab providerId={id} credentials={provider.provider_site_credentials || []} sites={sites} onChanged={reload} />}
       {tab === 'availability' && <PlaceholderTab label="Availability / PTO" />}
       {tab === 'history' && <PlaceholderTab label="Assignment History" />}
     </div>
@@ -195,6 +263,18 @@ function ProfileTab({ provider, onSave }: { provider: ProviderDetail; onSave: (u
   const [employeeId, setEmployeeId] = useState(provider.employee_id || '');
   const [startDate, setStartDate] = useState(provider.start_date || '');
   const [notes, setNotes] = useState(provider.notes_admin_only || '');
+
+  // Sync local state when the parent passes a new provider (e.g. after save).
+  useEffect(() => {
+    setFirstName(provider.first_name);
+    setLastName(provider.last_name);
+    setEmail(provider.email || '');
+    setPhone(provider.phone || '');
+    setNpi(provider.npi || '');
+    setEmployeeId(provider.employee_id || '');
+    setStartDate(provider.start_date || '');
+    setNotes(provider.notes_admin_only || '');
+  }, [provider]);
 
   const handleSave = () => {
     onSave({
@@ -235,7 +315,7 @@ function ProfileTab({ provider, onSave }: { provider: ProviderDetail; onSave: (u
 }
 
 // ── Scheduling Tab ──────────────────────────────────────────────────────────
-function SchedulingTab({ profile, onSave }: { profile: EmploymentProfile; onSave: (u: Record<string, unknown>) => void }) {
+function SchedulingTab({ profile, sites, onSave }: { profile: EmploymentProfile; sites: Array<{ id: string; name: string; short_name: string | null }>; onSave: (u: Record<string, unknown>) => void }) {
   const [empStatus, setEmpStatus] = useState(profile.employment_status);
   const [fte, setFte] = useState(String(profile.fte_value));
   const [isPartner, setIsPartner] = useState(profile.is_shareholder);
@@ -258,6 +338,36 @@ function SchedulingTab({ profile, onSave }: { profile: EmploymentProfile; onSave
   const [epElig, setEpElig] = useState(profile.ep_eligible);
   const [maxCalls, setMaxCalls] = useState(String(profile.max_monthly_calls ?? ''));
   const [maxConsec, setMaxConsec] = useState(String(profile.max_consecutive_calls ?? ''));
+  const [homeSite, setHomeSite] = useState(profile.home_site_id || '');
+
+  // Sync local state when the parent passes a new profile (e.g. after save
+  // or when switching between providers). useState initializers only run on
+  // mount, so we need this effect to pick up prop changes.
+  useEffect(() => {
+    setEmpStatus(profile.employment_status);
+    setFte(String(profile.fte_value));
+    setIsPartner(profile.is_shareholder);
+    setIsPartnerTrack(profile.is_partner_track);
+    setCallTaker(profile.call_taker);
+    setPartialCall(profile.partial_call_taker);
+    setWeekendElig(profile.weekend_call_eligible);
+    setHolidayElig(profile.holiday_call_eligible);
+    setNightElig(profile.night_call_eligible);
+    setBackupElig(profile.backup_call_eligible);
+    setLateElig(profile.late_shift_eligible);
+    setCanSupervise(profile.can_supervise_crnas);
+    setCanSolo(profile.can_work_solo);
+    setFloatElig(profile.float_eligible);
+    setTraumaElig(profile.trauma_eligible);
+    setObElig(profile.ob_eligible);
+    setCardiacElig(profile.cardiac_eligible);
+    setNeuroElig(profile.neuro_eligible);
+    setEndoElig(profile.endo_eligible);
+    setEpElig(profile.ep_eligible);
+    setMaxCalls(String(profile.max_monthly_calls ?? ''));
+    setMaxConsec(String(profile.max_consecutive_calls ?? ''));
+    setHomeSite(profile.home_site_id || '');
+  }, [profile]);
 
   const handleSave = () => {
     onSave({
@@ -273,13 +383,14 @@ function SchedulingTab({ profile, onSave }: { profile: EmploymentProfile; onSave
       endo_eligible: endoElig, ep_eligible: epElig,
       max_monthly_calls: maxCalls ? parseInt(maxCalls) : null,
       max_consecutive_calls: maxConsec ? parseInt(maxConsec) : null,
+      home_site_id: homeSite || null,
     });
   };
 
   return (
     <div style={{ maxWidth: 640 }}>
       <SectionLabel>Employment</SectionLabel>
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 16 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 12 }}>
         <div>
           <label style={fieldLabelStyle}>Employment Status</label>
           <select value={empStatus} onChange={e => setEmpStatus(e.target.value)} style={fieldInputStyle}>
@@ -289,6 +400,15 @@ function SchedulingTab({ profile, onSave }: { profile: EmploymentProfile; onSave
           </select>
         </div>
         <Field label="FTE" value={fte} onChange={setFte} />
+      </div>
+      <div style={{ marginBottom: 16 }}>
+        <label style={fieldLabelStyle}>Home Hospital / Surgery Center</label>
+        <select value={homeSite} onChange={e => setHomeSite(e.target.value)} style={fieldInputStyle}>
+          <option value="">— None —</option>
+          {sites.map(s => (
+            <option key={s.id} value={s.id}>{s.name}</option>
+          ))}
+        </select>
       </div>
 
       <div style={{ display: 'flex', gap: 16, marginBottom: 16 }}>
@@ -336,37 +456,127 @@ function SchedulingTab({ profile, onSave }: { profile: EmploymentProfile; onSave
 }
 
 // ── Sites Tab ───────────────────────────────────────────────────────────────
-function SitesTab({ credentials }: { credentials: SiteCredential[] }) {
-  if (credentials.length === 0) {
-    return (
-      <div style={{ color: 'var(--text-dim)', fontStyle: 'italic', padding: '20px 0' }}>
-        No site credentials configured yet. Add sites and then assign this provider.
-      </div>
-    );
-  }
+function SitesTab({ providerId, credentials, sites, onChanged }: {
+  providerId: string;
+  credentials: SiteCredential[];
+  sites: Array<{ id: string; name: string; short_name: string | null }>;
+  onChanged: () => void;
+}) {
+  const [addSiteId, setAddSiteId] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  const credentialedSiteIds = new Set(credentials.map(c => c.site_id));
+  const availableSites = sites.filter(s => !credentialedSiteIds.has(s.id));
+
+  const addSite = async () => {
+    if (!addSiteId) return;
+    setBusy(true);
+    try {
+      await fetch(`/api/scheduling/providers/${providerId}/site-credentials`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ site_id: addSiteId, credentialed: true, is_active: true }),
+      });
+      setAddSiteId('');
+      onChanged();
+    } finally { setBusy(false); }
+  };
+
+  const toggleField = async (cred: SiteCredential, field: keyof SiteCredential, value: boolean) => {
+    setBusy(true);
+    try {
+      await fetch(`/api/scheduling/providers/${providerId}/site-credentials`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          site_id: cred.site_id,
+          is_active: cred.is_active,
+          credentialed: cred.credentialed,
+          can_take_call: cred.can_take_call,
+          can_take_weekend_call: cred.can_take_weekend_call,
+          can_take_holiday_call: cred.can_take_holiday_call,
+          [field]: value,
+        }),
+      });
+      onChanged();
+    } finally { setBusy(false); }
+  };
+
+  const removeSite = async (siteId: string) => {
+    if (!confirm('Remove this site credential?')) return;
+    setBusy(true);
+    try {
+      await fetch(`/api/scheduling/providers/${providerId}/site-credentials?site_id=${siteId}`, {
+        method: 'DELETE',
+      });
+      onChanged();
+    } finally { setBusy(false); }
+  };
+
   return (
-    <div style={{ maxWidth: 640 }}>
-      {credentials.map(c => (
-        <div key={c.id} style={{
+    <div style={{ maxWidth: 720 }}>
+      {/* Add new site */}
+      {availableSites.length > 0 && (
+        <div style={{
+          display: 'flex', gap: 8, marginBottom: 16, padding: 12,
           background: 'var(--bg-surface)', border: '1px solid var(--border)', borderRadius: 10,
-          padding: '14px 18px', marginBottom: 8, display: 'flex', justifyContent: 'space-between', alignItems: 'center',
         }}>
-          <div>
-            <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--text)' }}>{c.sites?.name || c.site_id}</div>
-            <div style={{ fontSize: 11, color: 'var(--text-dim)', display: 'flex', gap: 10, marginTop: 3 }}>
-              {c.credentialed && <span>Credentialed</span>}
-              {c.can_take_call && <span>Call</span>}
-              {c.can_take_weekend_call && <span>Weekend</span>}
-              {c.can_take_holiday_call && <span>Holiday</span>}
+          <select
+            value={addSiteId}
+            onChange={e => setAddSiteId(e.target.value)}
+            style={{ ...fieldInputStyle, flex: 1 }}
+          >
+            <option value="">+ Credential at a new site...</option>
+            {availableSites.map(s => (
+              <option key={s.id} value={s.id}>{s.name}</option>
+            ))}
+          </select>
+          <button
+            onClick={addSite}
+            disabled={!addSiteId || busy}
+            style={{ ...saveBtnStyle, opacity: !addSiteId || busy ? 0.5 : 1 }}
+          >
+            Add
+          </button>
+        </div>
+      )}
+
+      {credentials.length === 0 ? (
+        <div style={{ color: 'var(--text-dim)', fontStyle: 'italic', padding: '20px 0' }}>
+          No site credentials configured yet. Use the dropdown above to add one.
+        </div>
+      ) : (
+        credentials.map(c => (
+          <div key={c.id} style={{
+            background: 'var(--bg-surface)', border: '1px solid var(--border)', borderRadius: 10,
+            padding: '14px 18px', marginBottom: 8,
+          }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+              <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--text)' }}>
+                {c.sites?.name || c.site_id}
+              </div>
+              <button
+                onClick={() => removeSite(c.site_id)}
+                disabled={busy}
+                style={{
+                  fontSize: 11, fontWeight: 600, color: '#f87171', background: 'none',
+                  border: '1px solid rgba(248,113,113,0.3)', borderRadius: 6,
+                  padding: '3px 10px', cursor: busy ? 'not-allowed' : 'pointer',
+                }}
+              >
+                Remove
+              </button>
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>
+              <Toggle label="Credentialed" checked={c.credentialed} onChange={v => toggleField(c, 'credentialed', v)} />
+              <Toggle label="Active" checked={c.is_active} onChange={v => toggleField(c, 'is_active', v)} />
+              <Toggle label="Can Take Call" checked={c.can_take_call} onChange={v => toggleField(c, 'can_take_call', v)} />
+              <Toggle label="Weekend Call" checked={c.can_take_weekend_call} onChange={v => toggleField(c, 'can_take_weekend_call', v)} />
+              <Toggle label="Holiday Call" checked={c.can_take_holiday_call} onChange={v => toggleField(c, 'can_take_holiday_call', v)} />
             </div>
           </div>
-          <span style={{
-            fontSize: 10, fontWeight: 700, padding: '3px 8px', borderRadius: 6,
-            background: c.is_active ? 'rgba(16,185,129,0.12)' : 'rgba(100,116,139,0.12)',
-            color: c.is_active ? '#10b981' : '#64748b',
-          }}>{c.is_active ? 'Active' : 'Inactive'}</span>
-        </div>
-      ))}
+        ))
+      )}
     </div>
   );
 }

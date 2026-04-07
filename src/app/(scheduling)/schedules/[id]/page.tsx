@@ -46,12 +46,21 @@ interface ProviderInfo {
   provider_type: string;
 }
 
+interface ValidationFlag {
+  rule_id: string | null;
+  rule_name: string;
+  category: string;
+  severity: 'hard' | 'soft';
+  message: string;
+}
+
 interface AssignmentInfo {
   id: string;
   provider_id: string | null;
   assignment_status: string;
   is_open_call: boolean;
   manually_overridden: boolean;
+  validation_flags?: ValidationFlag[] | null;
   providers: ProviderInfo | null;
 }
 
@@ -616,6 +625,9 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
                 const isAssigned = !!provider;
                 const isOpenCall = assignment?.is_open_call ?? false;
                 const isLocked = slot?.locked ?? false;
+                const flags = assignment?.validation_flags ?? [];
+                const hardFlag = flags.some(f => f.severity === 'hard');
+                const softFlag = !hardFlag && flags.some(f => f.severity === 'soft');
                 const dow = getDayOfWeek(date);
                 const isWeekend = dow === 0 || dow === 6;
                 const isHoliday = !!holidayMap[date];
@@ -684,6 +696,19 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
                         &#x1F512;
                       </span>
                     )}
+
+                    {/* Validation badge */}
+                    {(hardFlag || softFlag) && (
+                      <span
+                        title={flags.map(f => `${f.severity === 'hard' ? '!' : '?'} ${f.message}`).join('\n')}
+                        style={{
+                          position: 'absolute', top: 2, left: 4,
+                          width: 8, height: 8, borderRadius: '50%',
+                          background: hardFlag ? '#ef4444' : '#f59e0b',
+                          boxShadow: hardFlag ? '0 0 4px rgba(239,68,68,0.6)' : '0 0 4px rgba(245,158,11,0.5)',
+                        }}
+                      />
+                    )}
                   </div>
                 );
               })}
@@ -724,6 +749,36 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
               }}>
                 {activeAssignment?.providers?.provider_type}
               </div>
+              {activeAssignment?.validation_flags && activeAssignment.validation_flags.length > 0 && (
+                <div style={{
+                  marginBottom: 12, padding: 8, borderRadius: 6,
+                  background: 'rgba(239,68,68,0.06)',
+                  border: '1px solid rgba(239,68,68,0.25)',
+                  maxHeight: 140, overflowY: 'auto',
+                }}>
+                  <div style={{
+                    fontSize: 10, fontWeight: 700, letterSpacing: 0.5,
+                    color: '#ef4444', textTransform: 'uppercase', marginBottom: 6,
+                  }}>
+                    Rule Violations ({activeAssignment.validation_flags.length})
+                  </div>
+                  {activeAssignment.validation_flags.map((f, idx) => (
+                    <div key={idx} style={{
+                      fontSize: 11, color: 'var(--text)', marginBottom: 6, lineHeight: 1.4,
+                    }}>
+                      <span style={{
+                        display: 'inline-block', width: 6, height: 6, borderRadius: '50%',
+                        background: f.severity === 'hard' ? '#ef4444' : '#f59e0b',
+                        marginRight: 6, verticalAlign: 'middle',
+                      }} />
+                      <span style={{ fontWeight: 600 }}>{f.rule_name}</span>
+                      <div style={{ fontSize: 10, color: 'var(--text-dim)', marginLeft: 12 }}>
+                        {f.message}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
               <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                 <button
                   onClick={() => activeAssignment && removeAssignment(activeAssignment.id)}

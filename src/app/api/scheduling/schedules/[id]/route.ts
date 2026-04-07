@@ -54,19 +54,29 @@ export async function PATCH(
   return NextResponse.json(data);
 }
 
+// DELETE /api/scheduling/schedules/:id
+//   default behavior: hard delete (cascades remove versions, slots, assignments)
+//   ?archive=true   : soft delete by setting status='archived'
 export async function DELETE(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
   const sb = sbSchedulingServer();
   const { id } = await params;
+  const archive = new URL(req.url).searchParams.get('archive') === 'true';
 
-  const { data, error } = await sb
-    .from('schedules')
-    .update({ status: 'archived' })
-    .eq('id', id)
-    .select()
-    .single();
+  if (archive) {
+    const { data, error } = await sb
+      .from('schedules')
+      .update({ status: 'archived' })
+      .eq('id', id)
+      .select()
+      .single();
+    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+    return NextResponse.json(data);
+  }
+
+  const { error } = await sb.from('schedules').delete().eq('id', id);
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-  return NextResponse.json(data);
+  return NextResponse.json({ ok: true, deleted: true });
 }
