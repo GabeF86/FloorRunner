@@ -5,3 +5,7 @@ node_modules/
 out/
 *.log
 .DS_Store
+
+# TypeScript incremental build cache
+tsconfig.tsbuildinfo
+*.tsbuildinfo
