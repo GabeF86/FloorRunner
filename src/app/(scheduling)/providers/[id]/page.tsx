@@ -247,8 +247,8 @@ export default function ProviderDetailPage({ params }: { params: { id: string } 
       {tab === 'profile' && <ProfileTab provider={provider} onSave={save} />}
       {tab === 'scheduling' && <SchedulingTab profile={prof || EMPTY_PROFILE} sites={sites} onSave={save} />}
       {tab === 'sites' && <SitesTab providerId={id} credentials={provider.provider_site_credentials || []} sites={sites} onChanged={reload} />}
-      {tab === 'availability' && <PlaceholderTab label="Availability / PTO" />}
-      {tab === 'history' && <PlaceholderTab label="Assignment History" />}
+      {tab === 'availability' && <AvailabilityTab providerId={id} />}
+      {tab === 'history' && <HistoryTab providerId={id} />}
     </div>
   );
 }
@@ -581,14 +581,386 @@ function SitesTab({ providerId, credentials, sites, onChanged }: {
   );
 }
 
-// ── Placeholder Tab ─────────────────────────────────────────────────────────
-function PlaceholderTab({ label }: { label: string }) {
+// ── Availability Tab ───────────────────────────────────────────────────────
+
+interface AvailabilityRow {
+  id: string;
+  availability_type: string;
+  start_date: string;
+  end_date: string;
+  all_day: boolean;
+  notes: string | null;
+  approval_status: string;
+  source: string | null;
+}
+
+const AVAILABILITY_TYPES: { value: string; label: string; color: string }[] = [
+  { value: 'pto', label: 'PTO', color: '#10b981' },
+  { value: 'sick', label: 'Sick', color: '#f87171' },
+  { value: 'fmla', label: 'FMLA', color: '#f59e0b' },
+  { value: 'conference', label: 'Conference', color: '#0ea5e9' },
+  { value: 'cme', label: 'CME', color: '#6366f1' },
+  { value: 'admin', label: 'Admin', color: '#8b5cf6' },
+  { value: 'jury_duty', label: 'Jury Duty', color: '#64748b' },
+  { value: 'parental_leave', label: 'Parental Leave', color: '#fb923c' },
+  { value: 'military_leave', label: 'Military Leave', color: '#94a3b8' },
+  { value: 'unavailable', label: 'Unavailable', color: '#475569' },
+  { value: 'blocked', label: 'Blocked', color: '#334155' },
+  { value: 'no_call_request', label: 'No-Call Request', color: '#fbbf24' },
+  { value: 'call_request', label: 'Call Request', color: '#34d399' },
+];
+
+const AVAIL_TYPE_MAP: Record<string, { label: string; color: string }> = {};
+AVAILABILITY_TYPES.forEach(t => { AVAIL_TYPE_MAP[t.value] = t; });
+
+const APPROVAL_COLORS: Record<string, { color: string; bg: string }> = {
+  approved: { color: '#10b981', bg: 'rgba(16,185,129,0.12)' },
+  pending: { color: '#fbbf24', bg: 'rgba(251,191,36,0.12)' },
+  denied: { color: '#f87171', bg: 'rgba(248,113,113,0.12)' },
+  waitlisted: { color: '#8b5cf6', bg: 'rgba(139,92,246,0.12)' },
+  canceled: { color: '#64748b', bg: 'rgba(100,116,139,0.12)' },
+};
+
+function AvailabilityTab({ providerId }: { providerId: string }) {
+  const [rows, setRows] = useState<AvailabilityRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [showAdd, setShowAdd] = useState(false);
+
+  // Add form state
+  const [addType, setAddType] = useState('pto');
+  const [addStart, setAddStart] = useState('');
+  const [addEnd, setAddEnd] = useState('');
+  const [addNotes, setAddNotes] = useState('');
+  const [addBusy, setAddBusy] = useState(false);
+
+  const loadAvailability = async () => {
+    const res = await fetch(`/api/scheduling/availability?provider_id=${providerId}`);
+    if (res.ok) setRows(await res.json());
+    setLoading(false);
+  };
+
+  useEffect(() => { loadAvailability(); }, [providerId]);
+
+  const addEntry = async () => {
+    if (!addStart || !addEnd) return;
+    setAddBusy(true);
+    const res = await fetch('/api/scheduling/availability', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        provider_id: providerId,
+        availability_type: addType,
+        start_date: addStart,
+        end_date: addEnd,
+        notes: addNotes || null,
+        approval_status: 'approved',
+      }),
+    });
+    if (res.ok) {
+      setShowAdd(false);
+      setAddStart('');
+      setAddEnd('');
+      setAddNotes('');
+      await loadAvailability();
+    }
+    setAddBusy(false);
+  };
+
+  const deleteEntry = async (id: string) => {
+    if (!confirm('Remove this availability entry?')) return;
+    await fetch(`/api/scheduling/availability/${id}`, { method: 'DELETE' });
+    await loadAvailability();
+  };
+
+  const formatDate = (d: string) => {
+    const date = new Date(d + 'T12:00:00');
+    return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+  };
+
+  if (loading) return <div style={{ color: 'var(--text-dim)', padding: '20px 0' }}>Loading...</div>;
+
+  // Split into upcoming/current and past
+  const today = new Date().toISOString().slice(0, 10);
+  const upcoming = rows.filter(r => r.end_date >= today);
+  const past = rows.filter(r => r.end_date < today);
+
   return (
-    <div style={{ color: 'var(--text-dim)', fontStyle: 'italic', padding: '20px 0' }}>
-      {label} — coming soon
+    <div style={{ maxWidth: 720 }}>
+      {/* Add button */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+        <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>
+          {upcoming.length} upcoming{past.length > 0 ? `, ${past.length} past` : ''}
+        </div>
+        <button
+          onClick={() => setShowAdd(!showAdd)}
+          style={{
+            padding: '8px 16px', borderRadius: 8, cursor: 'pointer', fontWeight: 700, fontSize: 12,
+            background: showAdd ? 'var(--bg-deep)' : 'linear-gradient(135deg,#0ea5e9,#6366f1)',
+            color: showAdd ? 'var(--text-muted)' : '#fff',
+            border: showAdd ? '1px solid var(--border)' : 'none',
+          }}
+        >
+          {showAdd ? 'Cancel' : '+ Add Entry'}
+        </button>
+      </div>
+
+      {/* Add form */}
+      {showAdd && (
+        <div style={{
+          background: 'var(--bg-surface)', border: '1px solid var(--border)', borderRadius: 10,
+          padding: 16, marginBottom: 16,
+        }}>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12, marginBottom: 12 }}>
+            <div>
+              <label style={fieldLabelStyle}>Type</label>
+              <select value={addType} onChange={e => setAddType(e.target.value)} style={fieldInputStyle}>
+                {AVAILABILITY_TYPES.map(t => (
+                  <option key={t.value} value={t.value}>{t.label}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label style={fieldLabelStyle}>Start Date</label>
+              <input type="date" value={addStart} onChange={e => {
+                setAddStart(e.target.value);
+                if (!addEnd || e.target.value > addEnd) setAddEnd(e.target.value);
+              }} style={fieldInputStyle} />
+            </div>
+            <div>
+              <label style={fieldLabelStyle}>End Date</label>
+              <input type="date" value={addEnd} onChange={e => setAddEnd(e.target.value)} min={addStart} style={fieldInputStyle} />
+            </div>
+          </div>
+          <div style={{ marginBottom: 12 }}>
+            <label style={fieldLabelStyle}>Notes (optional)</label>
+            <input value={addNotes} onChange={e => setAddNotes(e.target.value)} placeholder="Reason or details..." style={fieldInputStyle} />
+          </div>
+          <button onClick={addEntry} disabled={addBusy || !addStart || !addEnd} style={{
+            ...saveBtnStyle, opacity: addBusy || !addStart || !addEnd ? 0.5 : 1,
+          }}>
+            {addBusy ? 'Adding...' : 'Add'}
+          </button>
+        </div>
+      )}
+
+      {/* Entries list */}
+      {upcoming.length === 0 && past.length === 0 ? (
+        <div style={{ color: 'var(--text-dim)', fontStyle: 'italic', padding: '20px 0' }}>
+          No availability or time-off entries yet.
+        </div>
+      ) : (
+        <>
+          {upcoming.length > 0 && (
+            <>
+              <SectionLabel>Upcoming & Current</SectionLabel>
+              {upcoming.map(r => <AvailabilityCard key={r.id} row={r} onDelete={deleteEntry} formatDate={formatDate} />)}
+            </>
+          )}
+          {past.length > 0 && (
+            <>
+              <SectionLabel>Past</SectionLabel>
+              {past.map(r => <AvailabilityCard key={r.id} row={r} onDelete={deleteEntry} formatDate={formatDate} />)}
+            </>
+          )}
+        </>
+      )}
     </div>
   );
 }
+
+function AvailabilityCard({ row, onDelete, formatDate }: {
+  row: AvailabilityRow;
+  onDelete: (id: string) => void;
+  formatDate: (d: string) => string;
+}) {
+  const typeInfo = AVAIL_TYPE_MAP[row.availability_type] || { label: row.availability_type, color: '#64748b' };
+  const approvalInfo = APPROVAL_COLORS[row.approval_status] || APPROVAL_COLORS.pending;
+  const sameDay = row.start_date === row.end_date;
+
+  return (
+    <div style={{
+      background: 'var(--bg-surface)', border: '1px solid var(--border)', borderRadius: 10,
+      padding: '12px 16px', marginBottom: 8,
+      display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+    }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+        <span style={{
+          fontSize: 11, fontWeight: 700, padding: '3px 8px', borderRadius: 6,
+          background: `${typeInfo.color}20`, color: typeInfo.color,
+        }}>
+          {typeInfo.label}
+        </span>
+        <div>
+          <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)' }}>
+            {formatDate(row.start_date)}{!sameDay && ` — ${formatDate(row.end_date)}`}
+          </div>
+          {row.notes && (
+            <div style={{ fontSize: 11, color: 'var(--text-dim)', marginTop: 2 }}>{row.notes}</div>
+          )}
+        </div>
+      </div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <span style={{
+          fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 6,
+          background: approvalInfo.bg, color: approvalInfo.color, textTransform: 'capitalize',
+        }}>
+          {row.approval_status}
+        </span>
+        <button
+          onClick={() => onDelete(row.id)}
+          title="Delete"
+          style={{
+            fontSize: 11, color: '#f87171', background: 'none', border: 'none',
+            cursor: 'pointer', padding: '2px 6px',
+          }}
+        >
+          x
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ── History / Burden Tab ───────────────────────────────────────────────────
+
+interface BurdenData {
+  period: { from: string; to: string };
+  burden: Record<string, number>;
+  history: Array<{
+    id: string;
+    slot_date: string;
+    shift_code: string;
+    shift_name: string;
+    shift_category: string;
+    day_type: string | null;
+    source_type: string;
+  }>;
+}
+
+const BURDEN_LABELS: Record<string, string> = {
+  total_assignments: 'Total Assignments',
+  total_call: 'Total Call',
+  weekday_call: 'Weekday Call',
+  friday_call: 'Friday Call',
+  weekend_call: 'Weekend Call',
+  holiday_call: 'Holiday Call',
+};
+
+const BURDEN_COLORS: Record<string, string> = {
+  total_assignments: '#64748b',
+  total_call: '#0ea5e9',
+  weekday_call: '#6366f1',
+  friday_call: '#f59e0b',
+  weekend_call: '#f87171',
+  holiday_call: '#10b981',
+};
+
+function HistoryTab({ providerId }: { providerId: string }) {
+  const [data, setData] = useState<BurdenData | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [year, setYear] = useState(new Date().getFullYear());
+
+  useEffect(() => {
+    setLoading(true);
+    fetch(`/api/scheduling/providers/${providerId}/burden?from=${year}-01-01&to=${year}-12-31`)
+      .then(r => r.json())
+      .then(d => { setData(d); setLoading(false); });
+  }, [providerId, year]);
+
+  const formatDate = (d: string) => {
+    const date = new Date(d + 'T12:00:00');
+    return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  };
+
+  if (loading) return <div style={{ color: 'var(--text-dim)', padding: '20px 0' }}>Loading...</div>;
+  if (!data) return <div style={{ color: 'var(--text-dim)', padding: '20px 0' }}>Failed to load data.</div>;
+
+  return (
+    <div style={{ maxWidth: 780 }}>
+      {/* Year selector */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 20 }}>
+        <button onClick={() => setYear(y => y - 1)} style={yearBtnStyle}>&larr;</button>
+        <span style={{ fontSize: 15, fontWeight: 800, color: 'var(--text)', minWidth: 50, textAlign: 'center' }}>{year}</span>
+        <button onClick={() => setYear(y => y + 1)} style={yearBtnStyle}>&rarr;</button>
+      </div>
+
+      {/* Burden summary cards */}
+      <SectionLabel>Call Burden Summary</SectionLabel>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10, marginBottom: 24 }}>
+        {Object.entries(BURDEN_LABELS).map(([key, label]) => (
+          <div key={key} style={{
+            background: 'var(--bg-surface)', border: '1px solid var(--border)', borderRadius: 10,
+            padding: '14px 16px', textAlign: 'center',
+          }}>
+            <div style={{ fontSize: 24, fontWeight: 800, color: BURDEN_COLORS[key] || 'var(--text)' }}>
+              {data.burden[key] ?? 0}
+            </div>
+            <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-dim)', marginTop: 4 }}>
+              {label}
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {/* Assignment history list */}
+      <SectionLabel>Assignments ({data.history.length})</SectionLabel>
+      {data.history.length === 0 ? (
+        <div style={{ color: 'var(--text-dim)', fontStyle: 'italic', padding: '12px 0' }}>
+          No assignments in {year}.
+        </div>
+      ) : (
+        <div style={{ background: 'var(--bg-surface)', border: '1px solid var(--border)', borderRadius: 12, overflow: 'hidden' }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+            <thead>
+              <tr style={{ borderBottom: '1px solid var(--border)', background: 'rgba(14,165,233,0.04)' }}>
+                {['Date', 'Shift', 'Category', 'Day Type', 'Source'].map(h => (
+                  <th key={h} style={{
+                    padding: '8px 12px', textAlign: 'left', fontSize: 10, fontWeight: 800,
+                    color: 'var(--text-dim)', letterSpacing: 1, textTransform: 'uppercase',
+                  }}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {data.history.map(a => (
+                <tr key={a.id} style={{ borderBottom: '1px solid rgba(30,58,95,0.3)' }}>
+                  <td style={{ padding: '8px 12px', fontWeight: 600, color: 'var(--text)' }}>
+                    {formatDate(a.slot_date)}
+                  </td>
+                  <td style={{ padding: '8px 12px', color: 'var(--text-muted)' }}>
+                    <span style={{ fontWeight: 700 }}>{a.shift_code}</span>
+                    <span style={{ marginLeft: 6, fontSize: 11, color: 'var(--text-dim)' }}>{a.shift_name}</span>
+                  </td>
+                  <td style={{ padding: '8px 12px', color: 'var(--text-dim)', textTransform: 'capitalize' }}>
+                    {a.shift_category}
+                  </td>
+                  <td style={{ padding: '8px 12px', color: 'var(--text-dim)', textTransform: 'capitalize' }}>
+                    {a.day_type?.replace('_', ' ') || '—'}
+                  </td>
+                  <td style={{ padding: '8px 12px' }}>
+                    <span style={{
+                      fontSize: 10, fontWeight: 600, padding: '2px 6px', borderRadius: 4,
+                      background: a.source_type === 'auto_generated' ? 'rgba(16,185,129,0.12)' : 'rgba(14,165,233,0.12)',
+                      color: a.source_type === 'auto_generated' ? '#10b981' : '#0ea5e9',
+                    }}>
+                      {a.source_type === 'auto_generated' ? 'Auto' : a.source_type === 'manual' ? 'Manual' : a.source_type}
+                    </span>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+const yearBtnStyle: React.CSSProperties = {
+  width: 28, height: 28, borderRadius: 6, border: '1px solid var(--border)',
+  background: 'var(--bg-surface)', color: 'var(--text-muted)', cursor: 'pointer',
+  display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 14,
+};
 
 // ── Shared Components ───────────────────────────────────────────────────────
 const fieldLabelStyle: React.CSSProperties = { fontSize: 11, color: 'var(--text-muted)', display: 'block', marginBottom: 5, fontWeight: 600, letterSpacing: 0.5 };

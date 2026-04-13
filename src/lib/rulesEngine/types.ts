@@ -119,6 +119,30 @@ export interface EvaluationContext {
   // PTO / unavailability rows overlapping the window
   availability: AvailabilityRow[];
 
+  // All assignments for the same slot_date in the same schedule version
+  // (needed for coverage and pairing evaluators — how many providers are
+  // filling each shift type on this day?)
+  sameDayAssignments: Array<{
+    slot_id: string;
+    slot_date: string;
+    shift_type_code: string;
+    shift_type_category: string;
+    provider_id: string | null;
+    required_count: number;
+  }>;
+
+  // Assignments for this provider across ALL sites on the same day
+  // (needed for cross-site evaluator — detect double-booking across sites)
+  crossSiteAssignments: Array<{
+    assignment_id: string;
+    site_id: string;
+    slot_date: string;
+    shift_type_code: string;
+  }>;
+
+  // Schedule version ID (for looking up related slots)
+  scheduleVersionId: string | null;
+
   // Active rules for this site
   rules: RuleDefinition[];
 

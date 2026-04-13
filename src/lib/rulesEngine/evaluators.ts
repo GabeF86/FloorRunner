@@ -465,9 +465,266 @@ const frequency: Evaluator = ctx => {
   return violations;
 };
 
+// ── Coverage ───────────────────────────────────────────────────────────────
+
+// Checks that each shift type on the slot's date has enough assigned
+// providers to meet the required_count. This runs per-cell but evaluates
+// the entire day's coverage picture. Fires a violation on the CURRENT slot
+// only if its own shift type is under-covered.
+
+const coverage: Evaluator = ctx => {
+  const violations: RuleViolation[] = [];
+  if (ctx.sameDayAssignments.length === 0) return violations;
+
+  // Group same-day assignments by shift type code
+  const byShiftCode = new Map<string, { assigned: number; required: number }>();
+  for (const a of ctx.sameDayAssignments) {
+    const existing = byShiftCode.get(a.shift_type_code);
+    if (!existing) {
+      byShiftCode.set(a.shift_type_code, { assigned: a.provider_id ? 1 : 0, required: a.required_count });
+    } else {
+      if (a.provider_id) existing.assigned++;
+      existing.required = Math.max(existing.required, a.required_count);
+    }
+  }
+
+  // Check rule-driven coverage requirements
+  for (const rule of ctx.rules) {
+    if (rule.rule_category !== 'coverage') continue;
+    if (!ruleApplies(ctx, rule)) continue;
+
+    const shiftCode = rule.condition.shift_code as string | undefined;
+    const minCount = rule.action.min_providers as number | undefined;
+    if (!shiftCode || typeof minCount !== 'number') continue;
+
+    // Only flag this on the cell that IS the under-covered shift
+    if (ctx.shiftType.code !== shiftCode) continue;
+
+    const entry = byShiftCode.get(shiftCode);
+    const assigned = entry?.assigned ?? 0;
+    if (assigned < minCount) {
+      violations.push({
+        rule_id: rule.id,
+        rule_name: rule.rule_name,
+        category: 'coverage',
+        severity: severity(rule),
+        message: `${shiftCode} needs ${minCount} provider${minCount > 1 ? 's' : ''} on ${ctx.slot.slot_date}, only ${assigned} assigned.`,
+        details: { assigned, required: minCount },
+      });
+    }
+  }
+
+  // Implicit coverage check: if this slot's required_count > assigned
+  const mySlotAssignments = ctx.sameDayAssignments.filter(
+    a => a.slot_id === ctx.slot.id,
+  );
+  const assignedToMySlot = mySlotAssignments.filter(a => a.provider_id).length;
+  const requiredForMySlot = mySlotAssignments[0]?.required_count ?? 1;
+  if (assignedToMySlot < requiredForMySlot) {
+    violations.push({
+      rule_id: null,
+      rule_name: 'Slot under-covered',
+      category: 'coverage',
+      severity: 'soft',
+      message: `This slot needs ${requiredForMySlot} provider${requiredForMySlot > 1 ? 's' : ''}, only ${assignedToMySlot} assigned.`,
+    });
+  }
+
+  return violations;
+};
+
+// ── Pairing ────────────────────────────────────────────────────────────────
+
+// A pairing rule says: when primary_shift_code is assigned, there must also
+// be a required_backup_code assigned on the same day. Optionally same_day=true
+// means they must be on the exact same day (not just overlapping window).
+
+const pairing: Evaluator = ctx => {
+  const violations: RuleViolation[] = [];
+
+  for (const rule of ctx.rules) {
+    if (rule.rule_category !== 'pairing') continue;
+
+    const primaryCode = rule.condition.primary_shift_code as string | undefined;
+    const backupCode = rule.action.required_backup_code as string | undefined;
+    if (!primaryCode || !backupCode) continue;
+
+    // Only check when THIS assignment is the primary shift
+    if (ctx.shiftType.code !== primaryCode) continue;
+    if (!ruleAppliesToProvider(rule, ctx.providerGroup)) continue;
+
+    // Look for the backup shift on the same day
+    const hasBackup = ctx.sameDayAssignments.some(
+      a => a.shift_type_code === backupCode && a.provider_id,
+    );
+
+    if (!hasBackup) {
+      violations.push({
+        rule_id: rule.id,
+        rule_name: rule.rule_name,
+        category: 'pairing',
+        severity: severity(rule),
+        message: `${primaryCode} on ${ctx.slot.slot_date} requires a ${backupCode} assignment on the same day, but none is assigned.`,
+      });
+    }
+  }
+
+  return violations;
+};
+
+// ── Fairness ───────────────────────────────────────────────────────────────
+
+// Fairness rules track whether a provider's burden is trending significantly
+// above or below average. This is informational (soft by default) — it won't
+// block an assignment but flags inequity for the scheduler to review.
+// Requires the frequency counter logic (already have neighbor data ±31 days).
+
+const fairness: Evaluator = ctx => {
+  if (!ctx.providerId) return [];
+  const violations: RuleViolation[] = [];
+
+  for (const rule of ctx.rules) {
+    if (rule.rule_category !== 'fairness') continue;
+    if (!ruleApplies(ctx, rule)) continue;
+
+    const category = (rule.condition.burden_category as string) || '';
+    const method = (rule.action.distribution_method as string) || 'equal';
+    const matcher = categoryMatcher(category);
+
+    // Count this provider's matching assignments in the current month
+    const monthStart = startOfMonth(ctx.slot.slot_date);
+    const monthEnd = (() => {
+      const d = new Date(monthStart + 'T00:00:00Z');
+      d.setUTCMonth(d.getUTCMonth() + 1);
+      d.setUTCDate(0);
+      return d.toISOString().slice(0, 10);
+    })();
+
+    let count = 0;
+    for (const n of ctx.neighborAssignments) {
+      if (n.slot_date < monthStart || n.slot_date > monthEnd) continue;
+      if (matcher(n.shift_type_category, n.day_type)) count++;
+    }
+    // Include current
+    if (matcher(ctx.shiftType.category, ctx.slot.derived_day_type)) count++;
+
+    // We can't compute the group average from a single-cell evaluation, so
+    // we use a heuristic: if the provider is at or above 150% of a
+    // reasonable target, flag it. The target can come from the provider's
+    // profile (via frequency rules) or we default to 6/month.
+    const maxReasonable = method === 'equal' ? 6 : 8;
+    if (count > maxReasonable) {
+      violations.push({
+        rule_id: rule.id,
+        rule_name: rule.rule_name,
+        category: 'fairness',
+        severity: 'soft',
+        message: `Provider has ${count} ${category} shifts this month — may exceed fair share.`,
+        details: { count, threshold: maxReasonable, month: monthStart },
+      });
+    }
+  }
+
+  return violations;
+};
+
+// ── Open Slot ──────────────────────────────────────────────────────────────
+
+// Flags slots that have no provider assigned. This is always-on (no rule
+// needed) — it's informational to help the scheduler see gaps at a glance.
+// If a rule specifies a deadline (days_before_slot), violations escalate
+// from soft to hard as the date approaches.
+
+const openSlot: Evaluator = ctx => {
+  // If there IS a provider assigned, no violation
+  if (ctx.providerId) return [];
+  const violations: RuleViolation[] = [];
+
+  const today = new Date().toISOString().slice(0, 10);
+  const daysUntil = dateDiffDays(ctx.slot.slot_date, today);
+
+  // Check rule-driven deadlines
+  for (const rule of ctx.rules) {
+    if (rule.rule_category !== 'open_slot') continue;
+    if (!ruleApplies(ctx, rule)) continue;
+
+    const deadlineDays = rule.action.days_before_slot as number | undefined;
+    if (typeof deadlineDays === 'number' && daysUntil <= deadlineDays) {
+      violations.push({
+        rule_id: rule.id,
+        rule_name: rule.rule_name,
+        category: 'open_slot',
+        severity: severity(rule),
+        message: `Slot on ${ctx.slot.slot_date} is unassigned and within ${deadlineDays}-day deadline (${daysUntil} days away).`,
+      });
+      return violations; // One deadline violation is enough
+    }
+  }
+
+  // Default: soft warning for any open slot
+  violations.push({
+    rule_id: null,
+    rule_name: 'Open slot',
+    category: 'open_slot',
+    severity: 'soft',
+    message: `${ctx.shiftType.code} on ${ctx.slot.slot_date} has no provider assigned.`,
+  });
+
+  return violations;
+};
+
+// ── Cross-Site ─────────────────────────────────────────────────────────────
+
+// Detects when a provider is assigned at more than one site on the same day.
+// Always a hard violation unless a rule explicitly allows it.
+
+const crossSite: Evaluator = ctx => {
+  if (!ctx.providerId) return [];
+  const violations: RuleViolation[] = [];
+
+  // Group cross-site assignments by site
+  const siteIds: string[] = [];
+  for (const a of ctx.crossSiteAssignments) {
+    if (!siteIds.includes(a.site_id)) siteIds.push(a.site_id);
+  }
+
+  if (siteIds.length <= 1) return violations;
+
+  // Check if any cross-site rule explicitly allows multi-site on this day
+  for (const rule of ctx.rules) {
+    if (rule.rule_category !== 'cross_site') continue;
+    const allowMultiSite = rule.action.allow_multi_site as boolean | undefined;
+    if (allowMultiSite) return []; // Explicitly allowed
+  }
+
+  // Build the site list for the message
+  const otherSites = siteIds.filter(s => s !== ctx.slot.site_id);
+  violations.push({
+    rule_id: null,
+    rule_name: 'Cross-site conflict',
+    category: 'cross_site',
+    severity: 'hard',
+    message: `Provider is assigned at ${siteIds.length} sites on ${ctx.slot.slot_date}. Other site(s): ${otherSites.join(', ')}.`,
+    details: { sites: siteIds },
+  });
+
+  return violations;
+};
+
 // ── Registry ───────────────────────────────────────────────────────────────
 
-export const evaluators: Evaluator[] = [eligibility, timeOff, sequence, rest, frequency];
+export const evaluators: Evaluator[] = [
+  eligibility,
+  timeOff,
+  sequence,
+  rest,
+  frequency,
+  coverage,
+  pairing,
+  fairness,
+  openSlot,
+  crossSite,
+];
 
 // Re-export helpers used by dateDiff in tests etc.
 export const __test = { dateDiffDays, startOfMonth, startOfWeek, shiftDate };

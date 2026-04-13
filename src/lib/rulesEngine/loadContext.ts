@@ -32,11 +32,12 @@ export async function loadContext(
   // 1. The slot itself
   const { data: slot, error: slotErr } = await sb
     .from('schedule_slots')
-    .select('id, site_id, slot_date, shift_type_id, provider_group, derived_day_type')
+    .select('id, site_id, slot_date, shift_type_id, provider_group, derived_day_type, schedule_version_id, required_count')
     .eq('id', slotId)
     .maybeSingle();
   if (slotErr || !slot) return null;
   const slotRow = slot as SlotRow;
+  const scheduleVersionId = (slot as Record<string, unknown>).schedule_version_id as string | null;
 
   // 2. All shift types for this site (small table; one query is fine)
   const { data: shiftTypes } = await sb
@@ -168,6 +169,57 @@ export async function loadContext(
     availability = (avail || []) as AvailabilityRow[];
   }
 
+  // 5. All assignments on the same date in the same schedule version
+  //    (for coverage and pairing checks — "are enough providers filling this day?")
+  let sameDayAssignments: EvaluationContext['sameDayAssignments'] = [];
+  if (scheduleVersionId) {
+    const { data: sameDay } = await sb
+      .from('schedule_slots')
+      .select('id, slot_date, shift_type_id, required_count, assignments(provider_id)')
+      .eq('schedule_version_id', scheduleVersionId)
+      .eq('slot_date', slotRow.slot_date);
+
+    sameDayAssignments = ((sameDay || []) as Array<Record<string, unknown>>).flatMap(s => {
+      const st = shiftTypesById.get(s.shift_type_id as string);
+      if (!st) return [];
+      const assignments = (s.assignments as Array<{ provider_id: string | null }>) || [];
+      return assignments.map(a => ({
+        slot_id: s.id as string,
+        slot_date: s.slot_date as string,
+        shift_type_code: st.code,
+        shift_type_category: st.category,
+        provider_id: a.provider_id,
+        required_count: (s.required_count as number) || 1,
+      }));
+    });
+  }
+
+  // 6. Cross-site assignments for this provider on the same date
+  //    (across ALL schedules, not just this version — to detect double-booking)
+  let crossSiteAssignments: EvaluationContext['crossSiteAssignments'] = [];
+  if (providerId) {
+    const { data: crossSite } = await sb
+      .from('assignments')
+      .select('id, schedule_slots!inner(site_id, slot_date, shift_type_id)')
+      .eq('provider_id', providerId)
+      .eq('assignment_status', 'assigned')
+      .eq('schedule_slots.slot_date', slotRow.slot_date);
+
+    crossSiteAssignments = ((crossSite || []) as Array<Record<string, unknown>>)
+      .map(row => {
+        const s = row.schedule_slots as Record<string, unknown> | null;
+        if (!s) return null;
+        const st = shiftTypesById.get(s.shift_type_id as string);
+        return {
+          assignment_id: row.id as string,
+          site_id: s.site_id as string,
+          slot_date: s.slot_date as string,
+          shift_type_code: st?.code || 'unknown',
+        };
+      })
+      .filter((x): x is NonNullable<typeof x> => x !== null);
+  }
+
   return {
     slot: slotRow,
     shiftType,
@@ -176,6 +228,9 @@ export async function loadContext(
     credentials,
     neighborAssignments,
     availability,
+    sameDayAssignments,
+    crossSiteAssignments,
+    scheduleVersionId,
     rules,
     shiftTypesByCode,
     shiftTypesById,

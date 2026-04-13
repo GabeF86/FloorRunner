@@ -380,6 +380,27 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
     }
   };
 
+  const [generating, setGenerating] = useState(false);
+  const [genResult, setGenResult] = useState<{ filled: number; skipped: number; errors: string[] } | null>(null);
+
+  const autoGenerateSchedule = async () => {
+    if (!grid) return;
+    if (!confirm('Auto-generate will fill all open slots using active rules. Manual assignments will NOT be overwritten. Continue?')) return;
+    setGenerating(true);
+    setGenResult(null);
+    try {
+      const res = await fetch(`/api/scheduling/schedules/${id}/generate`, { method: 'POST' });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Generation failed');
+      setGenResult({ filled: data.filled, skipped: data.skipped, errors: data.errors });
+      await loadGrid();
+    } catch (e) {
+      setActionError(e instanceof Error ? e.message : 'Auto-generation failed');
+    } finally {
+      setGenerating(false);
+    }
+  };
+
   /* ── Provider list for picker ───────────────────────────────────────────── */
 
   const activeSlot = activeCell && grid ? grid.slots.find(s => s.id === activeCell.slotId) ?? null : null;
@@ -495,6 +516,22 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
           </div>
         )}
 
+        {/* Auto-Generate button */}
+        {schedule.status === 'draft' && (
+          <button
+            onClick={autoGenerateSchedule}
+            disabled={generating}
+            style={{
+              padding: '6px 18px', fontSize: 13, fontWeight: 700, borderRadius: 6,
+              background: generating ? 'var(--bg-deep)' : 'rgba(16,185,129,0.15)',
+              color: generating ? 'var(--text-dim)' : '#10b981',
+              border: '1px solid rgba(16,185,129,0.3)', cursor: generating ? 'not-allowed' : 'pointer',
+            }}
+          >
+            {generating ? 'Generating...' : 'Auto-Generate'}
+          </button>
+        )}
+
         {/* Publish button */}
         {schedule.status === 'draft' && (
           <button
@@ -508,6 +545,26 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
           </button>
         )}
       </div>
+
+      {/* Generation result toast */}
+      {genResult && (
+        <div style={{
+          padding: '10px 16px', marginBottom: 12, borderRadius: 8, fontSize: 12,
+          background: genResult.errors.length > 0 ? 'rgba(248,113,113,0.1)' : 'rgba(16,185,129,0.1)',
+          border: `1px solid ${genResult.errors.length > 0 ? 'rgba(248,113,113,0.3)' : 'rgba(16,185,129,0.3)'}`,
+          color: 'var(--text)',
+          display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+        }}>
+          <span>
+            Filled {genResult.filled} slot{genResult.filled !== 1 ? 's' : ''}.
+            {genResult.skipped > 0 && ` ${genResult.skipped} could not be filled.`}
+            {genResult.errors.length > 0 && ` ${genResult.errors.length} error(s).`}
+          </span>
+          <button onClick={() => setGenResult(null)} style={{
+            background: 'none', border: 'none', color: 'var(--text-dim)', cursor: 'pointer', fontSize: 14,
+          }}>x</button>
+        </div>
+      )}
 
       {/* Action error toast */}
       {actionError && (
