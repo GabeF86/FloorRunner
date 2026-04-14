@@ -1,23 +1,37 @@
-// Auto-generation engine.
+// Auto-generation engine (physician call scheduling).
 //
-// Given a schedule version, attempt to assign providers to all open call slots
-// using:
-//   1. Home-site filter — only providers whose home_site_id matches the schedule's site
-//   2. Bucket-based quotas — each (provider × day_type × shift_code) has a quota
-//      computed as round(total_in_bucket / par_level × FTE) where par_level = 12
-//   3. Weekend pairing — Sat C1 ↔ Sun C2 (and Sat C2 ↔ Sun C1), C3 same provider both days
-//   4. Hard rule constraints — eligibility, time-off, etc. via evaluateAssignment
+// Strategy:
+//   1. Preload all data once (credentials, availability, existing assignments, site par_level).
+//   2. Filter candidates in-memory — no DB calls during the scoring loop.
+//   3. Greedy assignment with bucket-based quotas and weekend pairing.
+//   4. Only run the full rule evaluator on final assignments for validation flags.
 //
-// Non-call shifts (D-series, day shifts) are NOT auto-assigned here. They flow
-// from sequence rules (e.g. provider on C2 → automatically on D1 next day) or
-// manual entry by the scheduler.
+// Constraints applied during selection:
+//   - Home-site filter: provider.home_site_id == schedule.site_id
+//   - Site credentials: active, credentialed, can_take_call (+ weekend/holiday variants)
+//   - Availability: no approved PTO / sick / unavailable entries covering the date
+//   - Same-day conflict: provider not already assigned on this date
+//   - Bucket quota: assigned_in_bucket < target where target = total / par_level × FTE
+//   - C3 specific: neuro_eligible
+//
+// Non-call shifts (D1-D8, 7-3, 7-5) are NOT auto-assigned here. They flow from
+// sequence rules (e.g. C2 on day N → D1 on day N+1) or manual entry.
+//
+// Rules are NOT applied to CRNAs — this engine is physician-only for now.
+// CRNA rules will live in a separate evaluator when that module lands.
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type SupabaseClient = any;
 
 import { evaluateAssignment } from './evaluate';
 
-const PAR_LEVEL = 12; // base provider count for quota calculations
+const DEFAULT_PAR_LEVEL = 12; // fallback if site.call_par_level is not set
+const NEIGHBOR_WINDOW_DAYS = 31;
+
+// Availability types that block any assignment
+const BLOCKING_AVAIL = new Set([
+  'pto', 'sick', 'fmla', 'parental_leave', 'military_leave', 'jury_duty', 'unavailable', 'blocked',
+]);
 
 interface SlotToFill {
   slot_id: string;
@@ -40,6 +54,24 @@ interface CandidateProvider {
   home_site_id: string | null;
 }
 
+interface SiteCredentials {
+  is_active: boolean;
+  credentialed: boolean;
+  can_take_call: boolean;
+  can_take_weekend_call: boolean;
+  can_take_holiday_call: boolean;
+  allowed_shift_types: string[];
+  excluded_shift_types: string[];
+  skill_tags: string[];
+}
+
+interface AvailabilityEntry {
+  availability_type: string;
+  start_date: string;
+  end_date: string;
+  approval_status: string;
+}
+
 interface GenerationResult {
   filled: number;
   skipped: number;
@@ -57,10 +89,18 @@ interface GenerationResult {
     shift_type_code: string;
     reason: string;
   }>;
+  perf?: {
+    par_level: number;
+    total_slots: number;
+    call_slots: number;
+    providers: number;
+    elapsed_ms: number;
+    db_queries: number;
+  };
 }
 
-// Group derived_day_type into bucket buckets used for quotas.
-// 'weekday' = Mon-Thu. Friday/Saturday/Sunday/holidays are their own buckets.
+// ── Helpers ──────────────────────────────────────────────────────────────────
+
 function dayTypeBucket(dt: string): string {
   if (dt === 'weekday') return 'weekday';
   if (dt === 'friday') return 'friday';
@@ -70,63 +110,64 @@ function dayTypeBucket(dt: string): string {
   return dt;
 }
 
-function bucketKey(provider_id: string, day_bucket: string, shift_code: string): string {
-  return `${provider_id}|${day_bucket}|${shift_code}`;
-}
-
 function addDays(iso: string, n: number): string {
   const d = new Date(iso + 'T00:00:00Z');
   d.setUTCDate(d.getUTCDate() + n);
   return d.toISOString().slice(0, 10);
 }
 
-/**
- * Auto-generate assignments for all open call slots in a schedule version.
- */
+function datesOverlap(availStart: string, availEnd: string, date: string): boolean {
+  return availStart <= date && availEnd >= date;
+}
+
+// ── Entry point ──────────────────────────────────────────────────────────────
+
 export async function autoGenerate(
   sb: SupabaseClient,
   scheduleVersionId: string,
 ): Promise<GenerationResult> {
+  const t0 = Date.now();
+  let dbQueries = 0;
+  const countQ = () => { dbQueries++; };
+
   const result: GenerationResult = {
     filled: 0, skipped: 0, errors: [], assignments: [], unfilled: [],
   };
 
-  // 1. Load schedule + site context
-  const { data: firstSlot } = await sb
-    .from('schedule_slots')
-    .select('site_id')
-    .eq('schedule_version_id', scheduleVersionId)
-    .limit(1)
-    .single();
-  if (!firstSlot) {
-    result.errors.push('No slots found in this version');
-    return result;
-  }
-  const siteId = (firstSlot as { site_id: string }).site_id;
-
-  // 2. Load all slots for this version
+  // ── 1. Preload schedule + site + slots ────────────────────────────────────
+  countQ();
   const { data: rawSlots, error: slotsErr } = await sb
     .from('schedule_slots')
-    .select('id, slot_date, shift_type_id, provider_group, required_count, locked, derived_day_type, shift_types(code, category), assignments(id, provider_id, assignment_status)')
+    .select('id, slot_date, shift_type_id, provider_group, required_count, locked, derived_day_type, site_id, shift_types(code, category), assignments(id, provider_id, assignment_status)')
     .eq('schedule_version_id', scheduleVersionId)
     .order('slot_date')
     .order('slot_index');
 
-  if (slotsErr || !rawSlots) {
-    result.errors.push(`Failed to load slots: ${slotsErr?.message || 'no data'}`);
+  if (slotsErr || !rawSlots || rawSlots.length === 0) {
+    result.errors.push(`Failed to load slots: ${slotsErr?.message || 'no slots in version'}`);
     return result;
   }
+  const siteId = (rawSlots[0] as { site_id: string }).site_id;
 
-  // Build slots-to-fill (only call category, not yet assigned, not locked)
+  // Load site to get call_par_level (gracefully fallback if column doesn't exist yet)
+  let parLevel = DEFAULT_PAR_LEVEL;
+  try {
+    countQ();
+    const { data: site } = await sb.from('sites').select('call_par_level').eq('id', siteId).single();
+    if (site && typeof site.call_par_level === 'number' && site.call_par_level > 0) {
+      parLevel = site.call_par_level;
+    }
+  } catch { /* column may not exist yet — use default */ }
+
+  // ── 2. Build slotsToFill list (call-category, not locked, not fully assigned) ──
   const slotsToFill: SlotToFill[] = [];
-  // Index: by_date_and_code[date][code] = slot info (used for weekend pairing lookup)
   const slotIndex = new Map<string, Map<string, SlotToFill>>();
 
   for (const raw of rawSlots as Array<Record<string, unknown>>) {
     if (raw.locked) continue;
     const st = raw.shift_types as { code: string; category: string } | null;
     if (!st) continue;
-    if (st.category !== 'call') continue; // Only call shifts get auto-generated
+    if (st.category !== 'call') continue;
 
     const assignments = (raw.assignments as Array<{ id: string; provider_id: string | null }>) || [];
     const required = (raw.required_count as number) || 1;
@@ -151,17 +192,10 @@ export async function autoGenerate(
     slotIndex.get(slot.slot_date)!.set(slot.shift_type_code, slot);
   }
 
-  // Sort: process Saturday weekend pairs before Sunday so we can pre-fill Sundays.
-  // Within a date, process backup shifts (C2, C3) BEFORE primary (C1) so that
-  // pairing rules ("C1 requires C2 backup") see a satisfied backup when C1
-  // is evaluated. Same for D-series ordering when those become auto-fillable.
-  const dayOrder: Record<string, number> = {
-    saturday: 0, sunday: 1, friday: 2, weekday: 3, holiday: 4,
-  };
-  // Lower number = process earlier within a date. Backups before primaries.
-  const codeOrder: Record<string, number> = {
-    C2: 0, C3: 1, C1: 2,
-  };
+  // Sort: weekends first (Sat then Sun), then friday, then weekday — by date.
+  // Within a date, backup (C2, C3) before primary (C1) so pairing rules pass.
+  const dayOrder: Record<string, number> = { saturday: 0, sunday: 1, friday: 2, weekday: 3, holiday: 4 };
+  const codeOrder: Record<string, number> = { C2: 0, C3: 1, C1: 2 };
   slotsToFill.sort((a, b) => {
     const da = dayOrder[dayTypeBucket(a.derived_day_type)] ?? 5;
     const db = dayOrder[dayTypeBucket(b.derived_day_type)] ?? 5;
@@ -172,29 +206,31 @@ export async function autoGenerate(
     return ca - cb;
   });
 
-  console.log(`[autoGen] ${slotsToFill.length} call slots to fill from ${(rawSlots as unknown[]).length} total`);
+  console.log(`[autoGen] ${slotsToFill.length} call slots to fill, par_level=${parLevel}`);
   if (slotsToFill.length === 0) return result;
 
-  // 3. Load providers with home_site_id == siteId
+  // ── 3. Preload home-site providers ────────────────────────────────────────
+  countQ();
   const { data: profiles } = await sb
     .from('provider_employment_profiles')
-    .select('provider_id, home_site_id, fte_value, neuro_eligible')
+    .select('provider_id, fte_value, neuro_eligible, home_site_id')
     .eq('home_site_id', siteId);
 
-  const profileByProviderId = new Map<string, { fte_value: number; neuro_eligible: boolean; home_site_id: string }>();
+  const profileByPid = new Map<string, { fte_value: number; neuro_eligible: boolean; home_site_id: string }>();
   for (const p of (profiles || []) as Array<Record<string, unknown>>) {
-    profileByProviderId.set(p.provider_id as string, {
+    profileByPid.set(p.provider_id as string, {
       fte_value: (p.fte_value as number) || 1,
       neuro_eligible: !!p.neuro_eligible,
       home_site_id: p.home_site_id as string,
     });
   }
-  const providerIds = Array.from(profileByProviderId.keys());
+  const providerIds = Array.from(profileByPid.keys());
   if (providerIds.length === 0) {
     result.errors.push(`No providers found with home_site_id = ${siteId}`);
     return result;
   }
 
+  countQ();
   const { data: providerRows } = await sb
     .from('providers')
     .select('id, provider_type, short_display_name')
@@ -202,7 +238,7 @@ export async function autoGenerate(
     .eq('status', 'active');
 
   const providers: CandidateProvider[] = ((providerRows || []) as Array<Record<string, unknown>>).map(p => {
-    const prof = profileByProviderId.get(p.id as string)!;
+    const prof = profileByPid.get(p.id as string)!;
     return {
       id: p.id as string,
       provider_type: p.provider_type as string,
@@ -213,47 +249,107 @@ export async function autoGenerate(
     };
   });
 
-  console.log(`[autoGen] ${providers.length} home-site providers eligible`);
+  // ── 4. Preload site credentials for all home-site providers ───────────────
+  countQ();
+  const { data: creds } = await sb
+    .from('provider_site_credentials')
+    .select('provider_id, is_active, credentialed, can_take_call, can_take_weekend_call, can_take_holiday_call, allowed_shift_types, excluded_shift_types, skill_tags')
+    .eq('site_id', siteId)
+    .in('provider_id', providerIds);
 
-  // 4. Compute bucket quotas
-  // bucketTotals[day_bucket|shift_code] = total slots in this version
+  const credByPid = new Map<string, SiteCredentials>();
+  for (const c of (creds || []) as Array<Record<string, unknown>>) {
+    credByPid.set(c.provider_id as string, {
+      is_active: !!c.is_active,
+      credentialed: !!c.credentialed,
+      can_take_call: !!c.can_take_call,
+      can_take_weekend_call: !!c.can_take_weekend_call,
+      can_take_holiday_call: !!c.can_take_holiday_call,
+      allowed_shift_types: Array.isArray(c.allowed_shift_types) ? (c.allowed_shift_types as string[]) : [],
+      excluded_shift_types: Array.isArray(c.excluded_shift_types) ? (c.excluded_shift_types as string[]) : [],
+      skill_tags: Array.isArray(c.skill_tags) ? (c.skill_tags as string[]) : [],
+    });
+  }
+
+  // ── 5. Preload availability for the schedule date range ───────────────────
+  const dates = Array.from(new Set(slotsToFill.map(s => s.slot_date))).sort();
+  const minDate = dates[0];
+  const maxDate = dates[dates.length - 1];
+  const availRangeStart = addDays(minDate, -NEIGHBOR_WINDOW_DAYS);
+  const availRangeEnd = addDays(maxDate, NEIGHBOR_WINDOW_DAYS);
+
+  countQ();
+  const { data: avail } = await sb
+    .from('provider_availability')
+    .select('provider_id, availability_type, start_date, end_date, approval_status')
+    .in('provider_id', providerIds)
+    .lte('start_date', availRangeEnd)
+    .gte('end_date', availRangeStart);
+
+  const availByPid = new Map<string, AvailabilityEntry[]>();
+  for (const a of (avail || []) as Array<Record<string, unknown>>) {
+    const list = availByPid.get(a.provider_id as string) || [];
+    list.push({
+      availability_type: a.availability_type as string,
+      start_date: a.start_date as string,
+      end_date: a.end_date as string,
+      approval_status: a.approval_status as string,
+    });
+    availByPid.set(a.provider_id as string, list);
+  }
+
+  // ── 6. Preload existing cross-site assignments for these providers ────────
+  // Anything assigned to these providers on dates in the schedule range, at
+  // OTHER sites — used for same-day cross-site conflict checks.
+  countQ();
+  const { data: crossSite } = await sb
+    .from('assignments')
+    .select('provider_id, schedule_slots!inner(slot_date, site_id)')
+    .in('provider_id', providerIds)
+    .eq('assignment_status', 'assigned')
+    .gte('schedule_slots.slot_date', minDate)
+    .lte('schedule_slots.slot_date', maxDate)
+    .neq('schedule_slots.site_id', siteId);
+
+  // crossSiteByDate[pid][date] = true if provider is already on a different site that day
+  const crossSiteByDate = new Map<string, Set<string>>();
+  for (const a of (crossSite || []) as Array<Record<string, unknown>>) {
+    const s = a.schedule_slots as { slot_date: string };
+    const pid = a.provider_id as string;
+    if (!crossSiteByDate.has(pid)) crossSiteByDate.set(pid, new Set());
+    crossSiteByDate.get(pid)!.add(s.slot_date);
+  }
+
+  // ── 7. Compute bucket totals & targets ────────────────────────────────────
   const bucketTotals = new Map<string, number>();
   for (const s of slotsToFill) {
     const key = `${dayTypeBucket(s.derived_day_type)}|${s.shift_type_code}`;
     bucketTotals.set(key, (bucketTotals.get(key) || 0) + s.required_count);
   }
-  // Also include already-assigned slots in totals (so quotas match the schedule)
+  // Include already-assigned slots so targets reflect total schedule load
   for (const raw of rawSlots as Array<Record<string, unknown>>) {
     const st = raw.shift_types as { code: string; category: string } | null;
     if (!st || st.category !== 'call') continue;
     const assignments = (raw.assignments as Array<{ provider_id: string | null }>) || [];
-    const assignedCount = assignments.filter(a => a.provider_id).length;
-    if (assignedCount > 0) {
+    const n = assignments.filter(a => a.provider_id).length;
+    if (n > 0) {
       const dt = (raw.derived_day_type as string) || 'weekday';
       const key = `${dayTypeBucket(dt)}|${st.code}`;
-      bucketTotals.set(key, (bucketTotals.get(key) || 0) + assignedCount);
+      bucketTotals.set(key, (bucketTotals.get(key) || 0) + n);
     }
   }
 
-  console.log(`[autoGen] bucket totals: ${Array.from(bucketTotals.entries()).map(([k, v]) => `${k}=${v}`).join(', ')}`);
-
-  // bucketTarget[provider_id|day_bucket|shift_code] = fractional target
-  // (total / par_level × FTE). A provider remains eligible while their
-  // current assigned count is strictly less than this target. This is
-  // intentional: target=0.42 means a provider takes 1 then is done
-  // (1 >= 0.42), naturally distributing 1-per-provider until the pool
-  // runs out — rather than rounding to 0 and leaving everything open.
   const bucketTarget = new Map<string, number>();
   for (const p of providers) {
-    for (const [bucketKeyStr, total] of bucketTotals) {
-      const target = (total / PAR_LEVEL) * p.fte_value;
-      bucketTarget.set(`${p.id}|${bucketKeyStr}`, target);
+    for (const [k, total] of bucketTotals) {
+      bucketTarget.set(`${p.id}|${k}`, (total / parLevel) * p.fte_value);
     }
   }
 
-  // 5. Tracking maps
-  const bucketAssigned = new Map<string, number>(); // running count per (provider × bucket)
-  const assignedOnDate = new Map<string, Set<string>>(); // date → set of provider_ids
+  // ── 8. Runtime state (updated during the loop) ───────────────────────────
+  const bucketAssigned = new Map<string, number>();
+  const assignedOnDate = new Map<string, Set<string>>();
+  const handledSlotIds = new Set<string>();
 
   const markAssigned = (date: string, pid: string) => {
     if (!assignedOnDate.has(date)) assignedOnDate.set(date, new Set());
@@ -261,14 +357,13 @@ export async function autoGenerate(
   };
   const isAssignedOnDate = (date: string, pid: string) => assignedOnDate.get(date)?.has(pid) ?? false;
 
+  const bucketKey = (pid: string, dt: string, code: string) => `${pid}|${dayTypeBucket(dt)}|${code}`;
+  const getAssigned = (pid: string, dt: string, code: string) => bucketAssigned.get(bucketKey(pid, dt, code)) || 0;
+  const getTarget = (pid: string, dt: string, code: string) => bucketTarget.get(bucketKey(pid, dt, code)) || 0;
   const incBucket = (pid: string, dt: string, code: string) => {
-    const k = bucketKey(pid, dayTypeBucket(dt), code);
+    const k = bucketKey(pid, dt, code);
     bucketAssigned.set(k, (bucketAssigned.get(k) || 0) + 1);
   };
-  const getBucketAssigned = (pid: string, dt: string, code: string) =>
-    bucketAssigned.get(bucketKey(pid, dayTypeBucket(dt), code)) || 0;
-  const getBucketTarget = (pid: string, dt: string, code: string) =>
-    bucketTarget.get(bucketKey(pid, dayTypeBucket(dt), code)) || 0;
 
   // Pre-populate from existing assignments
   for (const raw of rawSlots as Array<Record<string, unknown>>) {
@@ -284,9 +379,56 @@ export async function autoGenerate(
     }
   }
 
-  // 6. Helper to perform a single assignment (write to DB + update trackers)
+  // ── 9. In-memory eligibility check ────────────────────────────────────────
+  const isEligible = (slot: SlotToFill, p: CandidateProvider): boolean => {
+    // Provider group match
+    if (slot.provider_group === 'physician' && p.provider_type !== 'physician') return false;
+    if (slot.provider_group === 'crna' && !['crna', 'aa'].includes(p.provider_type)) return false;
+
+    // Same-date conflict (this schedule)
+    if (isAssignedOnDate(slot.slot_date, p.id)) return false;
+
+    // Cross-site conflict (preloaded)
+    if (crossSiteByDate.get(p.id)?.has(slot.slot_date)) return false;
+
+    // Bucket quota
+    if (getAssigned(p.id, slot.derived_day_type, slot.shift_type_code) >=
+        getTarget(p.id, slot.derived_day_type, slot.shift_type_code)) return false;
+
+    // C3 neuro-eligible
+    if (slot.shift_type_code === 'C3' && !p.neuro_eligible) return false;
+
+    // Site credentials
+    const cred = credByPid.get(p.id);
+    if (cred) {
+      if (!cred.is_active) return false;
+      if (!cred.credentialed) return false;
+      if (cred.excluded_shift_types.includes(slot.shift_type_code)) return false;
+      if (cred.allowed_shift_types.length > 0 && !cred.allowed_shift_types.includes(slot.shift_type_code)) return false;
+      if (slot.shift_type_category === 'call') {
+        if (!cred.can_take_call) return false;
+        const dt = slot.derived_day_type;
+        if ((dt === 'saturday' || dt === 'sunday') && !cred.can_take_weekend_call) return false;
+        if ((dt === 'federal_holiday' || dt === 'major_holiday') && !cred.can_take_holiday_call) return false;
+      }
+    }
+    // Missing credentials row = "not yet configured", treat as passing (matches evaluator behavior)
+
+    // Availability (preloaded)
+    const entries = availByPid.get(p.id) || [];
+    for (const a of entries) {
+      if (a.approval_status === 'denied' || a.approval_status === 'canceled') continue;
+      if (!datesOverlap(a.start_date, a.end_date, slot.slot_date)) continue;
+      if (BLOCKING_AVAIL.has(a.availability_type)) return false;
+    }
+
+    return true;
+  };
+
+  // ── 10. DB write for a single assignment (updates in-memory state) ───────
   const doAssign = async (slot: SlotToFill, provider: CandidateProvider): Promise<boolean> => {
     try {
+      countQ();
       if (slot.existing_assignment_id) {
         await sb.from('assignments').update({
           provider_id: provider.id,
@@ -321,124 +463,93 @@ export async function autoGenerate(
     }
   };
 
-  // Track which slots we've already filled via pairing so we skip them in the main loop
-  const handledSlotIds = new Set<string>();
-
-  // 7. Main assignment loop
+  // ── 11. Main assignment loop ─────────────────────────────────────────────
   let slotIdx = 0;
   for (const slot of slotsToFill) {
     slotIdx++;
-    if (slotIdx % 10 === 1 || slotIdx === slotsToFill.length) {
-      console.log(`[autoGen] ${slotIdx}/${slotsToFill.length}: ${slot.shift_type_code} on ${slot.slot_date} (${slot.derived_day_type})`);
+    if (slotIdx % 20 === 1 || slotIdx === slotsToFill.length) {
+      console.log(`[autoGen] ${slotIdx}/${slotsToFill.length}`);
     }
-
     if (handledSlotIds.has(slot.slot_id)) continue;
 
-    // Filter candidates:
-    //   1. Provider group match
-    //   2. Not already on this date
-    //   3. Has remaining quota in this bucket (>= 1)
-    //   4. C3-specific: must be neuro_eligible
-    const candidates = providers.filter(p => {
-      if (slot.provider_group === 'physician' && p.provider_type !== 'physician') return false;
-      if (slot.provider_group === 'crna' && !['crna', 'aa'].includes(p.provider_type)) return false;
-      if (isAssignedOnDate(slot.slot_date, p.id)) return false;
-      if (slot.shift_type_code === 'C3' && !p.neuro_eligible) return false;
-      const assigned = getBucketAssigned(p.id, slot.derived_day_type, slot.shift_type_code);
-      const target = getBucketTarget(p.id, slot.derived_day_type, slot.shift_type_code);
-      if (assigned >= target) return false;
-      return true;
-    });
-
+    const candidates = providers.filter(p => isEligible(slot, p));
     if (candidates.length === 0) {
       result.unfilled.push({
         slot_id: slot.slot_id,
         slot_date: slot.slot_date,
         shift_type_code: slot.shift_type_code,
-        reason: 'No providers under quota / eligible',
+        reason: 'No eligible providers',
       });
       result.skipped++;
       continue;
     }
 
-    // Score: lowest assigned/FTE in this bucket (most under-quota first), then lowest total burden
+    // Score: lowest bucket-ratio first (most under quota). Fair distribution.
     const scored = candidates
-      .map(p => {
-        const assigned = getBucketAssigned(p.id, slot.derived_day_type, slot.shift_type_code);
-        return { provider: p, ratio: assigned / Math.max(p.fte_value, 0.01) };
-      })
+      .map(p => ({ p, ratio: getAssigned(p.id, slot.derived_day_type, slot.shift_type_code) / Math.max(p.fte_value, 0.01) }))
       .sort((a, b) => a.ratio - b.ratio);
 
-    // Run hard-constraint check on candidates in batches
-    const BATCH_SIZE = 5;
-    let chosen: CandidateProvider | null = null;
-    for (let bi = 0; bi * BATCH_SIZE < scored.length; bi++) {
-      const batch = scored.slice(bi * BATCH_SIZE, (bi + 1) * BATCH_SIZE);
-      for (const { provider } of batch) {
-        const ev = await evaluateAssignment(sb, slot.slot_id, provider.id);
-        if (ev.hardCount === 0) { chosen = provider; break; }
-      }
-      if (chosen) break;
-    }
-
-    if (!chosen) {
-      result.unfilled.push({
-        slot_id: slot.slot_id,
-        slot_date: slot.slot_date,
-        shift_type_code: slot.shift_type_code,
-        reason: `${candidates.length} candidates under quota but all have hard rule violations`,
-      });
-      result.skipped++;
-      continue;
-    }
-
-    // Perform the assignment
-    const assignedOk = await doAssign(slot, chosen);
-    if (!assignedOk) continue;
+    const chosen = scored[0].p;
+    const ok = await doAssign(slot, chosen);
+    if (!ok) continue;
     handledSlotIds.add(slot.slot_id);
 
-    // ── Weekend pairing ────────────────────────────────────────────────────
-    // Saturday → Sunday pairing (process the Saturday slot, then auto-fill the
-    // matching Sunday slot for the same weekend block).
-    const isSat = slot.derived_day_type === 'saturday';
-    if (isSat) {
+    // Weekend pairing
+    if (slot.derived_day_type === 'saturday') {
       const sundayDate = addDays(slot.slot_date, 1);
-      const sundaySlots = slotIndex.get(sundayDate);
-
-      if (slot.shift_type_code === 'C3' && sundaySlots) {
-        // Same provider takes C3 both days
-        const sunC3 = sundaySlots.get('C3');
-        if (sunC3 && !handledSlotIds.has(sunC3.slot_id)) {
-          await doAssign(sunC3, chosen);
-          handledSlotIds.add(sunC3.slot_id);
-        }
-      } else if (slot.shift_type_code === 'C1' && sundaySlots) {
-        // Sat C1 = Sun C2 same provider
-        const sunC2 = sundaySlots.get('C2');
-        if (sunC2 && !handledSlotIds.has(sunC2.slot_id)) {
-          await doAssign(sunC2, chosen);
-          handledSlotIds.add(sunC2.slot_id);
-        }
-      } else if (slot.shift_type_code === 'C2' && sundaySlots) {
-        // Sat C2 = Sun C1 same provider
-        const sunC1 = sundaySlots.get('C1');
-        if (sunC1 && !handledSlotIds.has(sunC1.slot_id)) {
-          await doAssign(sunC1, chosen);
-          handledSlotIds.add(sunC1.slot_id);
+      const sundayMap = slotIndex.get(sundayDate);
+      if (sundayMap) {
+        if (slot.shift_type_code === 'C3') {
+          const sunC3 = sundayMap.get('C3');
+          if (sunC3 && !handledSlotIds.has(sunC3.slot_id)) {
+            await doAssign(sunC3, chosen);
+            handledSlotIds.add(sunC3.slot_id);
+          }
+        } else if (slot.shift_type_code === 'C1') {
+          const sunC2 = sundayMap.get('C2');
+          if (sunC2 && !handledSlotIds.has(sunC2.slot_id)) {
+            await doAssign(sunC2, chosen);
+            handledSlotIds.add(sunC2.slot_id);
+          }
+        } else if (slot.shift_type_code === 'C2') {
+          const sunC1 = sundayMap.get('C1');
+          if (sunC1 && !handledSlotIds.has(sunC1.slot_id)) {
+            await doAssign(sunC1, chosen);
+            handledSlotIds.add(sunC1.slot_id);
+          }
         }
       }
     }
   }
 
-  // 8. Final pass: write validation flags
-  for (const a of result.assignments) {
-    const ev = await evaluateAssignment(sb, a.slot_id, a.provider_id);
-    await sb.from('assignments')
-      .update({ validation_flags: ev.violations })
-      .eq('schedule_slot_id', a.slot_id)
-      .eq('provider_id', a.provider_id);
+  // ── 12. Compute validation flags once per final assignment (parallel batches) ──
+  // Validation uses the DB-backed evaluator which loads a full context per call.
+  // Running in parallel batches so the total wall time scales with batch_count
+  // not slot_count.
+  console.log(`[autoGen] validating ${result.assignments.length} final assignments...`);
+  const VALIDATION_CONCURRENCY = 10;
+  for (let i = 0; i < result.assignments.length; i += VALIDATION_CONCURRENCY) {
+    const batch = result.assignments.slice(i, i + VALIDATION_CONCURRENCY);
+    await Promise.all(batch.map(async a => {
+      countQ();
+      const ev = await evaluateAssignment(sb, a.slot_id, a.provider_id);
+      countQ();
+      await sb.from('assignments')
+        .update({ validation_flags: ev.violations })
+        .eq('schedule_slot_id', a.slot_id)
+        .eq('provider_id', a.provider_id);
+    }));
   }
 
-  console.log(`[autoGen] DONE — filled ${result.filled}, skipped ${result.skipped}`);
+  const elapsed = Date.now() - t0;
+  result.perf = {
+    par_level: parLevel,
+    total_slots: (rawSlots as unknown[]).length,
+    call_slots: slotsToFill.length,
+    providers: providers.length,
+    elapsed_ms: elapsed,
+    db_queries: dbQueries,
+  };
+  console.log(`[autoGen] DONE — filled ${result.filled}, skipped ${result.skipped}, elapsed ${(elapsed/1000).toFixed(1)}s, ${dbQueries} DB queries`);
   return result;
 }
