@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import { sbSchedulingServer } from '@/lib/supabaseScheduling';
 import { autoGenerate } from '@/lib/rulesEngine/autoGenerate';
 
+export const dynamic = 'force-dynamic';
+
 // POST /api/scheduling/schedules/:id/generate
 // Runs the auto-generation engine on the latest version of this schedule.
 // Fills open slots using active rules. Does NOT overwrite manual assignments.
