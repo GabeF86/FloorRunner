@@ -302,14 +302,19 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
     }
 
     // Virtual rows: PTO / Available / Off
+    // Available = full-time call-takers at this site who happen to be un-assigned (overflow).
+    // Off = part-timers on a scheduled day off + non-call-takers not working today.
     const BLOCKING_TYPES = new Set(['pto', 'sick', 'fmla', 'parental_leave', 'military_leave', 'jury_duty', 'unavailable', 'blocked']);
     const siteId = grid.schedule.site_id;
     const homeSiteIds = new Set<string>();
-    const callTakerIds = new Set<string>();
+    // "Available" pool: full-time (FTE >= 1) call-takers only. Everyone else
+    // at home-site who's not working today lands in "Off".
+    const availablePoolIds = new Set<string>();
     for (const p of grid.profiles || []) {
       if (p.home_site_id === siteId) {
         homeSiteIds.add(p.provider_id);
-        if (p.call_taker) callTakerIds.add(p.provider_id);
+        const fte = p.fte_value ?? 1;
+        if (p.call_taker && fte >= 1) availablePoolIds.add(p.provider_id);
       }
     }
     const providerById: Record<string, Provider> = {};
@@ -347,7 +352,7 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
         if (assigned.has(pid) || ptoSet.has(pid)) continue;
         const provider = providerById[pid];
         if (!provider) continue;
-        if (callTakerIds.has(pid)) available.push(provider);
+        if (availablePoolIds.has(pid)) available.push(provider);
         else off.push(provider);
       }
       available.sort((a, b) => a.short_display_name.localeCompare(b.short_display_name));
