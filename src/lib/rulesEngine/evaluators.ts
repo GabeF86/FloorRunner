@@ -365,11 +365,17 @@ const rest: Evaluator = ctx => {
     const restType = (rule.condition.rest_type as string) || 'day_off';
     if (!afterCode) continue;
 
+    // Optional exemptions: shifts allowed on the rest day despite the rule.
+    // E.g. C1 → next day off, EXCEPT C3 (neuro coverage scarcity).
+    const exemptCodes: string[] = Array.isArray(rule.action.exempt_next_shift_codes)
+      ? (rule.action.exempt_next_shift_codes as string[])
+      : [];
+
     // Case A: this slot IS the after-shift — check the next day
-    if (ctx.shiftType.code === afterCode) {
+    if (ctx.shiftType.code === afterCode && ruleAppliesToDayType(rule, ctx.slot.derived_day_type)) {
       const nextDate = shiftDate(ctx.slot.slot_date, REST_WINDOW_DAYS);
       const next = ctx.neighborAssignments.find(n => n.slot_date === nextDate);
-      if (next && restType === 'day_off') {
+      if (next && restType === 'day_off' && !exemptCodes.includes(next.shift_type_code)) {
         violations.push({
           rule_id: rule.id,
           rule_name: rule.rule_name,
@@ -380,12 +386,15 @@ const rest: Evaluator = ctx => {
       }
     }
 
-    // Case B: a prior day has the after-shift — this slot may break rest
+    // Case B: a prior day has the after-shift — this slot may break rest.
+    // Only fires if (a) the prior day-type is in rule scope and (b) this
+    // slot's shift_code isn't in the exempt list.
     const priorDate = shiftDate(ctx.slot.slot_date, -REST_WINDOW_DAYS);
     const prior = ctx.neighborAssignments.find(
       n => n.slot_date === priorDate && n.shift_type_code === afterCode,
     );
-    if (prior && restType === 'day_off') {
+    if (prior && restType === 'day_off' && ruleAppliesToDayType(rule, prior.day_type) &&
+        !exemptCodes.includes(ctx.shiftType.code)) {
       violations.push({
         rule_id: rule.id,
         rule_name: rule.rule_name,

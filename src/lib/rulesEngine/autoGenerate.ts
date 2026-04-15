@@ -396,6 +396,15 @@ export async function autoGenerate(
     // Cross-site conflict (preloaded)
     if (crossSiteByDate.get(p.id)?.has(slot.slot_date)) return false;
 
+    // C1 post-call day-off check: if the provider is already committed to a shift
+    // the day AFTER this C1 (e.g. via another call shift's pre-call D-chain), they
+    // can't take C1 because they'd be working both days. Saturday C1 is excepted
+    // (the weekend swap intentionally puts Sat-C1 person on Sun-C2).
+    if (slot.shift_type_code === 'C1' && slot.derived_day_type !== 'saturday') {
+      const dayAfter = addDays(slot.slot_date, 1);
+      if (isAssignedOnDate(dayAfter, p.id)) return false;
+    }
+
     // Bucket quota
     if (getAssigned(p.id, slot.derived_day_type, slot.shift_type_code) >=
         getTarget(p.id, slot.derived_day_type, slot.shift_type_code)) return false;
