@@ -302,58 +302,77 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
     }
 
     // Virtual rows: PTO / Available / Off
-    // Available = full-time call-takers at this site who happen to be un-assigned (overflow).
-    // Off = part-timers on a scheduled day off + non-call-takers not working today.
-    const BLOCKING_TYPES = new Set(['pto', 'sick', 'fmla', 'parental_leave', 'military_leave', 'jury_duty', 'unavailable', 'blocked']);
+    //   PTO:        PTO / sick / FMLA / parental / military / jury duty
+    //   Off:        'unavailable' / 'blocked' (used for scheduled days off, e.g.
+    //               part-timer's regular non-working days), OR non-call-takers
+    //   Available:  home-site call-takers with no assignment and no availability
+    //               entry — the 'overflow' pool who could have worked but didn't
+    //               make it into the D-slot cut
+    const PTO_TYPES = new Set(['pto', 'sick', 'fmla', 'parental_leave', 'military_leave', 'jury_duty']);
+    const OFF_TYPES = new Set(['unavailable', 'blocked']);
     const siteId = grid.schedule.site_id;
     const homeSiteIds = new Set<string>();
-    // "Available" pool: full-time (FTE >= 1) call-takers only. Everyone else
-    // at home-site who's not working today lands in "Off".
-    const availablePoolIds = new Set<string>();
+    const callTakerIds = new Set<string>();
     for (const p of grid.profiles || []) {
       if (p.home_site_id === siteId) {
         homeSiteIds.add(p.provider_id);
-        const fte = p.fte_value ?? 1;
-        if (p.call_taker && fte >= 1) availablePoolIds.add(p.provider_id);
+        if (p.call_taker) callTakerIds.add(p.provider_id);
       }
     }
     const providerById: Record<string, Provider> = {};
     for (const p of grid.providers) providerById[p.id] = p;
 
-    // PTO by date: expand each availability entry across its date range.
+    // Expand availability entries into per-date maps. ptoByDate gets the
+    // PTO/sick/etc; scheduledOffByDate gets the 'unavailable'/'blocked'
+    // entries (used to mark a part-timer's regular off days).
     const ptoByDate: Record<string, Provider[]> = {};
+    const scheduledOffByDate: Record<string, Set<string>> = {};
     const allDatesSet = new Set(allDates);
     for (const avail of grid.availability || []) {
       if (avail.approval_status === 'denied' || avail.approval_status === 'canceled') continue;
-      if (!BLOCKING_TYPES.has(avail.availability_type)) continue;
       if (!homeSiteIds.has(avail.provider_id)) continue;
       const provider = providerById[avail.provider_id];
       if (!provider) continue;
+      const isPto = PTO_TYPES.has(avail.availability_type);
+      const isOff = OFF_TYPES.has(avail.availability_type);
+      if (!isPto && !isOff) continue;
       const start = new Date(avail.start_date + 'T00:00:00Z');
       const end = new Date(avail.end_date + 'T00:00:00Z');
       for (let d = new Date(start); d <= end; d.setUTCDate(d.getUTCDate() + 1)) {
         const ds = d.toISOString().slice(0, 10);
         if (!allDatesSet.has(ds)) continue;
-        if (!ptoByDate[ds]) ptoByDate[ds] = [];
-        if (!ptoByDate[ds].some(p => p.id === provider.id)) ptoByDate[ds].push(provider);
+        if (isPto) {
+          if (!ptoByDate[ds]) ptoByDate[ds] = [];
+          if (!ptoByDate[ds].some(p => p.id === provider.id)) ptoByDate[ds].push(provider);
+        }
+        if (isOff) {
+          if (!scheduledOffByDate[ds]) scheduledOffByDate[ds] = new Set();
+          scheduledOffByDate[ds].add(provider.id);
+        }
       }
     }
     for (const list of Object.values(ptoByDate)) list.sort((a, b) => a.short_display_name.localeCompare(b.short_display_name));
 
-    // Available (home-site call-takers not assigned, not PTO) and Off (home-site non-call-takers)
+    // Categorize each home-site provider per day:
+    //   - PTO entry that day      → ptoByDate (already set above)
+    //   - scheduled-off entry that day OR non-call-taker → Off
+    //   - home-site call-taker with no entry, not assigned → Available
     const availableByDate: Record<string, Provider[]> = {};
     const offByDate: Record<string, Provider[]> = {};
     for (const date of allDates) {
       const assigned = assignedOnDate[date] || new Set<string>();
       const ptoSet = new Set((ptoByDate[date] || []).map(p => p.id));
+      const offSet = scheduledOffByDate[date] || new Set<string>();
       const available: Provider[] = [];
       const off: Provider[] = [];
       for (const pid of homeSiteIds) {
         if (assigned.has(pid) || ptoSet.has(pid)) continue;
         const provider = providerById[pid];
         if (!provider) continue;
-        if (availablePoolIds.has(pid)) available.push(provider);
-        else off.push(provider);
+        // Off bucket: explicit scheduled-off that day, or a non-call-taker.
+        // Everyone else at home-site goes to Available (call-taker overflow).
+        if (offSet.has(pid) || !callTakerIds.has(pid)) off.push(provider);
+        else available.push(provider);
       }
       available.sort((a, b) => a.short_display_name.localeCompare(b.short_display_name));
       off.sort((a, b) => a.short_display_name.localeCompare(b.short_display_name));
