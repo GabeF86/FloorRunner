@@ -182,6 +182,7 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
   const [activeCell, setActiveCell] = useState<ActiveCell | null>(null);
   const [pickerSearch, setPickerSearch] = useState('');
   const [actionError, setActionError] = useState<string | null>(null);
+  const [showCounts, setShowCounts] = useState(false);
   const pickerRef = useRef<HTMLDivElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
 
@@ -515,6 +516,18 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
             </button>
           </div>
         )}
+
+        {/* Call Counts button */}
+        <button
+          onClick={() => setShowCounts(true)}
+          style={{
+            padding: '6px 14px', fontSize: 13, fontWeight: 600, borderRadius: 6,
+            background: 'rgba(99,102,241,0.12)', color: '#a5b4fc',
+            border: '1px solid rgba(99,102,241,0.3)', cursor: 'pointer',
+          }}
+        >
+          Call Counts
+        </button>
 
         {/* Auto-Generate button */}
         {schedule.status === 'draft' && (
@@ -933,6 +946,174 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
           )}
         </div>
       )}
+
+      {/* Call Counts Modal */}
+      {showCounts && grid && (
+        <CallCountsModal grid={grid} onClose={() => setShowCounts(false)} />
+      )}
+    </div>
+  );
+}
+
+/* ── Call Counts Modal ───────────────────────────────────────────────────── */
+
+function CallCountsModal({ grid, onClose }: { grid: GridData; onClose: () => void }) {
+  // Bucket key = combined day_type group (weekday | friday | weekend)
+  const BUCKETS = [
+    { key: 'weekday', label: 'M–Th' },
+    { key: 'friday',  label: 'Fri' },
+    { key: 'weekend', label: 'Sat/Sun' },
+  ] as const;
+  const CODES = ['C1', 'C2', 'C3'] as const;
+
+  // Aggregate counts: counts[providerId][bucket|code] = n
+  const counts: Record<string, Record<string, number>> = {};
+  const providerById: Record<string, Provider> = {};
+  for (const p of grid.providers) providerById[p.id] = p;
+
+  const providersWithCalls = new Set<string>();
+
+  for (const slot of grid.slots) {
+    const code = slot.shift_types?.code;
+    if (!code || !CODES.includes(code as typeof CODES[number])) continue;
+    const dt = slot.derived_day_type;
+    let bucket: string;
+    if (dt === 'weekday') bucket = 'weekday';
+    else if (dt === 'friday') bucket = 'friday';
+    else if (dt === 'saturday' || dt === 'sunday') bucket = 'weekend';
+    else continue; // skip holidays for now
+    for (const a of slot.assignments || []) {
+      if (!a.provider_id) continue;
+      if (!counts[a.provider_id]) counts[a.provider_id] = {};
+      const key = `${bucket}|${code}`;
+      counts[a.provider_id][key] = (counts[a.provider_id][key] || 0) + 1;
+      providersWithCalls.add(a.provider_id);
+    }
+  }
+
+  // Sort providers alphabetically, only include those with calls (or all?)
+  // Show ALL home-site physician providers who could potentially take call.
+  // For simplicity: show any provider with at least one call on this schedule,
+  // plus any provider in grid.providers who is a physician.
+  const allProviderIds = new Set<string>([
+    ...providersWithCalls,
+    ...grid.providers.filter(p => p.provider_type === 'physician').map(p => p.id),
+  ]);
+  const providers = Array.from(allProviderIds)
+    .map(id => providerById[id])
+    .filter(Boolean)
+    .sort((a, b) => a.short_display_name.localeCompare(b.short_display_name));
+
+  const getCount = (pid: string, bucket: string, code: string) =>
+    counts[pid]?.[`${bucket}|${code}`] || 0;
+
+  const rowTotal = (pid: string) => {
+    let t = 0;
+    for (const b of BUCKETS) for (const c of CODES) t += getCount(pid, b.key, c);
+    return t;
+  };
+
+  const colTotal = (bucket: string, code: string) => {
+    let t = 0;
+    for (const pid of providers.map(p => p.id)) t += getCount(pid, bucket, code);
+    return t;
+  };
+
+  return (
+    <div
+      onClick={onClose}
+      style={{
+        position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)',
+        zIndex: 800, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20,
+      }}
+    >
+      <div
+        onClick={e => e.stopPropagation()}
+        style={{
+          background: 'var(--bg-deep)', borderRadius: 10, border: '1px solid var(--border)',
+          padding: 20, maxWidth: '95vw', maxHeight: '90vh', overflow: 'auto', minWidth: 720,
+        }}
+      >
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
+          <div>
+            <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--text)' }}>Call Counts</div>
+            <div style={{ fontSize: 12, color: 'var(--text-dim)', marginTop: 2 }}>
+              {grid.schedule.schedule_name} — per provider, per day bucket, per call tier
+            </div>
+          </div>
+          <button onClick={onClose} style={{
+            background: 'none', border: '1px solid var(--border)', color: 'var(--text)',
+            padding: '4px 10px', borderRadius: 6, cursor: 'pointer', fontSize: 13,
+          }}>Close</button>
+        </div>
+
+        <table style={{ borderCollapse: 'collapse', width: '100%', fontSize: 12 }}>
+          <thead>
+            <tr style={{ background: 'var(--bg)', color: 'var(--text-dim)' }}>
+              <th rowSpan={2} style={{ padding: '6px 10px', textAlign: 'left', borderBottom: '1px solid var(--border)' }}>Provider</th>
+              {BUCKETS.map(b => (
+                <th key={b.key} colSpan={3} style={{
+                  padding: '6px 10px', textAlign: 'center',
+                  borderBottom: '1px solid var(--border)', borderLeft: '1px solid var(--border)',
+                }}>{b.label}</th>
+              ))}
+              <th rowSpan={2} style={{
+                padding: '6px 10px', textAlign: 'center', fontWeight: 700,
+                borderBottom: '1px solid var(--border)', borderLeft: '1px solid var(--border)',
+              }}>Total</th>
+            </tr>
+            <tr style={{ background: 'var(--bg)', color: 'var(--text-dim)' }}>
+              {BUCKETS.map(b => CODES.map(c => (
+                <th key={`${b.key}|${c}`} style={{
+                  padding: '4px 8px', textAlign: 'center', fontWeight: 600,
+                  borderBottom: '1px solid var(--border)',
+                  borderLeft: c === 'C1' ? '1px solid var(--border)' : 'none',
+                  color: c === 'C1' ? '#0ea5e9' : c === 'C2' ? '#34d399' : '#a855f7',
+                }}>{c}</th>
+              )))}
+            </tr>
+          </thead>
+          <tbody>
+            {providers.map(p => (
+              <tr key={p.id} style={{ borderBottom: '1px solid var(--border)' }}>
+                <td style={{ padding: '6px 10px', color: 'var(--text)', fontWeight: 500 }}>
+                  {p.short_display_name}
+                </td>
+                {BUCKETS.map(b => CODES.map(c => {
+                  const n = getCount(p.id, b.key, c);
+                  return (
+                    <td key={`${b.key}|${c}`} style={{
+                      padding: '6px 8px', textAlign: 'center',
+                      color: n === 0 ? 'var(--text-dim)' : 'var(--text)',
+                      borderLeft: c === 'C1' ? '1px solid var(--border)' : 'none',
+                      fontWeight: n > 0 ? 600 : 400,
+                    }}>{n || '—'}</td>
+                  );
+                }))}
+                <td style={{
+                  padding: '6px 10px', textAlign: 'center',
+                  borderLeft: '1px solid var(--border)', fontWeight: 700, color: 'var(--text)',
+                }}>{rowTotal(p.id)}</td>
+              </tr>
+            ))}
+            {/* Totals row */}
+            <tr style={{ background: 'var(--bg)', fontWeight: 700, color: 'var(--text)' }}>
+              <td style={{ padding: '8px 10px', borderTop: '2px solid var(--border)' }}>Total</td>
+              {BUCKETS.map(b => CODES.map(c => (
+                <td key={`total-${b.key}|${c}`} style={{
+                  padding: '8px 10px', textAlign: 'center',
+                  borderLeft: c === 'C1' ? '1px solid var(--border)' : 'none',
+                  borderTop: '2px solid var(--border)',
+                }}>{colTotal(b.key, c) || '—'}</td>
+              )))}
+              <td style={{
+                padding: '8px 10px', textAlign: 'center',
+                borderLeft: '1px solid var(--border)', borderTop: '2px solid var(--border)',
+              }}>{providers.reduce((s, p) => s + rowTotal(p.id), 0)}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }
