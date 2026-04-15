@@ -355,6 +355,27 @@ export async function autoGenerate(
   const bucketAssigned = new Map<string, number>();
   const assignedOnDate = new Map<string, Set<string>>();
   const handledSlotIds = new Set<string>();
+  // Sorted list of call dates per provider (for burnout / next-call scoring)
+  const callDatesByProvider = new Map<string, string[]>();
+  const addCallDate = (pid: string, date: string) => {
+    const list = callDatesByProvider.get(pid) || [];
+    if (list.includes(date)) return;
+    list.push(date);
+    list.sort();
+    callDatesByProvider.set(pid, list);
+  };
+
+  // Helper: days from provider's nearest prior call to `date` (Infinity if none)
+  const daysSinceLastCall = (pid: string, date: string): number => {
+    const list = callDatesByProvider.get(pid) || [];
+    let best = Infinity;
+    for (const d of list) {
+      if (d >= date) break;
+      const gap = Math.round((new Date(date + 'T00:00:00Z').getTime() - new Date(d + 'T00:00:00Z').getTime()) / 86400000);
+      if (gap < best) best = gap;
+    }
+    return best;
+  };
 
   const markAssigned = (date: string, pid: string) => {
     if (!assignedOnDate.has(date)) assignedOnDate.set(date, new Set());
@@ -379,6 +400,7 @@ export async function autoGenerate(
         markAssigned(raw.slot_date as string, a.provider_id);
         if (st && st.category === 'call') {
           incBucket(a.provider_id, (raw.derived_day_type as string) || 'weekday', st.code);
+          addCallDate(a.provider_id, raw.slot_date as string);
         }
       }
     }
@@ -466,6 +488,9 @@ export async function autoGenerate(
       }
       markAssigned(slot.slot_date, provider.id);
       incBucket(provider.id, slot.derived_day_type, slot.shift_type_code);
+      if (['C1', 'C2', 'C3'].includes(slot.shift_type_code)) {
+        addCallDate(provider.id, slot.slot_date);
+      }
       handledSlotIds.add(slot.slot_id);
       result.assignments.push({
         slot_id: slot.slot_id,
@@ -560,10 +585,16 @@ export async function autoGenerate(
       continue;
     }
 
-    // Score: lowest bucket-ratio first (most under quota). Fair distribution.
+    // Score candidates:
+    //   primary: lowest bucket-ratio first (fair distribution under par)
+    //   tie-break: MORE days since last call (avoid burnout / back-to-back)
     const scored = candidates
-      .map(p => ({ p, ratio: getAssigned(p.id, slot.derived_day_type, slot.shift_type_code) / Math.max(p.fte_value, 0.01) }))
-      .sort((a, b) => a.ratio - b.ratio);
+      .map(p => ({
+        p,
+        ratio: getAssigned(p.id, slot.derived_day_type, slot.shift_type_code) / Math.max(p.fte_value, 0.01),
+        recency: daysSinceLastCall(p.id, slot.slot_date),
+      }))
+      .sort((a, b) => a.ratio - b.ratio || b.recency - a.recency);
 
     const chosen = scored[0].p;
     const ok = await doAssign(slot, chosen);
@@ -676,8 +707,14 @@ export async function autoGenerate(
         p,
         distance: nextCall ? daysBetween(date, nextCall.date) : Infinity,
         tier: nextCall ? callTierPriority(nextCall.code) : 99,
+        // Fewer days since last call = more tired = earlier relief (lower D)
+        recency: daysSinceLastCall(p.id, date),
       };
-    }).sort((a, b) => a.distance - b.distance || a.tier - b.tier);
+    }).sort((a, b) =>
+      a.distance - b.distance ||
+      a.tier - b.tier ||
+      a.recency - b.recency
+    );
 
     let idx = 0;
     for (const code of RELIEF_CODES) {
