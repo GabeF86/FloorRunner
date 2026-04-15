@@ -608,14 +608,99 @@ export async function autoGenerate(
     }
   }
 
-  // ── 12. Compute validation flags once per final assignment (parallel batches) ──
-  // Validation uses the DB-backed evaluator which loads a full context per call.
-  // Running in parallel batches so the total wall time scales with batch_count
-  // not slot_count.
-  console.log(`[autoGen] validating ${result.assignments.length} final assignments...`);
+  // ── 11c. D4-D9 relief-order pass ─────────────────────────────────────────
+  // For every weekday/friday, any provider who is home-site, available, and
+  // NOT already assigned something that day gets placed onto D4, D5, D6, ...
+  // in order of how soon their next call is (closer → lower D number).
+  // Tie-break: upcoming C1 outranks C2 outranks C3 (higher-priority call
+  // = earlier relief).
+  const RELIEF_CODES = ['D4', 'D5', 'D6', 'D7', 'D8', 'D9'];
+
+  // Index all provider call assignments (including pre-existing + newly made)
+  const providerCalls = new Map<string, Array<{ date: string; code: string }>>();
+  const pushCall = (pid: string, date: string, code: string) => {
+    if (!providerCalls.has(pid)) providerCalls.set(pid, []);
+    providerCalls.get(pid)!.push({ date, code });
+  };
+  for (const a of result.assignments) {
+    if (['C1', 'C2', 'C3'].includes(a.shift_type_code)) pushCall(a.provider_id, a.slot_date, a.shift_type_code);
+  }
+  for (const raw of rawSlots as Array<Record<string, unknown>>) {
+    const st = raw.shift_types as { code: string; category: string } | null;
+    if (!st || !['C1', 'C2', 'C3'].includes(st.code)) continue;
+    for (const a of (raw.assignments as Array<{ provider_id: string | null }>) || []) {
+      if (a.provider_id) pushCall(a.provider_id, raw.slot_date as string, st.code);
+    }
+  }
+  for (const arr of providerCalls.values()) arr.sort((a, b) => a.date.localeCompare(b.date));
+
+  const callTierPriority = (code: string) => code === 'C1' ? 0 : code === 'C2' ? 1 : 2;
+  const daysBetween = (from: string, to: string) => {
+    const f = new Date(from + 'T00:00:00Z').getTime();
+    const t = new Date(to + 'T00:00:00Z').getTime();
+    return Math.round((t - f) / 86400000);
+  };
+
+  // Per-day credential / availability check (non-call checks only)
+  const isAvailableForReliefDay = (date: string, p: CandidateProvider): boolean => {
+    if (isAssignedOnDate(date, p.id)) return false;
+    if (crossSiteByDate.get(p.id)?.has(date)) return false;
+    const cred = credByPid.get(p.id);
+    if (cred) {
+      if (!cred.is_active) return false;
+      if (!cred.credentialed) return false;
+    }
+    const entries = availByPid.get(p.id) || [];
+    for (const a of entries) {
+      if (a.approval_status === 'denied' || a.approval_status === 'canceled') continue;
+      if (!datesOverlap(a.start_date, a.end_date, date)) continue;
+      if (BLOCKING_AVAIL.has(a.availability_type)) return false;
+    }
+    return true;
+  };
+
+  const scheduleDates = Array.from(slotIndex.keys()).sort();
+  let reliefFilled = 0;
+  for (const date of scheduleDates) {
+    const codeMap = slotIndex.get(date);
+    if (!codeMap) continue;
+    const sampleD = codeMap.get('D4') || codeMap.get('D5');
+    if (!sampleD) continue;
+    const dt = sampleD.derived_day_type;
+    if (dt !== 'weekday' && dt !== 'friday') continue;
+
+    const available = providers.filter(p => isAvailableForReliefDay(date, p));
+    const scored = available.map(p => {
+      const nextCall = (providerCalls.get(p.id) || []).find(c => c.date > date);
+      return {
+        p,
+        distance: nextCall ? daysBetween(date, nextCall.date) : Infinity,
+        tier: nextCall ? callTierPriority(nextCall.code) : 99,
+      };
+    }).sort((a, b) => a.distance - b.distance || a.tier - b.tier);
+
+    let idx = 0;
+    for (const code of RELIEF_CODES) {
+      if (idx >= scored.length) break;
+      const slot = codeMap.get(code);
+      if (!slot) continue;
+      if (handledSlotIds.has(slot.slot_id)) continue;
+      const ok = await doAssign(slot, scored[idx].p);
+      if (ok) reliefFilled++;
+      idx++;
+    }
+  }
+  console.log(`[autoGen] relief pass: filled ${reliefFilled} D4-D9 slots`);
+
+  // ── 12. Compute validation flags for call shifts only (parallel batches) ──
+  // D-shifts are deterministic chains or relief assignments — no rules target
+  // them in the current rule set. Skip their validation to keep the wall time
+  // bounded by the number of call shifts, which is the only interesting set.
+  const toValidate = result.assignments.filter(a => ['C1', 'C2', 'C3'].includes(a.shift_type_code));
+  console.log(`[autoGen] validating ${toValidate.length} call assignments (skipping ${result.assignments.length - toValidate.length} D-shifts)...`);
   const VALIDATION_CONCURRENCY = 10;
-  for (let i = 0; i < result.assignments.length; i += VALIDATION_CONCURRENCY) {
-    const batch = result.assignments.slice(i, i + VALIDATION_CONCURRENCY);
+  for (let i = 0; i < toValidate.length; i += VALIDATION_CONCURRENCY) {
+    const batch = toValidate.slice(i, i + VALIDATION_CONCURRENCY);
     await Promise.all(batch.map(async a => {
       countQ();
       const ev = await evaluateAssignment(sb, a.slot_id, a.provider_id);
