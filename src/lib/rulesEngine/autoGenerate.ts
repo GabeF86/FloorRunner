@@ -159,7 +159,9 @@ export async function autoGenerate(
     }
   } catch { /* column may not exist yet — use default */ }
 
-  // ── 2. Build slotsToFill list (call-category, not locked, not fully assigned) ──
+  // ── 2. Build slot index ───────────────────────────────────────────────────
+  // slotsToFill = call-category slots that need assignment (main loop)
+  // slotIndex   = ALL open slots by date+code (used for weekend chaining and D-fill)
   const slotsToFill: SlotToFill[] = [];
   const slotIndex = new Map<string, Map<string, SlotToFill>>();
 
@@ -167,7 +169,6 @@ export async function autoGenerate(
     if (raw.locked) continue;
     const st = raw.shift_types as { code: string; category: string } | null;
     if (!st) continue;
-    if (st.category !== 'call') continue;
 
     const assignments = (raw.assignments as Array<{ id: string; provider_id: string | null }>) || [];
     const required = (raw.required_count as number) || 1;
@@ -186,10 +187,14 @@ export async function autoGenerate(
       required_count: required,
       existing_assignment_id: openRow?.id || null,
     };
-    slotsToFill.push(slot);
 
+    // Index every open slot for cross-shift lookups
     if (!slotIndex.has(slot.slot_date)) slotIndex.set(slot.slot_date, new Map());
     slotIndex.get(slot.slot_date)!.set(slot.shift_type_code, slot);
+
+    // Only call slots go through the quota-based main loop.
+    // D-slots are filled deterministically in the post-pass from the call schedule.
+    if (st.category === 'call') slotsToFill.push(slot);
   }
 
   // Sort: weekends first (Sat then Sun), then friday, then weekday — by date.
@@ -494,33 +499,121 @@ export async function autoGenerate(
     if (!ok) continue;
     handledSlotIds.add(slot.slot_id);
 
-    // Weekend pairing
+    // ── Weekend block chains (Paoli-specific 3-day pattern) ─────────────────
+    // Two physicians cover the weekend with overlapping roles:
+    //   Provider A: Fri-C2 → Sat-C1 → Sun-C2  (backup-call-backup)
+    //   Provider B: Fri-D2 → Sat-C2 → Sun-C1
+    //   Provider C: Sat-C3 → Sun-C3            (neuro)
     if (slot.derived_day_type === 'saturday') {
       const sundayDate = addDays(slot.slot_date, 1);
+      const fridayDate = addDays(slot.slot_date, -1);
       const sundayMap = slotIndex.get(sundayDate);
-      if (sundayMap) {
-        if (slot.shift_type_code === 'C3') {
-          const sunC3 = sundayMap.get('C3');
-          if (sunC3 && !handledSlotIds.has(sunC3.slot_id)) {
-            await doAssign(sunC3, chosen);
-            handledSlotIds.add(sunC3.slot_id);
-          }
-        } else if (slot.shift_type_code === 'C1') {
-          const sunC2 = sundayMap.get('C2');
-          if (sunC2 && !handledSlotIds.has(sunC2.slot_id)) {
-            await doAssign(sunC2, chosen);
-            handledSlotIds.add(sunC2.slot_id);
-          }
-        } else if (slot.shift_type_code === 'C2') {
-          const sunC1 = sundayMap.get('C1');
-          if (sunC1 && !handledSlotIds.has(sunC1.slot_id)) {
-            await doAssign(sunC1, chosen);
-            handledSlotIds.add(sunC1.slot_id);
-          }
+      const fridayMap = slotIndex.get(fridayDate);
+
+      const chainAssign = async (slotMap: Map<string, SlotToFill> | undefined, code: string) => {
+        if (!slotMap) return;
+        const target = slotMap.get(code);
+        if (target && !handledSlotIds.has(target.slot_id)) {
+          await doAssign(target, chosen);
+          handledSlotIds.add(target.slot_id);
         }
+      };
+
+      if (slot.shift_type_code === 'C3') {
+        // C3 same provider both weekend days
+        await chainAssign(sundayMap, 'C3');
+      } else if (slot.shift_type_code === 'C1') {
+        // Sat-C1 person → Sun-C2 (post-call from Sat) AND Fri-C2 (the backup-call-backup chain)
+        await chainAssign(sundayMap, 'C2');
+        await chainAssign(fridayMap, 'C2');
+      } else if (slot.shift_type_code === 'C2') {
+        // Sat-C2 person → Sun-C1 AND Fri-D2 (the D2-call-call chain)
+        await chainAssign(sundayMap, 'C1');
+        await chainAssign(fridayMap, 'D2');
       }
     }
   }
+
+  // ── 11b. D-fill pass ─────────────────────────────────────────────────────
+  // After call shifts are assigned, fill D1/D2/D3 deterministically from the
+  // call schedule. Rules (Paoli):
+  //   D1 day N = C2 person from day N-1 (post-call, first on outlist)
+  //   D2 day N = C1 person from day N+1 (pre-call) — Friday handled by weekend chain
+  //   D3 day N = C2 person from day N+1 (pre-call, 2nd on outlist)
+  //   Fri-D3 stays open for now (would conflict with Fri-D2 via the weekend pattern)
+  // Skip if the target provider is already assigned that day or if the linked
+  // call slot has no provider yet.
+  console.log('[autoGen] D-fill pass starting...');
+
+  // Build call-assignment lookup: callByDate[date][code] = provider_id
+  const callByDate = new Map<string, Map<string, string>>();
+  for (const a of result.assignments) {
+    if (!['C1', 'C2', 'C3'].includes(a.shift_type_code)) continue;
+    if (!callByDate.has(a.slot_date)) callByDate.set(a.slot_date, new Map());
+    callByDate.get(a.slot_date)!.set(a.shift_type_code, a.provider_id);
+  }
+  // Also include pre-existing call assignments
+  for (const raw of rawSlots as Array<Record<string, unknown>>) {
+    const st = raw.shift_types as { code: string; category: string } | null;
+    if (!st || st.category !== 'call') continue;
+    const assignments = (raw.assignments as Array<{ provider_id: string | null }>) || [];
+    for (const a of assignments) {
+      if (!a.provider_id) continue;
+      const date = raw.slot_date as string;
+      if (!callByDate.has(date)) callByDate.set(date, new Map());
+      if (!callByDate.get(date)!.has(st.code)) callByDate.get(date)!.set(st.code, a.provider_id);
+    }
+  }
+
+  const providerById = new Map(providers.map(p => [p.id, p]));
+  let dFilled = 0;
+  let dSkipped = 0;
+
+  // Iterate every (date, code) in slotIndex. Look at D1/D2/D3 only.
+  for (const [date, codeMap] of slotIndex) {
+    for (const [code, slot] of codeMap) {
+      if (!['D1', 'D2', 'D3'].includes(code)) continue;
+      if (handledSlotIds.has(slot.slot_id)) continue;
+      // Only fill on weekday/friday — weekends don't have D slots in templates
+      const dt = slot.derived_day_type;
+      if (dt !== 'weekday' && dt !== 'friday') continue;
+
+      let sourceDate: string;
+      let sourceCode: string;
+      if (code === 'D1') { sourceDate = addDays(date, -1); sourceCode = 'C2'; }
+      else if (code === 'D2') {
+        // Friday D2 is handled by the weekend chain above. Skip if not yet handled
+        // (means Sat-C2 wasn't assigned, e.g., out of quota); leave open.
+        if (dt === 'friday') continue;
+        sourceDate = addDays(date, 1);
+        sourceCode = 'C1';
+      }
+      else if (code === 'D3') {
+        // Friday D3 conflict (would be Sat-C2 person, same as Fri-D2). Leave open.
+        if (dt === 'friday') continue;
+        sourceDate = addDays(date, 1);
+        sourceCode = 'C2';
+      }
+      else continue;
+
+      const sourcePid = callByDate.get(sourceDate)?.get(sourceCode);
+      if (!sourcePid) { dSkipped++; continue; } // No source assignment, leave D open
+
+      // Cross-site / same-day conflict check
+      if (isAssignedOnDate(date, sourcePid)) { dSkipped++; continue; }
+      if (crossSiteByDate.get(sourcePid)?.has(date)) { dSkipped++; continue; }
+
+      const provider = providerById.get(sourcePid);
+      if (!provider) { dSkipped++; continue; } // Provider not in our home-site pool
+
+      const ok = await doAssign(slot, provider);
+      if (ok) {
+        handledSlotIds.add(slot.slot_id);
+        dFilled++;
+      }
+    }
+  }
+  console.log(`[autoGen] D-fill pass: ${dFilled} filled, ${dSkipped} left open`);
 
   // ── 12. Compute validation flags once per final assignment (parallel batches) ──
   // Validation uses the DB-backed evaluator which loads a full context per call.
