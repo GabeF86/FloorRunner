@@ -13,6 +13,7 @@ interface SiteInfo {
 
 interface Schedule {
   id: string;
+  site_id: string;
   schedule_name: string;
   schedule_type: string;
   provider_group: string;
@@ -20,6 +21,23 @@ interface Schedule {
   date_end: string;
   status: string;
   sites: SiteInfo;
+}
+
+interface EmploymentProfile {
+  provider_id: string;
+  home_site_id: string | null;
+  call_taker: boolean;
+  fte_value: number | null;
+  employment_status: string | null;
+}
+
+interface AvailabilityEntry {
+  provider_id: string;
+  availability_type: string;
+  start_date: string;
+  end_date: string;
+  approval_status: string;
+  reason: string | null;
 }
 
 interface Version {
@@ -98,6 +116,8 @@ interface GridData {
   slots: Slot[];
   providers: Provider[];
   holidays: Holiday[];
+  profiles: EmploymentProfile[];
+  availability: AvailabilityEntry[];
 }
 
 interface ActiveCell {
@@ -242,8 +262,18 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
 
   /* ── Derived Data ───────────────────────────────────────────────────────── */
 
-  const { shiftTypes, allDates, slotMap, holidayMap, assignedOnDate } = useMemo(() => {
-    if (!grid) return { shiftTypes: [], allDates: [], slotMap: {} as Record<string, Record<string, Slot>>, holidayMap: {} as Record<string, Holiday>, assignedOnDate: {} as Record<string, Set<string>> };
+  const { shiftTypes, allDates, slotMap, holidayMap, assignedOnDate, availableByDate, offByDate, ptoByDate, maxAvailable, maxOff, maxPto } = useMemo(() => {
+    const empty = {
+      shiftTypes: [], allDates: [],
+      slotMap: {} as Record<string, Record<string, Slot>>,
+      holidayMap: {} as Record<string, Holiday>,
+      assignedOnDate: {} as Record<string, Set<string>>,
+      availableByDate: {} as Record<string, Provider[]>,
+      offByDate: {} as Record<string, Provider[]>,
+      ptoByDate: {} as Record<string, Provider[]>,
+      maxAvailable: 0, maxOff: 0, maxPto: 0,
+    };
+    if (!grid) return empty;
 
     // Unique shift types sorted by display_order
     const stMap = new Map<string, ShiftTypeInfo>();
@@ -252,23 +282,17 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
     }
     const shiftTypes = Array.from(stMap.values()).sort((a, b) => (a.display_order ?? 999) - (b.display_order ?? 999));
 
-    // All dates in range
     const allDates = allDatesInRange(grid.schedule.date_start, grid.schedule.date_end);
 
-    // Slot lookup: slotMap[shiftTypeId][date] → Slot
     const slotMap: Record<string, Record<string, Slot>> = {};
     for (const slot of grid.slots) {
       if (!slotMap[slot.shift_type_id]) slotMap[slot.shift_type_id] = {};
       slotMap[slot.shift_type_id][slot.slot_date] = slot;
     }
 
-    // Holiday lookup
     const holidayMap: Record<string, Holiday> = {};
-    for (const h of grid.holidays) {
-      holidayMap[h.holiday_date] = h;
-    }
+    for (const h of grid.holidays) holidayMap[h.holiday_date] = h;
 
-    // Assigned on date lookup
     const assignedOnDate: Record<string, Set<string>> = {};
     for (const slot of grid.slots) {
       if (!assignedOnDate[slot.slot_date]) assignedOnDate[slot.slot_date] = new Set();
@@ -277,7 +301,66 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
       }
     }
 
-    return { shiftTypes, allDates, slotMap, holidayMap, assignedOnDate };
+    // Virtual rows: PTO / Available / Off
+    const BLOCKING_TYPES = new Set(['pto', 'sick', 'fmla', 'parental_leave', 'military_leave', 'jury_duty', 'unavailable', 'blocked']);
+    const siteId = grid.schedule.site_id;
+    const homeSiteIds = new Set<string>();
+    const callTakerIds = new Set<string>();
+    for (const p of grid.profiles || []) {
+      if (p.home_site_id === siteId) {
+        homeSiteIds.add(p.provider_id);
+        if (p.call_taker) callTakerIds.add(p.provider_id);
+      }
+    }
+    const providerById: Record<string, Provider> = {};
+    for (const p of grid.providers) providerById[p.id] = p;
+
+    // PTO by date: expand each availability entry across its date range.
+    const ptoByDate: Record<string, Provider[]> = {};
+    const allDatesSet = new Set(allDates);
+    for (const avail of grid.availability || []) {
+      if (avail.approval_status === 'denied' || avail.approval_status === 'canceled') continue;
+      if (!BLOCKING_TYPES.has(avail.availability_type)) continue;
+      if (!homeSiteIds.has(avail.provider_id)) continue;
+      const provider = providerById[avail.provider_id];
+      if (!provider) continue;
+      const start = new Date(avail.start_date + 'T00:00:00Z');
+      const end = new Date(avail.end_date + 'T00:00:00Z');
+      for (let d = new Date(start); d <= end; d.setUTCDate(d.getUTCDate() + 1)) {
+        const ds = d.toISOString().slice(0, 10);
+        if (!allDatesSet.has(ds)) continue;
+        if (!ptoByDate[ds]) ptoByDate[ds] = [];
+        if (!ptoByDate[ds].some(p => p.id === provider.id)) ptoByDate[ds].push(provider);
+      }
+    }
+    for (const list of Object.values(ptoByDate)) list.sort((a, b) => a.short_display_name.localeCompare(b.short_display_name));
+
+    // Available (home-site call-takers not assigned, not PTO) and Off (home-site non-call-takers)
+    const availableByDate: Record<string, Provider[]> = {};
+    const offByDate: Record<string, Provider[]> = {};
+    for (const date of allDates) {
+      const assigned = assignedOnDate[date] || new Set<string>();
+      const ptoSet = new Set((ptoByDate[date] || []).map(p => p.id));
+      const available: Provider[] = [];
+      const off: Provider[] = [];
+      for (const pid of homeSiteIds) {
+        if (assigned.has(pid) || ptoSet.has(pid)) continue;
+        const provider = providerById[pid];
+        if (!provider) continue;
+        if (callTakerIds.has(pid)) available.push(provider);
+        else off.push(provider);
+      }
+      available.sort((a, b) => a.short_display_name.localeCompare(b.short_display_name));
+      off.sort((a, b) => a.short_display_name.localeCompare(b.short_display_name));
+      availableByDate[date] = available;
+      offByDate[date] = off;
+    }
+
+    const maxAvailable = Math.max(0, ...Object.values(availableByDate).map(v => v.length));
+    const maxOff = Math.max(0, ...Object.values(offByDate).map(v => v.length));
+    const maxPto = Math.max(0, ...Object.values(ptoByDate).map(v => v.length));
+
+    return { shiftTypes, allDates, slotMap, holidayMap, assignedOnDate, availableByDate, offByDate, ptoByDate, maxAvailable, maxOff, maxPto };
   }, [grid]);
 
   /* ── Visible dates based on view mode ───────────────────────────────────── */
@@ -784,6 +867,41 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
               })}
             </>
           ))}
+
+          {/* ── Virtual rows: Available / Off / PTO ──────────────────────── */}
+          {renderVirtualRows({
+            label: 'Available',
+            count: maxAvailable,
+            dataByDate: availableByDate,
+            color: '#34d399',
+            bg: 'rgba(52,211,153,0.08)',
+            visibleDates,
+            todayStr,
+            holidayMap,
+            getDayOfWeek,
+          })}
+          {renderVirtualRows({
+            label: 'Off',
+            count: maxOff,
+            dataByDate: offByDate,
+            color: '#94a3b8',
+            bg: 'rgba(148,163,184,0.08)',
+            visibleDates,
+            todayStr,
+            holidayMap,
+            getDayOfWeek,
+          })}
+          {renderVirtualRows({
+            label: 'PTO',
+            count: maxPto,
+            dataByDate: ptoByDate,
+            color: '#fbbf24',
+            bg: 'rgba(251,191,36,0.1)',
+            visibleDates,
+            todayStr,
+            holidayMap,
+            getDayOfWeek,
+          })}
         </div>
       </div>
 
@@ -953,6 +1071,75 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
       )}
     </div>
   );
+}
+
+/* ── Virtual Row Renderer (PTO / Available / Off) ─────────────────────────── */
+
+function renderVirtualRows({
+  label, count, dataByDate, color, bg, visibleDates, todayStr, holidayMap, getDayOfWeek,
+}: {
+  label: string;
+  count: number;
+  dataByDate: Record<string, Provider[]>;
+  color: string;
+  bg: string;
+  visibleDates: string[];
+  todayStr: string;
+  holidayMap: Record<string, Holiday>;
+  getDayOfWeek: (s: string) => number;
+}) {
+  if (count === 0) return null;
+  const rows = [];
+  for (let idx = 0; idx < count; idx++) {
+    rows.push(
+      <div key={`virt-label-${label}-${idx}`} style={{
+        position: 'sticky', left: 0, zIndex: 2,
+        background: 'var(--bg-surface)',
+        borderLeft: `4px solid ${color}`,
+        borderBottom: '1px solid rgba(30,58,95,0.4)',
+        borderRight: '1px solid var(--border)',
+        padding: '6px 10px', display: 'flex', alignItems: 'center',
+        minHeight: 34,
+      }}>
+        <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-dim)', whiteSpace: 'nowrap' }}>
+          {label}{count > 1 ? ` ${idx + 1}` : ''}
+        </div>
+      </div>
+    );
+    for (let i = 0; i < visibleDates.length; i++) {
+      const date = visibleDates[i];
+      const providers = dataByDate[date] || [];
+      const provider = providers[idx];
+      const dow = getDayOfWeek(date);
+      const isWeekend = dow === 0 || dow === 6;
+      const isHoliday = !!holidayMap[date];
+      const isToday = date === todayStr;
+      const isSatBorder = dow === 6 && i > 0;
+      const cellBg = isHoliday ? 'rgba(251,191,36,0.06)' : isWeekend ? 'rgba(99,102,241,0.04)' : 'transparent';
+      rows.push(
+        <div key={`virt-cell-${label}-${idx}-${date}`} style={{
+          background: cellBg,
+          borderBottom: '1px solid rgba(30,58,95,0.4)',
+          borderRight: '1px solid var(--border)',
+          borderLeft: isToday ? '2px solid rgba(14,165,233,0.4)' : isSatBorder ? '2px solid rgba(30,58,95,0.6)' : 'none',
+          padding: '3px 6px',
+          minHeight: 34,
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+        }}>
+          {provider ? (
+            <span style={{
+              fontSize: 11, fontWeight: 500, padding: '1px 8px', borderRadius: 4,
+              background: bg, color,
+              whiteSpace: 'nowrap',
+            }}>
+              {provider.short_display_name}
+            </span>
+          ) : null}
+        </div>
+      );
+    }
+  }
+  return <>{rows}</>;
 }
 
 /* ── Call Counts Modal ───────────────────────────────────────────────────── */

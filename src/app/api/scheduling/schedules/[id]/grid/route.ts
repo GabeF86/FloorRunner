@@ -66,12 +66,35 @@ export async function GET(
     .lte('holiday_date', schedule.date_end);
   if (holErr) return NextResponse.json({ error: holErr.message }, { status: 500 });
 
+  // 6. Fetch employment profiles so the UI can tell which providers are
+  //    home-site (for Off rows) and their call-taker status.
+  const providerIds = (providers || []).map(p => p.id);
+  const { data: profiles } = providerIds.length > 0
+    ? await sb
+        .from('provider_employment_profiles')
+        .select('provider_id, home_site_id, call_taker, fte_value, employment_status')
+        .in('provider_id', providerIds)
+    : { data: [] };
+
+  // 7. Fetch availability entries (PTO, sick, unavailable, etc.) overlapping
+  //    the schedule date range.
+  const { data: availability } = providerIds.length > 0
+    ? await sb
+        .from('provider_availability')
+        .select('provider_id, availability_type, start_date, end_date, approval_status, reason')
+        .in('provider_id', providerIds)
+        .lte('start_date', schedule.date_end)
+        .gte('end_date', schedule.date_start)
+    : { data: [] };
+
   return NextResponse.json({
     schedule,
     version,
     slots: slots || [],
     providers: providers || [],
     holidays: holidays || [],
+    profiles: profiles || [],
+    availability: availability || [],
   }, {
     headers: { 'Cache-Control': 'no-store, no-cache, must-revalidate' },
   });
