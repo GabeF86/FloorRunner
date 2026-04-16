@@ -715,7 +715,8 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
           <div style={{
             position: 'sticky', top: 0, left: 0, zIndex: 4,
             background: '#0d1b30', borderBottom: '1px solid #1e3a5f',
-            borderRight: '1px solid #1e3a5f', padding: '8px 12px',
+            borderRight: '1px solid #1e3a5f', padding: '6px 12px',
+            minHeight: 35,
           }} />
 
           {/* Day-of-week labels */}
@@ -735,6 +736,7 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
                 padding: '6px 8px', textAlign: 'center',
                 fontSize: 11, fontWeight: 700, color: isWeekend ? '#818cf8' : '#64748b',
                 textTransform: 'uppercase', letterSpacing: '0.05em',
+                minHeight: 35, display: 'flex', alignItems: 'center', justifyContent: 'center',
               }}>
                 {DAYS_SHORT[dow]}
               </div>
@@ -745,7 +747,7 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
 
           {/* Corner cell "Shifts" */}
           <div style={{
-            position: 'sticky', top: 36, left: 0, zIndex: 4,
+            position: 'sticky', top: 35, left: 0, zIndex: 4,
             background: '#0d1b30', borderBottom: '2px solid #1e3a5f',
             borderRight: '1px solid #1e3a5f', padding: '6px 12px',
             fontSize: 12, fontWeight: 700, color: '#64748b',
@@ -762,7 +764,7 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
             const isSatBorder = dow === 6 && i > 0;
             return (
               <div key={`date-${date}`} title={holiday ? holiday.holiday_name : undefined} style={{
-                position: 'sticky', top: 36, zIndex: 3,
+                position: 'sticky', top: 35, zIndex: 3,
                 background: holiday ? '#1a1a0d' : isWeekend ? '#0e1430' : '#0d1b30',
                 borderBottom: '2px solid #1e3a5f',
                 borderRight: '1px solid #1e3a5f',
