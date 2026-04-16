@@ -20,16 +20,16 @@ export default function SchedulingLayout({ children }: { children: React.ReactNo
 
   return (
     <div style={{ display: 'flex', height: '100vh', overflow: 'hidden' }}>
-      {/* Sidebar */}
+      {/* Sidebar — stays dark */}
       <nav style={{
-        width: 220, flexShrink: 0, background: 'var(--bg-surface)',
-        borderRight: '1px solid var(--border)', display: 'flex', flexDirection: 'column',
+        width: 220, flexShrink: 0, background: '#0d1b30',
+        borderRight: '1px solid #1e3a5f', display: 'flex', flexDirection: 'column',
         padding: '16px 0',
       }}>
         {/* Logo */}
-        <div style={{ padding: '0 20px 20px', borderBottom: '1px solid var(--border)', marginBottom: 8 }}>
+        <div style={{ padding: '0 20px 20px', borderBottom: '1px solid #1e3a5f', marginBottom: 8 }}>
           <div style={{ fontSize: 18, fontWeight: 800, color: '#0ea5e9', letterSpacing: -0.5 }}>FloorRunner</div>
-          <div style={{ fontSize: 10, color: 'var(--text-dim)', letterSpacing: 1, textTransform: 'uppercase', marginTop: 2 }}>Scheduling Platform</div>
+          <div style={{ fontSize: 10, color: '#334155', letterSpacing: 1, textTransform: 'uppercase', marginTop: 2 }}>Scheduling Platform</div>
         </div>
 
         {/* Nav items */}
@@ -41,7 +41,7 @@ export default function SchedulingLayout({ children }: { children: React.ReactNo
                 display: 'flex', alignItems: 'center', gap: 10,
                 padding: '10px 12px', borderRadius: 8, marginBottom: 2,
                 textDecoration: 'none', fontSize: 13, fontWeight: 600,
-                color: active ? '#0ea5e9' : 'var(--text-muted)',
+                color: active ? '#0ea5e9' : '#94a3b8',
                 background: active ? 'rgba(14,165,233,0.1)' : 'transparent',
                 border: '1px solid ' + (active ? 'rgba(14,165,233,0.25)' : 'transparent'),
                 transition: 'all 0.15s',
@@ -54,8 +54,22 @@ export default function SchedulingLayout({ children }: { children: React.ReactNo
         </div>
       </nav>
 
-      {/* Main content */}
-      <main style={{ flex: 1, overflow: 'auto', background: 'var(--bg-base)' }}>
+      {/* Main content — light theme via CSS var overrides */}
+      {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
+      <main style={{
+        flex: 1, overflow: 'auto',
+        background: '#f8fafc',
+        color: '#1e293b',
+        ...({
+          '--bg-base':    '#f8fafc',
+          '--bg-surface': '#ffffff',
+          '--bg-deep':    '#ffffff',
+          '--border':     '#e2e8f0',
+          '--text':       '#1e293b',
+          '--text-muted': '#475569',
+          '--text-dim':   '#94a3b8',
+        } as any),
+      }}>
         {children}
       </main>
     </div>
