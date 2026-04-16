@@ -697,24 +697,11 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
         </div>
       )}
 
-      {/* Grid Container — light interior, original dark outer border retained */}
+      {/* Grid Container — dark chrome (headers + shift labels), white data cells */}
       <div style={{
         flex: 1, overflow: 'auto', borderRadius: 8,
-        border: '1px solid var(--border)', // outer border stays dark
-        background: '#ffffff',
-        // Inside the grid, the CSS vars are overridden so all descendants
-        // (labels, cells, virtual rows, picker, etc.) render in light mode
-        // automatically — no other pages affected.
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        ...({
-          '--bg-surface': '#ffffff', // sticky labels background
-          '--bg-deep':    '#ffffff', // grid interior
-          '--border':     '#e2e8f0', // thin inner borders
-          '--text':       '#0f172a',
-          '--text-muted': '#475569',
-          '--text-dim':   '#94a3b8',
-          color:          '#0f172a',
-        } as any),
+        border: '1px solid var(--border)',
+        background: '#ffffff', // data cell background
       }}>
         <div style={{
           display: 'grid',
@@ -727,8 +714,8 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
           {/* Corner cell */}
           <div style={{
             position: 'sticky', top: 0, left: 0, zIndex: 4,
-            background: 'var(--bg-surface)', borderBottom: '1px solid var(--border)',
-            borderRight: '1px solid var(--border)', padding: '8px 12px',
+            background: '#0d1b30', borderBottom: '1px solid #1e3a5f',
+            borderRight: '1px solid #1e3a5f', padding: '8px 12px',
           }} />
 
           {/* Day-of-week labels */}
@@ -741,12 +728,12 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
             return (
               <div key={`dow-${date}`} style={{
                 position: 'sticky', top: 0, zIndex: 3,
-                background: isHoliday ? 'rgba(251,191,36,0.06)' : isWeekend ? 'rgba(99,102,241,0.04)' : 'var(--bg-surface)',
-                borderBottom: '1px solid var(--border)',
-                borderRight: '1px solid var(--border)',
+                background: isHoliday ? '#1a1a0d' : isWeekend ? '#0e1430' : '#0d1b30',
+                borderBottom: '1px solid #1e3a5f',
+                borderRight: '1px solid #1e3a5f',
                 borderLeft: isToday ? '2px solid rgba(14,165,233,0.4)' : isSatBorder ? '2px solid rgba(30,58,95,0.6)' : 'none',
                 padding: '6px 8px', textAlign: 'center',
-                fontSize: 11, fontWeight: 700, color: isWeekend ? '#6366f1' : 'var(--text-muted)',
+                fontSize: 11, fontWeight: 700, color: isWeekend ? '#818cf8' : '#64748b',
                 textTransform: 'uppercase', letterSpacing: '0.05em',
               }}>
                 {DAYS_SHORT[dow]}
@@ -759,9 +746,9 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
           {/* Corner cell "Shifts" */}
           <div style={{
             position: 'sticky', top: 36, left: 0, zIndex: 4,
-            background: 'var(--bg-surface)', borderBottom: '2px solid var(--border)',
-            borderRight: '1px solid var(--border)', padding: '6px 12px',
-            fontSize: 12, fontWeight: 700, color: 'var(--text-muted)',
+            background: '#0d1b30', borderBottom: '2px solid #1e3a5f',
+            borderRight: '1px solid #1e3a5f', padding: '6px 12px',
+            fontSize: 12, fontWeight: 700, color: '#64748b',
           }}>
             Shifts
           </div>
@@ -776,12 +763,12 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
             return (
               <div key={`date-${date}`} title={holiday ? holiday.holiday_name : undefined} style={{
                 position: 'sticky', top: 36, zIndex: 3,
-                background: holiday ? 'rgba(251,191,36,0.06)' : isWeekend ? 'rgba(99,102,241,0.04)' : 'var(--bg-surface)',
-                borderBottom: '2px solid var(--border)',
-                borderRight: '1px solid var(--border)',
+                background: holiday ? '#1a1a0d' : isWeekend ? '#0e1430' : '#0d1b30',
+                borderBottom: '2px solid #1e3a5f',
+                borderRight: '1px solid #1e3a5f',
                 borderLeft: isToday ? '2px solid rgba(14,165,233,0.4)' : isSatBorder ? '2px solid rgba(30,58,95,0.6)' : 'none',
                 padding: '6px 8px', textAlign: 'center',
-                fontSize: 12, fontWeight: 600, color: isToday ? '#0ea5e9' : 'var(--text)',
+                fontSize: 12, fontWeight: 600, color: isToday ? '#0ea5e9' : '#e2e8f0',
               }}>
                 {formatMMDD(date)}
                 {holiday && (
@@ -800,15 +787,15 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
               {/* Shift label cell */}
               <div key={`label-${st.id}`} style={{
                 position: 'sticky', left: 0, zIndex: 2,
-                background: 'var(--bg-surface)',
+                background: '#0d1b30',
                 borderLeft: `4px solid ${st.color_hex || '#64748b'}`,
-                borderBottom: '1px solid rgba(30,58,95,0.4)',
-                borderRight: '1px solid var(--border)',
+                borderBottom: '1px solid #1e3a5f',
+                borderRight: '1px solid #1e3a5f',
                 padding: '8px 10px', display: 'flex', flexDirection: 'column', justifyContent: 'center',
                 minHeight: 44,
               }}>
-                <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)', whiteSpace: 'nowrap' }}>{st.code}</div>
-                <div style={{ fontSize: 10, color: 'var(--text-dim)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{st.name}</div>
+                <div style={{ fontSize: 13, fontWeight: 700, color: '#e2e8f0', whiteSpace: 'nowrap' }}>{st.code}</div>
+                <div style={{ fontSize: 10, color: '#334155', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{st.name}</div>
               </div>
 
               {/* Assignment cells */}
@@ -828,7 +815,7 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
                 const isToday = date === todayStr;
                 const isSatBorder = dow === 6 && i > 0;
 
-                const cellBg = isHoliday ? 'rgba(251,191,36,0.06)' : isWeekend ? 'rgba(99,102,241,0.04)' : 'transparent';
+                const cellBg = isHoliday ? 'rgba(251,191,36,0.08)' : isWeekend ? 'rgba(99,102,241,0.06)' : '#ffffff';
 
                 return (
                   <div
@@ -845,9 +832,9 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
                     }}
                     style={{
                       background: cellBg,
-                      borderBottom: '1px solid rgba(30,58,95,0.4)',
-                      borderRight: '1px solid var(--border)',
-                      borderLeft: isToday ? '2px solid rgba(14,165,233,0.4)' : isSatBorder ? '2px solid rgba(30,58,95,0.6)' : 'none',
+                      borderBottom: '1px solid #e2e8f0',
+                      borderRight: '1px solid #e2e8f0',
+                      borderLeft: isToday ? '2px solid rgba(14,165,233,0.5)' : isSatBorder ? '2px solid #1e3a5f' : 'none',
                       padding: '4px 6px',
                       minHeight: 44,
                       display: 'flex', alignItems: 'center', justifyContent: 'center',
@@ -856,7 +843,7 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
                       transition: 'background 0.1s',
                     }}
                     onMouseEnter={(e) => {
-                      if (slot) (e.currentTarget as HTMLDivElement).style.background = isHoliday ? 'rgba(251,191,36,0.12)' : isWeekend ? 'rgba(99,102,241,0.10)' : 'rgba(14,165,233,0.06)';
+                      if (slot) (e.currentTarget as HTMLDivElement).style.background = isHoliday ? 'rgba(251,191,36,0.15)' : isWeekend ? 'rgba(99,102,241,0.10)' : 'rgba(14,165,233,0.06)';
                     }}
                     onMouseLeave={(e) => {
                       (e.currentTarget as HTMLDivElement).style.background = cellBg;
@@ -880,7 +867,7 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
                         OPEN
                       </span>
                     ) : (
-                      <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>OPEN</span>
+                      <span style={{ fontSize: 11, color: '#cbd5e1' }}>OPEN</span>
                     )}
 
                     {/* Lock icon */}
@@ -1136,14 +1123,14 @@ function renderVirtualRows({
     rows.push(
       <div key={`virt-label-${label}-${idx}`} style={{
         position: 'sticky', left: 0, zIndex: 2,
-        background: 'var(--bg-surface)',
+        background: '#0d1b30',
         borderLeft: `4px solid ${color}`,
-        borderBottom: '1px solid rgba(30,58,95,0.4)',
-        borderRight: '1px solid var(--border)',
+        borderBottom: '1px solid #1e3a5f',
+        borderRight: '1px solid #1e3a5f',
         padding: '6px 10px', display: 'flex', alignItems: 'center',
         minHeight: 34,
       }}>
-        <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-dim)', whiteSpace: 'nowrap' }}>
+        <div style={{ fontSize: 12, fontWeight: 600, color: '#e2e8f0', whiteSpace: 'nowrap' }}>
           {label}{count > 1 ? ` ${idx + 1}` : ''}
         </div>
       </div>
@@ -1157,13 +1144,13 @@ function renderVirtualRows({
       const isHoliday = !!holidayMap[date];
       const isToday = date === todayStr;
       const isSatBorder = dow === 6 && i > 0;
-      const cellBg = isHoliday ? 'rgba(251,191,36,0.06)' : isWeekend ? 'rgba(99,102,241,0.04)' : 'transparent';
+      const virtCellBg = isHoliday ? 'rgba(251,191,36,0.08)' : isWeekend ? 'rgba(99,102,241,0.06)' : '#ffffff';
       rows.push(
         <div key={`virt-cell-${label}-${idx}-${date}`} style={{
-          background: cellBg,
-          borderBottom: '1px solid rgba(30,58,95,0.4)',
-          borderRight: '1px solid var(--border)',
-          borderLeft: isToday ? '2px solid rgba(14,165,233,0.4)' : isSatBorder ? '2px solid rgba(30,58,95,0.6)' : 'none',
+          background: virtCellBg,
+          borderBottom: '1px solid #e2e8f0',
+          borderRight: '1px solid #e2e8f0',
+          borderLeft: isToday ? '2px solid rgba(14,165,233,0.5)' : isSatBorder ? '2px solid #1e3a5f' : 'none',
           padding: '3px 6px',
           minHeight: 34,
           display: 'flex', alignItems: 'center', justifyContent: 'center',
