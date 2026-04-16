@@ -697,8 +697,25 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
         </div>
       )}
 
-      {/* Grid Container */}
-      <div style={{ flex: 1, overflow: 'auto', borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg-deep)' }}>
+      {/* Grid Container — light interior, original dark outer border retained */}
+      <div style={{
+        flex: 1, overflow: 'auto', borderRadius: 8,
+        border: '1px solid var(--border)', // outer border stays dark
+        background: '#ffffff',
+        // Inside the grid, the CSS vars are overridden so all descendants
+        // (labels, cells, virtual rows, picker, etc.) render in light mode
+        // automatically — no other pages affected.
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        ...({
+          '--bg-surface': '#ffffff', // sticky labels background
+          '--bg-deep':    '#ffffff', // grid interior
+          '--border':     '#e2e8f0', // thin inner borders
+          '--text':       '#0f172a',
+          '--text-muted': '#475569',
+          '--text-dim':   '#94a3b8',
+          color:          '#0f172a',
+        } as any),
+      }}>
         <div style={{
           display: 'grid',
           gridTemplateColumns: `160px repeat(${colCount}, minmax(100px, 1fr))`,
@@ -847,10 +864,11 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
                   >
                     {!slot ? null : isAssigned ? (
                       <span style={{
-                        fontSize: 11, fontWeight: 600, padding: '2px 8px', borderRadius: 4,
+                        fontSize: 12, fontWeight: 800, padding: '2px 8px', borderRadius: 4,
                         background: colorWithAlpha(st.color_hex, 0.15),
                         color: st.color_hex || 'var(--text)',
                         whiteSpace: 'nowrap',
+                        letterSpacing: '-0.01em',
                       }}>
                         {provider!.short_display_name}
                       </span>
