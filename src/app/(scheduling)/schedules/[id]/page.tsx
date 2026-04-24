@@ -13,6 +13,7 @@ interface SiteInfo {
 
 interface Schedule {
   id: string;
+  organization_id: string;
   site_id: string;
   schedule_name: string;
   schedule_type: string;
@@ -20,6 +21,10 @@ interface Schedule {
   date_start: string;
   date_end: string;
   status: string;
+  // null = use default rule-based pool. Array of provider UUIDs = use
+  // exactly those as the auto-generate candidate pool (still subject to
+  // eligibility filters).
+  included_provider_ids: string[] | null;
   sites: SiteInfo;
 }
 
@@ -27,6 +32,7 @@ interface EmploymentProfile {
   provider_id: string;
   home_site_id: string | null;
   call_taker: boolean;
+  partial_call_taker: boolean;
   fte_value: number | null;
   employment_status: string | null;
 }
@@ -262,16 +268,18 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
 
   /* ── Derived Data ───────────────────────────────────────────────────────── */
 
-  const { shiftTypes, allDates, slotMap, holidayMap, assignedOnDate, availableByDate, offByDate, ptoByDate, maxAvailable, maxOff, maxPto } = useMemo(() => {
+  const { shiftTypes, allDates, slotMap, holidayMap, assignedOnDate, availableByDate, offByDate, ptoByDate, postCallByDate, maxAvailable, maxOff, maxPto, maxPostCall, callTakerIds } = useMemo(() => {
     const empty = {
-      shiftTypes: [], allDates: [],
+      shiftTypes: [] as ShiftTypeInfo[], allDates: [] as string[],
       slotMap: {} as Record<string, Record<string, Slot>>,
       holidayMap: {} as Record<string, Holiday>,
       assignedOnDate: {} as Record<string, Set<string>>,
       availableByDate: {} as Record<string, Provider[]>,
       offByDate: {} as Record<string, Provider[]>,
       ptoByDate: {} as Record<string, Provider[]>,
-      maxAvailable: 0, maxOff: 0, maxPto: 0,
+      postCallByDate: {} as Record<string, Provider[]>,
+      maxAvailable: 0, maxOff: 0, maxPto: 0, maxPostCall: 0,
+      callTakerIds: new Set<string>(),
     };
     if (!grid) return empty;
 
@@ -302,21 +310,28 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
     }
 
     // Virtual rows: PTO / Available / Off
-    //   PTO:        PTO / sick / FMLA / parental / military / jury duty
-    //   Off:        'unavailable' / 'blocked' (used for scheduled days off, e.g.
-    //               part-timer's regular non-working days), OR non-call-takers
+    //   PTO:        planned vacation-style leave (PTO / FMLA / parental /
+    //               military). Narrower than before — sick and jury_duty
+    //               previously bucketed into PTO are now under Off, which
+    //               better matches "days of PTO used" in Call Counts and
+    //               the user's mental model.
+    //   Off:        unavailable / blocked / sick / jury duty, OR non-call-takers
     //   Available:  home-site call-takers with no assignment and no availability
     //               entry — the 'overflow' pool who could have worked but didn't
     //               make it into the D-slot cut
-    const PTO_TYPES = new Set(['pto', 'sick', 'fmla', 'parental_leave', 'military_leave', 'jury_duty']);
-    const OFF_TYPES = new Set(['unavailable', 'blocked']);
+    const PTO_TYPES = new Set(['pto', 'fmla', 'parental_leave', 'military_leave']);
+    const OFF_TYPES = new Set(['unavailable', 'blocked', 'sick', 'jury_duty']);
     const siteId = grid.schedule.site_id;
     const homeSiteIds = new Set<string>();
+    // callTakerIds = profile-level call-taker pool. Includes both full and
+    // partial call-takers; these are the providers who get auto-assigned.
+    // Anyone assigned to a call slot who is NOT in this set is "picking up
+    // extra call" — legal, but rendered in blue as a visual signal.
     const callTakerIds = new Set<string>();
     for (const p of grid.profiles || []) {
       if (p.home_site_id === siteId) {
         homeSiteIds.add(p.provider_id);
-        if (p.call_taker) callTakerIds.add(p.provider_id);
+        if (p.call_taker || p.partial_call_taker) callTakerIds.add(p.provider_id);
       }
     }
     const providerById: Record<string, Provider> = {};
@@ -329,13 +344,19 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
     const scheduledOffByDate: Record<string, Set<string>> = {};
     const allDatesSet = new Set(allDates);
     for (const avail of grid.availability || []) {
-      if (avail.approval_status === 'denied' || avail.approval_status === 'canceled') continue;
-      if (!homeSiteIds.has(avail.provider_id)) continue;
+      // Only approved entries show up in virtual rows — pending/denied
+      // entries shouldn't visually occupy a slot until an admin signs off.
+      if (avail.approval_status !== 'approved') continue;
       const provider = providerById[avail.provider_id];
       if (!provider) continue;
       const isPto = PTO_TYPES.has(avail.availability_type);
       const isOff = OFF_TYPES.has(avail.availability_type);
       if (!isPto && !isOff) continue;
+      // PTO shows everyone regardless of home site — a cross-site doc on
+      // vacation is still meaningful context on this schedule. Off-row
+      // keeps the home-site gate since "non-working days" only makes
+      // sense for your own pool.
+      if (isOff && !homeSiteIds.has(avail.provider_id)) continue;
       const start = new Date(avail.start_date + 'T00:00:00Z');
       const end = new Date(avail.end_date + 'T00:00:00Z');
       for (let d = new Date(start); d <= end; d.setUTCDate(d.getUTCDate() + 1)) {
@@ -353,8 +374,51 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
     }
     for (const list of Object.values(ptoByDate)) list.sort((a, b) => a.short_display_name.localeCompare(b.short_display_name));
 
+    // Post-call detection: a provider who had a call-category shift yesterday
+    // is post-call today. The auto-gen explicitly blocks them from other
+    // shifts (via in-memory markAssigned) but that doesn't persist to the
+    // DB, so without this UI pass they'd otherwise silently land in the
+    // Available row despite being unavailable. C2 post-call providers
+    // appear in the D1 slot already (an actual assignment), so the
+    // "not already assigned today" check below keeps them out of this
+    // bucket — they render in their D1 slot, which is correct.
+    //
+    // Shift codes that do NOT trigger a post-call day off (provider
+    // continues working normally the next day). Currently just C3 —
+    // neuro call doesn't confer post-call relief because those docs
+    // work their regular Monday schedule after Sunday neuro call.
+    const NON_POST_CALL_CODES = new Set(['C3']);
+    const postCallByDate: Record<string, Provider[]> = {};
+    const addDaysStr = (iso: string, n: number) => {
+      const d = new Date(iso + 'T00:00:00Z');
+      d.setUTCDate(d.getUTCDate() + n);
+      return d.toISOString().slice(0, 10);
+    };
+    for (const slot of grid.slots) {
+      const st = slot.shift_types;
+      if (!st || st.category !== 'call') continue;
+      if (NON_POST_CALL_CODES.has(st.code)) continue;
+      for (const a of slot.assignments || []) {
+        if (!a.provider_id) continue;
+        const nextDay = addDaysStr(slot.slot_date, 1);
+        if (!allDatesSet.has(nextDay)) continue;
+        const provider = providerById[a.provider_id];
+        if (!provider) continue;
+        // Only show post-call in this row if the provider has no other
+        // assignment that next day. If they do (e.g. D1 post-call-for-C2),
+        // they render in that slot instead.
+        if ((assignedOnDate[nextDay] || new Set()).has(a.provider_id)) continue;
+        if (!postCallByDate[nextDay]) postCallByDate[nextDay] = [];
+        if (!postCallByDate[nextDay].some(p => p.id === provider.id)) {
+          postCallByDate[nextDay].push(provider);
+        }
+      }
+    }
+    for (const list of Object.values(postCallByDate)) list.sort((a, b) => a.short_display_name.localeCompare(b.short_display_name));
+
     // Categorize each home-site provider per day:
     //   - PTO entry that day      → ptoByDate (already set above)
+    //   - post-call (call shift yesterday, nothing today) → postCallByDate
     //   - scheduled-off entry that day OR non-call-taker → Off
     //   - home-site call-taker with no entry, not assigned → Available
     const availableByDate: Record<string, Provider[]> = {};
@@ -362,11 +426,12 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
     for (const date of allDates) {
       const assigned = assignedOnDate[date] || new Set<string>();
       const ptoSet = new Set((ptoByDate[date] || []).map(p => p.id));
+      const postCallSet = new Set((postCallByDate[date] || []).map(p => p.id));
       const offSet = scheduledOffByDate[date] || new Set<string>();
       const available: Provider[] = [];
       const off: Provider[] = [];
       for (const pid of homeSiteIds) {
-        if (assigned.has(pid) || ptoSet.has(pid)) continue;
+        if (assigned.has(pid) || ptoSet.has(pid) || postCallSet.has(pid)) continue;
         const provider = providerById[pid];
         if (!provider) continue;
         // Off bucket: explicit scheduled-off that day, or a non-call-taker.
@@ -383,8 +448,9 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
     const maxAvailable = Math.max(0, ...Object.values(availableByDate).map(v => v.length));
     const maxOff = Math.max(0, ...Object.values(offByDate).map(v => v.length));
     const maxPto = Math.max(0, ...Object.values(ptoByDate).map(v => v.length));
+    const maxPostCall = Math.max(0, ...Object.values(postCallByDate).map(v => v.length));
 
-    return { shiftTypes, allDates, slotMap, holidayMap, assignedOnDate, availableByDate, offByDate, ptoByDate, maxAvailable, maxOff, maxPto };
+    return { shiftTypes, allDates, slotMap, holidayMap, assignedOnDate, availableByDate, offByDate, ptoByDate, postCallByDate, maxAvailable, maxOff, maxPto, maxPostCall, callTakerIds };
   }, [grid]);
 
   /* ── Visible dates based on view mode ───────────────────────────────────── */
@@ -490,6 +556,7 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
 
   const [generating, setGenerating] = useState(false);
   const [genResult, setGenResult] = useState<{ filled: number; skipped: number; errors: string[] } | null>(null);
+  const [showPoolModal, setShowPoolModal] = useState(false);
 
   const autoGenerateSchedule = async () => {
     if (!grid) return;
@@ -636,20 +703,46 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
           Call Counts
         </button>
 
-        {/* Auto-Generate button */}
+        {/* Pool selector + Auto-Generate.
+            A custom pool replaces the default rule-based pool entirely. When
+            none is set, we show "Default Pool" as a cue that auto-gen will
+            use the home-site call-takers. */}
         {schedule.status === 'draft' && (
-          <button
-            onClick={autoGenerateSchedule}
-            disabled={generating}
-            style={{
-              padding: '6px 18px', fontSize: 13, fontWeight: 700, borderRadius: 6,
-              background: generating ? 'var(--bg-deep)' : 'rgba(16,185,129,0.15)',
-              color: generating ? 'var(--text-dim)' : '#10b981',
-              border: '1px solid rgba(16,185,129,0.3)', cursor: generating ? 'not-allowed' : 'pointer',
-            }}
-          >
-            {generating ? 'Generating...' : 'Auto-Generate'}
-          </button>
+          <>
+            <button
+              onClick={() => setShowPoolModal(true)}
+              title="Override the default auto-gen candidate pool"
+              style={{
+                padding: '6px 14px', fontSize: 13, fontWeight: 600, borderRadius: 6,
+                background: (schedule.included_provider_ids && schedule.included_provider_ids.length > 0)
+                  ? 'rgba(14,165,233,0.15)'
+                  : 'var(--bg-deep)',
+                color: (schedule.included_provider_ids && schedule.included_provider_ids.length > 0)
+                  ? '#0ea5e9'
+                  : 'var(--text-muted)',
+                border: (schedule.included_provider_ids && schedule.included_provider_ids.length > 0)
+                  ? '1px solid rgba(14,165,233,0.4)'
+                  : '1px solid var(--border)',
+                cursor: 'pointer',
+              }}
+            >
+              {(schedule.included_provider_ids && schedule.included_provider_ids.length > 0)
+                ? `Custom Pool (${schedule.included_provider_ids.length})`
+                : 'Select Pool'}
+            </button>
+            <button
+              onClick={autoGenerateSchedule}
+              disabled={generating}
+              style={{
+                padding: '6px 18px', fontSize: 13, fontWeight: 700, borderRadius: 6,
+                background: generating ? 'var(--bg-deep)' : 'rgba(16,185,129,0.15)',
+                color: generating ? 'var(--text-dim)' : '#10b981',
+                border: '1px solid rgba(16,185,129,0.3)', cursor: generating ? 'not-allowed' : 'pointer',
+              }}
+            >
+              {generating ? 'Generating...' : 'Auto-Generate'}
+            </button>
+          </>
         )}
 
         {/* Publish button */}
@@ -729,12 +822,15 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
             return (
               <div key={`dow-${date}`} style={{
                 position: 'sticky', top: 0, zIndex: 3,
-                background: isHoliday ? '#1a1a0d' : isWeekend ? '#0e1430' : '#0d1b30',
+                // Holidays get a distinctly yellow-tinted dark header so
+                // the whole column reads as "holiday" at a glance.
+                background: isHoliday ? '#3a3010' : isWeekend ? '#0e1430' : '#0d1b30',
                 borderBottom: '1px solid #1e3a5f',
                 borderRight: '1px solid #1e3a5f',
                 borderLeft: isToday ? '2px solid rgba(14,165,233,0.4)' : isSatBorder ? '2px solid rgba(30,58,95,0.6)' : 'none',
                 padding: '6px 8px', textAlign: 'center',
-                fontSize: 11, fontWeight: 700, color: isWeekend ? '#818cf8' : '#64748b',
+                fontSize: 11, fontWeight: 700,
+                color: isHoliday ? '#fbbf24' : isWeekend ? '#818cf8' : '#64748b',
                 textTransform: 'uppercase', letterSpacing: '0.05em',
                 minHeight: 35, display: 'flex', alignItems: 'center', justifyContent: 'center',
               }}>
@@ -765,12 +861,13 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
             return (
               <div key={`date-${date}`} title={holiday ? holiday.holiday_name : undefined} style={{
                 position: 'sticky', top: 35, zIndex: 3,
-                background: holiday ? '#1a1a0d' : isWeekend ? '#0e1430' : '#0d1b30',
+                background: holiday ? '#3a3010' : isWeekend ? '#0e1430' : '#0d1b30',
                 borderBottom: '2px solid #1e3a5f',
                 borderRight: '1px solid #1e3a5f',
                 borderLeft: isToday ? '2px solid rgba(14,165,233,0.4)' : isSatBorder ? '2px solid rgba(30,58,95,0.6)' : 'none',
                 padding: '6px 8px', textAlign: 'center',
-                fontSize: 12, fontWeight: 600, color: isToday ? '#0ea5e9' : '#e2e8f0',
+                fontSize: 12, fontWeight: 600,
+                color: isToday ? '#0ea5e9' : holiday ? '#fbbf24' : '#e2e8f0',
               }}>
                 {formatMMDD(date)}
                 {holiday && (
@@ -817,7 +914,21 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
                 const isToday = date === todayStr;
                 const isSatBorder = dow === 6 && i > 0;
 
-                const cellBg = isHoliday ? 'rgba(251,191,36,0.08)' : isWeekend ? 'rgba(99,102,241,0.06)' : '#ffffff';
+                // Extra-call detection: an assignment on a call-category shift
+                // where the provider is NOT in the profile-level call-taker
+                // pool (neither call_taker nor partial_call_taker checked).
+                // Rendered in blue as an informational notice — it's legal,
+                // just flags that this person is picking up an extra.
+                const isCallShift = st.category === 'call';
+                const isExtraCall = isAssigned && isCallShift && !!provider && !callTakerIds.has(provider.id);
+
+                // Holidays: a noticeably yellow wash across the whole
+                // column so the day reads as "closed / holiday" instantly.
+                // Previous value was 0.08 alpha, barely visible.
+                const baseCellBg = isHoliday ? 'rgba(251,191,36,0.22)' : isWeekend ? 'rgba(99,102,241,0.06)' : '#ffffff';
+                const extraBg = 'rgba(14,165,233,0.18)';
+                const extraHoverBg = 'rgba(14,165,233,0.28)';
+                const cellBg = isExtraCall ? extraBg : baseCellBg;
 
                 return (
                   <div
@@ -832,6 +943,9 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
                       });
                       setPickerSearch('');
                     }}
+                    title={isExtraCall && provider
+                      ? `Provider picking up Extra call — ${provider.short_display_name} is not in the regular call pool at this site.`
+                      : undefined}
                     style={{
                       background: cellBg,
                       borderBottom: '1px solid #e2e8f0',
@@ -845,7 +959,10 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
                       transition: 'background 0.1s',
                     }}
                     onMouseEnter={(e) => {
-                      if (slot) (e.currentTarget as HTMLDivElement).style.background = isHoliday ? 'rgba(251,191,36,0.15)' : isWeekend ? 'rgba(99,102,241,0.10)' : 'rgba(14,165,233,0.06)';
+                      if (!slot) return;
+                      (e.currentTarget as HTMLDivElement).style.background = isExtraCall
+                        ? extraHoverBg
+                        : (isHoliday ? 'rgba(251,191,36,0.32)' : isWeekend ? 'rgba(99,102,241,0.10)' : 'rgba(14,165,233,0.06)');
                     }}
                     onMouseLeave={(e) => {
                       (e.currentTarget as HTMLDivElement).style.background = cellBg;
@@ -870,6 +987,20 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
                       </span>
                     ) : (
                       <span style={{ fontSize: 11, color: '#cbd5e1' }}>OPEN</span>
+                    )}
+
+                    {/* Extra-call notice */}
+                    {isExtraCall && (
+                      <span style={{
+                        position: 'absolute', bottom: 1, right: 3,
+                        fontSize: 8, fontWeight: 800, letterSpacing: 0.5,
+                        color: '#0369a1',
+                        background: 'rgba(14,165,233,0.15)',
+                        padding: '1px 4px', borderRadius: 3,
+                        pointerEvents: 'none',
+                      }}>
+                        EXTRA
+                      </span>
                     )}
 
                     {/* Lock icon */}
@@ -899,13 +1030,28 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
             </>
           ))}
 
-          {/* ── Virtual rows: Available / Off / PTO ──────────────────────── */}
+          {/* ── Virtual rows: Available / Post-Call / Off / PTO ──────────── */}
           {renderVirtualRows({
             label: 'Available',
             count: maxAvailable,
             dataByDate: availableByDate,
             color: '#34d399',
             bg: 'rgba(52,211,153,0.08)',
+            visibleDates,
+            todayStr,
+            holidayMap,
+            getDayOfWeek,
+          })}
+          {/* Post-Call row: providers who had a call shift the day before
+              and have no assignment today. They're effectively off-duty
+              for call rotation but we still want them visible so users
+              know why they're "missing" from Available. */}
+          {renderVirtualRows({
+            label: 'Post-Call',
+            count: maxPostCall,
+            dataByDate: postCallByDate,
+            color: '#a78bfa',
+            bg: 'rgba(167,139,250,0.1)',
             visibleDates,
             todayStr,
             holidayMap,
@@ -932,6 +1078,10 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
             todayStr,
             holidayMap,
             getDayOfWeek,
+            // Always show the PTO label row even when empty — the bottom
+            // of the grid should always include a "PTO" cue so scanners
+            // know where to look for planned-leave providers.
+            alwaysRender: true,
           })}
         </div>
       </div>
@@ -1100,6 +1250,28 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
       {showCounts && grid && (
         <CallCountsModal grid={grid} onClose={() => setShowCounts(false)} />
       )}
+
+      {/* Pool Selector Modal */}
+      {showPoolModal && grid && (
+        <PoolSelectorModal
+          scheduleId={id}
+          scheduleSiteId={grid.schedule.site_id}
+          orgId={grid.schedule.organization_id}
+          providers={grid.providers}
+          profiles={grid.profiles}
+          initialSelection={schedule.included_provider_ids}
+          onClose={() => setShowPoolModal(false)}
+          onSaved={(next) => {
+            setShowPoolModal(false);
+            // Update the in-memory schedule so the button label refreshes
+            // immediately without waiting for a re-fetch.
+            setGrid(prev => prev ? {
+              ...prev,
+              schedule: { ...prev.schedule, included_provider_ids: next },
+            } : prev);
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -1108,6 +1280,7 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
 
 function renderVirtualRows({
   label, count, dataByDate, color, bg, visibleDates, todayStr, holidayMap, getDayOfWeek,
+  alwaysRender = false,
 }: {
   label: string;
   count: number;
@@ -1118,10 +1291,14 @@ function renderVirtualRows({
   todayStr: string;
   holidayMap: Record<string, Holiday>;
   getDayOfWeek: (s: string) => number;
+  // When true, render a single empty row even if no providers occupy it,
+  // so the label stays visible as a cue that nobody is on this row.
+  alwaysRender?: boolean;
 }) {
-  if (count === 0) return null;
+  if (count === 0 && !alwaysRender) return null;
+  const rowCount = Math.max(count, alwaysRender ? 1 : 0);
   const rows = [];
-  for (let idx = 0; idx < count; idx++) {
+  for (let idx = 0; idx < rowCount; idx++) {
     rows.push(
       <div key={`virt-label-${label}-${idx}`} style={{
         position: 'sticky', left: 0, zIndex: 2,
@@ -1146,7 +1323,7 @@ function renderVirtualRows({
       const isHoliday = !!holidayMap[date];
       const isToday = date === todayStr;
       const isSatBorder = dow === 6 && i > 0;
-      const virtCellBg = isHoliday ? 'rgba(251,191,36,0.08)' : isWeekend ? 'rgba(99,102,241,0.06)' : '#ffffff';
+      const virtCellBg = isHoliday ? 'rgba(251,191,36,0.22)' : isWeekend ? 'rgba(99,102,241,0.06)' : '#ffffff';
       rows.push(
         <div key={`virt-cell-${label}-${idx}-${date}`} style={{
           background: virtCellBg,
@@ -1175,6 +1352,328 @@ function renderVirtualRows({
 
 /* ── Call Counts Modal ───────────────────────────────────────────────────── */
 
+/* ── Pool Selector Modal ─────────────────────────────────────────────────────
+ * Lets the user hand-pick which providers are eligible for auto-generation
+ * on this schedule. Saved on the schedule row as `included_provider_ids`.
+ * Null / empty array = use the default rule-based pool (home-site call-
+ * takers for call, non-call-takers for day shifts). A non-empty array
+ * replaces both default pools with the explicit list.
+ * ───────────────────────────────────────────────────────────────────────── */
+function PoolSelectorModal({
+  scheduleId,
+  scheduleSiteId,
+  orgId,
+  providers,
+  profiles,
+  initialSelection,
+  onClose,
+  onSaved,
+}: {
+  scheduleId: string;
+  scheduleSiteId: string;
+  orgId: string;
+  providers: Provider[];
+  profiles: EmploymentProfile[];
+  initialSelection: string[] | null;
+  onClose: () => void;
+  onSaved: (next: string[] | null) => void;
+}) {
+  // Sites are loaded lazily so the button-click latency stays low. Grouping
+  // everyone by home_site_id requires site display names for the headings.
+  const [sites, setSites] = useState<Array<{ id: string; name: string; short_name: string | null }>>([]);
+  const [sitesLoaded, setSitesLoaded] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch(`/api/scheduling/sites?org_id=${orgId}`)
+      .then(r => r.json())
+      .then(data => {
+        if (cancelled) return;
+        setSites(Array.isArray(data) ? data : []);
+        setSitesLoaded(true);
+      })
+      .catch(() => {
+        if (!cancelled) setSitesLoaded(true);
+      });
+    return () => { cancelled = true; };
+  }, [orgId]);
+
+  // Map provider_id → home_site_id for fast lookup during grouping.
+  const homeSiteByPid = useMemo(() => {
+    const m = new Map<string, string | null>();
+    for (const p of profiles) m.set(p.provider_id, p.home_site_id);
+    return m;
+  }, [profiles]);
+
+  // Default selection = exactly whatever the current auto-gen rules would
+  // pick (home_site_id === this schedule's site_id). Called-out below via a
+  // "Reset to Default" button. If initialSelection is null we start with
+  // this; if it's set we start with whatever was saved.
+  const defaultSelection = useMemo(() => {
+    const ids = new Set<string>();
+    for (const p of providers) {
+      if (homeSiteByPid.get(p.id) === scheduleSiteId) ids.add(p.id);
+    }
+    return ids;
+  }, [providers, homeSiteByPid, scheduleSiteId]);
+
+  const [checked, setChecked] = useState<Set<string>>(() => {
+    if (initialSelection && initialSelection.length > 0) return new Set(initialSelection);
+    return new Set(defaultSelection);
+  });
+
+  // Groups: map site_id (or '__none') → list of providers. Sorted by the
+  // schedule's own site first (since it's the common case), then by site
+  // short_name, then "Unassigned" last.
+  const groups = useMemo(() => {
+    const bySite = new Map<string, Provider[]>();
+    for (const p of providers) {
+      const site = homeSiteByPid.get(p.id) || '__none';
+      const list = bySite.get(site) || [];
+      list.push(p);
+      bySite.set(site, list);
+    }
+    for (const list of bySite.values()) {
+      list.sort((a, b) => a.last_name.localeCompare(b.last_name));
+    }
+    const siteName = (id: string): string => {
+      if (id === '__none') return '(No home site)';
+      const s = sites.find(x => x.id === id);
+      return s ? (s.short_name || s.name) : '(Unknown site)';
+    };
+    const entries = Array.from(bySite.entries()).map(([siteId, list]) => ({
+      siteId, siteName: siteName(siteId), providers: list,
+    }));
+    entries.sort((a, b) => {
+      if (a.siteId === scheduleSiteId) return -1;
+      if (b.siteId === scheduleSiteId) return 1;
+      if (a.siteId === '__none') return 1;
+      if (b.siteId === '__none') return -1;
+      return a.siteName.localeCompare(b.siteName);
+    });
+    return entries;
+  }, [providers, homeSiteByPid, sites, scheduleSiteId]);
+
+  const toggle = (pid: string) => {
+    setChecked(prev => {
+      const next = new Set(prev);
+      if (next.has(pid)) next.delete(pid); else next.add(pid);
+      return next;
+    });
+  };
+
+  const toggleGroup = (groupIds: string[]) => {
+    setChecked(prev => {
+      const next = new Set(prev);
+      const allSelected = groupIds.every(id => next.has(id));
+      if (allSelected) groupIds.forEach(id => next.delete(id));
+      else groupIds.forEach(id => next.add(id));
+      return next;
+    });
+  };
+
+  const resetToDefault = () => setChecked(new Set(defaultSelection));
+  const clearAll = () => setChecked(new Set());
+
+  const save = async (asDefault: boolean) => {
+    setSaving(true); setError(null);
+    try {
+      // Passing null (not []) is the signal to the server/UI that the
+      // default rules should apply. A stored empty array would be
+      // indistinguishable from "you deselected everyone" — which is a
+      // valid but nonsensical state we don't need to represent.
+      const payload: string[] | null = asDefault ? null : Array.from(checked);
+      const res = await fetch(`/api/scheduling/schedules/${scheduleId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ included_provider_ids: payload }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setError(data.error || `Failed (${res.status})`);
+        return;
+      }
+      onSaved(payload);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Network error');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const totalSelected = checked.size;
+  const totalAvailable = providers.length;
+
+  return (
+    <div
+      onClick={onClose}
+      style={{
+        position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.75)',
+        display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 200,
+      }}
+    >
+      <div
+        onClick={e => e.stopPropagation()}
+        style={{
+          background: 'var(--bg-surface)', border: '1px solid var(--border)', borderRadius: 14,
+          padding: 24, width: 560, maxHeight: '85vh', display: 'flex', flexDirection: 'column',
+        }}
+      >
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+          <div>
+            <div style={{ fontSize: 16, fontWeight: 800, color: '#f1f5f9' }}>Select Pool of Physicians</div>
+            <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>
+              Auto-Generate will consider only the checked providers.
+              Eligibility filters (credentials, availability, weekday) still apply.
+            </div>
+          </div>
+          <div style={{ fontSize: 12, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>
+            {totalSelected} / {totalAvailable} selected
+          </div>
+        </div>
+
+        <div style={{ display: 'flex', gap: 6, margin: '10px 0 12px' }}>
+          <button onClick={resetToDefault} style={smallBtn}>Reset to Default</button>
+          <button onClick={clearAll} style={smallBtn}>Clear All</button>
+        </div>
+
+        {error && (
+          <div style={{
+            background: 'rgba(248,113,113,0.1)', border: '1px solid rgba(248,113,113,0.3)',
+            color: '#f87171', padding: '8px 12px', borderRadius: 8, marginBottom: 10, fontSize: 12,
+          }}>{error}</div>
+        )}
+
+        <div style={{ flex: 1, overflowY: 'auto', border: '1px solid var(--border)', borderRadius: 8 }}>
+          {!sitesLoaded ? (
+            <div style={{ padding: 20, color: 'var(--text-dim)', fontSize: 13 }}>Loading sites...</div>
+          ) : groups.length === 0 ? (
+            <div style={{ padding: 20, color: 'var(--text-dim)', fontStyle: 'italic', fontSize: 13 }}>
+              No physicians in this organization.
+            </div>
+          ) : (
+            groups.map(group => {
+              const groupIds = group.providers.map(p => p.id);
+              const allSelected = groupIds.every(id => checked.has(id));
+              const someSelected = !allSelected && groupIds.some(id => checked.has(id));
+              return (
+                <div key={group.siteId} style={{ borderBottom: '1px solid var(--border)' }}>
+                  <div
+                    style={{
+                      display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                      padding: '8px 12px', background: 'rgba(14,165,233,0.04)',
+                      borderBottom: '1px solid var(--border)',
+                    }}
+                  >
+                    <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
+                      <input
+                        type="checkbox"
+                        checked={allSelected}
+                        ref={el => { if (el) el.indeterminate = someSelected; }}
+                        onChange={() => toggleGroup(groupIds)}
+                        style={{ accentColor: '#0ea5e9', width: 15, height: 15 }}
+                      />
+                      <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>{group.siteName}</span>
+                      {group.siteId === scheduleSiteId && (
+                        <span style={{
+                          fontSize: 10, fontWeight: 700, color: '#10b981',
+                          background: 'rgba(16,185,129,0.12)',
+                          padding: '1px 6px', borderRadius: 4, letterSpacing: 0.5,
+                        }}>
+                          THIS SITE
+                        </span>
+                      )}
+                    </label>
+                    <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>
+                      {groupIds.filter(id => checked.has(id)).length} / {groupIds.length}
+                    </span>
+                  </div>
+                  {group.providers.map(p => {
+                    const prof = profiles.find(x => x.provider_id === p.id);
+                    const callLabel = prof?.call_taker ? 'Call'
+                      : prof?.partial_call_taker ? 'Partial'
+                      : 'Day Doc';
+                    const callColor = prof?.call_taker ? '#10b981'
+                      : prof?.partial_call_taker ? '#fbbf24'
+                      : '#94a3b8';
+                    return (
+                      <label key={p.id} style={{
+                        display: 'flex', alignItems: 'center', gap: 10,
+                        padding: '6px 12px 6px 34px', cursor: 'pointer',
+                      }}>
+                        <input
+                          type="checkbox"
+                          checked={checked.has(p.id)}
+                          onChange={() => toggle(p.id)}
+                          style={{ accentColor: '#0ea5e9', width: 14, height: 14 }}
+                        />
+                        <span style={{ fontSize: 13, color: 'var(--text)', flex: 1 }}>
+                          {p.first_name} {p.last_name}
+                        </span>
+                        <span style={{
+                          fontSize: 10, fontWeight: 700, color: callColor,
+                          background: `${callColor}15`, padding: '1px 6px', borderRadius: 4,
+                          letterSpacing: 0.5, whiteSpace: 'nowrap',
+                        }}>
+                          {callLabel}
+                        </span>
+                      </label>
+                    );
+                  })}
+                </div>
+              );
+            })
+          )}
+        </div>
+
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 14, gap: 8 }}>
+          <button
+            onClick={() => save(true)}
+            disabled={saving}
+            style={{
+              ...smallBtn,
+              opacity: saving ? 0.5 : 1, cursor: saving ? 'not-allowed' : 'pointer',
+            }}
+            title="Revert to the default rule-based pool (home-site call-takers / day docs)"
+          >
+            Use Default Pool
+          </button>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button onClick={onClose} style={{
+              padding: '8px 16px', borderRadius: 6, background: 'transparent',
+              color: 'var(--text-muted)', border: '1px solid var(--border)',
+              fontWeight: 600, fontSize: 13, cursor: 'pointer',
+            }}>
+              Cancel
+            </button>
+            <button
+              onClick={() => save(false)}
+              disabled={saving || totalSelected === 0}
+              style={{
+                padding: '8px 18px', borderRadius: 6, fontWeight: 700, fontSize: 13,
+                background: 'linear-gradient(135deg,#0ea5e9,#6366f1)',
+                color: '#fff', border: 'none',
+                opacity: (saving || totalSelected === 0) ? 0.5 : 1,
+                cursor: (saving || totalSelected === 0) ? 'not-allowed' : 'pointer',
+              }}
+            >
+              {saving ? 'Saving...' : `Save Pool (${totalSelected})`}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+const smallBtn: React.CSSProperties = {
+  padding: '6px 12px', fontSize: 11, fontWeight: 600, borderRadius: 6,
+  background: 'var(--bg-deep)', color: 'var(--text-muted)',
+  border: '1px solid var(--border)', cursor: 'pointer',
+};
+
 function CallCountsModal({ grid, onClose }: { grid: GridData; onClose: () => void }) {
   // Bucket key = combined day_type group (weekday | friday | weekend)
   const BUCKETS = [
@@ -1183,6 +1682,11 @@ function CallCountsModal({ grid, onClose }: { grid: GridData; onClose: () => voi
     { key: 'weekend', label: 'Sat/Sun' },
   ] as const;
   const CODES = ['C1', 'C2', 'C3'] as const;
+
+  // Types that count as "PTO days" in the tally column. Sick / jury_duty
+  // are intentionally excluded — that's unplanned or administrative, not
+  // vacation. Only the planned-leave types accrue here.
+  const PTO_TYPES = new Set(['pto', 'fmla', 'parental_leave', 'military_leave']);
 
   // Aggregate counts: counts[providerId][bucket|code] = n
   const counts: Record<string, Record<string, number>> = {};
@@ -1206,6 +1710,30 @@ function CallCountsModal({ grid, onClose }: { grid: GridData; onClose: () => voi
       const key = `${bucket}|${code}`;
       counts[a.provider_id][key] = (counts[a.provider_id][key] || 0) + 1;
       providersWithCalls.add(a.provider_id);
+    }
+  }
+
+  // PTO-days tally — approved planned-leave days overlapping the schedule
+  // window, counted Mon-Fri only (weekends don't consume PTO).
+  const scheduleStart = grid.schedule.date_start;
+  const scheduleEnd = grid.schedule.date_end;
+  const ptoDaysByPid: Record<string, number> = {};
+  for (const a of grid.availability || []) {
+    if (a.approval_status !== 'approved') continue;
+    if (!PTO_TYPES.has(a.availability_type)) continue;
+    // Clamp to schedule range. A PTO block that straddles the schedule
+    // boundary only counts the portion inside this schedule's window.
+    const start = a.start_date < scheduleStart ? scheduleStart : a.start_date;
+    const end = a.end_date > scheduleEnd ? scheduleEnd : a.end_date;
+    if (start > end) continue;
+    let d = new Date(start + 'T12:00:00Z');
+    const endD = new Date(end + 'T12:00:00Z');
+    while (d.getTime() <= endD.getTime()) {
+      const dow = d.getUTCDay();
+      if (dow >= 1 && dow <= 5) {
+        ptoDaysByPid[a.provider_id] = (ptoDaysByPid[a.provider_id] || 0) + 1;
+      }
+      d.setUTCDate(d.getUTCDate() + 1);
     }
   }
 
@@ -1237,6 +1765,19 @@ function CallCountsModal({ grid, onClose }: { grid: GridData; onClose: () => voi
     return t;
   };
 
+  const ptoDaysForPid = (pid: string) => ptoDaysByPid[pid] || 0;
+
+  // Combined count used by the right-most "Total + PTO" column — the user
+  // asked for PTO days to be included in the call count so the fairness
+  // view shows who has "been off" in either form.
+  const rowTotalWithPto = (pid: string) => rowTotal(pid) + ptoDaysForPid(pid);
+
+  const handlePrint = () => {
+    // Native print dialog → Save as PDF gets you a file. Relies on the
+    // .print-area / @media print styles below to isolate the table.
+    window.print();
+  };
+
   return (
     <div
       onClick={onClose}
@@ -1252,17 +1793,47 @@ function CallCountsModal({ grid, onClose }: { grid: GridData; onClose: () => voi
           padding: 20, maxWidth: '95vw', maxHeight: '90vh', overflow: 'auto', minWidth: 720,
         }}
       >
+        {/* Scoped print stylesheet: everything outside #call-counts-print is
+            hidden during print so Save as PDF captures just the table. */}
+        <style>{`
+          @media print {
+            body * { visibility: hidden !important; }
+            #call-counts-print, #call-counts-print * { visibility: visible !important; }
+            #call-counts-print {
+              position: fixed !important; inset: 0 !important;
+              background: #fff !important; color: #000 !important;
+              padding: 0.4in !important; overflow: visible !important;
+              max-height: none !important; max-width: none !important;
+              min-width: 0 !important;
+              border: none !important;
+            }
+            #call-counts-print table, #call-counts-print th, #call-counts-print td {
+              color: #000 !important; border-color: #666 !important;
+              background: #fff !important;
+            }
+            #call-counts-print .no-print { display: none !important; }
+          }
+        `}</style>
+
+        <div id="call-counts-print">
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
           <div>
             <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--text)' }}>Call Counts</div>
             <div style={{ fontSize: 12, color: 'var(--text-dim)', marginTop: 2 }}>
-              {grid.schedule.schedule_name} — per provider, per day bucket, per call tier
+              {grid.schedule.schedule_name} — per provider, per day bucket, per call tier. PTO days (M–F only) shown separately.
             </div>
           </div>
-          <button onClick={onClose} style={{
-            background: 'none', border: '1px solid var(--border)', color: 'var(--text)',
-            padding: '4px 10px', borderRadius: 6, cursor: 'pointer', fontSize: 13,
-          }}>Close</button>
+          <div className="no-print" style={{ display: 'flex', gap: 6 }}>
+            <button onClick={handlePrint} style={{
+              background: 'linear-gradient(135deg,#0ea5e9,#6366f1)', border: 'none',
+              color: '#fff', padding: '6px 14px', borderRadius: 6, cursor: 'pointer',
+              fontSize: 13, fontWeight: 700,
+            }}>Print / Save PDF</button>
+            <button onClick={onClose} style={{
+              background: 'none', border: '1px solid var(--border)', color: 'var(--text)',
+              padding: '4px 10px', borderRadius: 6, cursor: 'pointer', fontSize: 13,
+            }}>Close</button>
+          </div>
         </div>
 
         <table style={{ borderCollapse: 'collapse', width: '100%', fontSize: 12 }}>
@@ -1278,7 +1849,16 @@ function CallCountsModal({ grid, onClose }: { grid: GridData; onClose: () => voi
               <th rowSpan={2} style={{
                 padding: '6px 10px', textAlign: 'center', fontWeight: 700,
                 borderBottom: '1px solid var(--border)', borderLeft: '1px solid var(--border)',
-              }}>Total</th>
+              }}>Call Total</th>
+              <th rowSpan={2} style={{
+                padding: '6px 10px', textAlign: 'center', fontWeight: 700,
+                borderBottom: '1px solid var(--border)', borderLeft: '1px solid var(--border)',
+                color: '#fbbf24',
+              }}>PTO Days<br/><span style={{ fontSize: 10, fontWeight: 500, opacity: 0.7 }}>(M–F only)</span></th>
+              <th rowSpan={2} style={{
+                padding: '6px 10px', textAlign: 'center', fontWeight: 700,
+                borderBottom: '1px solid var(--border)', borderLeft: '1px solid var(--border)',
+              }}>Total + PTO</th>
             </tr>
             <tr style={{ background: 'var(--bg)', color: 'var(--text-dim)' }}>
               {BUCKETS.map(b => CODES.map(c => (
@@ -1312,6 +1892,15 @@ function CallCountsModal({ grid, onClose }: { grid: GridData; onClose: () => voi
                   padding: '6px 10px', textAlign: 'center',
                   borderLeft: '1px solid var(--border)', fontWeight: 700, color: 'var(--text)',
                 }}>{rowTotal(p.id)}</td>
+                <td style={{
+                  padding: '6px 10px', textAlign: 'center',
+                  borderLeft: '1px solid var(--border)', fontWeight: 600,
+                  color: ptoDaysForPid(p.id) > 0 ? '#fbbf24' : 'var(--text-dim)',
+                }}>{ptoDaysForPid(p.id) || '—'}</td>
+                <td style={{
+                  padding: '6px 10px', textAlign: 'center',
+                  borderLeft: '1px solid var(--border)', fontWeight: 800, color: 'var(--text)',
+                }}>{rowTotalWithPto(p.id)}</td>
               </tr>
             ))}
             {/* Totals row */}
@@ -1328,9 +1917,19 @@ function CallCountsModal({ grid, onClose }: { grid: GridData; onClose: () => voi
                 padding: '8px 10px', textAlign: 'center',
                 borderLeft: '1px solid var(--border)', borderTop: '2px solid var(--border)',
               }}>{providers.reduce((s, p) => s + rowTotal(p.id), 0)}</td>
+              <td style={{
+                padding: '8px 10px', textAlign: 'center',
+                borderLeft: '1px solid var(--border)', borderTop: '2px solid var(--border)',
+                color: '#fbbf24',
+              }}>{providers.reduce((s, p) => s + ptoDaysForPid(p.id), 0) || '—'}</td>
+              <td style={{
+                padding: '8px 10px', textAlign: 'center',
+                borderLeft: '1px solid var(--border)', borderTop: '2px solid var(--border)',
+              }}>{providers.reduce((s, p) => s + rowTotalWithPto(p.id), 0)}</td>
             </tr>
           </tbody>
         </table>
+        </div>
       </div>
     </div>
   );

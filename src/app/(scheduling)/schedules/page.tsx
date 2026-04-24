@@ -244,6 +244,18 @@ function CreateScheduleModal({ orgId, sites, onClose, onCreated }: { orgId: stri
   const [dateEnd, setDateEnd] = useState('');
   const [saving, setSaving] = useState(false);
 
+  // Snap end date from a week count. Blocks in anesthesia are usually talked
+  // about in whole weeks (e.g. "11-week block", "12-week rotation"). The
+  // user can still edit End Date manually if they want something custom.
+  const applyWeeks = (weeks: number) => {
+    if (!dateStart) return;
+    const d = new Date(dateStart + 'T00:00:00Z');
+    // weeks × 7 - 1 so an 11-week block starting Monday ends on the Sunday
+    // after 11 full weeks (not the start of the 12th week).
+    d.setUTCDate(d.getUTCDate() + weeks * 7 - 1);
+    setDateEnd(d.toISOString().slice(0, 10));
+  };
+
   const submit = async () => {
     if (!siteId || !dateStart || !dateEnd) return;
     setSaving(true);
@@ -303,7 +315,7 @@ function CreateScheduleModal({ orgId, sites, onClose, onCreated }: { orgId: stri
           ))}
         </div>
 
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 12 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 8 }}>
           <div>
             <label style={labelStyle}>Start Date *</label>
             <input type="date" style={inputStyle} value={dateStart} onChange={e => setDateStart(e.target.value)} />
@@ -312,6 +324,28 @@ function CreateScheduleModal({ orgId, sites, onClose, onCreated }: { orgId: stri
             <label style={labelStyle}>End Date *</label>
             <input type="date" style={inputStyle} value={dateEnd} onChange={e => setDateEnd(e.target.value)} />
           </div>
+        </div>
+
+        <label style={labelStyle}>Quick Block Length</label>
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 14 }}>
+          {[4, 6, 8, 11, 12, 13, 16].map(n => (
+            <button
+              key={n}
+              type="button"
+              onClick={() => applyWeeks(n)}
+              disabled={!dateStart}
+              title={!dateStart ? 'Pick a start date first' : `Set end date to ${n} weeks after start`}
+              style={{
+                padding: '6px 12px', borderRadius: 6, fontSize: 12, fontWeight: 700,
+                cursor: dateStart ? 'pointer' : 'not-allowed',
+                background: 'var(--bg-deep)', color: 'var(--text-muted)',
+                border: '1px solid var(--border)',
+                opacity: dateStart ? 1 : 0.5,
+              }}
+            >
+              {n} weeks
+            </button>
+          ))}
         </div>
 
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 12 }}>

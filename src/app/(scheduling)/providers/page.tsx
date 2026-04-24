@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import Link from 'next/link';
+import { isValidEmail } from '@/lib/validation/providers';
 
 interface Provider {
   id: string;
@@ -245,10 +246,10 @@ export default function ProvidersPage() {
                     {EMPLOYMENT_OPTIONS.find(o => o.value === prof?.employment_status)?.label || prof?.employment_status?.replace(/_/g, ' ') || '—'}
                   </td>
                   <td style={{ padding: '10px 14px', fontSize: 12, color: 'var(--text-muted)' }}>
-                    {prof?.fte_value ?? '—'}
+                    {prof?.fte_value != null ? Number(prof.fte_value).toFixed(2) : '—'}
                   </td>
                   <td style={{ padding: '10px 14px', fontSize: 12, color: 'var(--text-muted)' }}>
-                    {siteName(prof?.home_site_id || null)}
+                    {siteName(prof?.home_site_id ?? null)}
                   </td>
                   <td style={{ padding: '10px 14px' }}>
                     {prof?.call_taker ? (
@@ -338,6 +339,9 @@ function AddProviderModal({ orgId, sites, onClose, onAdded }: { orgId: string; s
   const [lastName, setLastName] = useState('');
   const [providerType, setProviderType] = useState('physician');
   const [email, setEmail] = useState('');
+  const [phone, setPhone] = useState('');
+  const [npi, setNpi] = useState('');
+  const [employeeId, setEmployeeId] = useState('');
   const [employmentStatus, setEmploymentStatus] = useState('full_time');
   const [callTaker, setCallTaker] = useState(false);
   const [isPartner, setIsPartner] = useState(false);
@@ -345,31 +349,53 @@ function AddProviderModal({ orgId, sites, onClose, onAdded }: { orgId: string; s
   const [homeSiteId, setHomeSiteId] = useState('');
   const [homeAddress, setHomeAddress] = useState('');
   const [startDate, setStartDate] = useState('');
-  const [fellowship, setFellowship] = useState('');
+  const [isDayDoc, setIsDayDoc] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const errors: Record<string, string> = {};
+  if (!firstName.trim()) errors.firstName = 'Required';
+  if (!lastName.trim()) errors.lastName = 'Required';
+  if (email.trim() && !isValidEmail(email.trim())) errors.email = 'Not a valid email';
+
+  const canSubmit = Object.keys(errors).length === 0 && !saving;
 
   const submit = async () => {
-    if (!firstName.trim() || !lastName.trim()) return;
-    setSaving(true);
-    await fetch('/api/scheduling/providers', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        organization_id: orgId,
-        first_name: firstName.trim(),
-        last_name: lastName.trim(),
-        provider_type: providerType,
-        email: email.trim() || null,
-        home_address: homeAddress.trim() || null,
-        start_date: startDate || null,
-        employment_status: employmentStatus,
-        call_taker: callTaker,
-        is_shareholder: isPartner,
-        is_partner_track: isPartnerTrack,
-        home_site_id: homeSiteId || null,
-        fellowship_primary: fellowship.trim() || null,
-      }),
-    });
-    onAdded();
+    if (!canSubmit) return;
+    setSaving(true); setError(null);
+    try {
+      const res = await fetch('/api/scheduling/providers', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          organization_id: orgId,
+          first_name: firstName.trim(),
+          last_name: lastName.trim(),
+          provider_type: providerType,
+          email: email.trim() || null,
+          phone: phone.trim() || null,
+          npi: npi.trim() || null,
+          employee_id: employeeId.trim() || null,
+          home_address: homeAddress.trim() || null,
+          start_date: startDate || null,
+          employment_status: employmentStatus,
+          call_taker: callTaker,
+          is_shareholder: isPartner,
+          is_partner_track: isPartnerTrack,
+          is_day_doc: isDayDoc,
+          home_site_id: homeSiteId || null,
+        }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        setError(data.error || `Failed (${res.status})`);
+        return;
+      }
+      onAdded();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Network error');
+    } finally {
+      setSaving(false);
+    }
   };
 
   const inputStyle: React.CSSProperties = {
@@ -378,25 +404,64 @@ function AddProviderModal({ orgId, sites, onClose, onAdded }: { orgId: string; s
     color: 'var(--text)', fontSize: 14, marginBottom: 12,
   };
   const labelStyle: React.CSSProperties = { fontSize: 11, color: 'var(--text-muted)', display: 'block', marginBottom: 5, fontWeight: 600, letterSpacing: 0.5 };
+  const errorStyle: React.CSSProperties = { fontSize: 10, color: '#f87171', marginBottom: 8, marginTop: 2 };
 
   return (
     <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.75)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 200 }} onClick={onClose}>
-      <div className="modal-box" style={{ background: 'var(--bg-surface)', border: '1px solid var(--border)', borderRadius: 16, padding: 28, width: 480, maxHeight: '85vh', overflowY: 'auto' }} onClick={e => e.stopPropagation()}>
+      <div className="modal-box" style={{ background: 'var(--bg-surface)', border: '1px solid var(--border)', borderRadius: 16, padding: 28, width: 520, maxHeight: '85vh', overflowY: 'auto' }} onClick={e => e.stopPropagation()}>
         <div style={{ fontSize: 17, fontWeight: 800, color: '#f1f5f9', marginBottom: 22 }}>Add Provider</div>
+
+        {error && (
+          <div style={{
+            background: 'rgba(248,113,113,0.1)', border: '1px solid rgba(248,113,113,0.3)',
+            color: '#f87171', padding: '10px 14px', borderRadius: 8, marginBottom: 14, fontSize: 13,
+          }}>{error}</div>
+        )}
 
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 12 }}>
           <div>
             <label style={labelStyle}>First Name *</label>
-            <input style={inputStyle} placeholder="Jane" value={firstName} onChange={e => setFirstName(e.target.value)} />
+            <input
+              style={{ ...inputStyle, border: `1px solid ${errors.firstName ? 'rgba(248,113,113,0.6)' : 'var(--border)'}`, marginBottom: errors.firstName ? 2 : 12 }}
+              placeholder="Jane" value={firstName} onChange={e => setFirstName(e.target.value)}
+            />
+            {errors.firstName && <div style={errorStyle}>{errors.firstName}</div>}
           </div>
           <div>
             <label style={labelStyle}>Last Name *</label>
-            <input style={inputStyle} placeholder="Smith" value={lastName} onChange={e => setLastName(e.target.value)} />
+            <input
+              style={{ ...inputStyle, border: `1px solid ${errors.lastName ? 'rgba(248,113,113,0.6)' : 'var(--border)'}`, marginBottom: errors.lastName ? 2 : 12 }}
+              placeholder="Smith" value={lastName} onChange={e => setLastName(e.target.value)}
+            />
+            {errors.lastName && <div style={errorStyle}>{errors.lastName}</div>}
           </div>
         </div>
 
-        <label style={labelStyle}>Email</label>
-        <input style={inputStyle} placeholder="jane.smith@hospital.org" value={email} onChange={e => setEmail(e.target.value)} />
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+          <div>
+            <label style={labelStyle}>Email</label>
+            <input
+              style={{ ...inputStyle, border: `1px solid ${errors.email ? 'rgba(248,113,113,0.6)' : 'var(--border)'}`, marginBottom: errors.email ? 2 : 12 }}
+              placeholder="jane.smith@hospital.org" value={email} onChange={e => setEmail(e.target.value)}
+            />
+            {errors.email && <div style={errorStyle}>{errors.email}</div>}
+          </div>
+          <div>
+            <label style={labelStyle}>Phone</label>
+            <input style={inputStyle} placeholder="(555) 123-4567" value={phone} onChange={e => setPhone(e.target.value)} />
+          </div>
+        </div>
+
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+          <div>
+            <label style={labelStyle}>NPI</label>
+            <input style={inputStyle} placeholder="1234567890" value={npi} onChange={e => setNpi(e.target.value)} />
+          </div>
+          <div>
+            <label style={labelStyle}>Employee ID</label>
+            <input style={inputStyle} placeholder="E12345" value={employeeId} onChange={e => setEmployeeId(e.target.value)} />
+          </div>
+        </div>
 
         <label style={labelStyle}>Provider Type</label>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 6, marginBottom: 14 }}>
@@ -436,8 +501,30 @@ function AddProviderModal({ orgId, sites, onClose, onAdded }: { orgId: string; s
 
         <div style={{ display: 'flex', gap: 16, marginBottom: 14, flexWrap: 'wrap' }}>
           <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, color: 'var(--text-muted)', cursor: 'pointer' }}>
-            <input type="checkbox" checked={callTaker} onChange={e => setCallTaker(e.target.checked)} style={{ accentColor: '#0ea5e9' }} />
+            <input
+              type="checkbox"
+              checked={callTaker}
+              onChange={e => {
+                const v = e.target.checked;
+                setCallTaker(v);
+                if (v) setIsDayDoc(false);
+              }}
+              style={{ accentColor: '#0ea5e9' }}
+            />
             Call Taker
+          </label>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, color: 'var(--text-muted)', cursor: 'pointer' }}>
+            <input
+              type="checkbox"
+              checked={isDayDoc}
+              onChange={e => {
+                const v = e.target.checked;
+                setIsDayDoc(v);
+                if (v) setCallTaker(false);
+              }}
+              style={{ accentColor: '#8b5cf6' }}
+            />
+            Day Doc
           </label>
           <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, color: 'var(--text-muted)', cursor: 'pointer' }}>
             <input type="checkbox" checked={isPartner} onChange={e => { setIsPartner(e.target.checked); if (e.target.checked) setIsPartnerTrack(false); }} style={{ accentColor: '#10b981' }} />
@@ -449,18 +536,11 @@ function AddProviderModal({ orgId, sites, onClose, onAdded }: { orgId: string; s
           </label>
         </div>
 
-        {(providerType === 'physician' || providerType === 'fellow') && (
-          <>
-            <label style={labelStyle}>Fellowship / Subspecialty</label>
-            <input style={inputStyle} placeholder="e.g. Cardiac, Pediatric, OB" value={fellowship} onChange={e => setFellowship(e.target.value)} />
-          </>
-        )}
-
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 12 }}>
           <button onClick={onClose} style={{ padding: '9px 18px', borderRadius: 8, cursor: 'pointer', background: 'transparent', color: 'var(--text-muted)', border: '1px solid var(--border)', fontWeight: 600, fontSize: 13 }}>Cancel</button>
-          <button onClick={submit} disabled={saving} style={{
-            padding: '9px 20px', borderRadius: 8, cursor: 'pointer', fontWeight: 700, fontSize: 13,
-            background: 'linear-gradient(135deg,#0ea5e9,#6366f1)', color: '#fff', border: 'none', opacity: saving ? 0.5 : 1,
+          <button onClick={submit} disabled={!canSubmit} style={{
+            padding: '9px 20px', borderRadius: 8, cursor: canSubmit ? 'pointer' : 'not-allowed', fontWeight: 700, fontSize: 13,
+            background: 'linear-gradient(135deg,#0ea5e9,#6366f1)', color: '#fff', border: 'none', opacity: canSubmit ? 1 : 0.5,
           }}>{saving ? 'Adding...' : 'Add Provider'}</button>
         </div>
       </div>
