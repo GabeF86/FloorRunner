@@ -407,7 +407,7 @@ export default function ProviderDetailPage({ params }: { params: { id: string } 
       {tab === 'preferences' && <PreferencesTab profile={prof || EMPTY_PROFILE} sites={sites} saveState={saveState} onSave={save} />}
       {tab === 'sites' && <SitesTab providerId={id} credentials={provider.provider_site_credentials || []} sites={sites} onChanged={reload} />}
       {tab === 'availability' && <AvailabilityTab providerId={id} />}
-      {tab === 'custom' && <CustomFieldsTab providerId={id} providerType={provider.provider_type} />}
+      {tab === 'custom' && <CustomFieldsTab providerId={id} providerType={provider.provider_type} homeSiteId={prof?.home_site_id ?? null} />}
       {tab === 'compensation' && <CompensationTab providerId={id} />}
       {tab === 'history' && <HistoryTab providerId={id} />}
     </div>
@@ -1903,7 +1903,7 @@ interface CustomFieldDef {
   display_order: number;
 }
 
-function CustomFieldsTab({ providerId, providerType }: { providerId: string; providerType: string }) {
+function CustomFieldsTab({ providerId, providerType, homeSiteId }: { providerId: string; providerType: string; homeSiteId: string | null }) {
   const [defs, setDefs] = useState<CustomFieldDef[]>([]);
   const [values, setValues] = useState<Record<string, unknown>>({});
   const [draft, setDraft] = useState<Record<string, unknown>>({});
@@ -1929,10 +1929,16 @@ function CustomFieldsTab({ providerId, providerType }: { providerId: string; pro
 
   useEffect(() => { load(); }, [providerId]);
 
-  // Only show definitions that apply to this provider type (or all if unscoped).
-  const visible = defs.filter(d =>
-    d.applies_to_provider_types.length === 0 || d.applies_to_provider_types.includes(providerType),
-  );
+  // Show a definition only if both scope filters pass:
+  //   - provider_type scope: empty list = applies to all types
+  //   - site scope: empty list = applies regardless of site; otherwise the
+  //     provider's home site must be in the list. Providers with no home
+  //     site are hidden from site-scoped fields (there's no site to match).
+  const visible = defs.filter(d => {
+    if (d.applies_to_provider_types.length > 0 && !d.applies_to_provider_types.includes(providerType)) return false;
+    if (d.applies_to_sites.length > 0 && (!homeSiteId || !d.applies_to_sites.includes(homeSiteId))) return false;
+    return true;
+  });
 
   const dirty = visible.some(d => !deepEqual(draft[d.id], values[d.id]));
 
@@ -2310,6 +2316,8 @@ function CompensationTab({ providerId }: { providerId: string }) {
         <MoneyField label="401(k) Contribution" value={comp.retirement_401k_contribution} onChange={v => patch('retirement_401k_contribution', v)} hint="Annual employer contribution" />
       </div>
 
+      <CompensationTotals comp={comp} />
+
       <SectionLabel>Notes</SectionLabel>
       <textarea
         value={comp.notes ?? ''}
@@ -2327,6 +2335,60 @@ function CompensationTab({ providerId }: { providerId: string }) {
           {saving ? 'Saving...' : 'Save Changes'}
         </button>
         {savedAt && <span style={{ fontSize: 11, color: '#10b981' }}>Saved at {savedAt}</span>}
+      </div>
+    </div>
+  );
+}
+
+// Live-computed totals panel shown between the Benefits section and Notes.
+// Reads directly from the draft state so edits are reflected as the admin
+// types. Retention bonus + profit share are conceptually lumpy (one-time
+// vs. variable) — noted in the footnote rather than excluded, because
+// hiding them would surprise admins who just typed them into the form.
+function CompensationTotals({ comp }: { comp: Compensation }) {
+  const sum = (...vals: (number | null)[]) => vals.reduce<number>((a, v) => a + (v ?? 0), 0);
+  const providerTotal = sum(
+    comp.base_salary,
+    comp.fellowship_stipend,
+    comp.admin_stipend,
+    comp.retention_bonus,
+    comp.profit_share,
+  );
+  const employerExtras = sum(
+    comp.health_insurance_cost,
+    comp.malpractice_cost,
+    comp.retirement_401k_contribution,
+  );
+  const employerTotal = providerTotal + employerExtras;
+  const fmt = (n: number) => n === 0 ? '—' : `$${n.toLocaleString('en-US', { maximumFractionDigits: 2 })}`;
+
+  const rowStyle: React.CSSProperties = {
+    display: 'flex', justifyContent: 'space-between', gap: 16, fontSize: 13, marginBottom: 8,
+  };
+
+  return (
+    <div style={{
+      background: 'rgba(14,165,233,0.04)',
+      border: '1px solid rgba(14,165,233,0.2)',
+      borderRadius: 10,
+      padding: '14px 18px',
+      marginBottom: 16,
+    }}>
+      <SectionLabel>Totals</SectionLabel>
+      <div style={rowStyle}>
+        <span style={{ color: 'var(--text-muted)' }}>Provider Total Compensation</span>
+        <span style={{ color: 'var(--text)', fontWeight: 700, fontFamily: 'monospace' }}>{fmt(providerTotal)}</span>
+      </div>
+      <div style={rowStyle}>
+        <span style={{ color: 'var(--text-dim)' }}>+ Employer Costs (health, malpractice, 401k)</span>
+        <span style={{ color: 'var(--text-muted)', fontFamily: 'monospace' }}>{fmt(employerExtras)}</span>
+      </div>
+      <div style={{ borderTop: '1px solid rgba(14,165,233,0.2)', paddingTop: 8, display: 'flex', justifyContent: 'space-between', gap: 16, fontSize: 13 }}>
+        <span style={{ color: 'var(--text)', fontWeight: 700 }}>Total Cost to Employer</span>
+        <span style={{ color: '#0ea5e9', fontWeight: 800, fontFamily: 'monospace' }}>{fmt(employerTotal)}</span>
+      </div>
+      <div style={{ fontSize: 10, color: 'var(--text-dim)', marginTop: 8, lineHeight: 1.5 }}>
+        Retention bonus is typically one-time; profit share varies by year. Adjust with context in the notes field.
       </div>
     </div>
   );
