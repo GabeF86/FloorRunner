@@ -72,20 +72,28 @@ export async function GET(
   const { data: profiles } = providerIds.length > 0
     ? await sb
         .from('provider_employment_profiles')
-        .select('provider_id, home_site_id, call_taker, fte_value, employment_status')
+        .select('provider_id, home_site_id, call_taker, partial_call_taker, fte_value, employment_status')
         .in('provider_id', providerIds)
     : { data: [] };
 
   // 7. Fetch availability entries (PTO, sick, unavailable, etc.) overlapping
   //    the schedule date range.
-  const { data: availability } = providerIds.length > 0
+  const { data: availability, error: availErr } = providerIds.length > 0
     ? await sb
         .from('provider_availability')
-        .select('provider_id, availability_type, start_date, end_date, approval_status, reason')
+        // NOTE: column is `reason_code`, not `reason`. Supabase returns an
+        // error if you select a missing column — and because the code
+        // downstream only destructured `data`, the whole availability
+        // array silently ended up as null/empty. That's what was hiding
+        // every PTO entry from the grid, the Call Counts modal, and the
+        // PTO virtual row. We now also capture `error` so a future column
+        // rename fails loudly instead of silently.
+        .select('provider_id, availability_type, start_date, end_date, approval_status, reason_code')
         .in('provider_id', providerIds)
         .lte('start_date', schedule.date_end)
         .gte('end_date', schedule.date_start)
-    : { data: [] };
+    : { data: [], error: null };
+  if (availErr) return NextResponse.json({ error: availErr.message }, { status: 500 });
 
   return NextResponse.json({
     schedule,

@@ -1,37 +1,39 @@
-// Auto-generation engine (physician call scheduling).
+// Auto-generation engine for physician call schedules.
 //
-// Strategy:
-//   1. Preload all data once (credentials, availability, existing assignments, site par_level).
-//   2. Filter candidates in-memory — no DB calls during the scoring loop.
-//   3. Greedy assignment with bucket-based quotas and weekend pairing.
-//   4. Only run the full rule evaluator on final assignments for validation flags.
+// Handles category='call' slots only. Day shifts (7-3, 7-5) are handled by
+// dayShiftAutoGen.ts, which runs as a second pass in the /generate route.
+// CRNA scheduling is out of scope today.
 //
-// Constraints applied during selection:
-//   - Home-site filter: provider.home_site_id == schedule.site_id
-//   - Site credentials: active, credentialed, can_take_call (+ weekend/holiday variants)
-//   - Availability: no approved PTO / sick / unavailable entries covering the date
-//   - Same-day conflict: provider not already assigned on this date
-//   - Bucket quota: assigned_in_bucket < target where target = total / par_level × FTE
-//   - C3 specific: neuro_eligible
+// High-level flow:
+//   1. Preload everything in one pass (slots, pool, credentials, availability,
+//      cross-site conflicts, historical counts).
+//   2. Compute FTE-weighted bucket quotas with historical deficit carried
+//      forward so part-timers catch up across blocks.
+//   3. Pre-PTO Thursday pass — give providers a long weekend before vacation.
+//   4. Main greedy loop: for each call slot, pick the eligible provider with
+//      the lowest lifetime-ratio, chain D-shifts inline, pair weekend blocks.
+//   5. D4–D9 relief pass for the remaining "first on out-list" assignments.
+//   6. Write validation flags for every call assignment in parallel batches.
 //
-// Non-call shifts (D1-D8, 7-3, 7-5) are NOT auto-assigned here. They flow from
-// sequence rules (e.g. C2 on day N → D1 on day N+1) or manual entry.
-//
-// Rules are NOT applied to CRNAs — this engine is physician-only for now.
-// CRNA rules will live in a separate evaluator when that module lands.
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-type SupabaseClient = any;
+// See /ALGORITHM.md for a fuller explanation.
 
 import { evaluateAssignment } from './evaluate';
+import {
+  BLOCKING_AVAIL,
+  BOOKEND_EXTENDING_TYPES,
+  addDays,
+  dayTypeBucket,
+  datesOverlap,
+  dayOfWeekUTC,
+  effectivePtoRange,
+  mondayOfWeek,
+  normalizeWeekdays,
+  thursdayBeforeWeekOf,
+  type SupabaseClient,
+} from './shared';
 
-const DEFAULT_PAR_LEVEL = 12; // fallback if site.call_par_level is not set
+const DEFAULT_PAR_LEVEL = 12; // fallback when site.call_par_level isn't set
 const NEIGHBOR_WINDOW_DAYS = 31;
-
-// Availability types that block any assignment
-const BLOCKING_AVAIL = new Set([
-  'pto', 'sick', 'fmla', 'parental_leave', 'military_leave', 'jury_duty', 'unavailable', 'blocked',
-]);
 
 interface SlotToFill {
   slot_id: string;
@@ -50,8 +52,10 @@ interface CandidateProvider {
   provider_type: string;
   short_display_name: string;
   fte_value: number;
-  neuro_eligible: boolean;
   home_site_id: string | null;
+  // 7 booleans indexed Sun..Sat (matches JS Date.getDay). Defaults to
+  // all-true for call-takers who never edit it.
+  available_weekdays: boolean[];
 }
 
 interface SiteCredentials {
@@ -99,32 +103,22 @@ interface GenerationResult {
   };
 }
 
-// ── Helpers ──────────────────────────────────────────────────────────────────
-
-function dayTypeBucket(dt: string): string {
-  if (dt === 'weekday') return 'weekday';
-  if (dt === 'friday') return 'friday';
-  if (dt === 'saturday') return 'saturday';
-  if (dt === 'sunday') return 'sunday';
-  if (dt === 'federal_holiday' || dt === 'major_holiday') return 'holiday';
-  return dt;
-}
-
-function addDays(iso: string, n: number): string {
-  const d = new Date(iso + 'T00:00:00Z');
-  d.setUTCDate(d.getUTCDate() + n);
-  return d.toISOString().slice(0, 10);
-}
-
-function datesOverlap(availStart: string, availEnd: string, date: string): boolean {
-  return availStart <= date && availEnd >= date;
-}
+// (Helpers now live in ./shared.ts — imported at the top.)
 
 // ── Entry point ──────────────────────────────────────────────────────────────
+
+export interface AutoGenerateOptions {
+  // Optional pool override. When provided, the candidate pool is exactly
+  // these provider UUIDs (still subject to credentials / availability /
+  // conflict checks). When omitted or empty, the default rule-based pool
+  // is used: home_site_id match + call_taker or partial_call_taker.
+  overrideProviderIds?: string[];
+}
 
 export async function autoGenerate(
   sb: SupabaseClient,
   scheduleVersionId: string,
+  options: AutoGenerateOptions = {},
 ): Promise<GenerationResult> {
   const t0 = Date.now();
   let dbQueries = 0;
@@ -214,24 +208,51 @@ export async function autoGenerate(
   console.log(`[autoGen] ${slotsToFill.length} call slots to fill, par_level=${parLevel}`);
   if (slotsToFill.length === 0) return result;
 
-  // ── 3. Preload home-site providers ────────────────────────────────────────
+  // ── 3. Preload pool providers ─────────────────────────────────────────────
   countQ();
-  const { data: profiles } = await sb
-    .from('provider_employment_profiles')
-    .select('provider_id, fte_value, neuro_eligible, home_site_id')
-    .eq('home_site_id', siteId);
+  // Default pool = providers whose home site is this site AND who are flagged
+  // as a call-taker or partial call-taker. `can_take_call` on the per-site
+  // credential is only an "eligible for extras" flag and does NOT pull
+  // someone into the auto-assignment pool.
+  //
+  // Override pool: when the caller passes overrideProviderIds, the pool is
+  // exactly those UUIDs. The home_site/call_taker gates are skipped — the
+  // scheduler (a human) has made a deliberate call about who to include.
+  // Eligibility checks (credentials, availability, conflicts, FTE quotas)
+  // still apply later in the pipeline.
+  const override = options.overrideProviderIds && options.overrideProviderIds.length > 0
+    ? options.overrideProviderIds
+    : null;
 
-  const profileByPid = new Map<string, { fte_value: number; neuro_eligible: boolean; home_site_id: string }>();
+  let profilesQuery = sb
+    .from('provider_employment_profiles')
+    .select('provider_id, fte_value, home_site_id, call_taker, partial_call_taker, available_weekdays');
+  if (override) {
+    profilesQuery = profilesQuery.in('provider_id', override);
+  } else {
+    profilesQuery = profilesQuery
+      .eq('home_site_id', siteId)
+      .or('call_taker.eq.true,partial_call_taker.eq.true');
+  }
+  const { data: profiles } = await profilesQuery;
+
+  const profileByPid = new Map<string, { fte_value: number; home_site_id: string; available_weekdays: boolean[] }>();
   for (const p of (profiles || []) as Array<Record<string, unknown>>) {
     profileByPid.set(p.provider_id as string, {
       fte_value: (p.fte_value as number) || 1,
-      neuro_eligible: !!p.neuro_eligible,
       home_site_id: p.home_site_id as string,
+      available_weekdays: normalizeWeekdays(p.available_weekdays),
     });
   }
   const providerIds = Array.from(profileByPid.keys());
   if (providerIds.length === 0) {
-    result.errors.push(`No providers found with home_site_id = ${siteId}`);
+    result.errors.push(
+      override
+        ? `Override pool is empty or none of the selected providers have an employment profile.`
+        : `No call-takers found at this site. ` +
+          `Providers must have home_site_id set to this site AND "Call Taker" ` +
+          `or "Partial Call Taker" checked on their Employment & Scheduling tab.`,
+    );
     return result;
   }
 
@@ -249,10 +270,11 @@ export async function autoGenerate(
       provider_type: p.provider_type as string,
       short_display_name: p.short_display_name as string,
       fte_value: prof.fte_value,
-      neuro_eligible: prof.neuro_eligible,
       home_site_id: prof.home_site_id,
+      available_weekdays: prof.available_weekdays,
     };
   });
+  const providerById = new Map(providers.map(p => [p.id, p]));
 
   // ── 4. Preload site credentials for all home-site providers ───────────────
   countQ();
@@ -325,6 +347,50 @@ export async function autoGenerate(
     crossSiteByDate.get(pid)!.add(s.slot_date);
   }
 
+  // ── 6.5. Preload historical call assignments ─────────────────────────────
+  //
+  // Cross-block memory. Per provider, count how many call shifts they've
+  // already taken in past schedules at this site, keyed by bucket + code.
+  // This lets us (a) score providers by lifetime fairness (not just
+  // within-block) and (b) widen a provider's block-level cap to let them
+  // catch up if they've been under-allocated historically.
+  //
+  // "Past" = anything with slot_date strictly before this schedule starts.
+  // So schedules that were cancelled / replaced mid-way won't get counted
+  // twice, and we automatically ignore the schedule we're generating right
+  // now.
+  countQ();
+  const historicalAssignedByPid = new Map<string, Map<string, number>>();
+  const historicalTotalByBucket = new Map<string, number>();
+  {
+    const { data: hist } = await sb
+      .from('assignments')
+      .select('provider_id, schedule_slots!inner(slot_date, site_id, derived_day_type, shift_types!inner(code, category))')
+      .in('provider_id', providerIds)
+      .eq('assignment_status', 'assigned')
+      .eq('schedule_slots.site_id', siteId)
+      .eq('schedule_slots.shift_types.category', 'call')
+      .lt('schedule_slots.slot_date', minDate);
+
+    for (const row of (hist || []) as Array<Record<string, unknown>>) {
+      const pid = row.provider_id as string | null;
+      const ss = row.schedule_slots as {
+        derived_day_type?: string;
+        shift_types?: { code?: string };
+      } | null;
+      if (!pid || !ss) continue;
+      const code = ss.shift_types?.code;
+      if (!code) continue;
+      const key = `${dayTypeBucket(ss.derived_day_type || 'weekday')}|${code}`;
+      const byProv = historicalAssignedByPid.get(pid) || new Map<string, number>();
+      byProv.set(key, (byProv.get(key) || 0) + 1);
+      historicalAssignedByPid.set(pid, byProv);
+      historicalTotalByBucket.set(key, (historicalTotalByBucket.get(key) || 0) + 1);
+    }
+  }
+  const getHistorical = (pid: string, dt: string, code: string) =>
+    historicalAssignedByPid.get(pid)?.get(`${dayTypeBucket(dt)}|${code}`) || 0;
+
   // ── 7. Compute bucket totals & targets ────────────────────────────────────
   const bucketTotals = new Map<string, number>();
   for (const s of slotsToFill) {
@@ -344,10 +410,29 @@ export async function autoGenerate(
     }
   }
 
+  // Per-provider block target = base share of THIS block + deficit carried
+  // forward from past blocks at this site.
+  //
+  //   base_i_B     = (block_total_B / par_level) * fte_i
+  //   expected_i_B = (hist_total_B / par_level) * fte_i   [what they *should* have]
+  //   actual_i_B   = hist_assigned_i_B                    [what they got]
+  //   deficit_i_B  = max(0, expected_i_B - actual_i_B)
+  //
+  //   target_i_B = base_i_B + deficit_i_B
+  //
+  // The `max(0, …)` means providers who've been OVER-allocated historically
+  // don't get their block target shrunk — they just get scored worse so the
+  // greedy loop hands slots to under-allocated providers first. A hard
+  // shrink of their cap could leave slots unfilled for no good reason.
   const bucketTarget = new Map<string, number>();
   for (const p of providers) {
-    for (const [k, total] of bucketTotals) {
-      bucketTarget.set(`${p.id}|${k}`, (total / parLevel) * p.fte_value);
+    for (const [k, blockTotal] of bucketTotals) {
+      const base = (blockTotal / parLevel) * p.fte_value;
+      const histTotal = historicalTotalByBucket.get(k) || 0;
+      const histExpected = (histTotal / parLevel) * p.fte_value;
+      const histActual = historicalAssignedByPid.get(p.id)?.get(k) || 0;
+      const deficit = Math.max(0, histExpected - histActual);
+      bucketTarget.set(`${p.id}|${k}`, base + deficit);
     }
   }
 
@@ -418,6 +503,11 @@ export async function autoGenerate(
     // Cross-site conflict (preloaded)
     if (crossSiteByDate.get(p.id)?.has(slot.slot_date)) return false;
 
+    // Weekday availability (only non-call-takers edit this; call-takers are
+    // stored as all-true so this is a no-op for them). Index is Sun..Sat.
+    const dow = new Date(slot.slot_date + 'T12:00:00Z').getUTCDay();
+    if (p.available_weekdays[dow] === false) return false;
+
     // C1 post-call day-off check: if the provider is already committed to a shift
     // the day AFTER this C1 (e.g. via another call shift's pre-call D-chain), they
     // can't take C1 because they'd be working both days. Saturday C1 is excepted
@@ -427,12 +517,21 @@ export async function autoGenerate(
       if (isAssignedOnDate(dayAfter, p.id)) return false;
     }
 
-    // Bucket quota
-    if (getAssigned(p.id, slot.derived_day_type, slot.shift_type_code) >=
-        getTarget(p.id, slot.derived_day_type, slot.shift_type_code)) return false;
-
-    // C3 neuro-eligible
-    if (slot.shift_type_code === 'C3' && !p.neuro_eligible) return false;
+    // Bucket quota. Old rule was `assigned >= target`, which with integer
+    // assigned and float target meant any 0 < target ≤ N allowed up to N
+    // assignments — so 0.6 FTE (target 1.44) capped at 2, same as 1.0 FTE
+    // (target 2.0). Fractional FTE was not actually enforced.
+    //
+    // New rule: "would one more assignment push us past target?" — i.e.,
+    // assigned + 1 > target. This caps at floor(target), so:
+    //   - 1.0 FTE weekend target 2.0 → max 2  ✓
+    //   - 0.6 FTE weekend target 1.44 → max 1  ✓
+    //   - 0.5 FTE weekend target 1.0 → max 1  ✓
+    //   - 0.3 FTE weekend target 0.72 → max 0 (picks up in future blocks
+    //     once cross-block memory is wired)
+    const assigned = getAssigned(p.id, slot.derived_day_type, slot.shift_type_code);
+    const target = getTarget(p.id, slot.derived_day_type, slot.shift_type_code);
+    if (assigned + 1 > target) return false;
 
     // Site credentials
     const cred = credByPid.get(p.id);
@@ -450,12 +549,15 @@ export async function autoGenerate(
     }
     // Missing credentials row = "not yet configured", treat as passing (matches evaluator behavior)
 
-    // Availability (preloaded)
+    // Availability (preloaded). Planned-leave (PTO/FMLA/parental/military)
+    // gets a weekend-bookend extension via effectivePtoRange() — Sat before
+    // if PTO starts Monday, Sun after if PTO ends Friday.
     const entries = availByPid.get(p.id) || [];
     for (const a of entries) {
       if (a.approval_status === 'denied' || a.approval_status === 'canceled') continue;
-      if (!datesOverlap(a.start_date, a.end_date, slot.slot_date)) continue;
-      if (BLOCKING_AVAIL.has(a.availability_type)) return false;
+      if (!BLOCKING_AVAIL.has(a.availability_type)) continue;
+      const { start, end } = effectivePtoRange(a);
+      if (datesOverlap(start, end, slot.slot_date)) return false;
     }
 
     return true;
@@ -550,19 +652,106 @@ export async function autoGenerate(
       return;
     }
 
-    // Weekday or Friday: normal D-chain
+    // Weekday or Friday: normal D-chain.
+    //
+    // Precedence: D1 (post-call relief) always beats D3 (pre-call backfill)
+    // when both could apply to the same day for the same provider. Without
+    // this, a provider on C2 Mon + C2 Wed would get Tue-D3 (pre-call for
+    // Wed) instead of Tue-D1 (post-call for Mon), which is incorrect
+    // because post-call relief is the stronger signal — they actually
+    // worked the night before.
+    const dayBefore = addDays(slot.slot_date, -1);
+    const twoDaysBefore = addDays(slot.slot_date, -2);
+    const hadCallTwoDaysBefore =
+      (callDatesByProvider.get(provider.id) || []).includes(twoDaysBefore);
+
     if (slot.shift_type_code === 'C1') {
-      // Pre-call backfill
-      await tryFill(addDays(slot.slot_date, -1), 'D2');
+      // Pre-call backfill: D2 — but skip if yesterday is their post-call
+      // day from a prior call shift (D1 already owns that day).
+      if (!hadCallTwoDaysBefore) {
+        await tryFill(dayBefore, 'D2');
+      }
       // Post-call day off (block provider from any shift the next day)
       markAssigned(addDays(slot.slot_date, 1), provider.id);
     } else if (slot.shift_type_code === 'C2') {
-      // Pre-call backfill
-      await tryFill(addDays(slot.slot_date, -1), 'D3');
+      // Pre-call backfill: D3 — but skip if yesterday is post-call for
+      // this provider, in which case D1 is the correct label and was
+      // already placed by the earlier call shift's chainDFills.
+      if (!hadCallTwoDaysBefore) {
+        await tryFill(dayBefore, 'D3');
+      }
       // Post-call relief (D1 next day, but stays working — first to leave)
       await tryFill(addDays(slot.slot_date, 1), 'D1');
     }
   };
+
+  // ── 10.5. Pre-PTO Thursday placement rule ────────────────────────────────
+  // If a provider is going on PTO, try to give them the Thursday C1 prior
+  // to the week of PTO. If two providers have PTO starting in the same
+  // week, one gets that Thursday's C1 and the other gets C2. Soft
+  // placement: silently skipped when the provider isn't eligible (missing
+  // credentials, weekday unavailability, cross-site conflict, etc.) or
+  // when the Thursday falls outside this schedule.
+  //
+  // Rationale: a Thursday C1 means they finish call Friday morning, so
+  // they get Fri-Sun off, then PTO Mon-Fri — effectively a 10-day break
+  // instead of just the 5-day PTO window. A common ask.
+  const prePtoByThursday = new Map<string, Set<string>>();
+  for (const p of providers) {
+    const entries = availByPid.get(p.id) || [];
+    for (const a of entries) {
+      if (a.approval_status !== 'approved') continue;
+      if (!BLOCKING_AVAIL.has(a.availability_type)) continue;
+      const thu = thursdayBeforeWeekOf(a.start_date);
+      if (!slotIndex.has(thu)) continue;
+      const set = prePtoByThursday.get(thu) || new Set<string>();
+      set.add(p.id);
+      prePtoByThursday.set(thu, set);
+    }
+  }
+
+  const tryPlacePrePto = async (
+    slot: SlotToFill | undefined,
+    provider: CandidateProvider,
+  ): Promise<boolean> => {
+    if (!slot) return false;
+    if (handledSlotIds.has(slot.slot_id)) return false;
+    if (!isEligible(slot, provider)) return false;
+    const ok = await doAssign(slot, provider);
+    if (ok) await chainDFills(slot, provider);
+    return ok;
+  };
+
+  let prePtoPlacements = 0;
+  for (const [thuDate, pidSet] of prePtoByThursday) {
+    const codeMap = slotIndex.get(thuDate);
+    if (!codeMap) continue;
+    const c1 = codeMap.get('C1');
+    const c2 = codeMap.get('C2');
+
+    // Deterministic ordering so two runs produce the same assignment. When
+    // two providers want the same Thursday, whichever sorts first (by
+    // provider id) gets first pick — usually C1, falling back to C2 if
+    // they aren't eligible for C1. The other provider takes whatever's
+    // left. Third+ providers intentionally fall through to the main loop.
+    const ranked = Array.from(pidSet).sort()
+      .map(pid => providerById.get(pid))
+      .filter((p): p is CandidateProvider => !!p);
+
+    if (ranked[0]) {
+      const placed = (await tryPlacePrePto(c1, ranked[0]))
+        || (await tryPlacePrePto(c2, ranked[0]));
+      if (placed) prePtoPlacements++;
+    }
+    if (ranked[1]) {
+      const placed = (await tryPlacePrePto(c1, ranked[1]))
+        || (await tryPlacePrePto(c2, ranked[1]));
+      if (placed) prePtoPlacements++;
+    }
+  }
+  if (prePtoPlacements > 0) {
+    console.log(`[autoGen] pre-PTO rule placed ${prePtoPlacements} Thursday call shifts`);
+  }
 
   // ── 11. Main assignment loop ─────────────────────────────────────────────
   let slotIdx = 0;
@@ -586,14 +775,24 @@ export async function autoGenerate(
     }
 
     // Score candidates:
-    //   primary: lowest bucket-ratio first (fair distribution under par)
+    //   primary: lowest LIFETIME bucket-ratio first. "Lifetime" = historical
+    //     assignments at this site + assignments made in this block so far.
+    //     This ensures a 0.3 FTE who got zero weekends last block gets
+    //     priority next block, rather than being hard-locked at 0 every
+    //     block and never taking any. Per-FTE normalization means
+    //     part-timers still don't take more than their proportional share
+    //     over time.
     //   tie-break: MORE days since last call (avoid burnout / back-to-back)
     const scored = candidates
-      .map(p => ({
-        p,
-        ratio: getAssigned(p.id, slot.derived_day_type, slot.shift_type_code) / Math.max(p.fte_value, 0.01),
-        recency: daysSinceLastCall(p.id, slot.slot_date),
-      }))
+      .map(p => {
+        const lifetime = getHistorical(p.id, slot.derived_day_type, slot.shift_type_code)
+          + getAssigned(p.id, slot.derived_day_type, slot.shift_type_code);
+        return {
+          p,
+          ratio: lifetime / Math.max(p.fte_value, 0.01),
+          recency: daysSinceLastCall(p.id, slot.slot_date),
+        };
+      })
       .sort((a, b) => a.ratio - b.ratio || b.recency - a.recency);
 
     const chosen = scored[0].p;

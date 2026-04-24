@@ -118,6 +118,61 @@ export async function applySequenceAutoFill(
     const offset = rule.relationship === 'pre_call' ? -1 : 1;
     const linkedDate = shiftDate(triggerDate, offset);
 
+    // D1/D3 precedence rule: post-call D1 always beats pre-call D3 on the
+    // same day for the same provider.
+    //
+    // Case A (pre_call rule firing): If `linkedDate` is already a post-
+    // call day for this provider — i.e. they have a call shift the day
+    // BEFORE linkedDate — skip this pre_call fill entirely. The prior
+    // call shift's post_call rule owns that day.
+    if (rule.relationship === 'pre_call') {
+      const postCallSourceDate = shiftDate(linkedDate, -1);
+      const { data: priorCalls } = await sb
+        .from('assignments')
+        .select('id, schedule_slots!inner(slot_date, schedule_version_id, shift_types(category))')
+        .eq('provider_id', providerId)
+        .eq('assignment_status', 'assigned')
+        .eq('schedule_slots.schedule_version_id', versionId)
+        .eq('schedule_slots.slot_date', postCallSourceDate);
+      const hasPriorCall = (priorCalls || []).some((x: Record<string, unknown>) => {
+        const ss = x.schedule_slots as { shift_types?: { category?: string } } | null;
+        return ss?.shift_types?.category === 'call';
+      });
+      if (hasPriorCall) continue;
+    }
+
+    // Case B (post_call rule firing): If the provider currently holds a
+    // D3 slot on `linkedDate` that was auto-filled by a previous sequence
+    // run, free it up so this D1 can take its place. D1 outranks D3 and
+    // the previous D3 fill was a best-guess that's now stale.
+    if (rule.relationship === 'post_call') {
+      const { data: conflictingD } = await sb
+        .from('assignments')
+        .select('id, source_type, schedule_slots!inner(slot_date, schedule_version_id, shift_types(code))')
+        .eq('provider_id', providerId)
+        .eq('assignment_status', 'assigned')
+        .eq('schedule_slots.schedule_version_id', versionId)
+        .eq('schedule_slots.slot_date', linkedDate);
+      for (const a of (conflictingD || []) as Array<{
+        id: string;
+        source_type: string;
+        schedule_slots: { shift_types: { code: string } };
+      }>) {
+        if (a.source_type === 'auto_generated' && a.schedule_slots.shift_types.code === 'D3') {
+          await sb
+            .from('assignments')
+            .update({
+              provider_id: null,
+              assignment_status: 'open',
+              source_type: 'manual',
+              assigned_at: null,
+              validation_flags: [],
+            })
+            .eq('id', a.id);
+        }
+      }
+    }
+
     // Find candidate linked slots on the linked date in the same version
     const { data: candidates } = await sb
       .from('schedule_slots')
