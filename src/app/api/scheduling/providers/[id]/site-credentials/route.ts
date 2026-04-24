@@ -2,6 +2,9 @@ import { NextRequest, NextResponse } from 'next/server';
 import { sbSchedulingServer } from '@/lib/supabaseScheduling';
 import { isValidDate } from '@/lib/validation/providers';
 
+// Never prerender — this route hits Supabase per request.
+export const dynamic = 'force-dynamic';
+
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id: providerId } = await params;
   const sb = sbSchedulingServer();

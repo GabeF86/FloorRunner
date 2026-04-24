@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { sbSchedulingServer } from '@/lib/supabaseScheduling';
 
+// Never prerender — this route hits Supabase per request.
+export const dynamic = 'force-dynamic';
+
 // GET /api/scheduling/master-schedule?site_id=...&from=...&to=...
 // Returns a combined view of all published schedules for a site in the given
 // date range. Merges call, shift, and assignment layers.

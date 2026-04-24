@@ -2,6 +2,9 @@ import { NextRequest, NextResponse } from 'next/server';
 import { sbSchedulingServer } from '@/lib/supabaseScheduling';
 import { validateCompensation } from '@/lib/validation/compensation';
 
+// Never prerender — this route hits Supabase per request.
+export const dynamic = 'force-dynamic';
+
 // GET /api/scheduling/providers/:id/compensation
 // Returns the provider's compensation row, or an empty object if not yet set.
 // NOTE: there is no authz enforcement here today — this is currently returned

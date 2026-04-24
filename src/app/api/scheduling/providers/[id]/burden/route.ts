@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { sbSchedulingServer } from '@/lib/supabaseScheduling';
 
+// Never prerender — this route hits Supabase per request.
+export const dynamic = 'force-dynamic';
+
 // GET /api/scheduling/providers/:id/burden?from=...&to=...
 // Computes call burden from assignments on-the-fly.
 // Returns per-category counts + a flat list of assignments for history display.

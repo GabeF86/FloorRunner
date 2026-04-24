@@ -2,6 +2,9 @@ import { NextRequest, NextResponse } from 'next/server';
 import { sbSchedulingServer } from '@/lib/supabaseScheduling';
 import { evaluateAssignment } from '@/lib/rulesEngine/evaluate';
 
+// Never prerender — this route hits Supabase per request.
+export const dynamic = 'force-dynamic';
+
 // POST /api/scheduling/schedule-assignments/[id]/validate
 // Re-runs the rules engine for an existing assignment and persists the result.
 export async function POST(_req: NextRequest, { params }: { params: { id: string } }) {

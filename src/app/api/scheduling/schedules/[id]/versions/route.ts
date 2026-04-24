@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { sbSchedulingServer } from '@/lib/supabaseScheduling';
 
+// Never prerender — this route hits Supabase per request.
+export const dynamic = 'force-dynamic';
+
 // GET /api/scheduling/schedules/:id/versions — list all versions
 export async function GET(
   _req: NextRequest,

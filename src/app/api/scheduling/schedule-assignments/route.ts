@@ -3,6 +3,9 @@ import { sbSchedulingServer } from '@/lib/supabaseScheduling';
 import { evaluateAssignment } from '@/lib/rulesEngine/evaluate';
 import { applySequenceAutoFill, cleanupSequenceAutoFill } from '@/lib/rulesEngine/sequenceAutoFill';
 
+// Never prerender — this route hits Supabase per request.
+export const dynamic = 'force-dynamic';
+
 export async function POST(req: NextRequest) {
   const sb = sbSchedulingServer();
   const body = await req.json();

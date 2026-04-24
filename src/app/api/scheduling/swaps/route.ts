@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { sbSchedulingServer } from '@/lib/supabaseScheduling';
 
+// Never prerender — this route hits Supabase per request.
+export const dynamic = 'force-dynamic';
+
 // GET /api/scheduling/swaps?status=...&provider_id=...
 export async function GET(req: NextRequest) {
   const sb = sbSchedulingServer();
