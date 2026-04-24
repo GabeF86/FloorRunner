@@ -24,9 +24,7 @@ import {
   addDays,
   dayTypeBucket,
   datesOverlap,
-  dayOfWeekUTC,
   effectivePtoRange,
-  mondayOfWeek,
   normalizeWeekdays,
   thursdayBeforeWeekOf,
   type SupabaseClient,
@@ -548,6 +546,34 @@ export async function autoGenerate(
       }
     }
     // Missing credentials row = "not yet configured", treat as passing (matches evaluator behavior)
+
+    // Saturday/Sunday adjacent-week PTO exclusion.
+    // Hard rule: if the provider has planned leave (PTO / FMLA / parental /
+    // military) covering any day of the Mon-Fri week immediately BEFORE the
+    // weekend OR the Mon-Fri week immediately AFTER the weekend, they are
+    // not eligible for Sat or Sun call. The existing bookend rule only
+    // catches leave that touches Mon or Fri; this closes the mid-week gap
+    // (e.g. PTO Tue-Thu the week prior).
+    // Friday call is intentionally NOT gated here — a provider may take the
+    // Friday immediately before their PTO week in extenuating circumstances.
+    if (slot.derived_day_type === 'saturday' || slot.derived_day_type === 'sunday') {
+      const satDate = slot.derived_day_type === 'saturday'
+        ? slot.slot_date
+        : addDays(slot.slot_date, -1);
+      const weekBeforeStart = addDays(satDate, -5); // Mon before the weekend
+      const weekBeforeEnd = addDays(satDate, -1);   // Fri before the weekend
+      const weekAfterStart = addDays(satDate, 2);   // Mon after the weekend
+      const weekAfterEnd = addDays(satDate, 6);     // Fri after the weekend
+      const entries = availByPid.get(p.id) || [];
+      for (const a of entries) {
+        if (a.approval_status === 'denied' || a.approval_status === 'canceled') continue;
+        if (!BOOKEND_EXTENDING_TYPES.has(a.availability_type)) continue;
+        // Range overlap: entry [start, end] intersects window [ws, we]
+        // iff start <= we AND end >= ws.
+        if (a.start_date <= weekBeforeEnd && a.end_date >= weekBeforeStart) return false;
+        if (a.start_date <= weekAfterEnd && a.end_date >= weekAfterStart) return false;
+      }
+    }
 
     // Availability (preloaded). Planned-leave (PTO/FMLA/parental/military)
     // gets a weekend-bookend extension via effectivePtoRange() — Sat before

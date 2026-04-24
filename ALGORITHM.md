@@ -67,7 +67,8 @@ Ordered for early return:
 5. C1 post-call guard (not assigned tomorrow, except Saturday)
 6. Bucket quota (deficit-adjusted target)
 7. Site credentials (active, credentialed, shift-type allow/deny, call/weekend/holiday variants)
-8. Availability with bookend — any approved blocking entry covering the slot (see §6)
+8. Sat/Sun adjacent-week PTO exclusion — no planned leave in the Mon-Fri weeks flanking the weekend (see §6.5)
+9. Availability with bookend — any approved blocking entry covering the slot (see §6)
 
 ## 6. PTO bookend rule ([`effectivePtoRange`](src/lib/rulesEngine/shared.ts))
 
@@ -76,6 +77,16 @@ Applies only to PTO / FMLA / parental_leave / military_leave (multi-day planned 
 - **+2 days forward** if entry ends on Friday (captures the Sunday after)
 
 Sick / jury_duty / unavailable / blocked are single-day types and don't extend. PTO that already begins/ends on a weekend isn't extended further — the weekend is already inside the range.
+
+## 6.5. Sat/Sun adjacent-week PTO exclusion
+
+Hard rule layered on top of the bookend. For any Sat or Sun call slot, the provider is ineligible if they have planned leave (PTO / FMLA / parental / military) covering any day of either flanking Mon-Fri week:
+- `[satDate - 5, satDate - 1]` — the week leading up to the weekend
+- `[satDate + 2, satDate + 6]` — the week following the weekend
+
+Friday slots are intentionally exempt — a provider may take the Friday immediately before their PTO week, though this is reserved for extenuating circumstances and is left to scheduler discretion.
+
+**Why this isn't just more bookend:** the bookend extends only when PTO touches Mon or Fri of the adjacent week. This rule catches mid-week leave (e.g. PTO Tue-Thu the week prior) that the bookend wouldn't reach but that still shouldn't share a weekend with the provider's planned time off. Limited to the `BOOKEND_EXTENDING_TYPES` set — single-day / ad-hoc types (sick, jury, blocked) are not meant to imply a recovery window.
 
 ## 7. Pre-PTO Thursday rule
 
