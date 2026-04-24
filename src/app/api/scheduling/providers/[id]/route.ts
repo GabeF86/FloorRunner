@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { sbSchedulingServer } from '@/lib/supabaseScheduling';
+import { validateAndSplitPatch } from '@/lib/validation/providers';
 
 export async function GET(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
@@ -19,7 +20,8 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
   ]);
 
   if (providerRes.error) {
-    return NextResponse.json({ error: providerRes.error.message }, { status: 500 });
+    const status = providerRes.error.code === 'PGRST116' ? 404 : 500;
+    return NextResponse.json({ error: providerRes.error.message }, { status });
   }
 
   // Auto-heal: only if we definitively confirm there's no profile row via
@@ -33,13 +35,21 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
       .select()
       .single();
     if (insertErr) {
+      // Don't swallow — if auto-heal failed, surface it. The previous
+      // version silently set profile=undefined, which caused downstream
+      // UI crashes that were extremely hard to diagnose. Return 500 so
+      // the caller sees the real error.
       console.error('[providers GET] auto-heal insert failed:', insertErr);
+      return NextResponse.json(
+        { error: `Failed to create employment profile: ${insertErr.message}` },
+        { status: 500 },
+      );
     }
     profile = inserted;
   }
 
   return NextResponse.json({
-    ...(providerRes.data || {}),
+    ...providerRes.data,
     provider_employment_profiles: profile ? [profile] : [],
     provider_site_credentials: credsRes.data || [],
   });
@@ -50,22 +60,69 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
   const sb = sbSchedulingServer();
   const body = await req.json();
 
-  // Separate provider fields from profile fields
-  const providerFields: Record<string, unknown> = {};
-  const profileFields: Record<string, unknown> = {};
+  const result = validateAndSplitPatch(body);
+  if (!result.ok) {
+    return NextResponse.json({ error: result.error }, { status: 400 });
+  }
+  const { providerFields, profileFields } = result;
 
-  const PROVIDER_COLUMNS = [
-    'first_name', 'last_name', 'preferred_display_name', 'short_display_name',
-    'initials', 'provider_type', 'status', 'email', 'phone', 'home_address',
-    'npi', 'employee_id', 'payroll_id', 'start_date', 'years_with_group',
-    'notes_admin_only', 'color_tag', 'photo_url',
-  ];
+  // Employee-ID uniqueness — partial UNIQUE (organization_id, employee_id).
+  // If the client is changing employee_id, check for a collision in the same
+  // org before the update so we can return a friendly 409.
+  if (typeof providerFields.employee_id === 'string' && providerFields.employee_id) {
+    const { data: current } = await sb
+      .from('providers')
+      .select('organization_id, employee_id')
+      .eq('id', id)
+      .single();
+    if (current && current.employee_id !== providerFields.employee_id) {
+      const { data: collision } = await sb
+        .from('providers')
+        .select('id')
+        .eq('organization_id', current.organization_id)
+        .eq('employee_id', providerFields.employee_id)
+        .neq('id', id)
+        .maybeSingle();
+      if (collision) {
+        return NextResponse.json(
+          { error: `Employee ID "${providerFields.employee_id}" is already in use` },
+          { status: 409 },
+        );
+      }
+    }
+  }
 
-  for (const [key, val] of Object.entries(body)) {
-    if (PROVIDER_COLUMNS.includes(key)) {
-      providerFields[key] = val;
-    } else if (key !== 'id' && key !== 'organization_id') {
-      profileFields[key] = val;
+  // If names changed, refresh the derived short_display_name + initials so
+  // the list view stays in sync. Only overwrite when the caller didn't
+  // explicitly pass its own values.
+  if ((providerFields.first_name || providerFields.last_name) &&
+      !providerFields.short_display_name && !providerFields.initials) {
+    const { data: current } = await sb
+      .from('providers')
+      .select('first_name, last_name')
+      .eq('id', id)
+      .single();
+    if (current) {
+      const first = String(providerFields.first_name ?? current.first_name).trim();
+      const last = String(providerFields.last_name ?? current.last_name).trim();
+      if (first && last) {
+        providerFields.short_display_name = `${first.charAt(0)}.${last}`;
+        providerFields.initials = `${first.charAt(0)}${last.charAt(0)}`.toUpperCase();
+      }
+    }
+  }
+
+  // Validate home_site_id belongs to the same org as the provider.
+  if (profileFields.home_site_id) {
+    const [{ data: prov }, { data: site }] = await Promise.all([
+      sb.from('providers').select('organization_id').eq('id', id).single(),
+      sb.from('sites').select('organization_id').eq('id', profileFields.home_site_id).maybeSingle(),
+    ]);
+    if (!site || !prov || site.organization_id !== prov.organization_id) {
+      return NextResponse.json(
+        { error: 'home_site_id does not belong to this provider\u2019s organization' },
+        { status: 400 },
+      );
     }
   }
 
