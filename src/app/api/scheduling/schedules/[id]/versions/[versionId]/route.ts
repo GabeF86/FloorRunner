@@ -1,11 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { sbSchedulingServer } from '@/lib/supabaseScheduling';
 
+// PATCH /api/scheduling/schedules/:id/versions/:versionId
+// Update version status (draft → review → published → archived)
 // Never prerender — this route hits Supabase per request.
 export const dynamic = 'force-dynamic';
 
-// PATCH /api/scheduling/schedules/:id/versions/:versionId
-// Update version status (draft → review → published → archived)
 export async function PATCH(
   req: NextRequest,
   { params }: { params: Promise<{ id: string; versionId: string }> },

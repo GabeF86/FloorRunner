@@ -1,10 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { sbSchedulingServer } from '@/lib/supabaseScheduling';
 
+// PATCH /api/scheduling/swaps/:id — approve/deny/cancel swap + execute if approved
 // Never prerender — this route hits Supabase per request.
 export const dynamic = 'force-dynamic';
 
-// PATCH /api/scheduling/swaps/:id — approve/deny/cancel swap + execute if approved
 export async function PATCH(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> },

@@ -1,9 +1,6 @@
 import { createClient } from '@supabase/supabase-js';
 import { NextRequest, NextResponse } from 'next/server';
 
-// Never prerender — this route hits Supabase per request.
-export const dynamic = 'force-dynamic';
-
 function server() {
   return createClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -14,6 +11,9 @@ function server() {
 interface BaselineSite {
   name: string; color: string; icon: string; rooms: string[];
 }
+
+// Never prerender — this route hits Supabase per request.
+export const dynamic = 'force-dynamic';
 
 export async function POST(req: NextRequest) {
   const sb = server();

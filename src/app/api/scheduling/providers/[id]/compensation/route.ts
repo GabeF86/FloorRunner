@@ -2,14 +2,14 @@ import { NextRequest, NextResponse } from 'next/server';
 import { sbSchedulingServer } from '@/lib/supabaseScheduling';
 import { validateCompensation } from '@/lib/validation/compensation';
 
-// Never prerender — this route hits Supabase per request.
-export const dynamic = 'force-dynamic';
-
 // GET /api/scheduling/providers/:id/compensation
 // Returns the provider's compensation row, or an empty object if not yet set.
 // NOTE: there is no authz enforcement here today — this is currently returned
 // to anyone who can reach the endpoint. When auth + RLS land, gate this table
 // behind an "admin" role.
+// Never prerender — this route hits Supabase per request.
+export const dynamic = 'force-dynamic';
+
 export async function GET(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id: providerId } = await params;
   const sb = sbSchedulingServer();

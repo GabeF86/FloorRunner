@@ -2,11 +2,11 @@ import { NextRequest, NextResponse } from 'next/server';
 import { sbSchedulingServer } from '@/lib/supabaseScheduling';
 import { coerceValue } from '@/lib/validation/customFields';
 
+// GET returns a map of { field_definition_id: value } plus the active
+// definitions for convenience, so the UI only needs one round trip to render.
 // Never prerender — this route hits Supabase per request.
 export const dynamic = 'force-dynamic';
 
-// GET returns a map of { field_definition_id: value } plus the active
-// definitions for convenience, so the UI only needs one round trip to render.
 export async function GET(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id: providerId } = await params;
   const sb = sbSchedulingServer();
