@@ -73,8 +73,9 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: 
     .in('id', submittedIds);
   if (defErr) return NextResponse.json({ error: defErr.message }, { status: 500 });
 
-  const defById = new Map<string, { id: string; field_type: string; options: string[]; organization_id: string }>();
-  for (const d of defs || []) defById.set(d.id, d);
+  type Def = { id: string; field_type: string; options: string[]; organization_id: string; required: boolean; display_label: string };
+  const defById = new Map<string, Def>();
+  for (const d of defs || []) defById.set(d.id, d as Def);
 
   const toUpsert: Array<{ provider_id: string; field_definition_id: string; value: unknown }> = [];
   const toDelete: string[] = [];
@@ -91,6 +92,16 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: 
     if (!coerced.ok) {
       return NextResponse.json(
         { error: `Value for "${defId}" invalid: ${coerced.error}` },
+        { status: 400 },
+      );
+    }
+    // Required-field enforcement. The UI catches this, but anyone hitting
+    // the API directly (scripts, future mobile client) would otherwise be
+    // able to clear a required field. Rejecting an explicit null submission
+    // is the right boundary — we don't touch fields that weren't submitted.
+    if (coerced.value === null && def.required) {
+      return NextResponse.json(
+        { error: `"${def.display_label}" is required` },
         { status: 400 },
       );
     }
