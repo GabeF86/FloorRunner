@@ -10,6 +10,7 @@ import type {
   RuleViolation,
   DayType,
 } from './types';
+import { BOOKEND_EXTENDING_TYPES } from './shared';
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -260,6 +261,54 @@ const timeOff: Evaluator = ctx => {
     }
   }
   return violations;
+};
+
+// ── Weekend adjacent-week PTO ──────────────────────────────────────────────
+//
+// Hard rule mirroring the eligibility check in autoGenerate.ts: a Sat or
+// Sun call assignment is invalid if the provider has planned leave
+// (PTO / FMLA / parental / military) covering any day of the Mon-Fri
+// week immediately BEFORE the weekend or the Mon-Fri week immediately
+// AFTER the weekend. Manual assignments that violate this surface the
+// same warning that the auto-generator would have used to exclude them.
+//
+// Friday slots are intentionally not checked — a provider may take the
+// Friday immediately before their PTO week in extenuating circumstances.
+
+const weekendAdjacentPto: Evaluator = ctx => {
+  if (!ctx.providerId) return [];
+  const dt = ctx.slot.derived_day_type;
+  if (dt !== 'saturday' && dt !== 'sunday') return [];
+
+  const satDate = dt === 'saturday'
+    ? ctx.slot.slot_date
+    : shiftDate(ctx.slot.slot_date, -1);
+  const weekBeforeStart = shiftDate(satDate, -5);
+  const weekBeforeEnd = shiftDate(satDate, -1);
+  const weekAfterStart = shiftDate(satDate, 2);
+  const weekAfterEnd = shiftDate(satDate, 6);
+
+  for (const a of ctx.availability) {
+    if (a.approval_status === 'denied' || a.approval_status === 'canceled') continue;
+    if (!BOOKEND_EXTENDING_TYPES.has(a.availability_type)) continue;
+
+    const overlapsBefore =
+      a.start_date <= weekBeforeEnd && a.end_date >= weekBeforeStart;
+    const overlapsAfter =
+      a.start_date <= weekAfterEnd && a.end_date >= weekAfterStart;
+    if (!overlapsBefore && !overlapsAfter) continue;
+
+    const which = overlapsBefore ? 'week before' : 'week after';
+    return [{
+      rule_id: null,
+      rule_name: 'Weekend call adjacent to PTO',
+      category: 'time_off',
+      severity: 'hard',
+      message: `Provider has ${a.availability_type} (${a.start_date} to ${a.end_date}) in the ${which} this weekend — Sat/Sun call should not be placed adjacent to planned leave.`,
+    }];
+  }
+
+  return [];
 };
 
 // ── Sequence ───────────────────────────────────────────────────────────────
@@ -725,6 +774,7 @@ const crossSite: Evaluator = ctx => {
 export const evaluators: Evaluator[] = [
   eligibility,
   timeOff,
+  weekendAdjacentPto,
   sequence,
   rest,
   frequency,
