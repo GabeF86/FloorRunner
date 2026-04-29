@@ -19,9 +19,15 @@ export const metadata: Metadata = {
   description: 'Real-time OR staffing board for anesthesia teams',
 };
 
+// Runs before React hydrates so dark→light switch never flashes.
+const themeInitScript = `(function(){try{var t=localStorage.getItem('theme');if(t==='light'||t==='dark'){document.documentElement.setAttribute('data-theme',t);}}catch(e){}})();`;
+
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en" className={`${dmSans.variable} ${dmMono.variable}`}>
+      <head>
+        <script dangerouslySetInnerHTML={{ __html: themeInitScript }} />
+      </head>
       <body>{children}</body>
     </html>
   );

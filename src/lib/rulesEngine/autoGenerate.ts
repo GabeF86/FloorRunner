@@ -954,12 +954,12 @@ export async function autoGenerate(
   }
   console.log(`[autoGen] relief pass: filled ${reliefFilled} D4-D9 slots`);
 
-  // ── 12. Compute validation flags for call shifts only (parallel batches) ──
-  // D-shifts are deterministic chains or relief assignments — no rules target
-  // them in the current rule set. Skip their validation to keep the wall time
-  // bounded by the number of call shifts, which is the only interesting set.
-  const toValidate = result.assignments.filter(a => ['C1', 'C2', 'C3'].includes(a.shift_type_code));
-  console.log(`[autoGen] validating ${toValidate.length} call assignments (skipping ${result.assignments.length - toValidate.length} D-shifts)...`);
+  // ── 12. Compute validation flags for ALL assignments (parallel batches) ──
+  // Every assignment now gets validated so the schedule UI can show a complete
+  // "rules checked / violations" picture, not just call shifts. This is more
+  // work, but the user explicitly needs to see whether D-shift rules are firing.
+  const toValidate = result.assignments;
+  console.log(`[autoGen] validating ${toValidate.length} assignments (all shift types)...`);
   const VALIDATION_CONCURRENCY = 10;
   for (let i = 0; i < toValidate.length; i += VALIDATION_CONCURRENCY) {
     const batch = toValidate.slice(i, i + VALIDATION_CONCURRENCY);

@@ -113,7 +113,7 @@ export default function RelievedBox({ reliefLog, today, dragging, onDropRelieved
                 <div style={{ fontSize: 11, color: 'var(--text-dim)', fontStyle: 'italic', textAlign: 'center', padding: '12px 0' }}>No records for this date</div>
               )}
               {!loading && history.map((entry) => (
-                <div key={entry.id} style={{ display: 'flex', alignItems: 'center', gap: 7, padding: '5px 6px', borderRadius: 7, marginBottom: 3, background: 'rgba(255,255,255,0.02)', border: '1px solid var(--border)' }}>
+                <div key={entry.id} style={{ display: 'flex', alignItems: 'center', gap: 7, padding: '5px 6px', borderRadius: 7, marginBottom: 3, background: 'var(--tint-surface-faint)', border: '1px solid var(--border)' }}>
                   <div style={{ width: 24, height: 24, borderRadius: 6, background: 'rgba(' + hexToRgb(roleColor(entry.staff_role)) + ',0.15)', color: roleColor(entry.staff_role), display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 9, fontWeight: 800, flexShrink: 0 }}>
                     {entry.staff_initials}
                   </div>

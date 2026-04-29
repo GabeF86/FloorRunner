@@ -70,20 +70,15 @@ export default function SiteCard(props: Props) {
       onMouseLeave={() => setHov(false)}
       style={{ background: 'var(--bg-surface)', borderRadius: 14, border: '1px solid var(--border)', overflow: 'visible', marginBottom: 14 }}
     >
-      {/* Site header — full width */}
-      <div style={{ padding: '12px 18px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: 'linear-gradient(135deg,rgba(' + rgb + ',0.08) 0%,transparent 100%)', borderBottom: '1px solid rgba(' + rgb + ',0.15)', borderRadius: '14px 14px 0 0' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-          <div style={{ width: 40, height: 40, borderRadius: 10, background: 'rgba(' + rgb + ',0.15)', color: site.color, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 20, boxShadow: '0 0 12px rgba(' + rgb + ',0.2)' }}>
-            {site.icon}
-          </div>
-          <div>
-            <div style={{ fontSize: 17, fontWeight: 800, color: site.color, letterSpacing: -0.3 }}>{site.name}</div>
-            <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 1 }}>{site.rooms.length} rooms</div>
-          </div>
+      {/* Site header — full width, denser */}
+      <div style={{ padding: '7px 12px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: 'linear-gradient(135deg,rgba(' + rgb + ',0.28) 0%,rgba(' + rgb + ',0.14) 100%)', borderBottom: '1px solid rgba(' + rgb + ',0.32)', borderRadius: '14px 14px 0 0' }}>
+        <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
+          <span style={{ fontSize: 13, fontWeight: 700, color: site.color, letterSpacing: -0.2 }}>{site.name}</span>
+          <span style={{ fontSize: 10, color: 'var(--text-muted)', fontFamily: 'var(--font-mono), ui-monospace, monospace' }}>· {site.rooms.length} rooms</span>
         </div>
-        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-          <button draggable={false} onClick={(e) => { e.stopPropagation(); props.onAddRoom(); }} style={{ background: 'rgba(' + rgb + ',0.1)', border: '1px solid rgba(' + rgb + ',0.25)', color: site.color, borderRadius: 7, padding: '5px 14px', fontSize: 12, fontWeight: 800, cursor: 'pointer' }}>+ Room</button>
-          {hov && <button draggable={false} onClick={(e) => { e.stopPropagation(); props.onDeleteSite(); }} style={{ background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.25)', color: '#f87171', borderRadius: 7, padding: '5px 12px', fontSize: 12, fontWeight: 800, cursor: 'pointer' }}>Delete Site</button>}
+        <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+          <button draggable={false} onClick={(e) => { e.stopPropagation(); props.onAddRoom(); }} style={{ background: 'rgba(' + rgb + ',0.12)', border: '1px solid rgba(' + rgb + ',0.3)', color: site.color, borderRadius: 5, padding: '2px 9px', fontSize: 10, fontWeight: 700, cursor: 'pointer' }}>+ Room</button>
+          {hov && <button draggable={false} onClick={(e) => { e.stopPropagation(); props.onDeleteSite(); }} style={{ background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.25)', color: '#f87171', borderRadius: 5, padding: '2px 9px', fontSize: 10, fontWeight: 700, cursor: 'pointer' }}>Delete Site</button>}
         </div>
       </div>
 
@@ -118,7 +113,7 @@ export default function SiteCard(props: Props) {
         onMouseDown={onResizeMouseDown}
         style={{ height: 6, cursor: 'ns-resize', display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: '0 0 14px 14px', background: hov ? `rgba(${rgb},0.08)` : 'transparent', transition: 'background 0.15s' }}
       >
-        <div style={{ width: 32, height: 3, borderRadius: 2, background: hov ? `rgba(${rgb},0.4)` : 'rgba(255,255,255,0.08)', transition: 'background 0.15s' }} />
+        <div style={{ width: 32, height: 3, borderRadius: 2, background: hov ? `rgba(${rgb},0.4)` : 'var(--tint-surface-strong)', transition: 'background 0.15s' }} />
       </div>
     </div>
   );
@@ -170,7 +165,7 @@ function RoomCell({ room, site, people, isOver, dragging, alertLevels, dailyShif
       style={{
         flexShrink: 0, width: 'auto', minWidth: 130, minHeight: 120,
         borderRadius: 10, border: '1px solid',
-        borderColor: isOver ? site.color : needsMd ? 'rgba(251,191,36,0.4)' : draggingRoom ? site.color : 'rgba(255,255,255,0.07)',
+        borderColor: isOver ? site.color : needsMd ? 'rgba(251,191,36,0.4)' : draggingRoom ? site.color : 'var(--border-faint)',
         background: isOver ? 'rgba(' + rgb + ',0.09)' : draggingRoom ? 'rgba(' + rgb + ',0.04)' : 'var(--bg-deep)',
         boxShadow: isOver ? '0 0 16px rgba(' + rgb + ',0.25)' : 'none',
         transition: 'all 0.14s', cursor: draggingRoom ? 'grabbing' : 'default',
@@ -179,17 +174,17 @@ function RoomCell({ room, site, people, isOver, dragging, alertLevels, dailyShif
       }}
     >
       {/* Room header */}
-      <div style={{ padding: '7px 9px 5px', borderBottom: '1px solid rgba(255,255,255,0.05)' }}>
+      <div style={{ padding: '4px 7px 3px', borderBottom: '1px solid var(--border-muted)' }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 4 }}>
-          <span style={{ fontSize: 13, fontWeight: 800, color: 'var(--text-muted)', letterSpacing: 0.2 }}>
+          <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-muted)', letterSpacing: 0.2, fontFamily: 'var(--font-mono), ui-monospace, monospace' }}>
             {room.name}
             {surgeon?.staff && (
-              <span style={{ fontSize: 11, color: ROLE_META.surgeon.color, fontWeight: 700, marginLeft: 5 }}>
+              <span style={{ fontSize: 10, color: ROLE_META.surgeon.color, fontWeight: 600, marginLeft: 4, fontFamily: 'var(--font-sans)' }}>
                 — {surgeon.staff.name}
               </span>
             )}
           </span>
-          {needsMd && <span style={{ fontSize: 10, fontWeight: 800, color: '#fbbf24', background: 'rgba(251,191,36,0.12)', border: '1px solid rgba(251,191,36,0.3)', borderRadius: 4, padding: '1px 5px', whiteSpace: 'nowrap' }}>⚠ No MD</span>}
+          {needsMd && <span style={{ fontSize: 9, fontWeight: 700, color: '#fbbf24', background: 'rgba(251,191,36,0.12)', border: '1px solid rgba(251,191,36,0.3)', borderRadius: 3, padding: '0 4px', whiteSpace: 'nowrap' }}>⚠ No MD</span>}
         </div>
       </div>
 
@@ -200,7 +195,7 @@ function RoomCell({ room, site, people, isOver, dragging, alertLevels, dailyShif
 
         {/* Divider between MD and CRNA when both present */}
         {mdPeople.length > 0 && crnaPeople.length > 0 && (
-          <div style={{ height: 1, background: 'rgba(255,255,255,0.05)', margin: '1px 0' }} />
+          <div style={{ height: 1, background: 'var(--border-muted)', margin: '1px 0' }} />
         )}
 
         {/* CRNA / SRNA */}
@@ -220,7 +215,7 @@ function RoomCell({ room, site, people, isOver, dragging, alertLevels, dailyShif
 
       {/* Delete room button */}
       {hov && !dragging && (
-        <button onClick={onDeleteRoom} style={{ position: 'absolute', top: -8, right: -8, width: 22, height: 22, borderRadius: '50%', background: '#1e293b', border: '1px solid #475569', color: '#94a3b8', fontSize: 14, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 800, zIndex: 10, padding: 0 }}>×</button>
+        <button onClick={onDeleteRoom} style={{ position: 'absolute', top: -8, right: -8, width: 22, height: 22, borderRadius: '50%', background: 'var(--bg-surface)', border: '1px solid var(--border-strong)', color: 'var(--text-muted)', fontSize: 14, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 800, zIndex: 10, padding: 0 }}>×</button>
       )}
     </div>
   );
@@ -242,14 +237,14 @@ function PersonChip({ assignment, person, alertLevels, dailyShifts, onRemove }: 
 
   return (
     <div onClick={onRemove} title={person.name + ' — click to unassign'}
-      style={{ display: 'flex', alignItems: 'center', gap: 4, padding: '4px 7px', borderRadius: 6, cursor: 'pointer', background: m.bg, color: m.color, border: '1px solid ' + (alert === 'critical' ? 'rgba(239,68,68,0.7)' : alert === 'warning' ? 'rgba(251,191,36,0.6)' : m.border), fontSize: 12, fontWeight: 700, position: 'relative', transition: 'opacity 0.12s' }}
+      style={{ display: 'flex', alignItems: 'center', gap: 3, padding: '2px 5px', borderRadius: 4, cursor: 'pointer', background: m.bg, color: m.color, border: '1px solid ' + (alert === 'critical' ? 'rgba(239,68,68,0.7)' : alert === 'warning' ? 'rgba(251,191,36,0.6)' : m.border), fontSize: 10, fontWeight: 700, position: 'relative', transition: 'opacity 0.12s' }}
       onMouseEnter={(e) => (e.currentTarget.style.opacity = '0.7')}
       onMouseLeave={(e) => (e.currentTarget.style.opacity = '1')}>
-      {alert !== 'none' && <div style={{ position: 'absolute', inset: 0, borderRadius: 6, border: '1px solid ' + (alert === 'critical' ? 'rgba(239,68,68,0.7)' : 'rgba(251,191,36,0.6)'), animation: 'relief-flash ' + (alert === 'critical' ? '1s' : '2s') + ' ease-in-out infinite', pointerEvents: 'none' }} />}
-      <span style={{ fontWeight: 800, fontSize: 11 }}>{person.initials}</span>
-      <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 70 }}>{person.name.split(' ').pop()}</span>
+      {alert !== 'none' && <div style={{ position: 'absolute', inset: 0, borderRadius: 4, border: '1px solid ' + (alert === 'critical' ? 'rgba(239,68,68,0.7)' : 'rgba(251,191,36,0.6)'), animation: 'relief-flash ' + (alert === 'critical' ? '1s' : '2s') + ' ease-in-out infinite', pointerEvents: 'none' }} />}
+      <span style={{ fontWeight: 800, fontSize: 9, fontFamily: 'var(--font-mono), ui-monospace, monospace' }}>{person.initials}</span>
+      <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 80 }}>{person.name.split(' ').pop()}</span>
       {hours && <ShiftBadge hours={hours} role={person.role} />}
-      <span style={{ opacity: 0.3, fontSize: 13 }}>×</span>
+      <span style={{ opacity: 0.3, fontSize: 11 }}>×</span>
     </div>
   );
 }
@@ -265,12 +260,9 @@ function FloatSiteCard({ site, floatAssignments, dragging, isOver, dailyShifts, 
   const rgb = hexToRgb(site.color);
   return (
     <div style={{ background: 'var(--bg-surface)', borderRadius: 14, border: '1px solid ' + (isOver ? site.color : 'var(--border)'), marginBottom: 14, boxShadow: isOver ? '0 0 20px rgba(' + rgb + ',0.2)' : 'none', transition: 'all 0.15s' }}>
-      <div style={{ padding: '12px 18px', display: 'flex', alignItems: 'center', gap: 12, borderBottom: '1px solid rgba(' + rgb + ',0.15)', background: 'linear-gradient(135deg,rgba(' + rgb + ',0.06) 0%,transparent 100%)', borderRadius: '14px 14px 0 0' }}>
-        <div style={{ width: 40, height: 40, borderRadius: 10, background: 'rgba(' + rgb + ',0.15)', color: site.color, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 20 }}>{site.icon}</div>
-        <div>
-          <div style={{ fontSize: 17, fontWeight: 800, color: site.color }}>{site.name}</div>
-          <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{floatAssignments.length} floating · giving breaks or standby</div>
-        </div>
+      <div style={{ padding: '7px 12px', display: 'flex', alignItems: 'baseline', gap: 8, borderBottom: '1px solid rgba(' + rgb + ',0.32)', background: 'linear-gradient(135deg,rgba(' + rgb + ',0.28) 0%,rgba(' + rgb + ',0.14) 100%)', borderRadius: '14px 14px 0 0' }}>
+        <span style={{ fontSize: 13, fontWeight: 700, color: site.color }}>{site.name}</span>
+        <span style={{ fontSize: 10, color: 'var(--text-muted)', fontFamily: 'var(--font-mono), ui-monospace, monospace' }}>· {floatAssignments.length} floating · giving breaks or standby</span>
       </div>
       <div
         onDragOver={(e) => { e.preventDefault(); onDragOver(); }}
@@ -290,13 +282,13 @@ function FloatSiteCard({ site, floatAssignments, dragging, isOver, dailyShifts, 
           const al = alertLevels[p.id] || 'none';
           return (
             <div key={a.id} onClick={() => onRemoveAssignment(a.id)} title={p.name + ' — click to remove'}
-              style={{ display: 'flex', alignItems: 'center', gap: 5, padding: '5px 10px', borderRadius: 8, cursor: 'pointer', background: m.bg, color: m.color, border: '1px solid ' + m.border, fontSize: 12, fontWeight: 700 }}
+              style={{ display: 'flex', alignItems: 'center', gap: 4, padding: '3px 7px', borderRadius: 5, cursor: 'pointer', background: m.bg, color: m.color, border: '1px solid ' + m.border, fontSize: 10, fontWeight: 700 }}
               onMouseEnter={(e) => (e.currentTarget.style.opacity = '0.7')}
               onMouseLeave={(e) => (e.currentTarget.style.opacity = '1')}>
-              <span style={{ fontWeight: 800, fontSize: 11 }}>{p.initials}</span>
+              <span style={{ fontWeight: 800, fontSize: 9, fontFamily: 'var(--font-mono), ui-monospace, monospace' }}>{p.initials}</span>
               <span>{p.name.split(' ').pop()}</span>
               {h && <ShiftBadge hours={h} role={p.role} />}
-              <span style={{ opacity: 0.3, fontSize: 13 }}>×</span>
+              <span style={{ opacity: 0.3, fontSize: 11 }}>×</span>
             </div>
           );
         })}

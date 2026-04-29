@@ -2,16 +2,92 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ── Dark theme (default) ────────────────────────────────────────────────── */
 :root {
-  --bg-base:    #070d1a;
-  --bg-surface: #0d1b30;
-  --bg-deep:    #07111f;
-  --border:     #1e3a5f;
-  --text:       #e2e8f0;
-  --text-muted: #64748b;
-  --text-dim:   #334155;
-  --blue:       #0ea5e9;
-  --indigo:     #6366f1;
+  /* Backgrounds */
+  --bg-base:           #070d1a;
+  --bg-surface:        #0d1b30;
+  --bg-deep:           #07111f;
+  --bg-header-from:    #0a1628;
+  --bg-header-to:      #0f1f3d;
+  --bg-sidebar:        #0a1628;
+  --bg-popover:        #0d1b30;
+  --bg-modal-backdrop: rgba(0,0,0,0.75);
+  --bg-print-overlay:  rgba(0,0,0,0.7);
+
+  /* Borders */
+  --border:         #1e3a5f;
+  --border-strong:  #334155;
+  --border-faint:   rgba(255,255,255,0.07);
+  --border-muted:   rgba(255,255,255,0.05);
+  --border-subtle:  rgba(255,255,255,0.08);
+  --border-input:   rgba(255,255,255,0.12);
+
+  /* Text */
+  --text:          #e2e8f0;
+  --text-strong:   #f1f5f9;
+  --text-bright:   #f8fafc;
+  --text-muted:    #64748b;
+  --text-dim:      #334155;
+  --text-faint:    #475569;
+  --text-disabled: #8899aa;
+
+  /* Surface tints (used over surface backgrounds) */
+  --tint-surface:        rgba(255,255,255,0.05);
+  --tint-surface-strong: rgba(255,255,255,0.08);
+  --tint-surface-faint:  rgba(255,255,255,0.02);
+
+  /* Scrollbar */
+  --scrollbar-thumb:       #1e3a5f;
+  --scrollbar-thumb-hover: #2d4f7a;
+
+  /* Shadows */
+  --shadow-card:    0 4px 24px rgba(0,0,0,0.4);
+  --shadow-modal:   0 24px 64px rgba(0,0,0,0.65);
+  --shadow-popover: 0 16px 48px rgba(0,0,0,0.8);
+
+  /* Brand accents (constant in both themes) */
+  --blue:    #0ea5e9;
+  --indigo:  #6366f1;
+}
+
+/* ── Light theme ─────────────────────────────────────────────────────────── */
+[data-theme='light'] {
+  --bg-base:           #f1f5f9;
+  --bg-surface:        #ffffff;
+  --bg-deep:           #f8fafc;
+  --bg-header-from:    #ffffff;
+  --bg-header-to:      #eff6ff;
+  --bg-sidebar:        #f8fafc;
+  --bg-popover:        #ffffff;
+  --bg-modal-backdrop: rgba(15,23,42,0.45);
+  --bg-print-overlay:  rgba(15,23,42,0.4);
+
+  --border:        #cbd5e1;
+  --border-strong: #94a3b8;
+  --border-faint:  rgba(15,23,42,0.08);
+  --border-muted:  rgba(15,23,42,0.06);
+  --border-subtle: rgba(15,23,42,0.1);
+  --border-input:  rgba(15,23,42,0.15);
+
+  --text:          #0f172a;
+  --text-strong:   #020617;
+  --text-bright:   #0f172a;
+  --text-muted:    #475569;
+  --text-dim:      #64748b;
+  --text-faint:    #94a3b8;
+  --text-disabled: #94a3b8;
+
+  --tint-surface:        rgba(15,23,42,0.05);
+  --tint-surface-strong: rgba(15,23,42,0.08);
+  --tint-surface-faint:  rgba(15,23,42,0.025);
+
+  --scrollbar-thumb:       #cbd5e1;
+  --scrollbar-thumb-hover: #94a3b8;
+
+  --shadow-card:    0 1px 3px rgba(15,23,42,0.06), 0 4px 14px rgba(15,23,42,0.07);
+  --shadow-modal:   0 12px 48px rgba(15,23,42,0.18);
+  --shadow-popover: 0 8px 28px rgba(15,23,42,0.15);
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -26,8 +102,8 @@ body {
 /* Scrollbar */
 ::-webkit-scrollbar       { width: 5px; height: 5px; }
 ::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: #1e3a5f; border-radius: 4px; }
-::-webkit-scrollbar-thumb:hover { background: #2d4f7a; }
+::-webkit-scrollbar-thumb { background: var(--scrollbar-thumb); border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: var(--scrollbar-thumb-hover); }
 
 /* Drag ghost opacity */
 [draggable='true']:active { opacity: 0.6; }

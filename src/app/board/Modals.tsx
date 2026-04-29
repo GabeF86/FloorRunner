@@ -23,7 +23,7 @@ function Modal({ title, children, onClose, onConfirm, confirmLabel }: {
     <div
       style={{
         position: 'fixed', inset: 0,
-        background: 'rgba(0,0,0,0.75)',
+        background: 'var(--bg-modal-backdrop)',
         display: 'flex', alignItems: 'center', justifyContent: 'center',
         zIndex: 200,
       }}
@@ -37,11 +37,11 @@ function Modal({ title, children, onClose, onConfirm, confirmLabel }: {
           borderRadius: 16,
           padding: 28,
           width: 400,
-          boxShadow: '0 24px 64px rgba(0,0,0,0.65)',
+          boxShadow: 'var(--shadow-modal)',
         }}
         onClick={(e) => e.stopPropagation()}
       >
-        <div style={{ fontSize: 17, fontWeight: 800, color: '#f1f5f9', marginBottom: 22 }}>{title}</div>
+        <div style={{ fontSize: 17, fontWeight: 800, color: 'var(--text-strong)', marginBottom: 22 }}>{title}</div>
         {children}
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 12 }}>
           <button

@@ -10,6 +10,7 @@ const NAV_ITEMS = [
   { href: '/schedules',  label: 'Schedules',    icon: '▦' },
   { href: '/rules',      label: 'Rules',        icon: '\u2696' },
   { href: '/requests',   label: 'Requests',     icon: '✉' },
+  { href: '/staffing-calculator', label: 'Staffing Calc', icon: '∑' },
   { href: '/board',      label: 'Floor Runner', icon: '⚡' },
   { href: '/reports',    label: 'Reports',      icon: '▤' },
   { href: '/settings',   label: 'Settings',     icon: '⚙' },

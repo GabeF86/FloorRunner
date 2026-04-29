@@ -16,6 +16,7 @@ import FloatBar from './FloatBar';
 import OutListPanel from './OutListPanel';
 import RelievedBox from './RelievedBox';
 import PrintView from './PrintView';
+import NetworkView from './NetworkView';
 import { AddSiteModal, AddStaffModal, AddRoomModal } from './Modals';
 
 interface Props {
@@ -76,12 +77,36 @@ export default function BoardClient({ initialSites, initialStaff, initialAssignm
   const [siteHeights,   setSiteHeights]   = useState<Record<string, number>>({});
   const [hospital, setHospital] = useState<Hospital | ''>('');
   const [sidebarWidth, setSidebarWidth] = useState<number>(290);
+  const [theme, setTheme] = useState<'dark' | 'light'>('dark');
+  const [viewMode, setViewMode] = useState<'grid' | 'network'>('grid');
 
   // Hydrate from localStorage after mount to avoid SSR mismatch
   useEffect(() => {
     try { const v = localStorage.getItem('siteHeights'); if (v) setSiteHeights(JSON.parse(v)); } catch {}
     try { const v = localStorage.getItem('hospital'); if (v) setHospital(v as Hospital); } catch {}
     try { const v = localStorage.getItem('sidebarWidth'); if (v) setSidebarWidth(parseInt(v)); } catch {}
+    try {
+      const t = localStorage.getItem('theme');
+      if (t === 'light' || t === 'dark') setTheme(t);
+    } catch {}
+    try {
+      const m = localStorage.getItem('boardViewMode');
+      if (m === 'grid' || m === 'network') setViewMode(m);
+    } catch {}
+  }, []);
+
+  const setViewModePersistent = useCallback((m: 'grid' | 'network') => {
+    setViewMode(m);
+    try { localStorage.setItem('boardViewMode', m); } catch {}
+  }, []);
+
+  const toggleTheme = useCallback(() => {
+    setTheme((prev) => {
+      const next = prev === 'dark' ? 'light' : 'dark';
+      try { localStorage.setItem('theme', next); } catch {}
+      document.documentElement.setAttribute('data-theme', next);
+      return next;
+    });
   }, []);
   const sidebarResizing = useRef(false);
 
@@ -487,84 +512,90 @@ export default function BoardClient({ initialSites, initialStaff, initialAssignm
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', overflow: 'hidden', background: 'var(--bg-base)', color: 'var(--text)' }}>
 
-      {/* HEADER */}
-      <header style={{ background: 'linear-gradient(135deg,#0a1628,#0f1f3d)', borderBottom: '1px solid var(--border)', padding: '13px 26px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', boxShadow: '0 4px 24px rgba(0,0,0,0.4)', position: 'sticky', top: 0, zIndex: 40 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-          <div style={{ width: 40, height: 40, borderRadius: 11, background: 'linear-gradient(135deg,#0ea5e9,#6366f1)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 20, boxShadow: '0 0 18px rgba(14,165,233,0.4)' }}>⚕</div>
-          <div>
-            <div style={{ fontSize: 22, fontWeight: 800, letterSpacing: -0.5, color: '#f8fafc' }}>ORBoard</div>
-            <div style={{ fontSize: 11, color: 'var(--text-muted)', letterSpacing: 2, textTransform: 'uppercase' }}>Anesthesia Command Center</div>
-          </div>
-          {/* Hospital selector */}
-          <select
-            value={hospital}
-            onChange={(e) => {
-              const val = e.target.value as Hospital | '';
-              setHospital(val);
-              try { localStorage.setItem('hospital', val); } catch {}
-            }}
-            style={{ marginLeft: 16, padding: '6px 12px', borderRadius: 8, background: '#0f1f3d', border: '1px solid rgba(14,165,233,0.35)', color: hospital ? '#0ea5e9' : '#64748b', fontSize: 13, fontWeight: 700, cursor: 'pointer', outline: 'none' }}
-          >
-            <option value="">All Hospitals</option>
-            {HOSPITALS.map((h) => <option key={h} value={h}>{h}</option>)}
-          </select>
-          {hospital && HOSPITAL_BASELINES[hospital] && (
-            <button
-              onClick={resetBoard}
-              style={{ marginLeft: 8, padding: '6px 13px', borderRadius: 8, background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.3)', color: '#f87171', fontWeight: 800, fontSize: 12, cursor: 'pointer' }}
-            >
-              ↺ Reset Board
-            </button>
-          )}
+      {/* TOP UTILITY BAR */}
+      <header style={{ background: 'var(--bg-surface)', borderBottom: '0.5px solid var(--border)', padding: '6px 12px', display: 'flex', alignItems: 'center', gap: 10, position: 'sticky', top: 0, zIndex: 40, minHeight: 38, fontSize: 12 }}>
+        {/* Mode toggle (leftmost — most fundamental nav) */}
+        <PillToggleV1
+          options={[{ value: 'grid', label: 'Grid' }, { value: 'network', label: 'Network' }]}
+          value={viewMode}
+          onChange={(v) => setViewModePersistent(v as 'grid' | 'network')}
+        />
+
+        <BarDivider />
+
+        {/* Brand */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginRight: 4 }}>
+          <span style={{ width: 22, height: 22, borderRadius: 5, background: 'linear-gradient(135deg,#0ea5e9,#6366f1)', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontSize: 12, color: '#fff' }}>⚕</span>
+          <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-bright)', letterSpacing: -0.2 }}>ORBoard</span>
         </div>
 
-        {/* Date navigator */}
-        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-            {!isToday && (
-              <NavArrow dir="left" onClick={() => {
-                const prev = addDays(viewDate, -1);
-                setViewDate(prev < today ? today : prev);
-              }} />
-            )}
-            <div style={{ textAlign: 'center' }}>
-              <div style={{ fontSize: 12, color: isPlanMode ? '#fbbf24' : '#94a3b8', letterSpacing: 0.4, fontWeight: 700 }}>
-                {isPlanMode ? '📅 PLANNING MODE' : dateLabel}
-              </div>
-              {isPlanMode && <div style={{ fontSize: 11, color: '#94a3b8' }}>{dateLabel}</div>}
-              {isToday && <LiveClock />}
-            </div>
-            <NavArrow dir="right" onClick={() => setViewDate(addDays(viewDate, 1))} />
-          </div>
-          {!isToday && (
-            <button onClick={() => setViewDate(today)} style={{ fontSize: 11, fontWeight: 700, color: '#0ea5e9', background: 'rgba(14,165,233,0.1)', border: '1px solid rgba(14,165,233,0.3)', borderRadius: 6, padding: '2px 12px', cursor: 'pointer' }}>
-              ← Back to Today
-            </button>
-          )}
+        <BarDivider />
+
+        {/* Date nav */}
+        <button onClick={() => { const p = addDays(viewDate, -1); setViewDate(p < today ? today : p); }} style={chevButton} title="Previous day">‹</button>
+        <span style={{ fontFamily: 'var(--font-mono), ui-monospace, monospace', fontSize: 11, color: 'var(--text)', minWidth: 110, textAlign: 'center' }}>
+          {dateLabel.replace(/,.*/, '')}
+        </span>
+        <button onClick={() => setViewDate(addDays(viewDate, 1))} style={chevButton} title="Next day">›</button>
+        {!isToday && (
+          <button onClick={() => setViewDate(today)} style={ghostButton} title="Back to today">Today</button>
+        )}
+        {isToday && <LiveClock />}
+
+        <BarDivider />
+
+        {/* Live / Planning toggle */}
+        <PillToggleV1
+          options={[{ value: 'live', label: 'Live' }, { value: 'plan', label: 'Planning' }]}
+          value={isPlanMode ? 'plan' : 'live'}
+          onChange={(v) => { if (v === 'live' && !isToday) setViewDate(today); }}
+        />
+
+        <BarDivider />
+
+        {/* Facility pills */}
+        <div style={{ display: 'flex', gap: 3 }}>
+          <FacilityPillV1 label="All" active={!hospital} onClick={() => { setHospital(''); try { localStorage.setItem('hospital', ''); } catch {} }} />
+          {HOSPITALS.map((h) => (
+            <FacilityPillV1
+              key={h}
+              label={facilityAbbrev(h)}
+              active={hospital === h}
+              onClick={() => {
+                const next = hospital === h ? '' : h;
+                setHospital(next);
+                try { localStorage.setItem('hospital', next); } catch {}
+              }}
+            />
+          ))}
         </div>
 
-        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-          {saving && <Pill label="Saving…" color="#94a3b8" />}
-          {isPlanMode && (
-            <button onClick={() => setShowPrint(true)} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '7px 16px', borderRadius: 8, background: 'rgba(14,165,233,0.12)', border: '1px solid rgba(14,165,233,0.35)', color: '#0ea5e9', fontWeight: 800, fontSize: 13, cursor: 'pointer' }}>
-              🖨️ Print Sheet
-            </button>
-          )}
+        {hospital && HOSPITAL_BASELINES[hospital] && (
+          <button onClick={resetBoard} style={{ ...ghostButton, color: '#f87171', borderColor: 'rgba(239,68,68,0.35)' }} title="Reset board to baseline">↺ Reset</button>
+        )}
+
+        {/* Right cluster */}
+        <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 6 }}>
+          {saving && <span style={{ fontSize: 10, color: 'var(--text-muted)', fontFamily: 'var(--font-mono), ui-monospace, monospace' }}>saving…</span>}
+          <span style={{ fontSize: 10, color: 'var(--text-muted)', fontFamily: 'var(--font-mono), ui-monospace, monospace' }}>
+            {realAssignedIds.size}/{activeStaff.filter((p) => activeStaffIds.has(p.id)).length} working · {filteredSites.filter((s) => !s.is_float).reduce((n, s) => n + s.rooms.length, 0)} rooms
+          </span>
           {isToday && <Pill label="LIVE" color="#10b981" pulse />}
-          <Pill label={realAssignedIds.size + ' / ' + activeStaff.filter((p) => activeStaffIds.has(p.id)).length + ' Working'} color="#0ea5e9" />
+          <BarDivider />
+          <button onClick={() => setShowPrint(true)} style={ghostButton} title="Print sheet">🖨 Print</button>
+          <ThemeToggle theme={theme} onToggle={toggleTheme} />
         </div>
       </header>
 
-      {/* PLANNING BANNER */}
+      {/* Inline planning banner */}
       {isPlanMode && (
-        <div style={{ background: 'rgba(251,191,36,0.08)', borderBottom: '1px solid rgba(251,191,36,0.25)', padding: '8px 26px', display: 'flex', alignItems: 'center', gap: 10, fontSize: 13, color: '#fbbf24', fontWeight: 600 }}>
-          📅 Planning mode — editing <strong style={{ color: '#fde68a' }}>{dateLabel}</strong>. Won't affect today's live board.
-          <button onClick={() => setShowPrint(true)} style={{ marginLeft: 'auto', fontSize: 12, fontWeight: 700, color: '#fbbf24', background: 'rgba(251,191,36,0.1)', border: '1px solid rgba(251,191,36,0.3)', borderRadius: 6, padding: '4px 14px', cursor: 'pointer' }}>🖨️ Print Sheet</button>
+        <div style={{ background: 'rgba(251,191,36,0.08)', borderBottom: '0.5px solid rgba(251,191,36,0.25)', padding: '4px 12px', display: 'flex', alignItems: 'center', gap: 8, fontSize: 11, color: '#fbbf24', fontWeight: 600 }}>
+          <span>📅 Planning — editing <strong style={{ color: '#fde68a' }}>{dateLabel}</strong>. Won't affect today's live board.</span>
         </div>
       )}
 
       {/* BODY */}
-      <div style={{ display: 'flex', flex: 1, overflow: 'hidden', height: isPlanMode ? 'calc(100vh - 120px)' : 'calc(100vh - 72px)' }}>
+      <div style={{ display: 'flex', flex: 1, overflow: 'hidden', height: isPlanMode ? 'calc(100vh - 62px)' : 'calc(100vh - 38px)' }}>
 
         {/* Sidebar — resizable */}
         <div style={{ width: sidebarWidth, minWidth: sidebarWidth, flexShrink: 0, display: 'flex', overflow: 'hidden' }}>
@@ -603,8 +634,20 @@ export default function BoardClient({ initialSites, initialStaff, initialAssignm
 
         {/* Main content */}
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-          <main style={{ flex: 1, overflowY: 'auto', padding: '18px 22px' }}>
+          <main style={{ flex: 1, overflowY: 'auto', padding: '12px 16px' }}>
             <StatsBar staff={activeStaff} assignments={assignments} assignedStaffIds={assignedStaffIds} supervisionLoads={supervisionLoads} sites={sites} />
+
+            {/* CONTINGENCY ROW — sits directly above the Available bar (stub, wired in Phase 2) */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '4px 10px', marginBottom: 8, borderRadius: 6, border: '0.5px solid var(--border)', background: 'var(--bg-surface)' }}>
+              <span style={{ fontSize: 9, color: 'var(--text-muted)', fontWeight: 700, letterSpacing: 0.3, textTransform: 'uppercase', marginRight: 4 }}>Contingencies</span>
+              <ContingencyPill label="Trauma alert" severity="high" />
+              <ContingencyPill label="Add-on case"  severity="medium" />
+              <ContingencyPill label="Late-out"     severity="medium" />
+              <button style={{ padding: '1px 8px', borderRadius: 999, fontSize: 9, fontWeight: 700, background: 'transparent', color: 'var(--text-muted)', border: '0.5px dashed var(--border)', cursor: 'pointer' }}>
+                + add
+              </button>
+              <span style={{ marginLeft: 'auto', fontSize: 9, color: 'var(--text-dim)', fontFamily: 'var(--font-mono), ui-monospace, monospace', fontStyle: 'italic' }}>coming soon</span>
+            </div>
 
             <FloatBar
               staff={activeStaff}
@@ -616,50 +659,68 @@ export default function BoardClient({ initialSites, initialStaff, initialAssignm
               onDragStart={handleDragStart}
             />
 
-            {/* Sites — 4-column grid: large OR sites full-width, small specialty sites half-width */}
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 14 }}>
-              {[
-                ...filteredSites.filter((s) => !s.is_float && !isSmallSite(s.name)),
-                ...filteredSites.filter((s) => !s.is_float && isSmallSite(s.name)),
-                ...filteredSites.filter((s) => s.is_float),
-              ].map((site, i) => (
-                <div key={site.id}
-                  style={{ gridColumn: site.is_float ? '1 / -1' : isSmallSite(site.name) ? 'span 2' : '1 / -1' }}
-                  draggable={!site.is_float}
-                  onDragStart={(e) => {
-                    if ((e.target as HTMLElement).closest('button,input,select,textarea')) { e.preventDefault(); return; }
-                    if (!site.is_float) { draggingSiteId.current = site.id; e.dataTransfer.effectAllowed = 'move'; }
-                  }}
-                  onDragEnd={() => { draggingSiteId.current = null; }}
-                  onDragOver={(e) => {
-                    const siteId = draggingSiteId.current;
-                    if (siteId && siteId !== site.id && !site.is_float) { e.preventDefault(); handleReorderSite(siteId, site.id); }
-                  }}
-                >
-                  <SiteCard
-                    site={site} index={i}
-                    roomAssignments={roomAssignments}
-                    floatAssignments={site.is_float ? floatAssignments : []}
-                    dragOver={dragOver} dragging={dragging}
-                    alertLevels={alertLevels} dailyShifts={dailyShifts}
-                    roomsHeight={siteHeights[site.id]}
-                    onDrop={handleDrop}
-                    onDropFloat={handleDropFloat}
-                    onDragOver={setDragOver}
-                    onDragLeave={() => setDragOver(null)}
-                    onRemoveAssignment={removeAssignment}
-                    onAddRoom={() => setShowAddRoom(site.id)}
-                    onDeleteRoom={(roomId) => deleteRoom(site.id, roomId)}
-                    onDeleteSite={() => deleteSite(site.id)}
-                    onReorderRoom={handleReorderRoom}
-                    onResizeHeight={(h) => setSiteHeight(site.id, h)}
-                  />
+            {viewMode === 'grid' ? (
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 14 }}>
+                {[
+                  ...filteredSites.filter((s) => !s.is_float && !isSmallSite(s.name)),
+                  ...filteredSites.filter((s) => !s.is_float && isSmallSite(s.name)),
+                  ...filteredSites.filter((s) => s.is_float),
+                ].map((site, i) => (
+                  <div key={site.id}
+                    style={{ gridColumn: site.is_float ? '1 / -1' : isSmallSite(site.name) ? 'span 2' : '1 / -1' }}
+                    draggable={!site.is_float}
+                    onDragStart={(e) => {
+                      if ((e.target as HTMLElement).closest('button,input,select,textarea')) { e.preventDefault(); return; }
+                      if (!site.is_float) { draggingSiteId.current = site.id; e.dataTransfer.effectAllowed = 'move'; }
+                    }}
+                    onDragEnd={() => { draggingSiteId.current = null; }}
+                    onDragOver={(e) => {
+                      const siteId = draggingSiteId.current;
+                      if (siteId && siteId !== site.id && !site.is_float) { e.preventDefault(); handleReorderSite(siteId, site.id); }
+                    }}
+                  >
+                    <SiteCard
+                      site={site} index={i}
+                      roomAssignments={roomAssignments}
+                      floatAssignments={site.is_float ? floatAssignments : []}
+                      dragOver={dragOver} dragging={dragging}
+                      alertLevels={alertLevels} dailyShifts={dailyShifts}
+                      roomsHeight={siteHeights[site.id]}
+                      onDrop={handleDrop}
+                      onDropFloat={handleDropFloat}
+                      onDragOver={setDragOver}
+                      onDragLeave={() => setDragOver(null)}
+                      onRemoveAssignment={removeAssignment}
+                      onAddRoom={() => setShowAddRoom(site.id)}
+                      onDeleteRoom={(roomId) => deleteRoom(site.id, roomId)}
+                      onDeleteSite={() => deleteSite(site.id)}
+                      onReorderRoom={handleReorderRoom}
+                      onResizeHeight={(h) => setSiteHeight(site.id, h)}
+                    />
+                  </div>
+                ))}
+                <div style={{ gridColumn: '1 / -1' }}>
+                  <AddSiteTile onClick={() => setShowAddSite(true)} />
                 </div>
-              ))}
-              <div style={{ gridColumn: '1 / -1' }}>
-                <AddSiteTile onClick={() => setShowAddSite(true)} />
               </div>
-            </div>
+            ) : (
+              <NetworkView
+                sites={sites}
+                filteredSites={filteredSites}
+                assignments={assignments}
+                roomAssignments={roomAssignments}
+                hospital={hospital}
+                hospitalStaff={hospitalStaff}
+                designations={designations}
+                dailyShifts={dailyShifts}
+                dragging={dragging}
+                dragOver={dragOver}
+                onDragOver={setDragOver}
+                onDragLeave={() => setDragOver(null)}
+                onDrop={handleDrop}
+                onRemoveAssignment={removeAssignment}
+              />
+            )}
           </main>
 
           <div style={{ display: 'flex', gap: 10, padding: '0 22px 18px', flexShrink: 0, alignItems: 'flex-end' }}>
@@ -684,6 +745,109 @@ export default function BoardClient({ initialSites, initialStaff, initialAssignm
   );
 }
 
+// ── Top-bar helpers (V2-style) ───────────────────────────────────────────────
+const chevButton: React.CSSProperties = {
+  width: 22, height: 22, borderRadius: 4, border: '0.5px solid var(--border)',
+  background: 'transparent', color: 'var(--text-muted)', cursor: 'pointer',
+  fontSize: 13, lineHeight: 1, padding: 0,
+};
+
+const ghostButton: React.CSSProperties = {
+  padding: '2px 8px', borderRadius: 4, border: '0.5px solid var(--border)',
+  background: 'transparent', color: 'var(--text-muted)', cursor: 'pointer',
+  fontSize: 11, fontWeight: 600, fontFamily: 'inherit',
+};
+
+function BarDivider() {
+  return <span style={{ width: 1, height: 18, background: 'var(--border)', display: 'inline-block', flexShrink: 0 }} />;
+}
+
+function PillToggleV1({ options, value, onChange }: {
+  options: { value: string; label: string }[];
+  value: string;
+  onChange: (v: string) => void;
+}) {
+  return (
+    <div style={{ display: 'inline-flex', borderRadius: 999, border: '0.5px solid var(--border)', overflow: 'hidden', background: 'var(--bg-deep)' }}>
+      {options.map((o) => {
+        const active = value === o.value;
+        return (
+          <button
+            key={o.value}
+            onClick={() => onChange(o.value)}
+            style={{
+              padding: '2px 12px', fontSize: 10, fontWeight: 600,
+              background: active ? 'var(--text)' : 'transparent',
+              color: active ? 'var(--bg-base)' : 'var(--text-muted)',
+              border: 'none', cursor: 'pointer', fontFamily: 'inherit',
+            }}
+          >{o.label}</button>
+        );
+      })}
+    </div>
+  );
+}
+
+function FacilityPillV1({ label, active, onClick }: { label: string; active: boolean; onClick: () => void }) {
+  return (
+    <button onClick={onClick} style={{
+      padding: '2px 8px', borderRadius: 999, fontSize: 9, fontWeight: 700,
+      fontFamily: 'var(--font-mono), ui-monospace, monospace',
+      background: active ? '#E1F5EE' : 'transparent',
+      color: active ? '#085041' : 'var(--text-muted)',
+      border: '0.5px solid ' + (active ? '#A8DBC9' : 'var(--border)'),
+      cursor: 'pointer', transition: 'all 0.12s',
+    }}>{label}</button>
+  );
+}
+
+function ContingencyPill({ label, severity }: { label: string; severity: 'high' | 'medium' }) {
+  const dot = severity === 'high' ? '#E24B4A' : '#BA7517';
+  return (
+    <button style={{
+      display: 'inline-flex', alignItems: 'center', gap: 4,
+      padding: '1px 8px', borderRadius: 999, fontSize: 9, fontWeight: 700,
+      background: 'var(--bg-deep)', color: 'var(--text)',
+      border: '0.5px solid var(--border)', cursor: 'pointer',
+    }}>
+      <span style={{ width: 5, height: 5, borderRadius: '50%', background: dot, display: 'inline-block' }} />
+      {label}
+    </button>
+  );
+}
+
+function facilityAbbrev(h: Hospital): string {
+  if (h === 'Paoli Hospital') return 'Paoli';
+  if (h === 'Bryn Mawr Hospital') return 'BMH';
+  if (h === 'Lankenau Hospital') return 'Lank';
+  if (h === 'Riddle Hospital') return 'Rid';
+  return h as string;
+}
+
+function ThemeToggle({ theme, onToggle }: { theme: 'dark' | 'light'; onToggle: () => void }) {
+  const [hov, setHov] = useState(false);
+  const isDark = theme === 'dark';
+  return (
+    <button
+      onClick={onToggle}
+      onMouseEnter={() => setHov(true)}
+      onMouseLeave={() => setHov(false)}
+      title={isDark ? 'Switch to light mode' : 'Switch to dark mode'}
+      style={{
+        width: 26, height: 26, borderRadius: 4,
+        background: hov ? 'rgba(14,165,233,0.12)' : 'transparent',
+        border: '0.5px solid ' + (hov ? 'rgba(14,165,233,0.35)' : 'var(--border)'),
+        color: hov ? '#0ea5e9' : 'var(--text-muted)',
+        cursor: 'pointer', fontSize: 13,
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        transition: 'all 0.15s',
+      }}
+    >
+      {isDark ? '☀' : '☾'}
+    </button>
+  );
+}
+
 function NavArrow({ dir, onClick }: { dir: 'left' | 'right'; onClick: () => void }) {
   const [hov, setHov] = useState(false);
   return (
@@ -697,19 +861,19 @@ function NavArrow({ dir, onClick }: { dir: 'left' | 'right'; onClick: () => void
 function LiveClock() {
   const [time, setTime] = useState('');
   useEffect(() => {
-    const fmt = () => new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    const fmt = () => new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
     setTime(fmt());
     const t = setInterval(() => setTime(fmt()), 1000);
     return () => clearInterval(t);
   }, []);
-  return <div style={{ fontSize: 22, fontWeight: 700, color: '#0ea5e9', fontFamily: 'monospace', letterSpacing: 2 }}>{time}</div>;
+  return <span style={{ fontSize: 11, fontWeight: 700, color: '#0ea5e9', fontFamily: 'var(--font-mono), ui-monospace, monospace', letterSpacing: 0.5 }}>{time}</span>;
 }
 
 function Pill({ label, color, pulse }: { label: string; color: string; pulse?: boolean }) {
   const rgb = hexToRgb(color);
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 14px', borderRadius: 20, background: 'rgba(' + rgb + ',0.12)', border: '1px solid rgba(' + rgb + ',0.3)', fontSize: 12, fontWeight: 700, color }}>
-      {pulse && <span style={{ width: 7, height: 7, borderRadius: '50%', background: color, display: 'inline-block', animation: 'relief-flash 1.5s ease-in-out infinite' }} />}
+    <div style={{ display: 'flex', alignItems: 'center', gap: 4, padding: '2px 9px', borderRadius: 999, background: 'rgba(' + rgb + ',0.12)', border: '1px solid rgba(' + rgb + ',0.3)', fontSize: 10, fontWeight: 700, color, fontFamily: 'var(--font-mono), ui-monospace, monospace' }}>
+      {pulse && <span style={{ width: 6, height: 6, borderRadius: '50%', background: color, display: 'inline-block', animation: 'relief-flash 1.5s ease-in-out infinite' }} />}
       {label}
     </div>
   );

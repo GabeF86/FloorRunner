@@ -33,10 +33,15 @@ interface Props {
 }
 
 export default function Sidebar(props: Props) {
-  const { staff, assignedStaffIds, activeStaffIds, dragging, onDropSidebar, onAddStaff } = props;
+  const { staff, currentHospital, assignedStaffIds, activeStaffIds, dragging, onDropSidebar, onAddStaff } = props;
   const isDragTarget = !!dragging && assignedStaffIds.has(dragging.id);
 
+  // Sidebar auto-populates with home staff for the currently selected facility.
+  // (`staff` here is `activeStaff` upstream, which is already hospital-filtered.)
+  // Each row's "working today" checkbox still controls assignability/break tracking.
+  // Full roster (incl. visiting staff from other facilities) is reachable via search.
   const byRole = (role: Role) => staff.filter((p) => p.role === role);
+  const onCount = staff.filter((p) => activeStaffIds.has(p.id)).length;
 
   const [search, setSearch] = useState('');
   const [mdPct, setMdPct] = useState<number>(() => {
@@ -97,23 +102,36 @@ export default function Sidebar(props: Props) {
   const searchTerm = search.toLowerCase().trim();
   const searchResults = searchTerm ? props.allStaff.filter((p) => p.name.toLowerCase().includes(searchTerm)) : null;
 
+  // Visible list — what bulk-actions operate on. When searching, that's the
+  // search hits (so you can mass-activate a different facility's roster);
+  // otherwise it's just the current facility's staff.
+  const visibleStaff = searchResults ?? staff;
+  const anyVisibleActive = visibleStaff.some((p) => activeStaffIds.has(p.id));
+  const bulkToggle = () => {
+    const next = !anyVisibleActive;
+    // Skip no-op toggles so we don't slam the API for no reason.
+    visibleStaff.forEach((p) => {
+      const isActive = activeStaffIds.has(p.id);
+      if (isActive !== next) props.onToggleActive(p.id, next);
+    });
+  };
+
   const renderRoleGroup = (role: Role) => {
     const meta = ROLE_META[role];
     const members = byRole(role);
-    const activeCount = members.filter((p) => activeStaffIds.has(p.id)).length;
     if (!members.length) return null;
     return (
-      <div key={role} style={{ marginBottom: 18 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 7, padding: '6px 3px', borderBottom: '1px solid rgba(' + hexToRgb(meta.color) + ',0.2)', marginBottom: 7 }}>
-          <span style={{ width: 9, height: 9, borderRadius: 2, background: meta.color, display: 'inline-block', flexShrink: 0 }} />
-          <span style={{ fontSize: 12, fontWeight: 800, letterSpacing: 1.2, textTransform: 'uppercase', color: meta.color }}>{meta.label}</span>
+      <div key={role} style={{ marginBottom: 12 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 5, padding: '4px 3px', borderBottom: '1px solid rgba(' + hexToRgb(meta.color) + ',0.2)', marginBottom: 5 }}>
+          <span style={{ width: 7, height: 7, borderRadius: 2, background: meta.color, display: 'inline-block', flexShrink: 0 }} />
+          <span style={{ fontSize: 10, fontWeight: 800, letterSpacing: 1, textTransform: 'uppercase', color: meta.color }}>{meta.label}</span>
           {role === 'physician' && (
-            <span style={{ fontSize: 10, color: 'var(--text-dim)' }}>
-              (max {SUPERVISION_LIMITS.crna} CRNA · {SUPERVISION_LIMITS.resident} Res)
+            <span style={{ fontSize: 9, color: 'var(--text-dim)', fontFamily: 'var(--font-mono), ui-monospace, monospace' }}>
+              max {SUPERVISION_LIMITS.crna}c·{SUPERVISION_LIMITS.resident}r
             </span>
           )}
-          <span style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--text-dim)', fontWeight: 700 }}>
-            {activeCount}/{members.length} on
+          <span style={{ marginLeft: 'auto', fontSize: 10, color: 'var(--text-dim)', fontFamily: 'var(--font-mono), ui-monospace, monospace' }}>
+            {members.length}
           </span>
         </div>
         {members.map((person) => (
@@ -127,24 +145,49 @@ export default function Sidebar(props: Props) {
 
   return (
     <aside
-      style={{ flex: 1, minWidth: 0, height: '100%', background: '#0a1628', display: 'flex', flexDirection: 'column', overflow: 'hidden', transition: 'box-shadow 0.2s', boxShadow: isDragTarget ? 'inset -3px 0 12px rgba(14,165,233,0.1)' : 'none' }}
+      style={{ flex: 1, minWidth: 0, height: '100%', background: 'var(--bg-sidebar)', display: 'flex', flexDirection: 'column', overflow: 'hidden', transition: 'box-shadow 0.2s', boxShadow: isDragTarget ? 'inset -3px 0 12px rgba(14,165,233,0.1)' : 'none' }}
       onDragOver={(e) => e.preventDefault()}
       onDrop={onDropSidebar}
     >
       {/* Header */}
-      <div style={{ padding: '14px 16px 11px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: '1px solid var(--border)', flexShrink: 0 }}>
-        <span style={{ fontSize: 13, fontWeight: 800, letterSpacing: 1.5, color: 'var(--text-muted)', textTransform: 'uppercase' }}>Staff Roster</span>
-        <button onClick={onAddStaff} style={{ background: 'rgba(14,165,233,0.12)', border: '1px solid rgba(14,165,233,0.3)', color: '#0ea5e9', borderRadius: 7, padding: '4px 13px', fontSize: 12, fontWeight: 800, cursor: 'pointer' }}>+ Add</button>
+      <div style={{ padding: '8px 12px 6px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: '1px solid var(--border)', flexShrink: 0 }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 1, minWidth: 0 }}>
+          <span style={{ fontSize: 11, fontWeight: 800, letterSpacing: 1.2, color: 'var(--text-muted)', textTransform: 'uppercase' }}>
+            {currentHospital ? facilityShort(currentHospital) + ' Staff' : 'Staff Roster'}
+          </span>
+          <span style={{ fontSize: 9, color: 'var(--text-dim)', fontFamily: 'var(--font-mono), ui-monospace, monospace', display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+            <span>{onCount}/{staff.length} on</span>
+            <span>·</span>
+            {visibleStaff.length > 0 && (
+              <>
+                <button
+                  onClick={bulkToggle}
+                  title={anyVisibleActive ? 'Deselect every visible staff member' : 'Mark every visible staff member as working today'}
+                  style={{
+                    background: 'transparent', border: 'none', padding: 0,
+                    color: '#0ea5e9', fontSize: 9, fontWeight: 700, cursor: 'pointer',
+                    fontFamily: 'inherit', textDecoration: 'underline', textUnderlineOffset: 2,
+                  }}
+                >
+                  {anyVisibleActive ? 'deselect all' : 'select all'}
+                </button>
+                <span>·</span>
+              </>
+            )}
+            <span>search for full roster</span>
+          </span>
+        </div>
+        <button onClick={onAddStaff} style={{ background: 'rgba(14,165,233,0.12)', border: '1px solid rgba(14,165,233,0.3)', color: '#0ea5e9', borderRadius: 5, padding: '2px 9px', fontSize: 10, fontWeight: 700, cursor: 'pointer' }}>+ Add</button>
       </div>
 
       {/* Search bar */}
-      <div style={{ padding: '8px 10px', borderBottom: '1px solid var(--border)', flexShrink: 0 }}>
+      <div style={{ padding: '5px 8px', borderBottom: '1px solid var(--border)', flexShrink: 0 }}>
         <input
           type="text"
-          placeholder="🔍  Search staff..."
+          placeholder="Search full roster…"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          style={{ width: '100%', boxSizing: 'border-box', background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 7, padding: '6px 10px', fontSize: 12, color: 'var(--text)', outline: 'none' }}
+          style={{ width: '100%', boxSizing: 'border-box', background: 'var(--tint-surface)', border: '1px solid var(--border-input)', borderRadius: 5, padding: '4px 8px', fontSize: 11, color: 'var(--text)', outline: 'none' }}
         />
       </div>
 
@@ -228,7 +271,7 @@ function StaffCard({ person, role, assignedStaffIds, currentHospital, supervisio
   const canDrag    = isActive;
 
   const borderColor =
-    !isActive            ? 'rgba(255,255,255,0.05)' :
+    !isActive            ? 'var(--border-muted)' :
     alert === 'critical' ? 'rgba(239,68,68,0.7)' :
     alert === 'warning'  ? 'rgba(251,191,36,0.6)' :
     isOver               ? 'rgba(248,113,113,0.5)' :
@@ -252,58 +295,58 @@ function StaffCard({ person, role, assignedStaffIds, currentHospital, supervisio
       onDragStart={() => { if (canDrag) onDragStart({ ...person, role }); }}
       onMouseEnter={() => setHov(true)}
       onMouseLeave={() => { setHov(false); setShowPicker(false); }}
-      style={{ borderRadius: 10, marginBottom: 5, border: '1px solid ' + borderColor, background: bgColor, opacity: isActive ? 1 : 0.72, transition: 'all 0.14s', position: 'relative', userSelect: 'none', cursor: canDrag ? 'grab' : 'default' }}
+      style={{ borderRadius: 6, marginBottom: 3, border: '1px solid ' + borderColor, background: bgColor, opacity: isActive ? 1 : 0.72, transition: 'all 0.14s', position: 'relative', userSelect: 'none', cursor: canDrag ? 'grab' : 'default' }}
     >
       {/* Alert flash */}
-      {isActive && alert === 'critical' && <div style={{ position: 'absolute', inset: 0, borderRadius: 10, border: '2px solid rgba(239,68,68,0.6)', animation: 'relief-flash 1s ease-in-out infinite', pointerEvents: 'none' }} />}
-      {isActive && alert === 'warning'  && <div style={{ position: 'absolute', inset: 0, borderRadius: 10, border: '2px solid rgba(251,191,36,0.5)', animation: 'relief-flash 2s ease-in-out infinite', pointerEvents: 'none' }} />}
+      {isActive && alert === 'critical' && <div style={{ position: 'absolute', inset: 0, borderRadius: 6, border: '2px solid rgba(239,68,68,0.6)', animation: 'relief-flash 1s ease-in-out infinite', pointerEvents: 'none' }} />}
+      {isActive && alert === 'warning'  && <div style={{ position: 'absolute', inset: 0, borderRadius: 6, border: '2px solid rgba(251,191,36,0.5)', animation: 'relief-flash 2s ease-in-out infinite', pointerEvents: 'none' }} />}
 
-      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 9, padding: '9px 10px' }}>
+      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 6, padding: '5px 7px' }}>
         {/* Working today checkbox */}
-        <div style={{ paddingTop: 2, flexShrink: 0 }} onClick={(e) => e.stopPropagation()}>
+        <div style={{ paddingTop: 1, flexShrink: 0 }} onClick={(e) => e.stopPropagation()}>
           <input
             type="checkbox"
             checked={isActive}
             onChange={(e) => onToggleActive(person.id, e.target.checked)}
             title={isActive ? 'Working today — uncheck to mark off' : 'Not working — check to activate'}
-            style={{ width: 15, height: 15, accentColor: meta.color, cursor: 'pointer' }}
+            style={{ width: 12, height: 12, accentColor: meta.color, cursor: 'pointer' }}
           />
         </div>
 
         {/* Avatar */}
-        <div style={{ width: 34, height: 34, borderRadius: 8, flexShrink: 0, background: isActive ? meta.bg : 'rgba(255,255,255,0.05)', color: isActive ? meta.color : '#475569', border: '1px solid ' + (isActive ? meta.border : 'rgba(255,255,255,0.08)'), display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 12, fontWeight: 800 }}>
+        <div style={{ width: 24, height: 24, borderRadius: 5, flexShrink: 0, background: isActive ? meta.bg : 'var(--tint-surface)', color: isActive ? meta.color : 'var(--text-faint)', border: '1px solid ' + (isActive ? meta.border : 'var(--border-subtle)'), display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 9, fontWeight: 800, fontFamily: 'var(--font-mono), ui-monospace, monospace' }}>
           {person.initials}
         </div>
 
         {/* Info */}
         <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ fontSize: 13, fontWeight: 700, color: isActive ? 'var(--text)' : '#8899aa', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          <div style={{ fontSize: 11, fontWeight: 600, color: isActive ? 'var(--text)' : 'var(--text-disabled)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
             {person.name}
           </div>
           {isVisiting && (
-            <div style={{ fontSize: 9, color: '#fb923c', fontWeight: 700, marginTop: 1 }}>
+            <div style={{ fontSize: 8, color: '#fb923c', fontWeight: 700, marginTop: 0 }}>
               visiting from {person.hospital}
             </div>
           )}
 
           {/* Physician badges */}
           {isPhys && isActive && (
-            <div style={{ marginTop: 4, display: 'flex', gap: 4, flexWrap: 'wrap', alignItems: 'center' }}>
-              {desg ? <DesignationBadge designation={desg} /> : <span style={{ fontSize: 10, color: 'var(--text-dim)', fontStyle: 'italic' }}>no designation</span>}
+            <div style={{ marginTop: 2, display: 'flex', gap: 3, flexWrap: 'wrap', alignItems: 'center' }}>
+              {desg ? <DesignationBadge designation={desg} /> : <span style={{ fontSize: 9, color: 'var(--text-dim)', fontStyle: 'italic' }}>no designation</span>}
               {load && <SupervisionBadge load={load} />}
             </div>
           )}
 
           {/* CRNA/SRNA/Resident shift */}
           {!isPhys && !isSurgeon && isActive && shiftHours && (
-            <div style={{ marginTop: 3 }}>
+            <div style={{ marginTop: 2 }}>
               <ShiftBadge hours={shiftHours} role={role} />
             </div>
           )}
 
           {/* Breaks */}
           {showBreaks && breaksForShift.length > 0 && (
-            <div style={{ display: 'flex', gap: 5, marginTop: 5, flexWrap: 'wrap' }}>
+            <div style={{ display: 'flex', gap: 3, marginTop: 3, flexWrap: 'wrap' }}>
               {breaksForShift.map((bt) => {
                 const done = myBreaks.find((b) => b.break_type === bt)?.taken ?? false;
                 return <BreakCheckbox key={bt} type={bt} done={done} onChange={(v) => onToggleBreak(person.id, bt, v)} />;
@@ -318,14 +361,14 @@ function StaffCard({ person, role, assignedStaffIds, currentHospital, supervisio
             {/* Picker button */}
             {!isSurgeon && (
               <button onClick={() => setShowPicker((v) => !v)}
-                style={{ fontSize: 11, padding: '3px 8px', fontWeight: 800, cursor: 'pointer', color: meta.color, background: meta.bg, border: '1px solid ' + meta.border, borderRadius: 6, lineHeight: 1.6 }}>
+                style={{ fontSize: 9, padding: '2px 6px', fontWeight: 800, cursor: 'pointer', color: meta.color, background: meta.bg, border: '1px solid ' + meta.border, borderRadius: 4, lineHeight: 1.4, fontFamily: 'var(--font-mono), ui-monospace, monospace' }}>
                 {isPhys ? (desg || '—') : (shiftHours || person.hours)}
               </button>
             )}
 
             {/* Picker dropdown — fixed to viewport so it's never clipped */}
             {showPicker && (
-              <div style={{ position: 'fixed', zIndex: 9999, background: '#0d1b30', border: '1px solid #334155', borderRadius: 12, padding: 10, boxShadow: '0 16px 48px rgba(0,0,0,0.8)', minWidth: 200 }}
+              <div style={{ position: 'fixed', zIndex: 9999, background: 'var(--bg-popover)', border: '1px solid var(--border-strong)', borderRadius: 12, padding: 10, boxShadow: 'var(--shadow-popover)', minWidth: 200 }}
                 ref={(el) => {
                   if (!el) return;
                   // Position below the button, flush right of sidebar
@@ -339,7 +382,7 @@ function StaffCard({ person, role, assignedStaffIds, currentHospital, supervisio
                     <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5 }}>
                       {MD_DESIGNATIONS.map((d) => (
                         <button key={d} onClick={() => { onSetDesignation(person.id, desg === d ? null : d); setShowPicker(false); }}
-                          style={{ padding: '5px 10px', borderRadius: 7, cursor: 'pointer', fontWeight: 800, fontSize: 12, border: '1px solid ' + (desg === d ? meta.color : '#334155'), background: desg === d ? meta.bg : 'transparent', color: desg === d ? meta.color : '#94a3b8', transition: 'all 0.1s' }}>
+                          style={{ padding: '5px 10px', borderRadius: 7, cursor: 'pointer', fontWeight: 800, fontSize: 12, border: '1px solid ' + (desg === d ? meta.color : 'var(--border-strong)'), background: desg === d ? meta.bg : 'transparent', color: desg === d ? meta.color : 'var(--text-muted)', transition: 'all 0.1s' }}>
                           {d}
                         </button>
                       ))}
@@ -351,7 +394,7 @@ function StaffCard({ person, role, assignedStaffIds, currentHospital, supervisio
                     <div style={{ display: 'flex', gap: 5 }}>
                       {HOUR_OPTIONS.map((h) => (
                         <button key={h} onClick={() => { onSetDailyShift(person.id, h as ShiftHours); setShowPicker(false); }}
-                          style={{ padding: '5px 10px', borderRadius: 7, cursor: 'pointer', fontWeight: 800, fontSize: 12, border: '1px solid ' + (shiftHours === h ? meta.color : '#334155'), background: shiftHours === h ? meta.bg : 'transparent', color: shiftHours === h ? meta.color : '#94a3b8', transition: 'all 0.1s' }}>
+                          style={{ padding: '5px 10px', borderRadius: 7, cursor: 'pointer', fontWeight: 800, fontSize: 12, border: '1px solid ' + (shiftHours === h ? meta.color : 'var(--border-strong)'), background: shiftHours === h ? meta.bg : 'transparent', color: shiftHours === h ? meta.color : 'var(--text-muted)', transition: 'all 0.1s' }}>
                           {h}
                         </button>
                       ))}
@@ -361,12 +404,20 @@ function StaffCard({ person, role, assignedStaffIds, currentHospital, supervisio
               </div>
             )}
 
-            <button onClick={() => onDeleteStaff(person.id)} style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: '#475569', fontSize: 18, lineHeight: 1, padding: '2px 4px', borderRadius: 4 }}>×</button>
+            <button onClick={() => onDeleteStaff(person.id)} style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--text-faint)', fontSize: 18, lineHeight: 1, padding: '2px 4px', borderRadius: 4 }}>×</button>
           </div>
         )}
       </div>
     </div>
   );
+}
+
+function facilityShort(h: string): string {
+  if (h === 'Paoli Hospital') return 'Paoli';
+  if (h === 'Bryn Mawr Hospital') return 'BMH';
+  if (h === 'Lankenau Hospital') return 'Lank';
+  if (h === 'Riddle Hospital') return 'Rid';
+  return h;
 }
 
 // ── Sub-components ────────────────────────────────────────────────────────────
@@ -376,8 +427,8 @@ function DesignationBadge({ designation }: { designation: MDDesignation }) {
   const isPerDiem = designation === '8hr' || designation === '10hr';
   const color = isCall ? '#a78bfa' : isLastOut ? '#fb7185' : isPerDiem ? '#94a3b8' : '#f59e0b';
   return (
-    <span style={{ fontSize: 11, fontWeight: 800, padding: '2px 7px', borderRadius: 5, background: 'rgba(' + hexToRgb(color) + ',0.15)', color, border: '1px solid rgba(' + hexToRgb(color) + ',0.35)' }}>
-      {isCall ? '☾ ' + designation : designation}
+    <span style={{ fontSize: 9, fontWeight: 800, padding: '1px 5px', borderRadius: 3, background: 'rgba(' + hexToRgb(color) + ',0.15)', color, border: '1px solid rgba(' + hexToRgb(color) + ',0.35)', fontFamily: 'var(--font-mono), ui-monospace, monospace' }}>
+      {isCall ? '☾' + designation : designation}
     </span>
   );
 }
@@ -386,23 +437,23 @@ function SupervisionBadge({ load }: { load: SupervisionLoad }) {
   const cc = load.overCrna ? '#f87171' : load.atCrna ? '#fbbf24' : '#34d399';
   const rc = load.overResident ? '#f87171' : load.atResident ? '#fbbf24' : '#34d399';
   return (
-    <div style={{ display: 'flex', gap: 3 }}>
-      <span style={{ fontSize: 10, fontWeight: 800, padding: '1px 5px', borderRadius: 4, background: 'rgba(' + hexToRgb(cc) + ',0.15)', color: cc, border: '1px solid rgba(' + hexToRgb(cc) + ',0.3)' }}>
-        {load.crnaCount}/{SUPERVISION_LIMITS.crna} CRNA
+    <div style={{ display: 'flex', gap: 2 }}>
+      <span style={{ fontSize: 9, fontWeight: 800, padding: '1px 4px', borderRadius: 3, background: 'rgba(' + hexToRgb(cc) + ',0.15)', color: cc, border: '1px solid rgba(' + hexToRgb(cc) + ',0.3)', fontFamily: 'var(--font-mono), ui-monospace, monospace' }}>
+        {load.crnaCount}/{SUPERVISION_LIMITS.crna}c
       </span>
-      <span style={{ fontSize: 10, fontWeight: 800, padding: '1px 5px', borderRadius: 4, background: 'rgba(' + hexToRgb(rc) + ',0.15)', color: rc, border: '1px solid rgba(' + hexToRgb(rc) + ',0.3)' }}>
-        {load.residentCount}/{SUPERVISION_LIMITS.resident} Res
+      <span style={{ fontSize: 9, fontWeight: 800, padding: '1px 4px', borderRadius: 3, background: 'rgba(' + hexToRgb(rc) + ',0.15)', color: rc, border: '1px solid rgba(' + hexToRgb(rc) + ',0.3)', fontFamily: 'var(--font-mono), ui-monospace, monospace' }}>
+        {load.residentCount}/{SUPERVISION_LIMITS.resident}r
       </span>
     </div>
   );
 }
 
 function BreakCheckbox({ type, done, onChange }: { type: BreakType; done: boolean; onChange: (v: boolean) => void }) {
-  const labels: Record<BreakType, string> = { morning: 'AM Brk', lunch: 'Lunch', afternoon: 'PM Brk' };
+  const labels: Record<BreakType, string> = { morning: 'AM', lunch: 'Lunch', afternoon: 'PM' };
   return (
-    <label style={{ display: 'flex', alignItems: 'center', gap: 4, cursor: 'pointer', userSelect: 'none' }} onClick={(e) => e.stopPropagation()}>
-      <input type="checkbox" checked={done} onChange={(e) => onChange(e.target.checked)} style={{ width: 13, height: 13, accentColor: '#10b981', cursor: 'pointer' }} />
-      <span style={{ fontSize: 10, color: done ? '#10b981' : 'var(--text-dim)', fontWeight: 700, textDecoration: done ? 'line-through' : 'none' }}>
+    <label style={{ display: 'flex', alignItems: 'center', gap: 3, cursor: 'pointer', userSelect: 'none' }} onClick={(e) => e.stopPropagation()}>
+      <input type="checkbox" checked={done} onChange={(e) => onChange(e.target.checked)} style={{ width: 11, height: 11, accentColor: '#10b981', cursor: 'pointer' }} />
+      <span style={{ fontSize: 9, color: done ? '#10b981' : 'var(--text-dim)', fontWeight: 700, textDecoration: done ? 'line-through' : 'none' }}>
         {labels[type]}
       </span>
     </label>
@@ -422,13 +473,14 @@ export function ShiftBadge({ hours, role }: { hours: string; role: Role }) {
   const color     = lateColor ?? roleColor;
   return (
     <span style={{
-      fontSize: 10, fontWeight: 800, padding: '2px 6px', borderRadius: 4,
+      fontSize: 9, fontWeight: 800, padding: '1px 5px', borderRadius: 3,
       background: `rgba(${hexToRgb(color)},${lateColor ? 0.18 : 0.12})`,
       color,
       border: `1px solid rgba(${hexToRgb(color)},${lateColor ? 0.45 : 0.28})`,
-      letterSpacing: lateColor ? 0.3 : 0,
+      letterSpacing: lateColor ? 0.2 : 0,
+      fontFamily: 'var(--font-mono), ui-monospace, monospace',
     }}>
-      {hours}
+      {hours.replace('hr', 'h')}
     </span>
   );
 }

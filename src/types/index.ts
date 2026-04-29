@@ -1,7 +1,8 @@
-export type Role = 'physician' | 'crna' | 'srna' | 'resident' | 'surgeon';
+export type Role = 'physician' | 'fellow' | 'crna' | 'srna' | 'resident' | 'surgeon';
 
 export const ROLE_META: Record<Role, { label: string; color: string; bg: string; border: string }> = {
   physician: { label: 'Physicians', color: '#f59e0b', bg: 'rgba(245,158,11,0.18)', border: 'rgba(245,158,11,0.35)' },
+  fellow:    { label: 'Fellows',    color: '#14b8a6', bg: 'rgba(20,184,166,0.18)',  border: 'rgba(20,184,166,0.35)' },
   crna:      { label: 'CRNAs',      color: '#0ea5e9', bg: 'rgba(14,165,233,0.18)',  border: 'rgba(14,165,233,0.35)' },
   srna:      { label: 'SRNAs',      color: '#a78bfa', bg: 'rgba(167,139,250,0.18)', border: 'rgba(167,139,250,0.35)' },
   resident:  { label: 'Residents',  color: '#34d399', bg: 'rgba(52,211,153,0.18)',  border: 'rgba(52,211,153,0.35)' },
@@ -11,9 +12,24 @@ export const ROLE_META: Record<Role, { label: string; color: string; bg: string;
 export const HOUR_OPTIONS = ['8hr', '10hr', '12hr', '24hr'] as const;
 export type ShiftHours = typeof HOUR_OPTIONS[number];
 
-export type MDDesignation = 'D1'|'D2'|'D3'|'D4'|'D5'|'D6'|'D7'|'D8'|'C1'|'C2'|'8hr'|'10hr';
-export const MD_DESIGNATIONS: MDDesignation[] = ['D1','D2','D3','D4','D5','D6','D7','D8','C1','C2','8hr','10hr'];
-export const DESIGNATION_OUT_ORDER: MDDesignation[] = ['D1','D2','D3','D4','D5','D6','D7','D8','C2'];
+export type MDDesignation =
+  | 'D1'|'D2'|'D3'|'D4'|'D5'|'D6'|'D7'|'D8'|'D9'
+  | 'C1'|'C2'|'C3'
+  | '3pm'|'5pm'|'7pm'
+  | '8hr'|'10hr';
+export const MD_DESIGNATIONS: MDDesignation[] = [
+  'D1','D2','D3','D4','D5','D6','D7','D8','D9',
+  'C1','C2','C3',
+  '3pm','5pm','7pm',
+  '8hr','10hr',
+];
+// Out order: day designations leave in numerical order, followed by early-out times,
+// then C2 (last-out call). C1/C3 are overnight call and don't appear in the day out-list.
+export const DESIGNATION_OUT_ORDER: MDDesignation[] = [
+  'D1','D2','D3','D4','D5','D6','D7','D8','D9',
+  '3pm','5pm','7pm',
+  'C2',
+];
 
 export const SUPERVISION_LIMITS = { crna: 4, resident: 2 };
 export const SUPERVISED_ROLES: Role[] = ['crna', 'srna', 'resident'];

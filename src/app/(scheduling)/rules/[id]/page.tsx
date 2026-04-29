@@ -51,6 +51,25 @@ type RuleCategory =
   | 'coverage' | 'sequence' | 'eligibility' | 'frequency'
   | 'rest' | 'pairing' | 'fairness' | 'open_slot' | 'time_off' | 'cross_site';
 
+interface PerRuleActivity {
+  rule_id: string | null;
+  rule_name: string;
+  hard_count: number;
+  soft_count: number;
+  total: number;
+}
+
+interface RuleSetActivity {
+  rule_set_id: string;
+  site_id: string;
+  assignments_checked: number;
+  assignments_with_violations: number;
+  total_violations: number;
+  hard_count: number;
+  soft_count: number;
+  per_rule: PerRuleActivity[];
+}
+
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 const CATEGORIES: { value: RuleCategory; label: string; color: string }[] = [
@@ -92,6 +111,108 @@ const labelStyle: React.CSSProperties = {
 };
 
 // ── InfoTip ───────────────────────────────────────────────────────────────────
+
+function RuleActivityBadge({ activity, ruleId, isActive }: {
+  activity: RuleSetActivity | null;
+  ruleId: string;
+  isActive: boolean;
+}) {
+  if (!isActive) return null;
+  if (!activity) return null;
+  const row = activity.per_rule.find(r => r.rule_id === ruleId);
+  if (!row) {
+    // Active rule that hasn't fired in any validated assignment.
+    return (
+      <span title="No violations recorded across this site's assignments." style={{
+        fontSize: 10, fontWeight: 600, padding: '2px 7px', borderRadius: 4,
+        background: 'rgba(16,185,129,0.10)', color: '#16a34a',
+        fontFamily: 'var(--font-mono), ui-monospace, monospace',
+      }}>0 fires</span>
+    );
+  }
+  const isHard = row.hard_count > 0;
+  return (
+    <span title={`${row.hard_count} hard · ${row.soft_count} soft across ${activity.assignments_checked} validated assignments`} style={{
+      fontSize: 10, fontWeight: 700, padding: '2px 7px', borderRadius: 4,
+      background: isHard ? 'rgba(239,68,68,0.12)' : 'rgba(245,158,11,0.12)',
+      color: isHard ? '#dc2626' : '#b45309',
+      fontFamily: 'var(--font-mono), ui-monospace, monospace',
+    }}>
+      {row.total} fire{row.total === 1 ? '' : 's'}
+    </span>
+  );
+}
+
+function ActivitySummary({ activity, ruleSetStatus }: {
+  activity: RuleSetActivity | null;
+  ruleSetStatus: 'draft' | 'active' | 'archived';
+}) {
+  if (!activity) {
+    return (
+      <div style={{
+        background: 'var(--bg-surface)', border: '1px solid var(--border)', borderRadius: 12,
+        padding: '14px 18px', marginBottom: 24, fontSize: 12, color: 'var(--text-dim)',
+      }}>
+        Loading activity…
+      </div>
+    );
+  }
+  const isInactive = ruleSetStatus !== 'active';
+  const hasFires = activity.total_violations > 0;
+
+  return (
+    <div style={{
+      background: 'var(--bg-surface)', border: '1px solid var(--border)', borderRadius: 12,
+      padding: '14px 18px', marginBottom: 24,
+    }}>
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: 12, marginBottom: isInactive || activity.assignments_checked === 0 ? 8 : 12 }}>
+        <span style={{ fontSize: 14, fontWeight: 700, color: 'var(--text)' }}>Rule activity</span>
+        <span style={{ fontSize: 11, color: 'var(--text-dim)', fontFamily: 'var(--font-mono), ui-monospace, monospace' }}>
+          across all schedules at this site
+        </span>
+      </div>
+
+      {isInactive && (
+        <div style={{
+          padding: '6px 10px', borderRadius: 6, marginBottom: 8,
+          background: 'rgba(245,158,11,0.10)', border: '0.5px solid rgba(245,158,11,0.30)',
+          color: '#b45309', fontSize: 11, fontWeight: 600,
+        }}>
+          ⚠ This rule set is <strong>{ruleSetStatus}</strong> — the algorithm is not consulting these rules. Activate the set to start enforcing.
+        </div>
+      )}
+
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: hasFires ? 12 : 0 }}>
+        <Stat label="Assignments checked" value={activity.assignments_checked} fontMono />
+        <Stat label="Clean" value={activity.assignments_checked - activity.assignments_with_violations} color="#16a34a" fontMono />
+        <Stat label="Hard violations" value={activity.hard_count} color={activity.hard_count > 0 ? '#dc2626' : 'var(--text-dim)'} fontMono />
+        <Stat label="Soft violations" value={activity.soft_count} color={activity.soft_count > 0 ? '#b45309' : 'var(--text-dim)'} fontMono />
+      </div>
+
+      {!isInactive && activity.assignments_checked === 0 && (
+        <div style={{ fontSize: 11, color: 'var(--text-dim)', fontStyle: 'italic' }}>
+          No assignments at this site have been validated yet. Run auto-generate on a schedule for this site to populate the counts.
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Stat({ label, value, color, fontMono }: { label: string; value: number; color?: string; fontMono?: boolean }) {
+  return (
+    <div>
+      <div style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 0.4, fontWeight: 600, marginBottom: 2 }}>
+        {label}
+      </div>
+      <div style={{
+        fontSize: 18, fontWeight: 800, color: color ?? 'var(--text)',
+        fontFamily: fontMono ? 'var(--font-mono), ui-monospace, monospace' : 'inherit',
+      }}>
+        {value.toLocaleString()}
+      </div>
+    </div>
+  );
+}
 
 function InfoTip({ text }: { text: string }) {
   const [show, setShow] = useState(false);
@@ -135,6 +256,7 @@ export default function RuleSetDetailPage({ params }: { params: { id: string } }
   const [collapsedCats, setCollapsedCats] = useState<Record<string, boolean>>({});
   const [showAddRule, setShowAddRule] = useState(false);
   const [editingRule, setEditingRule] = useState<RuleDefinition | null>(null);
+  const [activity, setActivity] = useState<RuleSetActivity | null>(null);
 
   const loadData = useCallback(async () => {
     const res = await fetch(`/api/scheduling/rule-sets/${id}`);
@@ -149,6 +271,12 @@ export default function RuleSetDetailPage({ params }: { params: { id: string } }
     const stData = await stRes.json();
     setShiftTypes(Array.isArray(stData) ? stData : []);
     setLoading(false);
+
+    // Activity load is fire-and-forget — failures shouldn't block rendering.
+    fetch(`/api/scheduling/rule-sets/${id}/activity`)
+      .then((r) => r.ok ? r.json() : null)
+      .then((act: RuleSetActivity | null) => { if (act) setActivity(act); })
+      .catch(() => { /* swallow — activity is informational */ });
   }, [id]);
 
   useEffect(() => { loadData(); }, [loadData]);
@@ -315,6 +443,10 @@ export default function RuleSetDetailPage({ params }: { params: { id: string } }
         />
       </div>
 
+      {/* Activity summary across all schedules at this site */}
+      <ActivitySummary activity={activity} ruleSetStatus={ruleSet.status} />
+
+
       {/* Add Rule button */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
         <span style={{ fontSize: 16, fontWeight: 800, color: 'var(--text)' }}>Rule Definitions</span>
@@ -384,6 +516,7 @@ export default function RuleSetDetailPage({ params }: { params: { id: string } }
                           fontSize: 10, fontWeight: 600, padding: '2px 7px', borderRadius: 4,
                           background: 'rgba(99,102,241,0.1)', color: '#818cf8',
                         }}>{rule.applies_to_provider_group}</span>
+                        <RuleActivityBadge activity={activity} ruleId={rule.id} isActive={rule.is_active} />
                       </div>
                       {rule.explanation_text && (
                         <div style={{ fontSize: 13, color: 'var(--text-muted)', lineHeight: 1.5, marginBottom: 6 }}>{rule.explanation_text}</div>

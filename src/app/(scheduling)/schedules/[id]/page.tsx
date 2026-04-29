@@ -598,6 +598,38 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
   }, [grid, activeSlot, pickerSearch]);
 
   const activeSlotDate = activeSlot?.slot_date ?? '';
+
+  // Aggregate validation_flags across every assignment so the user can verify
+  // at a glance whether their active rules are firing and whether anything is
+  // currently violated. Each violation is one rule firing on one assignment;
+  // the same rule can violate many times across the schedule.
+  const rulesSummary = useMemo(() => {
+    if (!grid) return { assignmentsChecked: 0, totalViolations: 0, hardCount: 0, softCount: 0, byRule: [] as { rule_id: string | null; rule_name: string; severity: 'hard' | 'soft'; count: number }[] };
+    let assignmentsChecked = 0;
+    let hardCount = 0;
+    let softCount = 0;
+    const ruleAgg = new Map<string, { rule_id: string | null; rule_name: string; severity: 'hard' | 'soft'; count: number }>();
+    for (const slot of grid.slots) {
+      for (const a of slot.assignments) {
+        if (!a.provider_id) continue;
+        // Count any assignment whose validation_flags column has been written
+        // (even an empty array means it was checked and passed).
+        if (a.validation_flags === null || a.validation_flags === undefined) continue;
+        assignmentsChecked++;
+        for (const f of a.validation_flags) {
+          if (f.severity === 'hard') hardCount++; else softCount++;
+          const key = (f.rule_id ?? f.rule_name) + '|' + f.severity;
+          const ex = ruleAgg.get(key);
+          if (ex) ex.count++;
+          else ruleAgg.set(key, { rule_id: f.rule_id, rule_name: f.rule_name, severity: f.severity, count: 1 });
+        }
+      }
+    }
+    const byRule = [...ruleAgg.values()].sort((a, b) => (b.severity === 'hard' ? 1 : 0) - (a.severity === 'hard' ? 1 : 0) || b.count - a.count);
+    return { assignmentsChecked, totalViolations: hardCount + softCount, hardCount, softCount, byRule };
+  }, [grid]);
+
+  const [showRulesSummary, setShowRulesSummary] = useState(false);
   const assignedOnActiveDate = assignedOnDate[activeSlotDate] ?? new Set<string>();
 
   /* ── Render ─────────────────────────────────────────────────────────────── */
@@ -642,6 +674,98 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
         <span style={{ fontSize: 13, color: 'var(--text-muted)' }}>
           {formatDateRange(schedule.date_start, schedule.date_end)}
         </span>
+
+        {/* Rules summary — verify the algorithm is enforcing your rules */}
+        <div style={{ position: 'relative' }}>
+          <button
+            onClick={() => setShowRulesSummary(v => !v)}
+            title="Aggregate of validation_flags across every assignment in this schedule"
+            style={{
+              display: 'inline-flex', alignItems: 'center', gap: 6,
+              padding: '3px 10px', borderRadius: 999, cursor: 'pointer',
+              fontSize: 11, fontFamily: 'var(--font-mono), ui-monospace, monospace',
+              background: rulesSummary.hardCount > 0
+                ? 'rgba(239,68,68,0.10)'
+                : rulesSummary.softCount > 0
+                ? 'rgba(245,158,11,0.10)'
+                : 'rgba(16,185,129,0.10)',
+              color: rulesSummary.hardCount > 0
+                ? '#dc2626'
+                : rulesSummary.softCount > 0
+                ? '#b45309'
+                : '#0e7c52',
+              border: '0.5px solid ' + (
+                rulesSummary.hardCount > 0
+                  ? 'rgba(239,68,68,0.35)'
+                  : rulesSummary.softCount > 0
+                  ? 'rgba(245,158,11,0.35)'
+                  : 'rgba(16,185,129,0.35)'
+              ),
+            }}
+          >
+            <span style={{
+              width: 6, height: 6, borderRadius: '50%',
+              background: rulesSummary.hardCount > 0
+                ? '#dc2626'
+                : rulesSummary.softCount > 0
+                ? '#b45309'
+                : '#16a34a',
+            }} />
+            checked {rulesSummary.assignmentsChecked} ·{' '}
+            {rulesSummary.hardCount + rulesSummary.softCount === 0
+              ? 'all clean'
+              : `${rulesSummary.hardCount}H · ${rulesSummary.softCount}S`}
+          </button>
+          {showRulesSummary && (
+            <div
+              onMouseLeave={() => setShowRulesSummary(false)}
+              style={{
+                position: 'absolute', top: '100%', left: 0, marginTop: 6,
+                background: 'var(--bg-surface)', border: '0.5px solid var(--border)',
+                borderRadius: 6, padding: '8px 10px', minWidth: 280, maxWidth: 360,
+                boxShadow: '0 8px 24px rgba(15,23,42,0.18)', zIndex: 100,
+              }}
+            >
+              <div style={{ fontSize: 9, fontFamily: 'var(--font-mono), ui-monospace, monospace', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 6, paddingBottom: 4, borderBottom: '0.5px solid var(--border)' }}>
+                Rule activity
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: 'var(--text-muted)', marginBottom: 8 }}>
+                <span>Assignments checked</span>
+                <span style={{ fontFamily: 'var(--font-mono), ui-monospace, monospace', color: 'var(--text)' }}>{rulesSummary.assignmentsChecked}</span>
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: 'var(--text-muted)', marginBottom: 8 }}>
+                <span>Hard violations</span>
+                <span style={{ fontFamily: 'var(--font-mono), ui-monospace, monospace', color: rulesSummary.hardCount > 0 ? '#dc2626' : 'var(--text-dim)' }}>{rulesSummary.hardCount}</span>
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: 'var(--text-muted)', marginBottom: 8 }}>
+                <span>Soft violations</span>
+                <span style={{ fontFamily: 'var(--font-mono), ui-monospace, monospace', color: rulesSummary.softCount > 0 ? '#b45309' : 'var(--text-dim)' }}>{rulesSummary.softCount}</span>
+              </div>
+              {rulesSummary.byRule.length > 0 ? (
+                <>
+                  <div style={{ fontSize: 9, fontFamily: 'var(--font-mono), ui-monospace, monospace', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 0.5, marginTop: 8, marginBottom: 4, paddingBottom: 4, borderBottom: '0.5px solid var(--border)' }}>
+                    By rule
+                  </div>
+                  {rulesSummary.byRule.map((r) => (
+                    <div key={(r.rule_id ?? r.rule_name) + r.severity} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '3px 0', fontSize: 11 }}>
+                      <span style={{ width: 5, height: 5, borderRadius: '50%', background: r.severity === 'hard' ? '#dc2626' : '#b45309', flexShrink: 0 }} />
+                      <span style={{ flex: 1, color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.rule_name}</span>
+                      <span style={{ fontFamily: 'var(--font-mono), ui-monospace, monospace', color: 'var(--text-muted)', fontSize: 10 }}>×{r.count}</span>
+                    </div>
+                  ))}
+                </>
+              ) : rulesSummary.assignmentsChecked > 0 ? (
+                <div style={{ fontSize: 11, color: '#0e7c52', textAlign: 'center', padding: '6px 0', fontStyle: 'italic' }}>
+                  All checked assignments pass every active rule.
+                </div>
+              ) : (
+                <div style={{ fontSize: 11, color: 'var(--text-dim)', textAlign: 'center', padding: '6px 0', fontStyle: 'italic' }}>
+                  No assignments have been validated yet — run auto-generate to populate.
+                </div>
+              )}
+            </div>
+          )}
+        </div>
 
         <div style={{ flex: 1 }} />
 

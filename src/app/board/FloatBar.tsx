@@ -26,42 +26,42 @@ export default function FloatBar({ staff, floatIds, assignedIds, activeStaffIds,
   return (
     <div style={{
       background: 'var(--bg-surface)',
-      border: '1px solid var(--border)',
-      borderRadius: 12,
-      marginBottom: 14,
+      border: '0.5px solid var(--border)',
+      borderRadius: 6,
+      marginBottom: 8,
       overflow: 'hidden',
     }}>
       {/* Header */}
       <div
         onClick={() => setCollapsed(v => !v)}
         style={{
-          padding: '9px 14px',
-          display: 'flex', alignItems: 'center', gap: 10,
+          padding: '4px 10px',
+          display: 'flex', alignItems: 'center', gap: 7,
           cursor: 'pointer',
-          borderBottom: collapsed ? 'none' : '1px solid var(--border)',
+          borderBottom: collapsed ? 'none' : '0.5px solid var(--border)',
           background: 'rgba(16,185,129,0.04)',
         }}
       >
-        <span style={{ fontSize: 13 }}>🟢</span>
-        <span style={{ fontSize: 11, fontWeight: 800, letterSpacing: 1.5, textTransform: 'uppercase', color: '#10b981' }}>
+        <span style={{ fontSize: 11 }}>🟢</span>
+        <span style={{ fontSize: 10, fontWeight: 800, letterSpacing: 1, textTransform: 'uppercase', color: '#10b981' }}>
           Available
         </span>
         <span style={{
-          fontSize: 10, fontWeight: 700, color: 'var(--text-dim)',
-          background: 'rgba(16,185,129,0.1)', border: '1px solid rgba(16,185,129,0.25)',
-          borderRadius: 10, padding: '1px 7px',
+          fontSize: 9, fontWeight: 700, color: 'var(--text-dim)',
+          background: 'rgba(16,185,129,0.1)', border: '0.5px solid rgba(16,185,129,0.25)',
+          borderRadius: 999, padding: '0 6px', fontFamily: 'var(--font-mono), ui-monospace, monospace',
         }}>
-          {available.length} available
+          {available.length}
         </span>
-        <span style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--text-dim)' }}>
+        <span style={{ marginLeft: 'auto', fontSize: 10, color: 'var(--text-dim)' }}>
           {collapsed ? '▲' : '▼'}
         </span>
       </div>
 
       {!collapsed && (
-        <div style={{ padding: '10px 14px', display: 'flex', flexWrap: 'wrap', gap: '10px 18px' }}>
+        <div style={{ padding: '6px 10px', display: 'flex', flexWrap: 'wrap', gap: '6px 14px' }}>
           {available.length === 0 && (
-            <span style={{ fontSize: 11, color: 'var(--text-dim)', fontStyle: 'italic' }}>
+            <span style={{ fontSize: 10, color: 'var(--text-dim)', fontStyle: 'italic' }}>
               All staff are currently assigned
             </span>
           )}
@@ -71,10 +71,10 @@ export default function FloatBar({ staff, floatIds, assignedIds, activeStaffIds,
             if (!members.length) return null;
             const meta = ROLE_META[role];
             return (
-              <div key={role} style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+              <div key={role} style={{ display: 'flex', alignItems: 'center', gap: 5, flexWrap: 'wrap' }}>
                 <span style={{
-                  fontSize: 9, fontWeight: 800, letterSpacing: 1.2, textTransform: 'uppercase',
-                  color: meta.color, minWidth: 44,
+                  fontSize: 8, fontWeight: 800, letterSpacing: 1, textTransform: 'uppercase',
+                  color: meta.color, minWidth: 36,
                 }}>
                   {role === 'physician' ? 'MDs' : meta.label.replace(/s$/, '')}
                 </span>
@@ -89,30 +89,31 @@ export default function FloatBar({ staff, floatIds, assignedIds, activeStaffIds,
                       onDragStart={() => onDragStart({ ...person, role })}
                       title={person.name + (isFloat ? ' — Floating' : '')}
                       style={{
-                        display: 'flex', alignItems: 'center', gap: 5,
-                        padding: '4px 8px', borderRadius: 7, cursor: 'grab',
+                        display: 'flex', alignItems: 'center', gap: 4,
+                        padding: '2px 6px', borderRadius: 4, cursor: 'grab',
                         background: isFloat ? 'rgba(16,185,129,0.1)' : meta.bg,
                         border: '1px solid ' + (isFloat ? 'rgba(16,185,129,0.35)' : meta.border),
                         color: isFloat ? '#10b981' : meta.color,
-                        fontSize: 11, fontWeight: 600,
+                        fontSize: 10, fontWeight: 600,
                         transition: 'all 0.14s',
                         userSelect: 'none',
                       }}
                       onMouseEnter={(e) => (e.currentTarget.style.opacity = '0.75')}
                       onMouseLeave={(e) => (e.currentTarget.style.opacity = '1')}
                     >
-                      <span style={{ fontWeight: 800, fontSize: 10 }}>{person.initials}</span>
+                      <span style={{ fontWeight: 800, fontSize: 9, fontFamily: 'var(--font-mono), ui-monospace, monospace' }}>{person.initials}</span>
                       <span>{person.name.split(' ').pop()}</span>
-                      {isFloat && <span style={{ fontSize: 9, opacity: 0.7 }}>🔄</span>}
+                      {isFloat && <span style={{ fontSize: 8, opacity: 0.7 }}>🔄</span>}
                       {desg && (
                         <span style={{
-                          fontSize: 9, fontWeight: 800, padding: '1px 4px', borderRadius: 3,
+                          fontSize: 8, fontWeight: 800, padding: '0 4px', borderRadius: 3,
                           background: 'rgba(' + hexToRgb(meta.color) + ',0.15)',
-                          border: '1px solid rgba(' + hexToRgb(meta.color) + ',0.3)',
+                          border: '0.5px solid rgba(' + hexToRgb(meta.color) + ',0.3)',
+                          fontFamily: 'var(--font-mono), ui-monospace, monospace',
                         }}>{desg}</span>
                       )}
                       {hours && (
-                        <span style={{ fontSize: 9, opacity: 0.7 }}>{hours}</span>
+                        <span style={{ fontSize: 8, opacity: 0.7, fontFamily: 'var(--font-mono), ui-monospace, monospace' }}>{hours.replace('hr', 'h')}</span>
                       )}
                     </div>
                   );

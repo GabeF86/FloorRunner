@@ -320,20 +320,26 @@ export default function ProviderDetailPage({ params }: { params: { id: string } 
   ];
 
   return (
-    <div style={{ padding: '24px 32px' }}>
+    <div style={{ padding: '14px 22px 28px', maxWidth: 1200 }}>
       {/* Breadcrumb */}
-      <div style={{ fontSize: 12, color: 'var(--text-dim)', marginBottom: 16 }}>
-        <Link href="/providers" style={{ color: '#0ea5e9', textDecoration: 'none' }}>Providers</Link>
-        <span style={{ margin: '0 6px' }}>/</span>
-        <span>{provider.first_name} {provider.last_name}</span>
+      <div style={{ fontSize: 11, color: 'var(--text-dim)', marginBottom: 10, display: 'flex', alignItems: 'center', gap: 6, fontFamily: 'var(--font-mono), ui-monospace, monospace' }}>
+        <Link href="/providers" style={{ color: '#0ea5e9', textDecoration: 'none' }}>providers</Link>
+        <span style={{ color: 'var(--text-dim)' }}>/</span>
+        <span style={{ color: 'var(--text-muted)' }}>{provider.last_name.toLowerCase()}, {provider.first_name.toLowerCase()}</span>
       </div>
 
-      {/* Header */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 16, marginBottom: 24 }}>
+      {/* Header card — single hairline-bordered surface, dense */}
+      <div style={{
+        display: 'flex', alignItems: 'center', gap: 14,
+        padding: '12px 14px', marginBottom: 14,
+        background: 'var(--bg-surface)', border: '0.5px solid var(--border)', borderRadius: 6,
+      }}>
         <div style={{
-          width: 56, height: 56, borderRadius: 12, display: 'flex', alignItems: 'center', justifyContent: 'center',
-          fontSize: 20, fontWeight: 800, background: tc.bg, color: tc.color, border: `1px solid ${tc.color}30`,
-          overflow: 'hidden', position: 'relative',
+          width: 44, height: 44, borderRadius: 8, display: 'flex', alignItems: 'center', justifyContent: 'center',
+          fontSize: 14, fontWeight: 800, background: tc.bg, color: tc.color,
+          border: `0.5px solid ${tc.color}40`,
+          overflow: 'hidden', position: 'relative', flexShrink: 0,
+          fontFamily: 'var(--font-mono), ui-monospace, monospace',
         }}>
           {provider.photo_url ? (
             // eslint-disable-next-line @next/next/no-img-element
@@ -347,55 +353,50 @@ export default function ProviderDetailPage({ params }: { params: { id: string } 
             provider.initials
           )}
         </div>
-        <div>
-          <h1 style={{ fontSize: 22, fontWeight: 800, color: 'var(--text)' }}>{provider.first_name} {provider.last_name}</h1>
-          <div style={{ display: 'flex', gap: 8, marginTop: 4, flexWrap: 'wrap' }}>
-            <span style={{ fontSize: 11, fontWeight: 700, padding: '2px 8px', borderRadius: 6, background: tc.bg, color: tc.color }}>
-              {tc.label}
-            </span>
-            <span style={{
-              fontSize: 11, fontWeight: 600, padding: '2px 8px', borderRadius: 6,
-              background: provider.status === 'active' ? 'rgba(16,185,129,0.12)' : 'rgba(100,116,139,0.12)',
-              color: provider.status === 'active' ? '#10b981' : '#64748b', textTransform: 'capitalize',
-            }}>{provider.status.replace('_', ' ')}</span>
-            {prof?.fellowship_primary && (
-              <span style={{ fontSize: 11, fontWeight: 600, padding: '2px 8px', borderRadius: 6, background: 'rgba(167,139,250,0.12)', color: '#a78bfa' }}>
-                {prof.fellowship_primary}
-              </span>
-            )}
-            {prof?.employment_status && (
-              <span style={{ fontSize: 11, fontWeight: 600, padding: '2px 8px', borderRadius: 6, background: 'rgba(14,165,233,0.1)', color: '#0ea5e9' }}>
-                {EMPLOYMENT_LABELS[prof.employment_status] || prof.employment_status}
-              </span>
-            )}
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <h1 style={{ fontSize: 16, fontWeight: 700, color: 'var(--text)', letterSpacing: -0.2, marginBottom: 3 }}>
+            {provider.first_name} {provider.last_name}
+          </h1>
+          <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap' }}>
+            <ChipPill text={tc.label} fg={tc.color} bg={tc.bg} />
+            <ChipPill
+              text={provider.status.replace('_', ' ')}
+              fg={provider.status === 'active' ? '#0e7c52' : '#64748b'}
+              bg={provider.status === 'active' ? 'rgba(16,185,129,0.12)' : 'rgba(100,116,139,0.12)'}
+            />
+            {prof?.fellowship_primary && <ChipPill text={prof.fellowship_primary} fg="#534AB7" bg="rgba(83,74,183,0.10)" />}
+            {prof?.employment_status && <ChipPill text={EMPLOYMENT_LABELS[prof.employment_status] || prof.employment_status} fg="#0C447C" bg="rgba(14,165,233,0.10)" />}
           </div>
         </div>
-        {saveState === 'saving' && <span style={{ fontSize: 11, color: '#0ea5e9', marginLeft: 'auto' }}>Saving...</span>}
-        {saveState === 'saved' && <span style={{ fontSize: 11, color: '#10b981', marginLeft: 'auto' }}>Saved ✓</span>}
+        <SaveIndicator state={saveState} />
       </div>
 
-      {/* Tabs */}
-      <div style={{ display: 'flex', gap: 0, borderBottom: '1px solid var(--border)', marginBottom: 24, flexWrap: 'wrap' }}>
+      {/* Tabs — hairline underline, sentence case, denser */}
+      <div style={{ display: 'flex', gap: 0, borderBottom: '0.5px solid var(--border)', marginBottom: 18, flexWrap: 'wrap' }}>
         {TABS.map(t => {
           const isAdminTab = t.key === 'compensation';
-          const activeColor = isAdminTab ? '#f59e0b' : '#0ea5e9';
+          const isActive = tab === t.key;
+          const activeColor = isAdminTab ? '#BA7517' : '#0ea5e9';
           return (
             <button key={t.key} onClick={() => setTab(t.key)} style={{
-              padding: '10px 18px', fontSize: 13, fontWeight: 700, cursor: 'pointer',
-              background: 'none', border: 'none', borderBottom: `2px solid ${tab === t.key ? activeColor : 'transparent'}`,
-              color: tab === t.key ? activeColor : 'var(--text-muted)', transition: 'all 0.15s',
-              display: 'flex', alignItems: 'center', gap: 6,
+              padding: '7px 12px', fontSize: 12, fontWeight: 600, cursor: 'pointer',
+              background: 'none', border: 'none',
+              borderBottom: `2px solid ${isActive ? activeColor : 'transparent'}`,
+              color: isActive ? activeColor : 'var(--text-muted)', transition: 'all 0.12s',
+              display: 'flex', alignItems: 'center', gap: 5,
+              marginBottom: -1, // sit on top of the container border
             }}>
               {t.label}
               {isAdminTab && (
                 <span style={{
-                  fontSize: 9, fontWeight: 800, padding: '1px 5px', borderRadius: 4,
-                  background: 'rgba(245,158,11,0.15)', color: '#f59e0b', letterSpacing: 0.5,
+                  fontSize: 8, fontWeight: 800, padding: '1px 4px', borderRadius: 3,
+                  background: 'rgba(186,117,23,0.15)', color: '#BA7517', letterSpacing: 0.5,
+                  fontFamily: 'var(--font-mono), ui-monospace, monospace',
                 }}>
                   ADMIN
                 </span>
               )}
-              {tab === t.key && <InfoTip text={t.info} />}
+              {isActive && <InfoTip text={t.info} />}
             </button>
           );
         })}
@@ -502,15 +503,18 @@ function ProfileTab({ provider, saveState, onSave }: { provider: ProviderDetail;
     });
   };
 
+  // Render a tiny swatch beside the color tag input so users see what they typed.
+  const swatchValid = /^#[0-9A-F]{6}$/i.test(colorTag.trim());
+
   return (
-    <div style={{ maxWidth: 720 }}>
+    <div style={{ maxWidth: 760 }}>
       <SectionLabel>Identity</SectionLabel>
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 12 }}>
-        <Field label="First Name *" value={firstName} onChange={setFirstName} error={errors.firstName} />
-        <Field label="Last Name *" value={lastName} onChange={setLastName} error={errors.lastName} />
-        <Field label="Preferred Display Name" value={preferredDisplay} onChange={setPreferredDisplay} hint={`Defaults to "${firstName} ${lastName}"`} />
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 14 }}>
+        <Field label="First name *" value={firstName} onChange={setFirstName} error={errors.firstName} />
+        <Field label="Last name *" value={lastName} onChange={setLastName} error={errors.lastName} />
+        <Field label="Preferred display name" value={preferredDisplay} onChange={setPreferredDisplay} hint={`Defaults to "${firstName} ${lastName}"`} />
         <div>
-          <label style={fieldLabelStyle}>Provider Type</label>
+          <label style={fieldLabelStyle}>Provider type</label>
           <select value={providerType} onChange={e => setProviderType(e.target.value)} style={fieldInputStyle}>
             {PROVIDER_TYPES.map(t => (
               <option key={t} value={t}>{TYPE_COLORS[t]?.label ?? t}</option>
@@ -528,30 +532,53 @@ function ProfileTab({ provider, saveState, onSave }: { provider: ProviderDetail;
       </div>
 
       <SectionLabel>Contact</SectionLabel>
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 12 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 14 }}>
         <Field label="Email" value={email} onChange={setEmail} error={errors.email} />
         <Field label="Phone" value={phone} onChange={setPhone} />
         <div style={{ gridColumn: '1 / -1' }}>
-          <Field label="Home Address" value={homeAddress} onChange={setHomeAddress} />
+          <Field label="Home address" value={homeAddress} onChange={setHomeAddress} />
         </div>
       </div>
 
-      <SectionLabel>Credentials & Employment Records</SectionLabel>
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12, marginBottom: 12 }}>
+      <SectionLabel>Credentials & employment records</SectionLabel>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10, marginBottom: 14 }}>
         <Field label="NPI" value={npi} onChange={setNpi} />
         <Field label="Employee ID" value={employeeId} onChange={setEmployeeId} />
         <Field label="Payroll ID" value={payrollId} onChange={setPayrollId} />
-        <Field label="Start Date" value={startDate} onChange={setStartDate} type="date" />
-        <Field label="Color Tag" value={colorTag} onChange={setColorTag} hint="e.g. #6366f1 — used in schedule views" />
+        <Field label="Start date" value={startDate} onChange={setStartDate} type="date" />
+        <div>
+          <label style={fieldLabelStyle}>Color tag</label>
+          <div style={{ display: 'flex', gap: 6, alignItems: 'stretch' }}>
+            <input
+              type="text"
+              value={colorTag}
+              onChange={(e) => setColorTag(e.target.value)}
+              placeholder="#6366f1"
+              style={{ ...fieldInputStyle, flex: 1, fontFamily: 'var(--font-mono), ui-monospace, monospace' }}
+            />
+            <div style={{
+              width: 28, borderRadius: 5, border: '0.5px solid var(--border)',
+              background: swatchValid ? colorTag.trim() : 'transparent',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              color: 'var(--text-dim)', fontSize: 9,
+            }}>
+              {!swatchValid && '—'}
+            </div>
+          </div>
+          <div style={{ fontSize: 10, color: 'var(--text-dim)', marginTop: 2 }}>
+            Used in schedule views.
+          </div>
+        </div>
       </div>
 
       <SectionLabel>Photo</SectionLabel>
-      <div style={{ display: 'flex', gap: 14, alignItems: 'flex-start', marginBottom: 16 }}>
+      <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start', marginBottom: 14 }}>
         <div style={{
-          width: 64, height: 64, borderRadius: 10, overflow: 'hidden', flexShrink: 0,
-          background: 'var(--bg-deep)', border: '1px solid var(--border)',
+          width: 56, height: 56, borderRadius: 6, overflow: 'hidden', flexShrink: 0,
+          background: 'var(--bg-deep)', border: '0.5px solid var(--border)',
           display: 'flex', alignItems: 'center', justifyContent: 'center',
-          fontSize: 11, color: 'var(--text-dim)',
+          fontSize: 9, color: 'var(--text-dim)', textAlign: 'center', padding: 4,
+          fontFamily: 'var(--font-mono), ui-monospace, monospace',
         }}>
           {photoUrl ? (
             // eslint-disable-next-line @next/next/no-img-element
@@ -562,7 +589,7 @@ function ProfileTab({ provider, saveState, onSave }: { provider: ProviderDetail;
               onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = 'none'; }}
             />
           ) : (
-            <span>No photo</span>
+            <span>no photo</span>
           )}
         </div>
         <div style={{ flex: 1 }}>
@@ -570,19 +597,20 @@ function ProfileTab({ provider, saveState, onSave }: { provider: ProviderDetail;
             label="Photo URL"
             value={photoUrl}
             onChange={setPhotoUrl}
-            hint="Paste a publicly-accessible image URL. Upload-from-device is coming soon."
+            hint="Paste a publicly-accessible image URL. Upload-from-device coming soon."
           />
         </div>
       </div>
 
-      <SectionLabel>Admin Notes</SectionLabel>
+      <SectionLabel>Admin notes</SectionLabel>
       <textarea
         value={notes} onChange={e => setNotes(e.target.value)}
-        placeholder="Internal notes visible only to admins..."
+        placeholder="Internal notes visible only to admins…"
         style={{
-          width: '100%', minHeight: 80, padding: '10px 12px', borderRadius: 8,
-          border: '1px solid var(--border)', background: 'var(--bg-deep)',
-          color: 'var(--text)', fontSize: 13, resize: 'vertical', marginBottom: 16,
+          width: '100%', minHeight: 72, padding: '7px 10px', borderRadius: 5,
+          border: '0.5px solid var(--border)', background: 'var(--bg-deep)',
+          color: 'var(--text)', fontSize: 12, resize: 'vertical', marginBottom: 14,
+          fontFamily: 'inherit', outline: 'none',
         }}
       />
 
@@ -2573,14 +2601,20 @@ const yearBtnStyle: React.CSSProperties = {
 };
 
 // ── Shared Components ───────────────────────────────────────────────────────
-const fieldLabelStyle: React.CSSProperties = { fontSize: 11, color: 'var(--text-muted)', display: 'block', marginBottom: 5, fontWeight: 600, letterSpacing: 0.5 };
+const fieldLabelStyle: React.CSSProperties = {
+  fontSize: 10, color: 'var(--text-muted)', display: 'block',
+  marginBottom: 4, fontWeight: 600, letterSpacing: 0.5,
+  textTransform: 'uppercase',
+};
 const fieldInputStyle: React.CSSProperties = {
-  width: '100%', padding: '9px 12px', borderRadius: 8, border: '1px solid var(--border)',
-  background: 'var(--bg-deep)', color: 'var(--text)', fontSize: 13,
+  width: '100%', padding: '6px 10px', borderRadius: 5, border: '0.5px solid var(--border)',
+  background: 'var(--bg-deep)', color: 'var(--text)', fontSize: 12,
+  outline: 'none',
 };
 const saveBtnStyle: React.CSSProperties = {
-  padding: '10px 24px', borderRadius: 8, cursor: 'pointer', fontWeight: 700, fontSize: 13,
+  padding: '7px 18px', borderRadius: 5, cursor: 'pointer', fontWeight: 700, fontSize: 12,
   background: 'linear-gradient(135deg,#0ea5e9,#6366f1)', color: '#fff', border: 'none',
+  letterSpacing: 0.2,
 };
 
 // Unified save button for profile tabs. Shows an in-flight "Saving..." and a
@@ -2606,7 +2640,7 @@ function SaveButton({
     background: isSaved ? 'linear-gradient(135deg,#10b981,#059669)' : saveBtnStyle.background,
     opacity: disabled && !isSaving ? 0.5 : 1,
     cursor: disabled ? 'not-allowed' : 'pointer',
-    minWidth: 140,
+    minWidth: 120,
     transition: 'background 0.2s',
   };
   return (
@@ -2632,12 +2666,12 @@ function Field({ label, value, onChange, type, error, hint }: {
         type={type || 'text'}
         value={value}
         onChange={e => onChange(e.target.value)}
-        style={{ ...fieldInputStyle, border: `1px solid ${borderColor}` }}
+        style={{ ...fieldInputStyle, border: `0.5px solid ${borderColor}` }}
       />
       {error ? (
-        <div style={{ fontSize: 10, color: '#f87171', marginTop: 3 }}>{error}</div>
+        <div style={{ fontSize: 10, color: '#dc2626', marginTop: 2 }}>{error}</div>
       ) : hint ? (
-        <div style={{ fontSize: 10, color: 'var(--text-dim)', marginTop: 3 }}>{hint}</div>
+        <div style={{ fontSize: 10, color: 'var(--text-dim)', marginTop: 2 }}>{hint}</div>
       ) : null}
     </div>
   );
@@ -2645,8 +2679,8 @@ function Field({ label, value, onChange, type, error, hint }: {
 
 function Toggle({ label, checked, onChange }: { label: string; checked: boolean; onChange: (v: boolean) => void }) {
   return (
-    <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: 'var(--text-muted)', cursor: 'pointer', padding: '4px 0' }}>
-      <input type="checkbox" checked={checked} onChange={e => onChange(e.target.checked)} style={{ accentColor: '#0ea5e9', width: 15, height: 15 }} />
+    <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--text-muted)', cursor: 'pointer', padding: '2px 0' }}>
+      <input type="checkbox" checked={checked} onChange={e => onChange(e.target.checked)} style={{ accentColor: '#0ea5e9', width: 13, height: 13 }} />
       {label}
     </label>
   );
@@ -2659,17 +2693,17 @@ function InfoTip({ text }: { text: string }) {
       onMouseEnter={() => setShow(true)} onMouseLeave={() => setShow(false)}
       onClick={(e) => { e.stopPropagation(); setShow(v => !v); }}>
       <span style={{
-        width: 16, height: 16, borderRadius: '50%', display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-        fontSize: 10, fontWeight: 800, cursor: 'pointer',
-        background: 'rgba(14,165,233,0.15)', color: '#0ea5e9', border: '1px solid rgba(14,165,233,0.3)',
-        flexShrink: 0,
+        width: 13, height: 13, borderRadius: '50%', display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+        fontSize: 9, fontWeight: 800, cursor: 'pointer',
+        background: 'rgba(14,165,233,0.12)', color: '#0ea5e9', border: '0.5px solid rgba(14,165,233,0.3)',
+        flexShrink: 0, fontFamily: 'var(--font-mono), ui-monospace, monospace',
       }}>i</span>
       {show && (
         <div style={{
           position: 'absolute', top: '100%', left: '50%', transform: 'translateX(-50%)',
-          marginTop: 8, padding: '10px 14px', borderRadius: 8, fontSize: 12, lineHeight: 1.5,
-          background: '#1e293b', color: '#e2e8f0', border: '1px solid #334155',
-          boxShadow: '0 8px 24px rgba(0,0,0,0.5)', width: 280, zIndex: 300,
+          marginTop: 6, padding: '8px 12px', borderRadius: 6, fontSize: 11, lineHeight: 1.5,
+          background: '#1e293b', color: '#e2e8f0', border: '0.5px solid #334155',
+          boxShadow: '0 4px 16px rgba(15,23,42,0.18)', width: 260, zIndex: 300,
           fontWeight: 500, whiteSpace: 'normal',
         }}>
           {text}
@@ -2681,8 +2715,43 @@ function InfoTip({ text }: { text: string }) {
 
 function SectionLabel({ children }: { children: React.ReactNode }) {
   return (
-    <div style={{ fontSize: 11, fontWeight: 800, color: 'var(--text-dim)', letterSpacing: 1.5, textTransform: 'uppercase', marginBottom: 10, marginTop: 8 }}>
+    <div style={{
+      fontSize: 9, fontWeight: 700, color: 'var(--text-muted)',
+      letterSpacing: 1, textTransform: 'uppercase',
+      marginBottom: 8, marginTop: 4,
+      paddingBottom: 4, borderBottom: '0.5px solid var(--border)',
+      fontFamily: 'var(--font-mono), ui-monospace, monospace',
+    }}>
       {children}
     </div>
+  );
+}
+
+function ChipPill({ text, fg, bg }: { text: string; fg: string; bg: string }) {
+  return (
+    <span style={{
+      fontSize: 10, fontWeight: 600, padding: '1px 7px', borderRadius: 999,
+      background: bg, color: fg, textTransform: 'capitalize',
+      border: `0.5px solid ${fg}30`,
+    }}>
+      {text}
+    </span>
+  );
+}
+
+function SaveIndicator({ state }: { state: 'idle' | 'saving' | 'saved' }) {
+  if (state === 'idle') return null;
+  const isSaving = state === 'saving';
+  return (
+    <span style={{
+      fontSize: 10, fontFamily: 'var(--font-mono), ui-monospace, monospace',
+      color: isSaving ? '#0ea5e9' : '#10b981',
+      display: 'inline-flex', alignItems: 'center', gap: 4,
+      padding: '2px 8px', borderRadius: 4,
+      background: isSaving ? 'rgba(14,165,233,0.08)' : 'rgba(16,185,129,0.08)',
+      border: `0.5px solid ${isSaving ? 'rgba(14,165,233,0.25)' : 'rgba(16,185,129,0.25)'}`,
+    }}>
+      {isSaving ? '⋯ saving' : '✓ saved'}
+    </span>
   );
 }

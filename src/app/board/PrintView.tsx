@@ -48,7 +48,7 @@ export default function PrintView({ date, sites, staff, assignments, designation
   return (
     <div style={{
       position: 'fixed', inset: 0, zIndex: 200,
-      background: 'rgba(0,0,0,0.7)',
+      background: 'var(--bg-print-overlay)',
       display: 'flex', alignItems: 'center', justifyContent: 'center',
     }}>
       {/* Controls — hidden on print */}
@@ -70,7 +70,7 @@ export default function PrintView({ date, sites, staff, assignments, designation
           onClick={onClose}
           style={{
             padding: '10px 22px', borderRadius: 8, cursor: 'pointer',
-            background: '#1e293b', border: '1px solid #475569', color: '#94a3b8',
+            background: 'var(--bg-surface)', border: '1px solid var(--border-strong)', color: 'var(--text-muted)',
             fontWeight: 700, fontSize: 13,
           }}
         >
