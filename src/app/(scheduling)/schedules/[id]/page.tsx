@@ -86,7 +86,6 @@ interface AssignmentInfo {
   assignment_status: string;
   is_open_call: boolean;
   manually_overridden: boolean;
-  pre_call_activation?: boolean;
   validation_flags?: ValidationFlag[] | null;
   providers: ProviderInfo | null;
 }
@@ -484,7 +483,6 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
         shiftCode: string;
         color: string;
         providerType: string;
-        isPreCallActivated: boolean;
       }>>,
       overParAssignmentIds: new Set<string>(),
     };
@@ -542,7 +540,7 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
 
     // Per-date working roster. Filter rule for the MD count:
     //   - Include weekend C1 (24h call → on-floor all day)
-    //   - Exclude weekday C1 UNLESS pre_call_activation is true
+    //   - Exclude weekday C1 (overnight call → not on floor during the day)
     //   - Include everything else (C2, C3, D1-D9, day shifts, etc.)
     // CRNAs counted separately; the rule is the same shape but in practice
     // CRNAs don't take C1 call so this only matters for MDs.
@@ -557,7 +555,6 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
       shiftCode: string;
       color: string;
       providerType: string;
-      isPreCallActivated: boolean;
     }>> = {};
 
     for (const slot of grid.slots) {
@@ -567,9 +564,7 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
       const isWeekday = dow >= 1 && dow <= 5;
       for (const a of slot.assignments) {
         if (!a.provider_id || !a.providers) continue;
-        const isPreCallActivated = !!a.pre_call_activation;
-        // Weekday C1 only counts when pre-call activated.
-        if (code === 'C1' && isWeekday && !isPreCallActivated) continue;
+        if (code === 'C1' && isWeekday) continue;
         const provider = providerById.get(a.provider_id);
         const lastName = provider?.last_name || a.providers.last_name || '';
         const initials = provider?.initials || a.providers.initials || '';
@@ -589,7 +584,6 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
           shiftCode: code,
           color: slot.shift_types.color_hex || '#64748b',
           providerType: type,
-          isPreCallActivated,
         });
       }
     }
@@ -687,36 +681,6 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
     } catch {
       setGrid({ ...grid, slots: prevSlots });
       setActionError('Failed to remove assignment');
-    }
-  };
-
-  // Pre-call activation toggle. Only meaningful on a weekday C1 assignment
-  // (weekend C1 already counts as daytime work via 24h call rules), but we
-  // don't gate the call here — the button is only rendered on weekday C1
-  // assigned cells, so the persisted flag is effectively scoped there.
-  const togglePreCallActivation = async (assignmentId: string, nextValue: boolean) => {
-    if (!grid) return;
-    const prevSlots = [...grid.slots];
-    setGrid({
-      ...grid,
-      slots: grid.slots.map(s => ({
-        ...s,
-        assignments: s.assignments.map(a =>
-          a.id === assignmentId ? { ...a, pre_call_activation: nextValue } : a
-        ),
-      })),
-    });
-    setActiveCell(null);
-    try {
-      const res = await fetch('/api/scheduling/schedule-assignments', {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id: assignmentId, pre_call_activation: nextValue }),
-      });
-      if (!res.ok) throw new Error('Failed to update');
-    } catch {
-      setGrid({ ...grid, slots: prevSlots });
-      setActionError('Failed to toggle pre-call activation');
     }
   };
 
@@ -1201,7 +1165,7 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
                   <div style={{
                     fontSize: 9, fontWeight: 700, color: '#94a3b8', marginTop: 2,
                     fontFamily: 'var(--font-mono), ui-monospace, monospace',
-                  }} title="MDs working (weekday C1 excluded unless pre-call activated) · CRNAs working">
+                  }} title="MDs working (weekday C1 excluded) · CRNAs working">
                     {mdCount} MD{crnaCount > 0 ? ` · ${crnaCount} CRNA` : ''}
                   </div>
                 )}
@@ -1509,33 +1473,6 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
                 </div>
               )}
               <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                {/* Pre-call activation toggle — only meaningful on weekday
-                    C1 assignments. Weekend C1 already counts as daytime
-                    work (24h call) so the toggle is hidden there. */}
-                {activeSlot && activeAssignment && activeSlot.shift_types.code === 'C1' &&
-                  (() => {
-                    const dow = getDayOfWeek(activeSlot.slot_date);
-                    const isWeekday = dow >= 1 && dow <= 5;
-                    if (!isWeekday) return null;
-                    const active = !!activeAssignment.pre_call_activation;
-                    return (
-                      <button
-                        onClick={() => togglePreCallActivation(activeAssignment.id, !active)}
-                        title="When on, this provider is counted as a daytime MD on this date even though C1 is overnight call."
-                        style={{
-                          padding: '6px 12px', fontSize: 12, fontWeight: 600,
-                          border: `1px solid ${active ? 'rgba(34,197,94,0.4)' : 'var(--border)'}`,
-                          borderRadius: 6,
-                          background: active ? 'rgba(34,197,94,0.12)' : 'var(--bg-deep)',
-                          color: active ? '#22c55e' : 'var(--text-muted)',
-                          cursor: 'pointer', textAlign: 'left',
-                        }}
-                      >
-                        {active ? '✓ Pre-call activated' : 'Mark Pre-call activated'}
-                      </button>
-                    );
-                  })()
-                }
                 <button
                   onClick={() => activeAssignment && removeAssignment(activeAssignment.id)}
                   style={{
@@ -2333,7 +2270,6 @@ interface CalendarWorker {
   shiftCode: string;
   color: string;
   providerType: string;
-  isPreCallActivated: boolean;
 }
 
 function CalendarView({
@@ -2519,7 +2455,7 @@ function CalendarView({
                 </div>
                 {cell.inSchedule && (mdCount > 0 || crnaCount > 0) && (
                   <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 1 }}>
-                    <span title="MDs working (weekday C1 excluded unless pre-call activated)" style={{
+                    <span title="MDs working (weekday C1 excluded)" style={{
                       fontSize: 10, fontWeight: 800,
                       color: '#0ea5e9',
                       background: 'rgba(14,165,233,0.12)',
@@ -2555,7 +2491,7 @@ function CalendarView({
                         key={wi}
                         title={
                           (isOverPar ? 'Above FTE-weighted target. ' : '') +
-                          `${w.shortName} · ${w.shiftCode}${w.isPreCallActivated ? ' (pre-call activated)' : ''}`
+                          `${w.shortName} · ${w.shiftCode}`
                         }
                         style={{
                           display: 'flex', alignItems: 'center', gap: 4,
@@ -2583,11 +2519,6 @@ function CalendarView({
                           color: isOverPar ? '#ef4444' : 'var(--text)',
                         }}>
                           {display}
-                          {w.isPreCallActivated && (
-                            <span style={{ color: '#22c55e', fontWeight: 700 }} title="Pre-call activated">
-                              {' *'}
-                            </span>
-                          )}
                         </span>
                       </div>
                     );
