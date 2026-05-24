@@ -485,6 +485,10 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
         shiftCode: string;
         color: string;
         providerType: string;
+        // Counts toward the MD/CRNA daytime total. False for weekday C1
+        // (overnight call only — included in the visual list, but not in
+        // the headline count). Matches the grid view's column-header rule.
+        countsTowardCount: boolean;
       }>>,
       overParAssignmentIds: new Set<string>(),
     };
@@ -540,12 +544,13 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
       }
     }
 
-    // Per-date working roster. Filter rule for the MD count:
+    // Per-date working roster. The list INCLUDES every assignment so the
+    // viewer sees who's nominally on the schedule. The MD/CRNA totals are
+    // a separate filtered count:
     //   - Include weekend C1 (24h call → on-floor all day)
-    //   - Exclude weekday C1 (overnight call → not on floor during the day)
+    //   - Exclude weekday C1 from the count (overnight call → not on floor
+    //     during the day) — still rendered in the list
     //   - Include everything else (C2, C3, D1-D9, day shifts, etc.)
-    // CRNAs counted separately; the rule is the same shape but in practice
-    // CRNAs don't take C1 call so this only matters for MDs.
     const mdCountByDate: Record<string, number> = {};
     const crnaCountByDate: Record<string, number> = {};
     const workingByDate: Record<string, Array<{
@@ -557,6 +562,7 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
       shiftCode: string;
       color: string;
       providerType: string;
+      countsTowardCount: boolean;
     }>> = {};
 
     for (const slot of grid.slots) {
@@ -564,19 +570,15 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
       const code = slot.shift_types.code;
       const dow = getDayOfWeek(date);
       const isWeekday = dow >= 1 && dow <= 5;
+      const countsTowardCount = !(code === 'C1' && isWeekday);
       for (const a of slot.assignments) {
         if (!a.provider_id || !a.providers) continue;
-        if (code === 'C1' && isWeekday) continue;
         const provider = providerById.get(a.provider_id);
         const lastName = provider?.last_name || a.providers.last_name || '';
         const initials = provider?.initials || a.providers.initials || '';
         const shortName = a.providers.short_display_name;
         const type = a.providers.provider_type;
         if (!workingByDate[date]) workingByDate[date] = [];
-        // Dedupe: a provider with two assignments same day (e.g. D2 + 7-3)
-        // should still only count once toward the MD/CRNA totals, but they
-        // appear in the working list once per role. For simplicity we list
-        // them per assignment; the count below uses a Set.
         workingByDate[date].push({
           assignmentId: a.id,
           providerId: a.provider_id,
@@ -586,21 +588,36 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
           shiftCode: code,
           color: slot.shift_types.color_hex || '#64748b',
           providerType: type,
+          countsTowardCount,
         });
       }
     }
+
+    // Stable sort rank: C-shifts first (C1 → C2 → C3), then D-shifts in
+    // numeric order (D1 → D9), then everything else (Day Doc shift codes
+    // like 7-3, 7-5 — these aren't part of the call/relief chain so they
+    // sit at the bottom of the cell).
+    const shiftRank = (code: string): number => {
+      if (code === 'C1') return 1;
+      if (code === 'C2') return 2;
+      if (code === 'C3') return 3;
+      const m = /^D(\d+)$/.exec(code);
+      if (m) return 10 + parseInt(m[1], 10);
+      return 100;
+    };
 
     for (const [date, list] of Object.entries(workingByDate)) {
       const mdSet = new Set<string>();
       const crnaSet = new Set<string>();
       for (const w of list) {
+        if (!w.countsTowardCount) continue;
         if (w.providerType === 'physician') mdSet.add(w.providerId);
         else if (w.providerType === 'crna' || w.providerType === 'aa') crnaSet.add(w.providerId);
       }
       mdCountByDate[date] = mdSet.size;
       crnaCountByDate[date] = crnaSet.size;
       list.sort((a, b) =>
-        (a.providerType === 'physician' ? 0 : 1) - (b.providerType === 'physician' ? 0 : 1) ||
+        shiftRank(a.shiftCode) - shiftRank(b.shiftCode) ||
         a.shiftCode.localeCompare(b.shiftCode) ||
         (a.last_name || a.initials).localeCompare(b.last_name || b.initials)
       );
@@ -2016,8 +2033,23 @@ function CallCountsModal({ grid, onClose }: { grid: GridData; onClose: () => voi
 
   // Aggregate counts: counts[providerId][bucket|code] = n
   const counts: Record<string, Record<string, number>> = {};
+  // Extra-call counts: extras[providerId][code] = n. An "extra call" is a
+  // call assignment held by a provider who is NOT in the regular call pool
+  // (no call_taker / partial_call_taker flag at the schedule's site). Same
+  // definition as the grid view's isExtraCall.
+  const extras: Record<string, Record<string, number>> = {};
   const providerById: Record<string, Provider> = {};
   for (const p of grid.providers) providerById[p.id] = p;
+
+  // Call-taker pool from profiles — anyone home-site with call_taker or
+  // partial_call_taker is in the regular pool; everyone else's call
+  // assignments count as "Extra".
+  const siteId = grid.schedule.site_id;
+  const callTakerIds = new Set<string>();
+  for (const p of grid.profiles || []) {
+    if (p.home_site_id !== siteId) continue;
+    if (p.call_taker || p.partial_call_taker) callTakerIds.add(p.provider_id);
+  }
 
   const providersWithCalls = new Set<string>();
 
@@ -2036,6 +2068,10 @@ function CallCountsModal({ grid, onClose }: { grid: GridData; onClose: () => voi
       const key = `${bucket}|${code}`;
       counts[a.provider_id][key] = (counts[a.provider_id][key] || 0) + 1;
       providersWithCalls.add(a.provider_id);
+      if (!callTakerIds.has(a.provider_id)) {
+        if (!extras[a.provider_id]) extras[a.provider_id] = {};
+        extras[a.provider_id][code] = (extras[a.provider_id][code] || 0) + 1;
+      }
     }
   }
 
@@ -2093,10 +2129,12 @@ function CallCountsModal({ grid, onClose }: { grid: GridData; onClose: () => voi
 
   const ptoDaysForPid = (pid: string) => ptoDaysByPid[pid] || 0;
 
-  // Combined count used by the right-most "Total + PTO" column — the user
-  // asked for PTO days to be included in the call count so the fairness
-  // view shows who has "been off" in either form.
-  const rowTotalWithPto = (pid: string) => rowTotal(pid) + ptoDaysForPid(pid);
+  const getExtra = (pid: string, code: string) => extras[pid]?.[code] || 0;
+  const colExtraTotal = (code: string) => {
+    let t = 0;
+    for (const pid of providers.map(p => p.id)) t += getExtra(pid, code);
+    return t;
+  };
 
   const handlePrint = () => {
     // Native print dialog → Save as PDF gets you a file. Relies on the
@@ -2172,6 +2210,13 @@ function CallCountsModal({ grid, onClose }: { grid: GridData; onClose: () => voi
                   borderBottom: '1px solid var(--border)', borderLeft: '1px solid var(--border)',
                 }}>{b.label}</th>
               ))}
+              <th colSpan={3} style={{
+                padding: '6px 10px', textAlign: 'center',
+                borderBottom: '1px solid var(--border)', borderLeft: '1px solid var(--border)',
+                color: '#0ea5e9',
+              }} title="Calls taken by providers not in the regular call pool (no call_taker / partial_call_taker flag at this site)">
+                Extra Calls
+              </th>
               <th rowSpan={2} style={{
                 padding: '6px 10px', textAlign: 'center', fontWeight: 700,
                 borderBottom: '1px solid var(--border)', borderLeft: '1px solid var(--border)',
@@ -2181,10 +2226,6 @@ function CallCountsModal({ grid, onClose }: { grid: GridData; onClose: () => voi
                 borderBottom: '1px solid var(--border)', borderLeft: '1px solid var(--border)',
                 color: '#fbbf24',
               }}>PTO Days<br/><span style={{ fontSize: 10, fontWeight: 500, opacity: 0.7 }}>(M–F only)</span></th>
-              <th rowSpan={2} style={{
-                padding: '6px 10px', textAlign: 'center', fontWeight: 700,
-                borderBottom: '1px solid var(--border)', borderLeft: '1px solid var(--border)',
-              }}>Total + PTO</th>
             </tr>
             <tr style={{ background: 'var(--bg)', color: 'var(--text-dim)' }}>
               {BUCKETS.map(b => CODES.map(c => (
@@ -2195,6 +2236,14 @@ function CallCountsModal({ grid, onClose }: { grid: GridData; onClose: () => voi
                   color: c === 'C1' ? '#0ea5e9' : c === 'C2' ? '#34d399' : '#a855f7',
                 }}>{c}</th>
               )))}
+              {CODES.map(c => (
+                <th key={`extra|${c}`} style={{
+                  padding: '4px 8px', textAlign: 'center', fontWeight: 600,
+                  borderBottom: '1px solid var(--border)',
+                  borderLeft: c === 'C1' ? '1px solid var(--border)' : 'none',
+                  color: c === 'C1' ? '#0ea5e9' : c === 'C2' ? '#34d399' : '#a855f7',
+                }}>{c}</th>
+              ))}
             </tr>
           </thead>
           <tbody>
@@ -2214,6 +2263,17 @@ function CallCountsModal({ grid, onClose }: { grid: GridData; onClose: () => voi
                     }}>{n || '—'}</td>
                   );
                 }))}
+                {CODES.map(c => {
+                  const n = getExtra(p.id, c);
+                  return (
+                    <td key={`extra|${c}`} style={{
+                      padding: '6px 8px', textAlign: 'center',
+                      color: n === 0 ? 'var(--text-dim)' : '#0ea5e9',
+                      borderLeft: c === 'C1' ? '1px solid var(--border)' : 'none',
+                      fontWeight: n > 0 ? 700 : 400,
+                    }}>{n || '—'}</td>
+                  );
+                })}
                 <td style={{
                   padding: '6px 10px', textAlign: 'center',
                   borderLeft: '1px solid var(--border)', fontWeight: 700, color: 'var(--text)',
@@ -2223,10 +2283,6 @@ function CallCountsModal({ grid, onClose }: { grid: GridData; onClose: () => voi
                   borderLeft: '1px solid var(--border)', fontWeight: 600,
                   color: ptoDaysForPid(p.id) > 0 ? '#fbbf24' : 'var(--text-dim)',
                 }}>{ptoDaysForPid(p.id) || '—'}</td>
-                <td style={{
-                  padding: '6px 10px', textAlign: 'center',
-                  borderLeft: '1px solid var(--border)', fontWeight: 800, color: 'var(--text)',
-                }}>{rowTotalWithPto(p.id)}</td>
               </tr>
             ))}
             {/* Totals row */}
@@ -2239,6 +2295,14 @@ function CallCountsModal({ grid, onClose }: { grid: GridData; onClose: () => voi
                   borderTop: '2px solid var(--border)',
                 }}>{colTotal(b.key, c) || '—'}</td>
               )))}
+              {CODES.map(c => (
+                <td key={`total-extra|${c}`} style={{
+                  padding: '8px 10px', textAlign: 'center',
+                  borderLeft: c === 'C1' ? '1px solid var(--border)' : 'none',
+                  borderTop: '2px solid var(--border)',
+                  color: '#0ea5e9',
+                }}>{colExtraTotal(c) || '—'}</td>
+              ))}
               <td style={{
                 padding: '8px 10px', textAlign: 'center',
                 borderLeft: '1px solid var(--border)', borderTop: '2px solid var(--border)',
@@ -2248,10 +2312,6 @@ function CallCountsModal({ grid, onClose }: { grid: GridData; onClose: () => voi
                 borderLeft: '1px solid var(--border)', borderTop: '2px solid var(--border)',
                 color: '#fbbf24',
               }}>{providers.reduce((s, p) => s + ptoDaysForPid(p.id), 0) || '—'}</td>
-              <td style={{
-                padding: '8px 10px', textAlign: 'center',
-                borderLeft: '1px solid var(--border)', borderTop: '2px solid var(--border)',
-              }}>{providers.reduce((s, p) => s + rowTotalWithPto(p.id), 0)}</td>
             </tr>
           </tbody>
         </table>
@@ -2272,6 +2332,7 @@ interface CalendarWorker {
   shiftCode: string;
   color: string;
   providerType: string;
+  countsTowardCount: boolean;
 }
 
 function CalendarView({
