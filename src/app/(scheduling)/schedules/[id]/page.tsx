@@ -9,6 +9,7 @@ interface SiteInfo {
   name: string;
   short_name: string | null;
   timezone: string | null;
+  call_par_level: number | null;
 }
 
 interface Schedule {
@@ -65,6 +66,7 @@ interface ShiftTypeInfo {
 
 interface ProviderInfo {
   id: string;
+  last_name?: string;
   short_display_name: string;
   initials: string;
   provider_type: string;
@@ -84,6 +86,7 @@ interface AssignmentInfo {
   assignment_status: string;
   is_open_call: boolean;
   manually_overridden: boolean;
+  pre_call_activation?: boolean;
   validation_flags?: ValidationFlag[] | null;
   providers: ProviderInfo | null;
 }
@@ -203,7 +206,11 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
   const [grid, setGrid] = useState<GridData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [viewMode, setViewMode] = useState<'week' | 'month'>('month');
+  const [viewMode, setViewMode] = useState<'week' | 'month' | 'calendar'>('month');
+  // Month offset for calendar view — index 0 = first month touched by the
+  // schedule, increments forward. Reset to 0 whenever the user picks a new
+  // view mode so navigation is unambiguous.
+  const [calendarMonthOffset, setCalendarMonthOffset] = useState(0);
   const [weekOffset, setWeekOffset] = useState(0);
   const [activeCell, setActiveCell] = useState<ActiveCell | null>(null);
   const [pickerSearch, setPickerSearch] = useState('');
@@ -453,10 +460,164 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
     return { shiftTypes, allDates, slotMap, holidayMap, assignedOnDate, availableByDate, offByDate, ptoByDate, postCallByDate, maxAvailable, maxOff, maxPto, maxPostCall, callTakerIds };
   }, [grid]);
 
+  /* ── Per-date working roster + over-par detection ───────────────────────── */
+
+  // Matches the engine's `dayTypeBucket` from src/lib/rulesEngine/shared.ts:
+  //   Mon-Thu → weekday, Fri → friday, Sat/Sun → weekend, holidays → holiday
+  // The per-bucket totals × FTE ÷ call_par_level gives each provider's base
+  // target; over-par means their assignment count in (code, bucket) is
+  // strictly greater than that target. Deficit carry-forward (which the
+  // engine adds to the cap) is NOT included here — it requires historical
+  // data outside this schedule. A provider catching up from a prior block
+  // may legitimately exceed base target; treat this as a "look at this"
+  // flag, not a hard violation.
+  const { mdCountByDate, crnaCountByDate, workingByDate, overParAssignmentIds } = useMemo(() => {
+    const empty = {
+      mdCountByDate: {} as Record<string, number>,
+      crnaCountByDate: {} as Record<string, number>,
+      workingByDate: {} as Record<string, Array<{
+        assignmentId: string;
+        providerId: string;
+        last_name: string;
+        initials: string;
+        shortName: string;
+        shiftCode: string;
+        color: string;
+        providerType: string;
+        isPreCallActivated: boolean;
+      }>>,
+      overParAssignmentIds: new Set<string>(),
+    };
+    if (!grid) return empty;
+
+    const parLevel = grid.schedule.sites?.call_par_level ?? 12;
+    const fteByPid = new Map<string, number>();
+    for (const p of grid.profiles || []) {
+      fteByPid.set(p.provider_id, p.fte_value ?? 1);
+    }
+    const providerById = new Map<string, Provider>();
+    for (const p of grid.providers) providerById.set(p.id, p);
+
+    const bucketOf = (date: string): string => {
+      if (holidayMap[date]) return 'holiday';
+      const dow = getDayOfWeek(date);
+      if (dow === 5) return 'friday';
+      if (dow === 0 || dow === 6) return 'weekend';
+      return 'weekday';
+    };
+
+    // Block totals per (code, bucket) — denominator for FTE targets.
+    const blockTotals = new Map<string, number>();
+    // Current assignment counts per (pid, code, bucket).
+    const providerCounts = new Map<string, number>();
+
+    for (const slot of grid.slots) {
+      if (slot.shift_types.category !== 'call') continue;
+      const bucket = bucketOf(slot.slot_date);
+      const codeKey = `${slot.shift_types.code}|${bucket}`;
+      blockTotals.set(codeKey, (blockTotals.get(codeKey) || 0) + 1);
+      for (const a of slot.assignments) {
+        if (!a.provider_id) continue;
+        const k = `${a.provider_id}|${codeKey}`;
+        providerCounts.set(k, (providerCounts.get(k) || 0) + 1);
+      }
+    }
+
+    const overParAssignmentIds = new Set<string>();
+    for (const slot of grid.slots) {
+      if (slot.shift_types.category !== 'call') continue;
+      const bucket = bucketOf(slot.slot_date);
+      const blockTotal = blockTotals.get(`${slot.shift_types.code}|${bucket}`) || 0;
+      for (const a of slot.assignments) {
+        if (!a.provider_id) continue;
+        const fte = fteByPid.get(a.provider_id) ?? 1;
+        const target = (blockTotal / parLevel) * fte;
+        const count = providerCounts.get(`${a.provider_id}|${slot.shift_types.code}|${bucket}`) || 0;
+        // Strict comparison: count > target. A 0.5 FTE with target 2.5
+        // reads red on their 3rd C1; a 1.0 FTE with target 5.0 reads red
+        // on their 6th. Matches the engine's "assigned + 1 > target" cap.
+        if (count > target) overParAssignmentIds.add(a.id);
+      }
+    }
+
+    // Per-date working roster. Filter rule for the MD count:
+    //   - Include weekend C1 (24h call → on-floor all day)
+    //   - Exclude weekday C1 UNLESS pre_call_activation is true
+    //   - Include everything else (C2, C3, D1-D9, day shifts, etc.)
+    // CRNAs counted separately; the rule is the same shape but in practice
+    // CRNAs don't take C1 call so this only matters for MDs.
+    const mdCountByDate: Record<string, number> = {};
+    const crnaCountByDate: Record<string, number> = {};
+    const workingByDate: Record<string, Array<{
+      assignmentId: string;
+      providerId: string;
+      last_name: string;
+      initials: string;
+      shortName: string;
+      shiftCode: string;
+      color: string;
+      providerType: string;
+      isPreCallActivated: boolean;
+    }>> = {};
+
+    for (const slot of grid.slots) {
+      const date = slot.slot_date;
+      const code = slot.shift_types.code;
+      const dow = getDayOfWeek(date);
+      const isWeekday = dow >= 1 && dow <= 5;
+      for (const a of slot.assignments) {
+        if (!a.provider_id || !a.providers) continue;
+        const isPreCallActivated = !!a.pre_call_activation;
+        // Weekday C1 only counts when pre-call activated.
+        if (code === 'C1' && isWeekday && !isPreCallActivated) continue;
+        const provider = providerById.get(a.provider_id);
+        const lastName = provider?.last_name || a.providers.last_name || '';
+        const initials = provider?.initials || a.providers.initials || '';
+        const shortName = a.providers.short_display_name;
+        const type = a.providers.provider_type;
+        if (!workingByDate[date]) workingByDate[date] = [];
+        // Dedupe: a provider with two assignments same day (e.g. D2 + 7-3)
+        // should still only count once toward the MD/CRNA totals, but they
+        // appear in the working list once per role. For simplicity we list
+        // them per assignment; the count below uses a Set.
+        workingByDate[date].push({
+          assignmentId: a.id,
+          providerId: a.provider_id,
+          last_name: lastName,
+          initials,
+          shortName,
+          shiftCode: code,
+          color: slot.shift_types.color_hex || '#64748b',
+          providerType: type,
+          isPreCallActivated,
+        });
+      }
+    }
+
+    for (const [date, list] of Object.entries(workingByDate)) {
+      const mdSet = new Set<string>();
+      const crnaSet = new Set<string>();
+      for (const w of list) {
+        if (w.providerType === 'physician') mdSet.add(w.providerId);
+        else if (w.providerType === 'crna' || w.providerType === 'aa') crnaSet.add(w.providerId);
+      }
+      mdCountByDate[date] = mdSet.size;
+      crnaCountByDate[date] = crnaSet.size;
+      list.sort((a, b) =>
+        (a.providerType === 'physician' ? 0 : 1) - (b.providerType === 'physician' ? 0 : 1) ||
+        a.shiftCode.localeCompare(b.shiftCode) ||
+        (a.last_name || a.initials).localeCompare(b.last_name || b.initials)
+      );
+    }
+
+    return { mdCountByDate, crnaCountByDate, workingByDate, overParAssignmentIds };
+  }, [grid, holidayMap]);
+
   /* ── Visible dates based on view mode ───────────────────────────────────── */
 
   const visibleDates = useMemo(() => {
     if (viewMode === 'month') return allDates;
+    if (viewMode === 'calendar') return allDates;
     if (allDates.length === 0) return [];
     const startIdx = getWeekStart(allDates, weekOffset);
     return allDates.slice(startIdx, startIdx + 7);
@@ -526,6 +687,36 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
     } catch {
       setGrid({ ...grid, slots: prevSlots });
       setActionError('Failed to remove assignment');
+    }
+  };
+
+  // Pre-call activation toggle. Only meaningful on a weekday C1 assignment
+  // (weekend C1 already counts as daytime work via 24h call rules), but we
+  // don't gate the call here — the button is only rendered on weekday C1
+  // assigned cells, so the persisted flag is effectively scoped there.
+  const togglePreCallActivation = async (assignmentId: string, nextValue: boolean) => {
+    if (!grid) return;
+    const prevSlots = [...grid.slots];
+    setGrid({
+      ...grid,
+      slots: grid.slots.map(s => ({
+        ...s,
+        assignments: s.assignments.map(a =>
+          a.id === assignmentId ? { ...a, pre_call_activation: nextValue } : a
+        ),
+      })),
+    });
+    setActiveCell(null);
+    try {
+      const res = await fetch('/api/scheduling/schedule-assignments', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: assignmentId, pre_call_activation: nextValue }),
+      });
+      if (!res.ok) throw new Error('Failed to update');
+    } catch {
+      setGrid({ ...grid, slots: prevSlots });
+      setActionError('Failed to toggle pre-call activation');
     }
   };
 
@@ -771,17 +962,21 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
 
         {/* View toggle */}
         <div style={{ display: 'flex', borderRadius: 6, overflow: 'hidden', border: '1px solid var(--border)' }}>
-          {(['week', 'month'] as const).map(m => (
+          {(['week', 'month', 'calendar'] as const).map(m => (
             <button
               key={m}
-              onClick={() => { setViewMode(m); setWeekOffset(0); }}
+              onClick={() => {
+                setViewMode(m);
+                setWeekOffset(0);
+                setCalendarMonthOffset(0);
+              }}
               style={{
                 padding: '5px 14px', fontSize: 12, fontWeight: 600, border: 'none', cursor: 'pointer',
                 background: viewMode === m ? 'rgba(14,165,233,0.2)' : 'var(--bg-surface)',
                 color: viewMode === m ? '#0ea5e9' : 'var(--text-muted)',
               }}
             >
-              {m === 'week' ? 'Week' : 'Month'}
+              {m === 'week' ? 'Week' : m === 'month' ? 'Month' : 'Calendar'}
             </button>
           ))}
         </div>
@@ -915,6 +1110,7 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
       )}
 
       {/* Grid Container — dark chrome (headers + shift labels), white data cells */}
+      {viewMode !== 'calendar' && (
       <div style={{
         flex: 1, overflow: 'auto', borderRadius: 8,
         border: '1px solid var(--border)',
@@ -982,6 +1178,8 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
             const holiday = holidayMap[date];
             const isToday = date === todayStr;
             const isSatBorder = dow === 6 && i > 0;
+            const mdCount = mdCountByDate[date] ?? 0;
+            const crnaCount = crnaCountByDate[date] ?? 0;
             return (
               <div key={`date-${date}`} title={holiday ? holiday.holiday_name : undefined} style={{
                 position: 'sticky', top: 35, zIndex: 3,
@@ -997,6 +1195,14 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
                 {holiday && (
                   <div style={{ fontSize: 9, color: '#fbbf24', fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                     {holiday.holiday_name}
+                  </div>
+                )}
+                {(mdCount > 0 || crnaCount > 0) && (
+                  <div style={{
+                    fontSize: 9, fontWeight: 700, color: '#94a3b8', marginTop: 2,
+                    fontFamily: 'var(--font-mono), ui-monospace, monospace',
+                  }} title="MDs working (weekday C1 excluded unless pre-call activated) · CRNAs working">
+                    {mdCount} MD{crnaCount > 0 ? ` · ${crnaCount} CRNA` : ''}
                   </div>
                 )}
               </div>
@@ -1045,6 +1251,10 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
                 // just flags that this person is picking up an extra.
                 const isCallShift = st.category === 'call';
                 const isExtraCall = isAssigned && isCallShift && !!provider && !callTakerIds.has(provider.id);
+                // Over-par: the assignment pushed this provider above their
+                // FTE-weighted base target for (shift_code, day-type bucket).
+                // Doesn't include deficit carry-forward — see useMemo notes.
+                const isOverPar = isAssigned && !!assignment && overParAssignmentIds.has(assignment.id);
 
                 // Holidays: a noticeably yellow wash across the whole
                 // column so the day reads as "closed / holiday" instantly.
@@ -1052,7 +1262,11 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
                 const baseCellBg = isHoliday ? 'rgba(251,191,36,0.22)' : isWeekend ? 'rgba(99,102,241,0.06)' : '#ffffff';
                 const extraBg = 'rgba(14,165,233,0.18)';
                 const extraHoverBg = 'rgba(14,165,233,0.28)';
-                const cellBg = isExtraCall ? extraBg : baseCellBg;
+                const overParBg = 'rgba(239,68,68,0.18)';
+                const overParHoverBg = 'rgba(239,68,68,0.28)';
+                // Precedence: over-par wins over extra-call (it's a more
+                // urgent signal — extra-call is just informational).
+                const cellBg = isOverPar ? overParBg : isExtraCall ? extraBg : baseCellBg;
 
                 return (
                   <div
@@ -1067,9 +1281,13 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
                       });
                       setPickerSearch('');
                     }}
-                    title={isExtraCall && provider
-                      ? `Provider picking up Extra call — ${provider.short_display_name} is not in the regular call pool at this site.`
-                      : undefined}
+                    title={
+                      isOverPar && provider
+                        ? `${provider.short_display_name} is above their FTE-weighted target for this shift type in this block.`
+                        : isExtraCall && provider
+                          ? `Provider picking up Extra call — ${provider.short_display_name} is not in the regular call pool at this site.`
+                          : undefined
+                    }
                     style={{
                       background: cellBg,
                       borderBottom: '1px solid #e2e8f0',
@@ -1084,9 +1302,11 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
                     }}
                     onMouseEnter={(e) => {
                       if (!slot) return;
-                      (e.currentTarget as HTMLDivElement).style.background = isExtraCall
-                        ? extraHoverBg
-                        : (isHoliday ? 'rgba(251,191,36,0.32)' : isWeekend ? 'rgba(99,102,241,0.10)' : 'rgba(14,165,233,0.06)');
+                      (e.currentTarget as HTMLDivElement).style.background = isOverPar
+                        ? overParHoverBg
+                        : isExtraCall
+                          ? extraHoverBg
+                          : (isHoliday ? 'rgba(251,191,36,0.32)' : isWeekend ? 'rgba(99,102,241,0.10)' : 'rgba(14,165,233,0.06)');
                     }}
                     onMouseLeave={(e) => {
                       (e.currentTarget as HTMLDivElement).style.background = cellBg;
@@ -1209,6 +1429,22 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
           })}
         </div>
       </div>
+      )}
+
+      {viewMode === 'calendar' && (
+        <CalendarView
+          allDates={allDates}
+          monthOffset={calendarMonthOffset}
+          onPrevMonth={() => setCalendarMonthOffset(o => Math.max(0, o - 1))}
+          onNextMonth={() => setCalendarMonthOffset(o => o + 1)}
+          mdCountByDate={mdCountByDate}
+          crnaCountByDate={crnaCountByDate}
+          workingByDate={workingByDate}
+          overParAssignmentIds={overParAssignmentIds}
+          holidayMap={holidayMap}
+          todayStr={todayStr}
+        />
+      )}
 
       {/* ── Provider Picker / Action Popover ──────────────────────────────── */}
 
@@ -1273,6 +1509,33 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
                 </div>
               )}
               <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                {/* Pre-call activation toggle — only meaningful on weekday
+                    C1 assignments. Weekend C1 already counts as daytime
+                    work (24h call) so the toggle is hidden there. */}
+                {activeSlot && activeAssignment && activeSlot.shift_types.code === 'C1' &&
+                  (() => {
+                    const dow = getDayOfWeek(activeSlot.slot_date);
+                    const isWeekday = dow >= 1 && dow <= 5;
+                    if (!isWeekday) return null;
+                    const active = !!activeAssignment.pre_call_activation;
+                    return (
+                      <button
+                        onClick={() => togglePreCallActivation(activeAssignment.id, !active)}
+                        title="When on, this provider is counted as a daytime MD on this date even though C1 is overnight call."
+                        style={{
+                          padding: '6px 12px', fontSize: 12, fontWeight: 600,
+                          border: `1px solid ${active ? 'rgba(34,197,94,0.4)' : 'var(--border)'}`,
+                          borderRadius: 6,
+                          background: active ? 'rgba(34,197,94,0.12)' : 'var(--bg-deep)',
+                          color: active ? '#22c55e' : 'var(--text-muted)',
+                          cursor: 'pointer', textAlign: 'left',
+                        }}
+                      >
+                        {active ? '✓ Pre-call activated' : 'Mark Pre-call activated'}
+                      </button>
+                    );
+                  })()
+                }
                 <button
                   onClick={() => activeAssignment && removeAssignment(activeAssignment.id)}
                   style={{
@@ -2057,4 +2320,302 @@ function CallCountsModal({ grid, onClose }: { grid: GridData; onClose: () => voi
       </div>
     </div>
   );
+}
+
+/* ── Calendar (month grid) View ──────────────────────────────────────────── */
+
+interface CalendarWorker {
+  assignmentId: string;
+  providerId: string;
+  last_name: string;
+  initials: string;
+  shortName: string;
+  shiftCode: string;
+  color: string;
+  providerType: string;
+  isPreCallActivated: boolean;
+}
+
+function CalendarView({
+  allDates,
+  monthOffset,
+  onPrevMonth,
+  onNextMonth,
+  mdCountByDate,
+  crnaCountByDate,
+  workingByDate,
+  overParAssignmentIds,
+  holidayMap,
+  todayStr,
+}: {
+  allDates: string[];
+  monthOffset: number;
+  onPrevMonth: () => void;
+  onNextMonth: () => void;
+  mdCountByDate: Record<string, number>;
+  crnaCountByDate: Record<string, number>;
+  workingByDate: Record<string, CalendarWorker[]>;
+  overParAssignmentIds: Set<string>;
+  holidayMap: Record<string, Holiday>;
+  todayStr: string;
+}) {
+  // overParAssignmentIds is consumed in the working-list rendering below.
+  // Build the list of (year, month) pairs the schedule touches so prev/next
+  // never strays outside the block. Hooks must run unconditionally — guard
+  // with early-return AFTER all hook calls.
+  const monthsTouched = useMemoMonths(allDates);
+
+  if (allDates.length === 0 || monthsTouched.length === 0) {
+    return <div style={{ padding: 40, color: 'var(--text-muted)' }}>No dates in this schedule.</div>;
+  }
+
+  const idx = Math.max(0, Math.min(monthOffset, monthsTouched.length - 1));
+  const { year, month } = monthsTouched[idx];
+  const hasPrev = idx > 0;
+  const hasNext = idx < monthsTouched.length - 1;
+
+  const inScheduleSet = new Set(allDates);
+
+  // First Sunday on or before the 1st of the month → start of grid.
+  const firstOfMonth = new Date(Date.UTC(year, month, 1));
+  const firstDow = firstOfMonth.getUTCDay();
+  const gridStart = new Date(firstOfMonth);
+  gridStart.setUTCDate(firstOfMonth.getUTCDate() - firstDow);
+
+  // 6 rows × 7 cols = 42 cells, enough for any month layout.
+  const cells: Array<{ dateStr: string; inMonth: boolean; inSchedule: boolean }> = [];
+  for (let i = 0; i < 42; i++) {
+    const d = new Date(gridStart);
+    d.setUTCDate(gridStart.getUTCDate() + i);
+    const ds = d.toISOString().slice(0, 10);
+    cells.push({
+      dateStr: ds,
+      inMonth: d.getUTCMonth() === month && d.getUTCFullYear() === year,
+      inSchedule: inScheduleSet.has(ds),
+    });
+  }
+  // Trim trailing all-out-of-month row if unused for a tighter layout.
+  const lastRowUsed = cells.slice(35, 42).some(c => c.inMonth);
+  const visibleCells = lastRowUsed ? cells : cells.slice(0, 35);
+
+  const monthName = firstOfMonth.toLocaleString('en-US', { month: 'long', timeZone: 'UTC' });
+
+  return (
+    <div style={{
+      flex: 1, overflow: 'auto', borderRadius: 8,
+      border: '1px solid var(--border)',
+      background: 'var(--bg-surface)', display: 'flex', flexDirection: 'column',
+    }}>
+      {/* Month nav bar */}
+      <div style={{
+        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+        padding: '10px 16px', borderBottom: '1px solid var(--border)',
+        background: '#0d1b30', color: '#e2e8f0',
+      }}>
+        <button
+          onClick={onPrevMonth}
+          disabled={!hasPrev}
+          style={{
+            padding: '4px 12px', fontSize: 12, fontWeight: 600, borderRadius: 6,
+            border: '1px solid #1e3a5f', background: 'transparent',
+            color: hasPrev ? '#94a3b8' : '#334155',
+            cursor: hasPrev ? 'pointer' : 'not-allowed',
+          }}
+        >
+          ← Prev
+        </button>
+        <div style={{ fontSize: 16, fontWeight: 700, letterSpacing: '0.02em' }}>
+          {monthName} {year}
+        </div>
+        <button
+          onClick={onNextMonth}
+          disabled={!hasNext}
+          style={{
+            padding: '4px 12px', fontSize: 12, fontWeight: 600, borderRadius: 6,
+            border: '1px solid #1e3a5f', background: 'transparent',
+            color: hasNext ? '#94a3b8' : '#334155',
+            cursor: hasNext ? 'pointer' : 'not-allowed',
+          }}
+        >
+          Next →
+        </button>
+      </div>
+
+      {/* Weekday header */}
+      <div style={{
+        display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)',
+        background: '#0d1b30', borderBottom: '1px solid #1e3a5f',
+      }}>
+        {DAYS_SHORT.map((d, i) => {
+          const isWeekend = i === 0 || i === 6;
+          return (
+            <div key={d} style={{
+              padding: '8px 4px', textAlign: 'center', fontSize: 11, fontWeight: 700,
+              color: isWeekend ? '#818cf8' : '#64748b',
+              textTransform: 'uppercase', letterSpacing: '0.05em',
+              borderRight: i < 6 ? '1px solid #1e3a5f' : 'none',
+            }}>
+              {d}
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Month grid */}
+      <div style={{
+        flex: 1, display: 'grid',
+        gridTemplateColumns: 'repeat(7, 1fr)',
+        gridAutoRows: 'minmax(140px, 1fr)',
+      }}>
+        {visibleCells.map((cell) => {
+          const date = cell.dateStr;
+          const dow = getDayOfWeek(date);
+          const isWeekend = dow === 0 || dow === 6;
+          const holiday = holidayMap[date];
+          const isToday = date === todayStr;
+          const workers = cell.inSchedule ? (workingByDate[date] || []) : [];
+          const mdCount = cell.inSchedule ? (mdCountByDate[date] ?? 0) : 0;
+          const crnaCount = cell.inSchedule ? (crnaCountByDate[date] ?? 0) : 0;
+          const dayNum = parseDate(date).getDate();
+
+          const cellBg = !cell.inMonth
+            ? 'rgba(15,23,42,0.4)'
+            : holiday
+              ? 'rgba(251,191,36,0.08)'
+              : isWeekend
+                ? 'rgba(99,102,241,0.04)'
+                : 'var(--bg-surface)';
+
+          return (
+            <div key={date} style={{
+              padding: 6,
+              borderRight: '1px solid var(--border)',
+              borderBottom: '1px solid var(--border)',
+              background: cellBg,
+              opacity: !cell.inMonth ? 0.4 : !cell.inSchedule ? 0.55 : 1,
+              display: 'flex', flexDirection: 'column', gap: 4,
+              overflow: 'hidden',
+              outline: isToday ? '2px solid rgba(14,165,233,0.5)' : 'none',
+              outlineOffset: -2,
+            }}>
+              {/* Day number + holiday tag + counts */}
+              <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 4 }}>
+                <div style={{ display: 'flex', flexDirection: 'column' }}>
+                  <span style={{
+                    fontSize: 13, fontWeight: 700,
+                    color: isToday ? '#0ea5e9' : holiday ? '#fbbf24' : 'var(--text)',
+                  }}>
+                    {dayNum}
+                  </span>
+                  {holiday && (
+                    <span style={{
+                      fontSize: 9, color: '#fbbf24', fontWeight: 500,
+                      whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+                      maxWidth: 120,
+                    }} title={holiday.holiday_name}>
+                      {holiday.holiday_name}
+                    </span>
+                  )}
+                </div>
+                {cell.inSchedule && (mdCount > 0 || crnaCount > 0) && (
+                  <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 1 }}>
+                    <span title="MDs working (weekday C1 excluded unless pre-call activated)" style={{
+                      fontSize: 10, fontWeight: 800,
+                      color: '#0ea5e9',
+                      background: 'rgba(14,165,233,0.12)',
+                      padding: '1px 6px', borderRadius: 999,
+                      fontFamily: 'var(--font-mono), ui-monospace, monospace',
+                    }}>
+                      {mdCount} MD
+                    </span>
+                    {crnaCount > 0 && (
+                      <span title="CRNAs working" style={{
+                        fontSize: 9, fontWeight: 700,
+                        color: '#94a3b8',
+                        fontFamily: 'var(--font-mono), ui-monospace, monospace',
+                      }}>
+                        {crnaCount} CRNA
+                      </span>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              {/* Working list — last name preferred, fallback to initials,
+                  then short_display_name if both blank. */}
+              {workers.length > 0 && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 1, overflow: 'hidden' }}>
+                  {workers.map((w, wi) => {
+                    const display = (w.last_name && w.last_name.trim())
+                      || (w.initials && w.initials.trim())
+                      || w.shortName;
+                    const isOverPar = overParAssignmentIds.has(w.assignmentId);
+                    return (
+                      <div
+                        key={wi}
+                        title={
+                          (isOverPar ? 'Above FTE-weighted target. ' : '') +
+                          `${w.shortName} · ${w.shiftCode}${w.isPreCallActivated ? ' (pre-call activated)' : ''}`
+                        }
+                        style={{
+                          display: 'flex', alignItems: 'center', gap: 4,
+                          fontSize: 10, lineHeight: 1.25,
+                          color: 'var(--text)',
+                          whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+                          background: isOverPar ? 'rgba(239,68,68,0.15)' : 'transparent',
+                          borderRadius: 3,
+                          padding: isOverPar ? '0 2px' : 0,
+                        }}
+                      >
+                        <span style={{
+                          flexShrink: 0, fontSize: 8, fontWeight: 700,
+                          padding: '1px 4px', borderRadius: 3,
+                          background: colorWithAlpha(w.color, 0.18),
+                          color: w.color,
+                          letterSpacing: '0.02em',
+                          fontFamily: 'var(--font-mono), ui-monospace, monospace',
+                        }}>
+                          {w.shiftCode}
+                        </span>
+                        <span style={{
+                          fontWeight: w.providerType === 'physician' ? 600 : 500,
+                          overflow: 'hidden', textOverflow: 'ellipsis',
+                          color: isOverPar ? '#ef4444' : 'var(--text)',
+                        }}>
+                          {display}
+                          {w.isPreCallActivated && (
+                            <span style={{ color: '#22c55e', fontWeight: 700 }} title="Pre-call activated">
+                              {' *'}
+                            </span>
+                          )}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// Walks the schedule date list and returns one entry per (year, month) the
+// schedule touches. Order = chronological. Drives the calendar's prev/next
+// nav so navigation never strays outside the block.
+function useMemoMonths(allDates: string[]): Array<{ year: number; month: number }> {
+  return useMemo(() => {
+    const seen = new Set<string>();
+    const out: Array<{ year: number; month: number }> = [];
+    for (const d of allDates) {
+      const dt = parseDate(d);
+      const key = `${dt.getFullYear()}-${dt.getMonth()}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push({ year: dt.getFullYear(), month: dt.getMonth() });
+    }
+    return out;
+  }, [allDates]);
 }
