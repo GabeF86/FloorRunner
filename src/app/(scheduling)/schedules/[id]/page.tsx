@@ -9,7 +9,9 @@ interface SiteInfo {
   name: string;
   short_name: string | null;
   timezone: string | null;
-  call_par_level: number | null;
+  // Optional — older deployments may not have this column on sites. Page
+  // defaults to 12 when it's missing (matches the engine's fallback).
+  call_par_level?: number | null;
 }
 
 interface Schedule {
