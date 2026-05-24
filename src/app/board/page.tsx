@@ -2,6 +2,10 @@ import { createClient } from '@supabase/supabase-js';
 import BoardClient from './BoardClient';
 import { Site, StaffMember, Assignment } from '@/types';
 
+// Never prerender — getData() hits Supabase, which only resolves at request
+// time on Vercel (env vars aren't present during static export).
+export const dynamic = 'force-dynamic';
+
 async function getData() {
   const sb = createClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
