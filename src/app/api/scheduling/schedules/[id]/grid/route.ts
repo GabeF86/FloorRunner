@@ -11,14 +11,12 @@ export async function GET(
   const sb = sbSchedulingServer();
   const { id } = await params;
 
-  // 1. Fetch schedule with site join. call_par_level is NOT joined in here
-  // because some sites tables don't have that column yet (older deployments
-  // that haven't run the patch). The page defaults to 12 when it's missing.
-  // To enable per-site overrides, apply the call_par_level migration on
-  // sites and add it back to this select.
+  // 1. Fetch schedule with site join. call_par_level powers per-site over-par
+  // math; if it's missing for any reason the page falls back to 12 (matches
+  // the engine's default).
   const { data: schedule, error: schedErr } = await sb
     .from('schedules')
-    .select('*, sites(name, short_name, timezone)')
+    .select('*, sites(name, short_name, timezone, call_par_level)')
     .eq('id', id)
     .single();
   if (schedErr) return NextResponse.json({ error: schedErr.message }, { status: 500 });
