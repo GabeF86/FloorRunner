@@ -191,11 +191,27 @@ export async function autoGenerate(
 
   // Sort: weekends first (Sat then Sun), then friday, then weekday — by date.
   // Within a date, backup (C2, C3) before primary (C1) so pairing rules pass.
-  const dayOrder: Record<string, number> = { saturday: 0, sunday: 1, friday: 2, weekday: 3, holiday: 4 };
+  //
+  // IMPORTANT: this sort reads `derived_day_type` DIRECTLY — not through
+  // dayTypeBucket(). The bucket collapses saturday/sunday into 'weekend',
+  // which isn't in dayOrder; both Sat and Sun would fall through to the
+  // `?? 5` default and end up dead-last. That broke the whole weekend-first
+  // contract — the weekend chain (Sat-C2 → Sun-C1 + Fri-D2, etc.) needs to
+  // run before the Friday slots get filled by their own normal pass,
+  // otherwise the chain double-books providers across Friday + Saturday.
+  const dayOrder: Record<string, number> = {
+    saturday: 0,
+    sunday: 1,
+    friday: 2,
+    weekday: 3,
+    federal_holiday: 4,
+    major_holiday: 4,
+    holiday: 4,
+  };
   const codeOrder: Record<string, number> = { C2: 0, C3: 1, C1: 2 };
   slotsToFill.sort((a, b) => {
-    const da = dayOrder[dayTypeBucket(a.derived_day_type)] ?? 5;
-    const db = dayOrder[dayTypeBucket(b.derived_day_type)] ?? 5;
+    const da = dayOrder[a.derived_day_type] ?? 5;
+    const db = dayOrder[b.derived_day_type] ?? 5;
     if (da !== db) return da - db;
     if (a.slot_date !== b.slot_date) return a.slot_date.localeCompare(b.slot_date);
     const ca = codeOrder[a.shift_type_code] ?? 9;
@@ -842,11 +858,19 @@ export async function autoGenerate(
       const chainAssign = async (slotMap: Map<string, SlotToFill> | undefined, code: string) => {
         if (!slotMap) return;
         const target = slotMap.get(code);
-        if (target && !handledSlotIds.has(target.slot_id)) {
-          await doAssign(target, chosen);
-          // Chained call shifts also trigger their D-chain (e.g. Sun-C2 → Mon-D1)
-          await chainDFills(target, chosen);
-        }
+        if (!target) return;
+        if (handledSlotIds.has(target.slot_id)) return;
+        // Defensive: don't double-book `chosen` on a date they already have
+        // an assignment in this schedule. The slot sort above ensures
+        // weekends process before Friday so this shouldn't happen in normal
+        // flow, but a pre-existing assignment (manual edit, prior run,
+        // sequence auto-fill from another path) could still set up a same-
+        // date conflict. doAssign itself doesn't guard against this — only
+        // the main loop's isEligible does, and chainAssign bypasses it.
+        if (isAssignedOnDate(target.slot_date, chosen.id)) return;
+        await doAssign(target, chosen);
+        // Chained call shifts also trigger their D-chain (e.g. Sun-C2 → Mon-D1)
+        await chainDFills(target, chosen);
       };
 
       if (slot.shift_type_code === 'C3') {
