@@ -405,14 +405,31 @@ function deleteAssignmentInResult(prev: CalculatorOutput, id: string): Calculato
   return computeTotals({ ...prev, assignments: next, contingencies });
 }
 
-// Add a new MD to a given site. Generates a fresh id and uses a generic role
-// label — the user can rename later if we ever wire up inline editing.
-function addMDInResult(prev: CalculatorOutput, site: string, isSolo: boolean): CalculatorOutput {
+// Add a new MD to a given site. Generates a fresh id and a role label that
+// reflects the requested kind. Cardiac MDs continue the existing `Cardiac N`
+// series at the site so the numbering stays consistent with the algorithm.
+function addMDInResult(
+  prev: CalculatorOutput,
+  site: string,
+  opts: { isSolo: boolean; isCardiac?: boolean },
+): CalculatorOutput {
   const id = `md-custom-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
-  const role = isSolo ? 'Solo MD (added)' : 'Supv MD (added)';
+  let role: string;
+  if (opts.isCardiac) {
+    const nextNum = prev.assignments.filter((a) => a.isCardiac && a.site === site).length + 1;
+    role = `Cardiac ${nextNum}`;
+  } else {
+    role = opts.isSolo ? 'Solo MD (added)' : 'Supv MD (added)';
+  }
+  const newMD: StaffAssignment = {
+    id, type: 'MD', role, site, supervises: [],
+    isSolo: opts.isSolo,
+    ...(opts.isCardiac ? { isCardiac: true } : {}),
+    notes: 'Manually added.',
+  };
   const next = [
     ...prev.assignments.map((a) => ({ ...a, supervises: [...(a.supervises || [])] })),
-    { id, type: 'MD', role, site, supervises: [], isSolo, notes: 'Manually added.' } as StaffAssignment,
+    newMD,
   ];
   return computeTotals({ ...prev, assignments: next });
 }
@@ -475,8 +492,8 @@ function StaffingDiagram({ result, setResult, siteCatalog }: {
     setResult((prev) => prev ? deleteAssignmentInResult(prev, id) : prev);
     if (selectedCRNA === id) setSelectedCRNA(null);
   };
-  const addMD = (site: string, isSolo: boolean) => {
-    setResult((prev) => prev ? addMDInResult(prev, site, isSolo) : prev);
+  const addMD = (site: string, opts: { isSolo: boolean; isCardiac?: boolean }) => {
+    setResult((prev) => prev ? addMDInResult(prev, site, opts) : prev);
   };
   const addCRNA = (site: string) => {
     setResult((prev) => prev ? addCRNAInResult(prev, site) : prev);
@@ -547,10 +564,7 @@ function StaffingDiagram({ result, setResult, siteCatalog }: {
           const siteMDs = mds.filter((m) => m.site === site.key);
           const siteCRNAs = crnas.filter((c) => c.site === site.key);
           const isFloatPool = site.key === 'Float';
-          const is8101Lane = site.key === '8101';
-          const displayCRNACount = is8101Lane
-            ? crnas.filter((c) => siteMDs.some((m) => m.supervises?.includes(c.id))).length
-            : siteCRNAs.length;
+          const displayCRNACount = siteCRNAs.length;
           const isLaneTarget = dropTarget === 'lane-' + site.key;
 
           return (
@@ -650,8 +664,13 @@ function StaffingDiagram({ result, setResult, siteCatalog }: {
                   {/* Per-lane add controls — change ratios in place without
                       having to reset the whole calculator. */}
                   <LaneAddControls
-                    onAddSupv={() => addMD(site.key, false)}
-                    onAddSolo={() => addMD(site.key, true)}
+                    onAddSupv={() => addMD(site.key, { isSolo: false })}
+                    onAddSolo={() => addMD(site.key, { isSolo: true })}
+                    onAddCardiac={
+                      site.key === 'Cardiac'
+                        ? () => addMD(site.key, { isSolo: true, isCardiac: true })
+                        : undefined
+                    }
                     onAddCRNA={() => addCRNA(site.key)}
                     laneColor={site.color}
                   />
@@ -770,9 +789,12 @@ function RemoteCoverageRow({ crnas, mds, siteCatalog }: {
 
 // Per-lane add row — small ghost buttons for spinning up extra MDs and CRNAs
 // without wiping the algorithm's output. Lives inside each lane below the MDs.
-function LaneAddControls({ onAddSupv, onAddSolo, onAddCRNA, laneColor }: {
+function LaneAddControls({ onAddSupv, onAddSolo, onAddCardiac, onAddCRNA, laneColor }: {
   onAddSupv: () => void;
   onAddSolo: () => void;
+  // Only set on the Cardiac lane — when present, it takes the slot the
+  // Supv MD button would otherwise occupy (cardiac MDs are always solo).
+  onAddCardiac?: () => void;
   onAddCRNA: () => void;
   laneColor: string;
 }) {
@@ -783,7 +805,11 @@ function LaneAddControls({ onAddSupv, onAddSolo, onAddCRNA, laneColor }: {
   });
   return (
     <div style={{ display: 'flex', gap: 5, padding: '4px 0 2px', flexWrap: 'wrap' }}>
-      <button onClick={onAddSupv} style={btn('+ Supv MD', onAddSupv, '#4A90D9')}>+ Supv MD</button>
+      {onAddCardiac ? (
+        <button onClick={onAddCardiac} style={btn('+ Cardiac MD', onAddCardiac, '#E05599')}>+ Cardiac MD</button>
+      ) : (
+        <button onClick={onAddSupv} style={btn('+ Supv MD', onAddSupv, '#4A90D9')}>+ Supv MD</button>
+      )}
       <button onClick={onAddSolo} style={btn('+ Solo MD', onAddSolo, '#B06AE8')}>+ Solo MD</button>
       <button onClick={onAddCRNA} style={btn('+ CRNA', onAddCRNA, tok.crna.fg)}>+ CRNA</button>
       <span style={{ marginLeft: 4, color: tok.textDim, fontSize: 9, alignSelf: 'center' }}>

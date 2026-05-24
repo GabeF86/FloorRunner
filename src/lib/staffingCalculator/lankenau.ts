@@ -76,7 +76,9 @@ function calculateLankenau(cfgIn: CalculatorConfig, avail: AvailableStaff): Calc
   const mdTight = totalMDEst >= avail.mds; // true = conserve MDs
 
   // ── 8101 — Schedule Runner ──
-  const md8101 = push({ id: `md-${mdt++}`, type: 'MD', role: '8101', site: '8101',
+  // Lives in the Main OR lane alongside OR Supv MDs — it's a Main-OR-area
+  // role, not its own site. The is8101 flag still drives the yellow badge.
+  const md8101 = push({ id: `md-${mdt++}`, type: 'MD', role: '8101', site: 'Main OR',
     supervises: [], isSolo: true, is8101: true,
     notes: 'Runs schedule. Available for emergencies, traumas, epidurals. Avoids rooms if possible.' });
 
@@ -435,10 +437,9 @@ export const lankenauCalculator: FacilityCalculator = {
   calculate: calculateLankenau,
   status: 'ready',
   siteCatalog: [
-    { key: '8101',    label: '8101 — Schedule Runner',  color: '#FFD54F', icon: '📋' },
     { key: 'Main OR', label: 'Main OR (4th Floor)',     color: '#4A90D9', icon: '🏥' },
-    { key: 'APC',     label: 'APC (Surgery Center)',    color: '#B06AE8', icon: '🔧' },
     { key: 'Cardiac', label: 'Cardiac / TAVR',          color: '#E05599', icon: '❤️' },
+    { key: 'APC',     label: 'APC (Surgery Center)',    color: '#B06AE8', icon: '🔧' },
     { key: 'Endo',    label: 'Endoscopy (GI)',          color: '#8BC34A', icon: '🔬' },
     { key: 'EP Lab',  label: 'EP Lab',                  color: '#29B6F6', icon: '⚡' },
     { key: 'OB',      label: 'OB / L&D',                color: '#E88AD0', icon: '👶' },
