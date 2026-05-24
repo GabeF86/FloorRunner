@@ -2033,23 +2033,10 @@ function CallCountsModal({ grid, onClose }: { grid: GridData; onClose: () => voi
 
   // Aggregate counts: counts[providerId][bucket|code] = n
   const counts: Record<string, Record<string, number>> = {};
-  // Extra-call counts: extras[providerId][code] = n. An "extra call" is a
-  // call assignment held by a provider who is NOT in the regular call pool
-  // (no call_taker / partial_call_taker flag at the schedule's site). Same
-  // definition as the grid view's isExtraCall.
-  const extras: Record<string, Record<string, number>> = {};
+  // Block totals per (bucket, code) — drives the FTE-weighted target math.
+  const blockTotals: Record<string, number> = {};
   const providerById: Record<string, Provider> = {};
   for (const p of grid.providers) providerById[p.id] = p;
-
-  // Call-taker pool from profiles — anyone home-site with call_taker or
-  // partial_call_taker is in the regular pool; everyone else's call
-  // assignments count as "Extra".
-  const siteId = grid.schedule.site_id;
-  const callTakerIds = new Set<string>();
-  for (const p of grid.profiles || []) {
-    if (p.home_site_id !== siteId) continue;
-    if (p.call_taker || p.partial_call_taker) callTakerIds.add(p.provider_id);
-  }
 
   const providersWithCalls = new Set<string>();
 
@@ -2062,16 +2049,13 @@ function CallCountsModal({ grid, onClose }: { grid: GridData; onClose: () => voi
     else if (dt === 'friday') bucket = 'friday';
     else if (dt === 'saturday' || dt === 'sunday') bucket = 'weekend';
     else continue; // skip holidays for now
+    const key = `${bucket}|${code}`;
+    blockTotals[key] = (blockTotals[key] || 0) + 1;
     for (const a of slot.assignments || []) {
       if (!a.provider_id) continue;
       if (!counts[a.provider_id]) counts[a.provider_id] = {};
-      const key = `${bucket}|${code}`;
       counts[a.provider_id][key] = (counts[a.provider_id][key] || 0) + 1;
       providersWithCalls.add(a.provider_id);
-      if (!callTakerIds.has(a.provider_id)) {
-        if (!extras[a.provider_id]) extras[a.provider_id] = {};
-        extras[a.provider_id][code] = (extras[a.provider_id][code] || 0) + 1;
-      }
     }
   }
 
@@ -2129,7 +2113,31 @@ function CallCountsModal({ grid, onClose }: { grid: GridData; onClose: () => voi
 
   const ptoDaysForPid = (pid: string) => ptoDaysByPid[pid] || 0;
 
-  const getExtra = (pid: string, code: string) => extras[pid]?.[code] || 0;
+  // Extra Calls = over-par assignments. For each (provider, bucket, code)
+  // we compute the FTE-weighted base target — (block_total / par_level) ×
+  // fte_value — and count how many assignments in that bucket exceed
+  // floor(target). The Extra C1 column then sums those excesses across
+  // M-Th, Fri, and Sat/Sun for C1. Same math as the red grid cells.
+  //
+  // Deficit carry-forward is NOT included (we don't have historical data
+  // here), so this can over-report for part-timers legitimately catching
+  // up from a prior block. Documented in the column tooltip.
+  const parLevel = grid.schedule.sites?.call_par_level ?? 12;
+  const fteByPid: Record<string, number> = {};
+  for (const p of grid.profiles || []) {
+    fteByPid[p.provider_id] = p.fte_value ?? 1;
+  }
+  const getExtra = (pid: string, code: string): number => {
+    const fte = fteByPid[pid] ?? 1;
+    let total = 0;
+    for (const b of BUCKETS) {
+      const blockTotal = blockTotals[`${b.key}|${code}`] || 0;
+      const target = (blockTotal / parLevel) * fte;
+      const count = getCount(pid, b.key, code);
+      total += Math.max(0, count - Math.floor(target));
+    }
+    return total;
+  };
   const colExtraTotal = (code: string) => {
     let t = 0;
     for (const pid of providers.map(p => p.id)) t += getExtra(pid, code);
@@ -2213,8 +2221,8 @@ function CallCountsModal({ grid, onClose }: { grid: GridData; onClose: () => voi
               <th colSpan={3} style={{
                 padding: '6px 10px', textAlign: 'center',
                 borderBottom: '1px solid var(--border)', borderLeft: '1px solid var(--border)',
-                color: '#0ea5e9',
-              }} title="Calls taken by providers not in the regular call pool (no call_taker / partial_call_taker flag at this site)">
+                color: '#ef4444',
+              }} title="Calls above the provider's FTE-weighted base target — same math as the red grid cells. (block_total_in_bucket / call_par_level) × fte_value defines the target; anything over floor(target) shows here. Deficit carry-forward is not included.">
                 Extra Calls
               </th>
               <th rowSpan={2} style={{
@@ -2268,7 +2276,7 @@ function CallCountsModal({ grid, onClose }: { grid: GridData; onClose: () => voi
                   return (
                     <td key={`extra|${c}`} style={{
                       padding: '6px 8px', textAlign: 'center',
-                      color: n === 0 ? 'var(--text-dim)' : '#0ea5e9',
+                      color: n === 0 ? 'var(--text-dim)' : '#ef4444',
                       borderLeft: c === 'C1' ? '1px solid var(--border)' : 'none',
                       fontWeight: n > 0 ? 700 : 400,
                     }}>{n || '—'}</td>
@@ -2300,7 +2308,7 @@ function CallCountsModal({ grid, onClose }: { grid: GridData; onClose: () => voi
                   padding: '8px 10px', textAlign: 'center',
                   borderLeft: c === 'C1' ? '1px solid var(--border)' : 'none',
                   borderTop: '2px solid var(--border)',
-                  color: '#0ea5e9',
+                  color: '#ef4444',
                 }}>{colExtraTotal(c) || '—'}</td>
               ))}
               <td style={{
