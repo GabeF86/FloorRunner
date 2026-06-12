@@ -19,7 +19,7 @@ export interface GenerationResult {
   assignments: Array<{
     slot_id: string; slot_date: string; shift_type_code: string;
     provider_id: string; provider_name: string;
-    source: PlacementSource;
+    source?: PlacementSource;
     explanation?: AssignmentExplanation;
   }>;
   unfilled: UnfilledSlot[];
