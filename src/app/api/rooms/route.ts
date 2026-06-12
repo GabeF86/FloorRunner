@@ -20,7 +20,10 @@ export async function POST(req: NextRequest) {
   const sb = server();
   // Give the new room the next free position in its site (the client sends a
   // placeholder 99; computing max+1 prevents every new room colliding).
-  const { data: siblings } = await sb.from('rooms').select('position').eq('site_id', body.site_id);
+  // Surface a failed sibling lookup rather than silently inserting at 0.
+  const { data: siblings, error: sibErr } = await sb
+    .from('rooms').select('position').eq('site_id', body.site_id);
+  if (sibErr) return NextResponse.json({ error: sibErr.message }, { status: 500 });
   const position = nextPosition((siblings as Array<{ position: number | null }> | null) ?? []);
 
   const { data, error } = await sb
