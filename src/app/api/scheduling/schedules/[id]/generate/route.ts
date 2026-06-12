@@ -75,7 +75,9 @@ export async function POST(
   // isn't the same kind of gap as a missing call assignment.
   result.filled += dayResult.filled;
   result.errors.push(...dayResult.errors);
-  result.assignments.push(...dayResult.assignments);
+  // Day-shift assignments are surfaced as 'main-loop' source (they use a
+  // similar scoring pass). No explanation is computed for day shifts yet.
+  result.assignments.push(...dayResult.assignments.map(a => ({ ...a, source: 'main-loop' as const })));
 
   return NextResponse.json(result, { status: statusForResult(result) });
 }

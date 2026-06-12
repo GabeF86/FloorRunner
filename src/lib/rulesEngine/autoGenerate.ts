@@ -3,9 +3,10 @@
 // See ALGORITHM.md and docs/superpowers/specs/2026-06-11-scheduling-engine-optimization-design.md
 import { loadGenerationContext } from './genContext';
 import { solve } from './solve';
-import { commitPlan, commitValidation } from './commit';
+import { commitPlan, commitValidation, commitMetadata, hasGenerationMetadataColumn } from './commit';
+import { scoreSolution } from './metrics';
 import type { SupabaseClient } from './shared';
-import type { UnfilledSlot } from './genTypes';
+import type { UnfilledSlot, PlannedAssignment, AssignmentExplanation, SolutionMetrics, PlacementSource } from './genTypes';
 
 export interface AutoGenerateOptions {
   overrideProviderIds?: string[];
@@ -18,14 +19,27 @@ export interface GenerationResult {
   assignments: Array<{
     slot_id: string; slot_date: string; shift_type_code: string;
     provider_id: string; provider_name: string;
+    source: PlacementSource;
+    explanation?: AssignmentExplanation;
   }>;
   unfilled: UnfilledSlot[];
   // Distinguishes a hard failure (no slots / empty pool / DB error) from a
   // legitimate partial fill. The route maps this to an HTTP status.
   ok: boolean;
+  metrics?: SolutionMetrics;
   perf?: {
     par_level: number; total_slots: number; call_slots: number;
     providers: number; elapsed_ms: number; db_queries: number;
+  };
+}
+
+// Pure: planned assignment -> the API/UI assignment shape (now includes the
+// placement source + explanation for the schedule UI's "why" view).
+export function toResultAssignment(a: PlannedAssignment) {
+  return {
+    slot_id: a.slot_id, slot_date: a.slot_date, shift_type_code: a.shift_type_code,
+    provider_id: a.provider_id, provider_name: a.provider_name,
+    source: a.source, explanation: a.explanation,
   };
 }
 
@@ -76,14 +90,29 @@ export async function autoGenerate(
     );
   }
 
-  // Map plan -> the legacy result shape the UI expects.
+  // Persist per-assignment explanations, best-effort + graceful if the column
+  // is absent (mirrors the call_par_level fallback). Never flips ok to false.
+  let metadataQueries = 0;
+  try {
+    if (await hasGenerationMetadataColumn(sb)) {
+      const meta = await commitMetadata(sb, plan.assignments);
+      metadataQueries = meta.dbQueries;
+      if (meta.errors.length > 0) {
+        result.errors.push(`Some explanation metadata was not saved (${meta.errors.length} rows).`);
+      }
+    }
+  } catch (e: unknown) {
+    result.errors.push(
+      `Explanation metadata pass failed (assignments were still saved): ${e instanceof Error ? e.message : String(e)}`,
+    );
+  }
+
+  // Map plan -> the result shape (now with source + explanation per assignment).
   result.filled = commit.filled;
   result.skipped = plan.unfilled.length;
-  result.assignments = plan.assignments.map(a => ({
-    slot_id: a.slot_id, slot_date: a.slot_date, shift_type_code: a.shift_type_code,
-    provider_id: a.provider_id, provider_name: a.provider_name,
-  }));
+  result.assignments = plan.assignments.map(toResultAssignment);
   result.unfilled = plan.unfilled;
+  result.metrics = scoreSolution(plan, ctx);
   result.ok = true;
   result.perf = {
     par_level: ctx.parLevel,
@@ -91,7 +120,7 @@ export async function autoGenerate(
     call_slots: ctx.slotsToFill.length, // open (unfilled) call slots at generation time
     providers: ctx.providers.length,
     elapsed_ms: Date.now() - t0,
-    db_queries: load.dbQueries + commit.dbQueries + validationQueries,
+    db_queries: load.dbQueries + commit.dbQueries + validationQueries + metadataQueries,
   };
   return result;
 }
