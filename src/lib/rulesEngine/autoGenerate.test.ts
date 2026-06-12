@@ -1,6 +1,18 @@
 import { describe, it, expect } from 'vitest';
-import { toResultAssignment } from './autoGenerate';
+import { toResultAssignment, resolveOptimizeEnabled } from './autoGenerate';
 import type { PlannedAssignment } from './genTypes';
+
+describe('resolveOptimizeEnabled', () => {
+  it('defaults to true when unset', () => {
+    expect(resolveOptimizeEnabled(undefined)).toBe(true);
+  });
+  it('honors an explicit false (disable optimization)', () => {
+    expect(resolveOptimizeEnabled(false)).toBe(false);
+  });
+  it('honors an explicit true', () => {
+    expect(resolveOptimizeEnabled(true)).toBe(true);
+  });
+});
 
 describe('toResultAssignment', () => {
   it('maps a planned assignment to the API shape including explanation + source', () => {

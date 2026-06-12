@@ -3,6 +3,7 @@
 // See ALGORITHM.md and docs/superpowers/specs/2026-06-11-scheduling-engine-optimization-design.md
 import { loadGenerationContext } from './genContext';
 import { solve } from './solve';
+import { optimize } from './optimize';
 import { commitPlan, commitValidation, commitMetadata, hasGenerationMetadataColumn } from './commit';
 import { scoreSolution } from './metrics';
 import type { SupabaseClient } from './shared';
@@ -10,6 +11,12 @@ import type { UnfilledSlot, PlannedAssignment, AssignmentExplanation, SolutionMe
 
 export interface AutoGenerateOptions {
   overrideProviderIds?: string[];
+  optimize?: boolean; // default true; set false to use raw greedy construction
+}
+
+// Pure: optimization is on by default; an explicit boolean overrides.
+export function resolveOptimizeEnabled(flag: boolean | undefined): boolean {
+  return flag !== false;
 }
 
 export interface GenerationResult {
@@ -27,6 +34,7 @@ export interface GenerationResult {
   // legitimate partial fill. The route maps this to an HTTP status.
   ok: boolean;
   metrics?: SolutionMetrics;
+  seedMetrics?: SolutionMetrics; // greedy baseline, for before/after comparison
   perf?: {
     par_level: number; total_slots: number; call_slots: number;
     providers: number; elapsed_ms: number; db_queries: number;
@@ -62,8 +70,11 @@ export async function autoGenerate(
 
   let plan;
   let commit;
+  let seedMetrics;
   try {
-    plan = solve(ctx);
+    const seedPlan = solve(ctx);
+    seedMetrics = scoreSolution(seedPlan, ctx);
+    plan = resolveOptimizeEnabled(options.optimize) ? optimize(ctx) : seedPlan;
     commit = await commitPlan(sb, plan);
   } catch (e: unknown) {
     result.errors.push(
@@ -113,6 +124,7 @@ export async function autoGenerate(
   result.assignments = plan.assignments.map(toResultAssignment);
   result.unfilled = plan.unfilled;
   result.metrics = scoreSolution(plan, ctx);
+  result.seedMetrics = seedMetrics;
   result.ok = true;
   result.perf = {
     par_level: ctx.parLevel,
