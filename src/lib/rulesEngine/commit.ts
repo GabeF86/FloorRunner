@@ -10,9 +10,22 @@ export function buildMetadataPayload(a: PlannedAssignment): Record<string, unkno
 
 // Cheap probe: does scheduling.assignments have the generation_metadata column?
 // Mirrors the call_par_level graceful-fallback pattern. Returns false on any error.
+//
+// The POSITIVE result is cached for the process lifetime — once the column is
+// confirmed present, every later generation skips the round-trip. A negative
+// result is NOT cached, so applying the migration mid-process self-heals on the
+// next generation rather than being stuck "absent" until a restart.
+let metadataColumnConfirmed = false;
 export async function hasGenerationMetadataColumn(sb: SupabaseClient): Promise<boolean> {
+  if (metadataColumnConfirmed) return true;
   const { error } = await sb.from('assignments').select('generation_metadata').limit(1);
+  if (!error) metadataColumnConfirmed = true;
   return !error;
+}
+
+// Test-only: reset the cached probe result so unit tests don't leak state.
+export function __resetMetadataColumnCache(): void {
+  metadataColumnConfirmed = false;
 }
 
 // Best-effort: write generation_metadata per assignment. Caller should only
