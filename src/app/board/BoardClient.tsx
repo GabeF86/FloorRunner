@@ -897,4 +897,3 @@ export function hexToRgb(hex = '#0ea5e9') {
   return r ? parseInt(r[1], 16) + ',' + parseInt(r[2], 16) + ',' + parseInt(r[3], 16) : '14,165,233';
 }
 
-// Also need PATCH for rooms/sites APIs - add sort_order support

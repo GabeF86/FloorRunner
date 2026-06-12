@@ -1,5 +1,6 @@
 import { createClient } from '@supabase/supabase-js';
 import { NextRequest, NextResponse } from 'next/server';
+import { safeJson, missingFields } from '@/lib/boardApi';
 
 const sb = () => createClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!);
 
@@ -14,13 +15,17 @@ export async function GET(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
-  const body    = await req.json();
-  const date    = body.board_date || new Date().toISOString().split('T')[0];
+  const body = await safeJson(req);
+  if (!body) return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
+  const missing = missingFields(body, ['staff_id', 'break_type']);
+  if (missing.length) return NextResponse.json({ error: `Missing: ${missing.join(', ')}` }, { status: 400 });
+
+  const date    = (body.board_date as string) || new Date().toISOString().split('T')[0];
   const taken_at = body.taken ? new Date().toISOString() : null;
   const { data, error } = await sb()
     .from('breaks')
     .upsert(
-      { staff_id: body.staff_id, board_date: date, break_type: body.break_type, taken: body.taken, taken_at },
+      { staff_id: body.staff_id as string, board_date: date, break_type: body.break_type as string, taken: body.taken, taken_at },
       { onConflict: 'staff_id,board_date,break_type' }
     )
     .select().single();
