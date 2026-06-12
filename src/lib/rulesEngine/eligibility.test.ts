@@ -135,6 +135,49 @@ describe('evaluateEligibility — call gate', () => {
     const r = evaluateEligibility(slot(), provider(), emptySolveState(), c, 'call');
     expect(r).toEqual({ eligible: false, reason: 'availability-blocked' });
   });
+
+  it('exempts Saturday C1 from the post-call guard (weekend swap)', () => {
+    // 2026-01-03 is Saturday. Provider is committed Sunday 2026-01-04, but a
+    // Saturday C1 must still be allowed (the weekend swap intentionally puts
+    // the Sat-C1 person on Sun-C2).
+    const st = emptySolveState();
+    st.assignedOnDate.set('2026-01-04', new Set(['p1']));
+    const c = ctx({ bucketTarget: new Map([['p1|weekend|C1', 5]]) });
+    const satC1 = slot({ slot_date: '2026-01-03', derived_day_type: 'saturday' });
+    const r = evaluateEligibility(satC1, provider(), st, c, 'call');
+    expect(r.eligible).toBe(true);
+  });
+
+  it('rejects via the positive allow-list when the shift type is not listed', () => {
+    const c = ctx({
+      credByPid: new Map([['p1', {
+        is_active: true, credentialed: true, can_take_call: true,
+        can_take_weekend_call: true, can_take_holiday_call: true,
+        allowed_shift_types: ['C2'], excluded_shift_types: [], skill_tags: [],
+      }]]),
+    });
+    const r = evaluateEligibility(slot(), provider(), emptySolveState(), c, 'call');
+    expect(r).toEqual({ eligible: false, reason: 'credential' });
+  });
+
+  it('rejects an inactive credential row', () => {
+    const c = ctx({
+      credByPid: new Map([['p1', {
+        is_active: false, credentialed: true, can_take_call: true,
+        can_take_weekend_call: true, can_take_holiday_call: true,
+        allowed_shift_types: [], excluded_shift_types: [], skill_tags: [],
+      }]]),
+    });
+    const r = evaluateEligibility(slot(), provider(), emptySolveState(), c, 'call');
+    expect(r).toEqual({ eligible: false, reason: 'credential' });
+  });
+
+  it('treats a missing credential row as passing (not yet configured)', () => {
+    // ctx() has an empty credByPid by default, so this confirms the
+    // "no cred row = pass" behavior explicitly.
+    const r = evaluateEligibility(slot(), provider(), emptySolveState(), ctx(), 'call');
+    expect(r.eligible).toBe(true);
+  });
 });
 
 describe('evaluateEligibility — derived gate (relief / D-chain)', () => {
@@ -156,5 +199,13 @@ describe('evaluateEligibility — derived gate (relief / D-chain)', () => {
     const d1 = slot({ shift_type_code: 'D1', shift_type_category: 'regular' });
     const r = evaluateEligibility(d1, provider(), emptySolveState(), c, 'derived');
     expect(r).toEqual({ eligible: false, reason: 'availability-blocked' });
+  });
+
+  it('skips the C1 post-call guard for derived placements', () => {
+    // Same setup that rejects under the 'call' gate must PASS under 'derived'.
+    const st = emptySolveState();
+    st.assignedOnDate.set('2026-01-08', new Set(['p1']));
+    const r = evaluateEligibility(slot(), provider(), st, ctx(), 'derived');
+    expect(r.eligible).toBe(true);
   });
 });

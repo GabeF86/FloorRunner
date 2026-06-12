@@ -90,8 +90,8 @@ export type RejectionReason =
   | 'availability-blocked';
 
 export interface EligibilityResult {
-  eligible: boolean;
-  reason?: RejectionReason;
+  readonly eligible: boolean;
+  readonly reason?: RejectionReason;
 }
 
 // Source of a planned assignment (for debugging / future explainability).

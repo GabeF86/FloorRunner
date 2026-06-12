@@ -65,7 +65,7 @@ export function evaluateEligibility(
   if (gate === 'call') {
     const k = `${p.id}|${dayTypeBucket(slot.derived_day_type)}|${slot.shift_type_code}`;
     const assigned = state.bucketAssigned.get(k) || 0;
-    const target = ctx.bucketTarget.get(k) || 0;
+    const target = ctx.bucketTarget.get(k) ?? 0;
     if (assigned + 1 > target) {
       return { eligible: false, reason: 'bucket-quota' };
     }
@@ -101,10 +101,10 @@ export function evaluateEligibility(
     const satDate = slot.derived_day_type === 'saturday'
       ? slot.slot_date
       : addDays(slot.slot_date, -1);
-    const weekBeforeStart = addDays(satDate, -5);
-    const weekBeforeEnd = addDays(satDate, -1);
-    const weekAfterStart = addDays(satDate, 2);
-    const weekAfterEnd = addDays(satDate, 6);
+    const weekBeforeStart = addDays(satDate, -5); // Mon before the weekend
+    const weekBeforeEnd = addDays(satDate, -1);   // Fri before the weekend
+    const weekAfterStart = addDays(satDate, 2);   // Mon after the weekend
+    const weekAfterEnd = addDays(satDate, 6);     // Fri after the weekend
     const entries = ctx.availByPid.get(p.id) || [];
     for (const a of entries) {
       if (a.approval_status === 'denied' || a.approval_status === 'canceled') continue;
