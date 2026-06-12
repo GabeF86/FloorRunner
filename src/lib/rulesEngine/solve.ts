@@ -25,9 +25,10 @@ export function solve(ctx: GenerationContext, opts: SolveOptions = {}): Solution
   const providerById = new Map(ctx.providers.map(p => [p.id, p]));
 
   const overrides = opts.callOverrides;
-  // If this call slot is overridden, return the forced provider WHEN eligible,
-  // else null. A null return means "fall through to normal scoring"; an
-  // overridden-but-ineligible slot is handled by the caller (left unfilled).
+  // Resolve a call slot's override, distinguishing three caller actions:
+  //   undefined → slot is NOT overridden → fall through to normal scoring
+  //   null      → overridden but the forced provider is ineligible → leave unfilled
+  //   provider  → overridden and eligible → force this provider
   const overrideFor = (slot: SlotToFill): CandidateProvider | null | undefined => {
     if (!overrides || !overrides.has(slot.slot_id)) return undefined; // not overridden
     const p = providerById.get(overrides.get(slot.slot_id)!);
