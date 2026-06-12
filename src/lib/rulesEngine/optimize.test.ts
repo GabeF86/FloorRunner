@@ -148,3 +148,42 @@ describe('optimize — eviction fills a skip greedy left behind', () => {
     expect(optM.fairnessStdev).toBeLessThanOrEqual(seedM.fairnessStdev + 1e-9);
   });
 });
+
+describe('golden-master / equivalence', () => {
+  // A richer block: 4 weeks of weekday C1 + C2, 5 providers of mixed FTE.
+  function richCtx() {
+    const slots: SlotToFill[] = [];
+    const dates = ['2026-01-06', '2026-01-13', '2026-01-20', '2026-01-27']; // Tuesdays
+    for (const d of dates) {
+      slots.push(callSlot(`c1-${d}`, d, 'C1'));
+      slots.push(callSlot(`c2-${d}`, d, 'C2'));
+    }
+    const providers = [
+      prov('pA', 1), prov('pB', 1), prov('pC', 0.5), prov('pD', 0.5), prov('pE', 1),
+    ];
+    return buildCtx(slots, providers);
+  }
+
+  it('full-seed override re-solve reproduces the seed exactly (equivalence)', () => {
+    const ctx = richCtx();
+    const seed = solve(ctx);
+    const seedAssign = extractCallAssignment(seed);
+    const replay = solve(ctx, { callOverrides: seedAssign });
+    const key = (p: typeof seed) => p.assignments
+      .map(a => `${a.slot_id}:${a.provider_id}`).sort();
+    expect(key(replay)).toEqual(key(seed));
+  });
+
+  it('optimize never increases skips or fairness stdev vs the greedy seed', () => {
+    const ctx = richCtx();
+    const seed = solve(ctx);
+    const seedM = scoreSolution(seed, ctx);
+    const opt = optimize(ctx);
+    const optM = scoreSolution(opt, ctx);
+    expect(optM.skipped).toBeLessThanOrEqual(seedM.skipped);
+    // On equal skips, fairness must not get worse.
+    if (optM.skipped === seedM.skipped) {
+      expect(optM.fairnessStdev).toBeLessThanOrEqual(seedM.fairnessStdev + 1e-9);
+    }
+  });
+});
