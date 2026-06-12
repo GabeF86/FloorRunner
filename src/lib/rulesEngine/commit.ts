@@ -61,22 +61,26 @@ export async function commitPlan(
   const assignedAt = new Date().toISOString();
   const { updates, inserts } = partitionForWrite(plan.assignments, assignedAt);
 
+  let filled = 0;
   if (updates.length > 0) {
     dbQueries++;
-    const { error } = await sb.from('assignments')
-      .upsert(updates, { onConflict: 'id' });
+    const { error } = await sb.from('assignments').upsert(updates, { onConflict: 'id' });
     if (error) errors.push(`Batch update failed: ${error.message}`);
+    else filled += updates.length;
   }
   if (inserts.length > 0) {
     dbQueries++;
     const { error } = await sb.from('assignments').insert(inserts);
     if (error) errors.push(`Batch insert failed: ${error.message}`);
+    else filled += inserts.length;
   }
 
-  const filled = errors.length === 0 ? plan.assignments.length : 0;
   return { filled, errors, dbQueries };
 }
 
+// INVARIANT: every assignment must belong to `siteId`. loadSiteValidationContext
+// keys off this value (a schedule version is single-site, so this always holds
+// for the orchestrator's call site).
 // Validation pass — loads the per-site rule/shift-type context ONCE (M3 fix)
 // and threads it into each evaluateAssignment, then writes validation_flags
 // in parallel batches.
@@ -85,6 +89,9 @@ export async function commitValidation(
   siteId: string,
   assignments: PlannedAssignment[],
 ): Promise<{ dbQueries: number }> {
+  // NOTE: dbQueries is an approximate lower bound — loadSiteValidationContext
+  // itself issues 2-3 queries but is counted once. Used for smoke-test signal,
+  // not exact accounting.
   let dbQueries = 0;
   dbQueries++;
   const siteCtx = await loadSiteValidationContext(sb, siteId);

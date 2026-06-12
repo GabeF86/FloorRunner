@@ -89,57 +89,10 @@ export async function loadContext(
   const slotRow = slot as SlotRow;
   const scheduleVersionId = (slot as Record<string, unknown>).schedule_version_id as string | null;
 
-  // 2. All shift types for this site + active rules.
-  //    When a preloaded siteCtx is provided, skip both queries (N+1 fix).
-  let shiftTypesById: Map<string, ShiftTypeRow>;
-  let shiftTypesByCode: Map<string, ShiftTypeRow>;
-  let rules: RuleDefinition[];
-
-  if (siteCtx) {
-    // Fast path: reuse the caller-supplied preloaded context.
-    shiftTypesById = siteCtx.shiftTypesById;
-    shiftTypesByCode = siteCtx.shiftTypesByCode;
-    rules = siteCtx.rules;
-  } else {
-    // Slow path: query inline (preserves behavior for non-batched callers).
-    const { data: shiftTypes } = await sb
-      .from('shift_types')
-      .select('id, site_id, code, name, category, requires_credential, requires_specific_skills')
-      .eq('site_id', slotRow.site_id);
-    const shiftTypeRows: ShiftTypeRow[] = (shiftTypes || []).map((s: Record<string, unknown>) => ({
-      id: s.id as string,
-      site_id: s.site_id as string,
-      code: s.code as string,
-      name: s.name as string,
-      category: s.category as ShiftTypeRow['category'],
-      requires_credential: (s.requires_credential as string | null) ?? null,
-      requires_specific_skills: Array.isArray(s.requires_specific_skills)
-        ? (s.requires_specific_skills as string[])
-        : [],
-    }));
-    shiftTypesById = new Map(shiftTypeRows.map(s => [s.id, s]));
-    shiftTypesByCode = new Map(shiftTypeRows.map(s => [s.code, s]));
-
-    const { data: ruleSets } = await sb
-      .from('rule_sets')
-      .select('id')
-      .eq('site_id', slotRow.site_id)
-      .eq('status', 'active');
-    const ruleSetIds = (ruleSets || []).map((r: { id: string }) => r.id);
-
-    rules = [];
-    if (ruleSetIds.length > 0) {
-      const { data: ruleRows } = await sb
-        .from('rule_definitions')
-        .select(
-          'id, rule_set_id, rule_name, rule_category, hard_constraint, priority_rank, applies_to_provider_group, applies_to_shift_types, applies_to_day_types, condition, action, explanation_text, is_active',
-        )
-        .in('rule_set_id', ruleSetIds)
-        .eq('is_active', true);
-      rules = (ruleRows || []) as RuleDefinition[];
-    }
-  }
-
+  // Site-level validation context: reuse the caller's preloaded copy when
+  // present (the N+1 fast path), otherwise load it for this slot's site.
+  const { shiftTypesById, shiftTypesByCode, rules } =
+    siteCtx ?? await loadSiteValidationContext(sb, slotRow.site_id);
   const shiftType = shiftTypesById.get(slotRow.shift_type_id);
   if (!shiftType) return null;
 

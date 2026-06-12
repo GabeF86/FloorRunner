@@ -24,5 +24,7 @@ describe('partitionForWrite', () => {
     expect(updates[0].source_type).toBe('auto_generated');
     expect(inserts.map(i => i.schedule_slot_id)).toEqual(['b']);
     expect(inserts[0].assignment_status).toBe('assigned');
+    expect(inserts[0].source_type).toBe('auto_generated');
+    expect(inserts[0].assigned_at).toBeDefined();
   });
 });
