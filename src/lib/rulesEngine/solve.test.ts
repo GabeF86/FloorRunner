@@ -125,7 +125,8 @@ describe('solve — weekend block (H1)', () => {
   it('does NOT force a Sun-C1 onto a provider lacking weekend-call credential', () => {
     // Sat-C2 -> would chain Sun-C1 to the same provider. p1 has the Sat slot
     // (weekend cred true) but we revoke weekend cred -> the Sat itself is the
-    // gate; use two providers so Sat fills and the chain is what we test.
+    // gate; With weekend cred revoked, Sat-C2 itself fails the weekend-call gate,
+    // so the chain never fires and Sun stays unfilled.
     const sat = callSlot('sat', '2026-01-03', 'C2', 'saturday');
     const sun = callSlot('sun', '2026-01-04', 'C1', 'sunday');
     const ctx = buildCtx([sat, sun], [prov('p1')], {
@@ -172,6 +173,94 @@ describe('solve — pre-PTO Thursday', () => {
     const thu = plan.assignments.find(a => a.slot_id === 'thu');
     expect(thu?.provider_id).toBe('p1');
     expect(thu?.source).toBe('pre-pto-thursday');
+  });
+});
+
+describe('solve — characterization: D1 > D3 precedence', () => {
+  it('fills Tue-D1 (post-call from Mon-C2) and suppresses Tue-D3 (Wed-C2 hadCallTwoDaysBefore guard)', () => {
+    // Mon 2026-01-05 C2 → chains Tue D1 (post-call).
+    // Wed 2026-01-07 C2 → would chain Tue D3 (day-before backfill) but
+    // hadCallTwoDaysBefore is true (Mon C2), so D3 is suppressed.
+    const monC2 = callSlot('monC2', '2026-01-05', 'C2');
+    const wedC2 = callSlot('wedC2', '2026-01-07', 'C2');
+    const tueD1 = dSlot('tueD1', '2026-01-06', 'D1');
+    const tueD3 = dSlot('tueD3', '2026-01-06', 'D3');
+    const ctx = buildCtx([monC2, wedC2, tueD1, tueD3], [prov('p1')], {
+      bucketTarget: new Map([
+        ['p1|weekday|C2', 99],
+        ['p1|weekday|C1', 99],
+      ]),
+    });
+    const plan = solve(ctx);
+    const d1Assign = plan.assignments.find(a => a.slot_id === 'tueD1');
+    const d3Assign = plan.assignments.find(a => a.slot_id === 'tueD3');
+    // Tue-D1 is filled via d-chain from Mon-C2
+    expect(d1Assign?.provider_id).toBe('p1');
+    expect(d1Assign?.source).toBe('d-chain');
+    // Tue-D3 is suppressed: Wed-C2 hadCallTwoDaysBefore (Mon), so D3 backfill never fires
+    expect(d3Assign).toBeUndefined();
+  });
+});
+
+describe('solve — characterization: weekend Sat-C1 chain', () => {
+  it('chains Sat-C1 provider onto Sun-C2 and Fri-C2 via weekend-chain', () => {
+    // Sat 2026-01-03 C1; Sun 2026-01-04 C2; Fri 2026-01-02 C2.
+    // One eligible provider with weekend-call credential.
+    const satC1 = callSlot('satC1', '2026-01-03', 'C1', 'saturday');
+    const sunC2 = callSlot('sunC2', '2026-01-04', 'C2', 'sunday');
+    const friC2 = callSlot('friC2', '2026-01-02', 'C2', 'friday');
+    const ctx = buildCtx([friC2, satC1, sunC2], [prov('p1')], {
+      bucketTarget: new Map([
+        ['p1|weekend|C1', 99],
+        ['p1|weekend|C2', 99],
+        ['p1|friday|C2', 99],
+      ]),
+      credByPid: new Map([['p1', {
+        is_active: true, credentialed: true, can_take_call: true,
+        can_take_weekend_call: true, can_take_holiday_call: true,
+        allowed_shift_types: [], excluded_shift_types: [], skill_tags: [],
+      }]]),
+    });
+    const plan = solve(ctx);
+    const satAssign = plan.assignments.find(a => a.slot_id === 'satC1');
+    const sunAssign = plan.assignments.find(a => a.slot_id === 'sunC2');
+    const friAssign = plan.assignments.find(a => a.slot_id === 'friC2');
+    expect(satAssign?.provider_id).toBe('p1');
+    expect(sunAssign?.provider_id).toBe('p1');
+    expect(sunAssign?.source).toBe('weekend-chain');
+    // Fri-C2 is processed by the main loop before Sat-C1 (earlier date order),
+    // so p1 gets Fri-C2 from the main loop; the Sat chain finds it already handled.
+    expect(friAssign?.provider_id).toBe('p1');
+    expect(friAssign?.source).toBe('main-loop');
+  });
+});
+
+describe('solve — characterization: pre-PTO two-provider split', () => {
+  it('places two PTO-bound providers on Thu-C1 and Thu-C2, deterministically by id', () => {
+    // Both p1 and p2 have PTO starting Mon 2026-01-12.
+    // thursdayBeforeWeekOf('2026-01-12') = 2026-01-08.
+    // ranked = sorted by id: [p1, p2] → p1 → C1, p2 → C2.
+    const thuC1 = callSlot('thuC1', '2026-01-08', 'C1');
+    const thuC2 = callSlot('thuC2', '2026-01-08', 'C2');
+    const providers = [prov('p2'), prov('p1')]; // intentionally unsorted
+    const ctx = buildCtx([thuC1, thuC2], providers, {
+      bucketTarget: new Map([
+        ['p1|weekday|C1', 99], ['p1|weekday|C2', 99],
+        ['p2|weekday|C1', 99], ['p2|weekday|C2', 99],
+      ]),
+      availByPid: new Map([
+        ['p1', [{ availability_type: 'pto', start_date: '2026-01-12', end_date: '2026-01-16', approval_status: 'approved' }]],
+        ['p2', [{ availability_type: 'pto', start_date: '2026-01-12', end_date: '2026-01-16', approval_status: 'approved' }]],
+      ]),
+    });
+    const plan = solve(ctx);
+    const c1Assign = plan.assignments.find(a => a.slot_id === 'thuC1');
+    const c2Assign = plan.assignments.find(a => a.slot_id === 'thuC2');
+    // Lower id (p1) sorted first → gets C1; p2 gets C2
+    expect(c1Assign?.provider_id).toBe('p1');
+    expect(c1Assign?.source).toBe('pre-pto-thursday');
+    expect(c2Assign?.provider_id).toBe('p2');
+    expect(c2Assign?.source).toBe('pre-pto-thursday');
   });
 });
 

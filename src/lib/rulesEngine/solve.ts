@@ -19,6 +19,8 @@ export function solve(ctx: GenerationContext): SolutionPlan {
     }
   }
 
+  const RELIEF_CODES = ['D4', 'D5', 'D6', 'D7', 'D8', 'D9'];
+
   const providerById = new Map(ctx.providers.map(p => [p.id, p]));
 
   const record = (slot: SlotToFill, p: CandidateProvider, source: PlacementSource) => {
@@ -102,15 +104,20 @@ export function solve(ctx: GenerationContext): SolutionPlan {
     const ranked = Array.from(pidSet).sort()
       .map(pid => providerById.get(pid))
       .filter((p): p is CandidateProvider => !!p);
+    // A Thursday offers only C1 + C2, so at most two PTO-bound providers get a
+    // pre-PTO placement here (first → C1, second → C2). A 3rd+ provider with PTO
+    // the same week falls through to the main loop. See ALGORITHM.md §7.
     if (ranked[0]) { tryPlacePrePto(c1, ranked[0]) || tryPlacePrePto(c2, ranked[0]); }
     if (ranked[1]) { tryPlacePrePto(c1, ranked[1]) || tryPlacePrePto(c2, ranked[1]); }
   }
 
   // ── main construction loop ──
-  const RELIEF_CODES_SET = new Set(['D4', 'D5', 'D6', 'D7', 'D8', 'D9']);
   for (const slot of ctx.slotsToFill) {
     if (state.handledSlotIds.has(slot.slot_id)) continue;
-    if (RELIEF_CODES_SET.has(slot.shift_type_code)) continue; // handled by relief pass
+    // The main loop assigns CALL shifts only. In production loadGenerationContext
+    // puts only call-category slots in slotsToFill; this guard makes that invariant
+    // explicit and keeps derived (D-shift) slots out of the call-scoring path.
+    if (slot.shift_type_category !== 'call') continue;
 
     const candidates = ctx.providers.filter(
       p => evaluateEligibility(slot, p, state, ctx, 'call').eligible,
@@ -175,7 +182,6 @@ export function solve(ctx: GenerationContext): SolutionPlan {
   }
 
   // ── D4–D9 relief pass (H2 fix) ──
-  const RELIEF_CODES = Array.from(RELIEF_CODES_SET);
   const callTierPriority = (code: string) => code === 'C1' ? 0 : code === 'C2' ? 1 : 2;
 
   const providerCalls = new Map<string, Array<{ date: string; code: string }>>();
@@ -215,13 +221,22 @@ export function solve(ctx: GenerationContext): SolutionPlan {
       a.distance - b.distance || a.tier - b.tier ||
       a.recency - b.recency || a.p.id.localeCompare(b.p.id),
     );
+    // Rank: soonest next call first (most needs relief), then call tier,
+    // then most-recently-called (smallest recency) as a tiebreak, then id.
 
     let idx = 0;
     for (const code of RELIEF_CODES) {
-      if (idx >= scored.length) break;
       const slot = codeMap.get(code);
       if (!slot) continue;
       if (state.handledSlotIds.has(slot.slot_id)) continue;
+      // Re-check the SPECIFIC slot: D4–D9 share date-level gates (already in
+      // `scored`), but per-code credential allow/exclude lists differ. Advance
+      // past any provider not eligible for this exact code.
+      while (idx < scored.length
+        && !evaluateEligibility(slot, scored[idx].p, state, ctx, 'derived').eligible) {
+        idx++;
+      }
+      if (idx >= scored.length) break;
       record(slot, scored[idx].p, 'relief-order');
       idx++;
     }
