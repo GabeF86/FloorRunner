@@ -3,6 +3,42 @@ import { loadSiteValidationContext } from './loadContext';
 import type { SupabaseClient } from './shared';
 import type { SolutionPlan, PlannedAssignment } from './genTypes';
 
+// Pure: fold source + explanation detail into the jsonb stored on the row.
+export function buildMetadataPayload(a: PlannedAssignment): Record<string, unknown> {
+  return { source: a.source, ...(a.explanation ?? {}) };
+}
+
+// Cheap probe: does scheduling.assignments have the generation_metadata column?
+// Mirrors the call_par_level graceful-fallback pattern. Returns false on any error.
+export async function hasGenerationMetadataColumn(sb: SupabaseClient): Promise<boolean> {
+  const { error } = await sb.from('assignments').select('generation_metadata').limit(1);
+  return !error;
+}
+
+// Best-effort: write generation_metadata per assignment. Caller should only
+// invoke this when hasGenerationMetadataColumn() is true. Batched updates,
+// keyed by (schedule_slot_id, provider_id) like the validation pass.
+export async function commitMetadata(
+  sb: SupabaseClient,
+  assignments: PlannedAssignment[],
+): Promise<{ dbQueries: number; errors: string[] }> {
+  const errors: string[] = [];
+  let dbQueries = 0;
+  const CONCURRENCY = 10;
+  for (let i = 0; i < assignments.length; i += CONCURRENCY) {
+    const batch = assignments.slice(i, i + CONCURRENCY);
+    await Promise.all(batch.map(async a => {
+      dbQueries++;
+      const { error } = await sb.from('assignments')
+        .update({ generation_metadata: buildMetadataPayload(a) })
+        .eq('schedule_slot_id', a.slot_id)
+        .eq('provider_id', a.provider_id);
+      if (error) errors.push(`metadata write failed for slot ${a.slot_id}: ${error.message}`);
+    }));
+  }
+  return { dbQueries, errors };
+}
+
 export interface WriteUpdate {
   id: string;
   provider_id: string;

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { partitionForWrite } from './commit';
+import { partitionForWrite, buildMetadataPayload } from './commit';
 import type { PlannedAssignment } from './genTypes';
 
 function pa(over: Partial<PlannedAssignment>): PlannedAssignment {
@@ -26,5 +26,23 @@ describe('partitionForWrite', () => {
     expect(inserts[0].assignment_status).toBe('assigned');
     expect(inserts[0].source_type).toBe('auto_generated');
     expect(inserts[0].assigned_at).toBeDefined();
+  });
+});
+
+describe('buildMetadataPayload', () => {
+  it('folds source + explanation into one jsonb payload', () => {
+    const payload = buildMetadataPayload(pa({
+      source: 'main-loop',
+      explanation: { ratioAtAssignment: 1.5, daysSinceLastCall: 7, competingCandidates: 3 },
+    }));
+    expect(payload).toEqual({
+      source: 'main-loop',
+      ratioAtAssignment: 1.5, daysSinceLastCall: 7, competingCandidates: 3,
+    });
+  });
+
+  it('handles a structural assignment with no explanation', () => {
+    const payload = buildMetadataPayload(pa({ source: 'd-chain', explanation: undefined }));
+    expect(payload).toEqual({ source: 'd-chain' });
   });
 });
