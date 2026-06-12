@@ -15,6 +15,7 @@ import {
   FacilityCalculator,
   StaffAssignment,
 } from './types';
+import { clampConfig, buildBreakAnalysis, breakCoverageNotes, feasibilityNotes, BREAKS_PER_FLOAT } from './shared';
 
 const FR_MAX = 3; // Floor Runner hard cap on supervised CRNAs
 
@@ -39,13 +40,14 @@ interface MutableAssignment extends StaffAssignment {
 }
 
 function calculatePaoli(cfgIn: CalculatorConfig, avail: AvailableStaff): CalculatorOutput {
+  const clamped = clampConfig(SCHEMA, cfgIn);
   const cfg = {
-    mainORCount: Number(cfgIn.mainORCount ?? 0),
-    addOnRooms:  Number(cfgIn.addOnRooms ?? 0),
-    epLab:       Boolean(cfgIn.epLab ?? false),
-    neuroLab:    Boolean(cfgIn.neuroLab ?? false),
-    tees:        Boolean(cfgIn.tees ?? false),
-    soloPri:     Boolean(cfgIn.soloPri ?? false),
+    mainORCount: Number(clamped.mainORCount),
+    addOnRooms:  Number(clamped.addOnRooms),
+    epLab:       Boolean(clamped.epLab),
+    neuroLab:    Boolean(clamped.neuroLab),
+    tees:        Boolean(clamped.tees),
+    soloPri:     Boolean(clamped.soloPri),
   };
 
   const totalORs = cfg.mainORCount + cfg.addOnRooms;
@@ -331,7 +333,7 @@ function calculatePaoli(cfgIn: CalculatorConfig, avail: AvailableStaff): Calcula
   const breakDemand = provNeedingBreaks.length;
 
   const totalFloats = floatCRNAs.length + (mdFloat ? 1 : 0);
-  const bkFloats = totalFloats * 5;
+  const bkFloats = totalFloats * BREAKS_PER_FLOAT;
   const bkOB = 1;
   const bkEndoMD = endoMD.supervises.length === 0 ? 1 : 0;
   const bkFloorRunner = floor.supervises.length < FR_MAX ? 1 : 0;
@@ -346,26 +348,11 @@ function calculatePaoli(cfgIn: CalculatorConfig, avail: AvailableStaff): Calcula
     ...(supMDsWith3 > 0 ? [{ label: 'Supv MDs (≥1:3)', count: supMDsWith3, breaks: supMDsWith3, detail: `${supMDsWith3} × 1` }] : []),
   ];
 
-  const breakCapacity = breakSources.reduce((sum, s) => sum + s.breaks, 0);
-  const breakGap = breakDemand - breakCapacity;
-  const breakPct = breakDemand > 0 ? Math.round((breakCapacity / breakDemand) * 100) : 100;
-  const breakAnalysis = {
-    demand: breakDemand,
-    capacity: breakCapacity,
-    sources: breakSources,
-    gap: breakGap,
-    pct: Math.min(breakPct, 100),
-    severity: (breakPct >= 100 ? 'ok' : breakPct >= 75 ? 'tight' : breakPct >= 50 ? 'warning' : 'critical') as 'ok' | 'tight' | 'warning' | 'critical',
-    unrelieved: Math.max(0, breakGap),
-  };
+  const breakAnalysis = buildBreakAnalysis(breakDemand, breakSources);
 
-  notes.push('── BREAK COVERAGE ──');
-  breakSources.forEach((s) => notes.push(`  ☕ ${s.label}: ${s.breaks} break${s.breaks !== 1 ? 's' : ''} (${s.detail})`));
-  notes.push(`  📊 Total: ${breakCapacity} break slots for ${breakDemand} providers needing breaks`);
-  if (breakAnalysis.severity === 'ok')       notes.push(`  ✅ Coverage sufficient (${breakPct}%).`);
-  if (breakAnalysis.severity === 'tight')    notes.push(`  ⚠️ Coverage tight (${breakPct}%). Some breaks may be delayed.`);
-  if (breakAnalysis.severity === 'warning')  notes.push(`  🔴 Coverage strained (${breakPct}%). ${breakAnalysis.unrelieved} providers may not get timely breaks.`);
-  if (breakAnalysis.severity === 'critical') notes.push(`  🚨 CRITICAL (${breakPct}%). ${breakAnalysis.unrelieved} providers will not get breaks without pulling coverage.`);
+  notes.push(...breakCoverageNotes(breakAnalysis));
+
+  notes.push(...feasibilityNotes(mds.length, crnas.length, avail));
 
   // Suppress unused-var lint for `obMD` — referenced indirectly via `asgn`.
   void obMD;
