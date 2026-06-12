@@ -6,9 +6,14 @@ import type {
 
 const CALL_CODES = ['C1', 'C2', 'C3'];
 const MAX_ITERATIONS = 200; // bound on accepted moves (hill-climb is monotone)
+// Worst-case re-solves per scan = unfilled × providers × movable × providers.
+// On a real 12-week/85-provider block that can reach ~50 × 85 × 850 × 85 ≈ 307 M.
+// The budget caps wall-clock to ≈ maxResolves × <ms per solve> (opt-out via orchestrator).
+const DEFAULT_MAX_RESOLVES = 5000;
 
 export interface OptimizeOptions {
   maxIterations?: number;
+  maxResolves?: number;
 }
 
 // slot_id -> provider_id for every filled CALL slot in a plan.
@@ -54,18 +59,23 @@ function evaluate(ctx: GenerationContext, callAssign: Map<string, string>):
 // move improves the lexicographic objective or the iteration budget is hit.
 export function optimize(ctx: GenerationContext, opts: OptimizeOptions = {}): SolutionPlan {
   const maxIters = opts.maxIterations ?? MAX_ITERATIONS;
+  const maxResolves = opts.maxResolves ?? DEFAULT_MAX_RESOLVES;
   const providerIds = ctx.providers.map(p => p.id).sort();
 
   let best = solve(ctx);
   let bestMetrics = scoreSolution(best, ctx);
   let bestAssign = extractCallAssignment(best);
+  let resolvesUsed = 0;
 
   for (let iter = 0; iter < maxIters; iter++) {
     let improved = false;
 
-    // ── Move set 1: eviction to fill a skipped CALL slot ──
-    // For each unfilled call slot U, try moving a provider P off one of their
-    // movable call slots S onto U (P->U), freeing S to be re-picked by solve.
+    // ── Move set 1: 2-slot eviction to fill a skipped CALL slot ──
+    // For each unfilled call slot U, try moving provider P onto U and
+    // simultaneously forcing provider Q onto P's vacated slot S.
+    // This engineers the augmenting path: P moves to the gap U, Q takes
+    // P's old slot S. Without forcing S→Q, solve re-picks P for S and
+    // P ends up blocked from U (eviction self-rejects).
     const unfilledCallIds = best.unfilled
       .filter(u => CALL_CODES.includes(u.shift_type_code))
       .map(u => u.slot_id).sort();
@@ -74,18 +84,22 @@ export function optimize(ctx: GenerationContext, opts: OptimizeOptions = {}): So
     outer:
     for (const uId of unfilledCallIds) {
       for (const pid of providerIds) {
-        // P must currently hold at least one movable slot (so the move keeps
-        // P's call count constant) — find their movable slots, sorted.
+        // P must currently hold at least one movable slot.
         const pSlots = movable.filter(sId => bestAssign.get(sId) === pid).sort();
         for (const sId of pSlots) {
-          const trial = new Map(bestAssign);
-          trial.set(uId, pid);   // force P onto the gap
-          trial.delete(sId);     // vacate S (solve re-picks it)
-          const { plan, metrics } = evaluate(ctx, trial);
-          if (compareMetrics(metrics, bestMetrics) < 0) {
-            best = plan; bestMetrics = metrics; bestAssign = extractCallAssignment(plan);
-            improved = true;
-            break outer; // re-start the scan from the new best (monotone)
+          for (const qid of providerIds) {
+            if (qid === pid) continue;
+            if (resolvesUsed >= maxResolves) break outer; // budget guard
+            const trial = new Map(bestAssign);
+            trial.set(uId, pid);   // P fills the gap
+            trial.set(sId, qid);   // Q takes P's vacated slot
+            resolvesUsed++;
+            const { plan, metrics } = evaluate(ctx, trial);
+            if (compareMetrics(metrics, bestMetrics) < 0) {
+              best = plan; bestMetrics = metrics; bestAssign = extractCallAssignment(plan);
+              improved = true;
+              break outer; // re-start scan from new best (monotone)
+            }
           }
         }
       }
@@ -101,8 +115,10 @@ export function optimize(ctx: GenerationContext, opts: OptimizeOptions = {}): So
       const current = bestAssign.get(sId);
       for (const pid of providerIds) {
         if (pid === current) continue;
+        if (resolvesUsed >= maxResolves) break swap; // budget guard
         const trial = new Map(bestAssign);
         trial.set(sId, pid);
+        resolvesUsed++;
         const { plan, metrics } = evaluate(ctx, trial);
         if (compareMetrics(metrics, bestMetrics) < 0) {
           best = plan; bestMetrics = metrics; bestAssign = extractCallAssignment(plan);

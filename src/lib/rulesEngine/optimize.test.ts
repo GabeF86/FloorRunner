@@ -65,10 +65,10 @@ describe('compareMetrics (lexicographic: skipped, fairnessStdev, burnout)', () =
 });
 
 describe('optimize — eviction fills a skip greedy left behind', () => {
-  it('fills a slot that greedy stranded via a single eviction', () => {
-    // Construct a corner: provider pX is the ONLY one eligible for slot s2
-    // (others are weekday-unavailable that day), but greedy uses pX on s1
-    // first, leaving s2 unfillable. pY can cover s1. Eviction: pX->s2, pY->s1.
+  it('fills a stranded slot via local search', () => {
+    // The optimizer (eviction or fairness swap) fills a slot greedy stranded.
+    // pX is the ONLY one eligible for slot s2 (pY is Wed-unavailable), but
+    // greedy uses pX on s1 first, leaving s2 unfillable. pY can cover s1.
     // s1 Tue 2026-01-06, s2 Wed 2026-01-07.
     const pX = prov('pX');
     // pY only available Tue (not Wed) -> pY can't take s2, only s1.
@@ -89,6 +89,26 @@ describe('optimize — eviction fills a skip greedy left behind', () => {
     // Both slots filled in the optimized result.
     expect(optimized.assignments.some(a => a.slot_id === 's1')).toBe(true);
     expect(optimized.assignments.some(a => a.slot_id === 's2')).toBe(true);
+  });
+
+  it('eviction: frees a quota-blocked specialist to cover their unique slot', () => {
+    // pX: eligible Tue + Wed, weekday|C1 quota = 1 (can take only ONE).
+    // pY: eligible Tue only (Wed-unavailable), quota = 1.
+    // Greedy takes Tue with pX (quota full) -> Wed stranded (pX over quota, pY Wed-off).
+    // Eviction: Tue -> pY, frees pX -> pX covers Wed. Both filled.
+    const pX = prov('pX');
+    const pY = prov('pY', 1, { available_weekdays: [true, true, true, false, true, true, true] }); // Wed(3) off
+    const s1 = callSlot('s1', '2026-01-06', 'C1'); // Tue
+    const s2 = callSlot('s2', '2026-01-07', 'C1'); // Wed
+    const ctx = buildCtx([s1, s2], [pX, pY], {
+      // quota 1 each so pX can't hold both Tue and Wed
+      bucketTarget: new Map([['pX|weekday|C1', 1], ['pY|weekday|C1', 1]]),
+    });
+    const seed = solve(ctx);
+    const opt = optimize(ctx);
+    expect(scoreSolution(opt, ctx).skipped).toBeLessThan(scoreSolution(seed, ctx).skipped);
+    expect(opt.assignments.some(a => a.slot_id === 's1')).toBe(true);
+    expect(opt.assignments.some(a => a.slot_id === 's2')).toBe(true);
   });
 
   it('never produces more skips than the seed (never-worse guarantee)', () => {
@@ -112,5 +132,19 @@ describe('optimize — eviction fills a skip greedy left behind', () => {
     const b = optimize(mk());
     expect(a.assignments.map(x => `${x.slot_id}:${x.provider_id}`).sort())
       .toEqual(b.assignments.map(x => `${x.slot_id}:${x.provider_id}`).sort());
+  });
+
+  it('fairness swap lowers stdev when one provider is overloaded', () => {
+    // Two weekday C1 slots, generous quota. Greedy id-tiebreak may load pA twice
+    // (ratio 2 vs 0). A fairness swap to pB lowers the stdev. Either way the
+    // optimizer must not leave fairness worse than the seed.
+    const s1 = callSlot('s1', '2026-01-06', 'C1');
+    const s2 = callSlot('s2', '2026-01-13', 'C1');
+    const ctx = buildCtx([s1, s2], [prov('pA'), prov('pB')]); // generous quota (buildCtx sets 99)
+    const seed = solve(ctx);
+    const opt = optimize(ctx);
+    const seedM = scoreSolution(seed, ctx);
+    const optM = scoreSolution(opt, ctx);
+    expect(optM.fairnessStdev).toBeLessThanOrEqual(seedM.fairnessStdev + 1e-9);
   });
 });
