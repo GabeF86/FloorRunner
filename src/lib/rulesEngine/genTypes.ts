@@ -102,6 +102,32 @@ export type PlacementSource =
   | 'weekend-chain'
   | 'relief-order';
 
+// Richer "why this assignment" detail, captured at decision time. The
+// PlacementSource (main-loop / d-chain / weekend-chain / …) stays on
+// PlannedAssignment.source; this holds the numeric detail that only the
+// main-loop scoring path has.
+export interface AssignmentExplanation {
+  ratioAtAssignment?: number;       // lifetime bucket-ratio of the chosen provider
+  daysSinceLastCall?: number | null; // null when they had no prior call (was Infinity)
+  competingCandidates?: number;      // how many providers were eligible for this slot
+}
+
+// One provider's reason for being ineligible for a slot that ended up unfilled.
+export interface CandidateRejection {
+  provider_id: string;
+  provider_name: string;
+  reason: RejectionReason;
+}
+
+// Quantified quality of a SolutionPlan. The objective Phase 2b minimizes.
+export interface SolutionMetrics {
+  filled: number;          // assignments made
+  skipped: number;         // call slots left unfilled
+  fairnessStdev: number;   // population stdev of per-provider call ratio (load / fte)
+  burnout: number;         // count of too-tight call spacings (see metrics.ts)
+  providersUsed: number;   // distinct providers who received >= 1 call this block
+}
+
 export interface PlannedAssignment {
   slot_id: string;
   slot_date: string;
@@ -112,6 +138,7 @@ export interface PlannedAssignment {
   provider_name: string;
   existing_assignment_id: string | null;
   source: PlacementSource;
+  explanation?: AssignmentExplanation;   // main-loop populates; structural omits
 }
 
 export interface UnfilledSlot {
@@ -119,6 +146,7 @@ export interface UnfilledSlot {
   slot_date: string;
   shift_type_code: string;
   reason: string;
+  candidates?: CandidateRejection[];      // per-provider "why not"
 }
 
 export interface SolutionPlan {

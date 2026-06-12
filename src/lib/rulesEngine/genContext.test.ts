@@ -1,7 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import { emptySolveState } from './genTypes';
 import { computeBucketTargets } from './genContext';
-import type { CandidateProvider } from './genTypes';
+import type {
+  CandidateProvider, AssignmentExplanation, CandidateRejection, SolutionMetrics,
+} from './genTypes';
 
 describe('emptySolveState', () => {
   it('creates independent empty state', () => {
@@ -55,5 +57,22 @@ describe('computeBucketTargets', () => {
       12,
     );
     expect(targets.get('p1|weekday|C1')).toBeCloseTo(1.0);
+  });
+});
+
+describe('phase 2a types', () => {
+  it('AssignmentExplanation / CandidateRejection / SolutionMetrics are constructible', () => {
+    const e: AssignmentExplanation = {
+      ratioAtAssignment: 1.5, daysSinceLastCall: 7, competingCandidates: 3,
+    };
+    const c: CandidateRejection = {
+      provider_id: 'p1', provider_name: 'DOCA', reason: 'bucket-quota',
+    };
+    const m: SolutionMetrics = {
+      filled: 10, skipped: 1, fairnessStdev: 0.25, burnout: 0, providersUsed: 4,
+    };
+    expect(e.competingCandidates).toBe(3);
+    expect(c.reason).toBe('bucket-quota');
+    expect(m.fairnessStdev).toBeCloseTo(0.25);
   });
 });
