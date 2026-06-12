@@ -54,6 +54,14 @@ export function datesOverlap(rangeStart: string, rangeEnd: string, date: string)
   return rangeStart <= date && rangeEnd >= date;
 }
 
+// Whole-day difference (to - from) in UTC days. Positive when `to` is later.
+// Inputs are YYYY-MM-DD strings parsed at UTC midnight, so this is DST-safe.
+export function daysBetween(from: string, to: string): number {
+  const f = new Date(from + 'T00:00:00Z').getTime();
+  const t = new Date(to + 'T00:00:00Z').getTime();
+  return Math.round((t - f) / 86400000);
+}
+
 // ── PTO bookend extension ──────────────────────────────────────────────────
 
 // Given an availability entry's dates + type, return the effective
