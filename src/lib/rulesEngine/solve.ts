@@ -3,7 +3,7 @@ import { evaluateEligibility } from './eligibility';
 import { emptySolveState } from './genTypes';
 import type {
   GenerationContext, SlotToFill, CandidateProvider, SolveState,
-  SolutionPlan, PlacementSource,
+  SolutionPlan, PlacementSource, AssignmentExplanation, CandidateRejection,
 } from './genTypes';
 
 export function solve(ctx: GenerationContext): SolutionPlan {
@@ -23,7 +23,10 @@ export function solve(ctx: GenerationContext): SolutionPlan {
 
   const providerById = new Map(ctx.providers.map(p => [p.id, p]));
 
-  const record = (slot: SlotToFill, p: CandidateProvider, source: PlacementSource) => {
+  const record = (
+    slot: SlotToFill, p: CandidateProvider, source: PlacementSource,
+    explanation?: AssignmentExplanation,
+  ) => {
     markAssigned(state, slot.slot_date, p.id);
     if (slot.shift_type_category === 'call') {
       incBucket(state, p.id, slot.derived_day_type, slot.shift_type_code);
@@ -38,7 +41,7 @@ export function solve(ctx: GenerationContext): SolutionPlan {
       shift_type_category: slot.shift_type_category,
       derived_day_type: slot.derived_day_type,
       provider_id: p.id, provider_name: p.short_display_name,
-      existing_assignment_id: slot.existing_assignment_id, source,
+      existing_assignment_id: slot.existing_assignment_id, source, explanation,
     });
   };
 
@@ -123,9 +126,17 @@ export function solve(ctx: GenerationContext): SolutionPlan {
       p => evaluateEligibility(slot, p, state, ctx, 'call').eligible,
     );
     if (candidates.length === 0) {
+      const candidateReasons: CandidateRejection[] = ctx.providers.map(p => {
+        const r = evaluateEligibility(slot, p, state, ctx, 'call');
+        return {
+          provider_id: p.id, provider_name: p.short_display_name,
+          reason: r.reason ?? 'group-mismatch',
+        };
+      });
       plan.unfilled.push({
         slot_id: slot.slot_id, slot_date: slot.slot_date,
-        shift_type_code: slot.shift_type_code, reason: 'No eligible providers',
+        shift_type_code: slot.shift_type_code,
+        reason: 'No eligible providers', candidates: candidateReasons,
       });
       continue;
     }
@@ -145,8 +156,13 @@ export function solve(ctx: GenerationContext): SolutionPlan {
       a.p.id.localeCompare(b.p.id),   // M5: stable final tiebreak
     );
 
-    record(slot, scored[0].p, 'main-loop');
-    chainDFills(slot, scored[0].p);
+    const winner = scored[0];
+    record(slot, winner.p, 'main-loop', {
+      ratioAtAssignment: winner.ratio,
+      daysSinceLastCall: Number.isFinite(winner.recency) ? winner.recency : null,
+      competingCandidates: candidates.length,
+    });
+    chainDFills(slot, winner.p);
 
     // ── weekend block chain (H1 fix) ──
     if (slot.derived_day_type === 'saturday') {

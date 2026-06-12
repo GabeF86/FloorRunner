@@ -288,3 +288,31 @@ describe('solve — D4-D9 relief (H2)', () => {
     expect(got?.source).toBe('relief-order');
   });
 });
+
+describe('solve — explainability (Phase 2a)', () => {
+  it('records an explanation with competing-candidate count on a main-loop pick', () => {
+    const slots = [callSlot('s1', '2026-01-07', 'C1')];
+    const plan = solve(buildCtx(slots, [prov('pA'), prov('pB')]));
+    const a = plan.assignments.find(x => x.slot_id === 's1');
+    expect(a?.source).toBe('main-loop');
+    expect(a?.explanation).toBeDefined();
+    expect(a?.explanation?.competingCandidates).toBe(2);
+    // first call for both providers -> no prior call -> daysSinceLastCall null
+    expect(a?.explanation?.daysSinceLastCall).toBeNull();
+    expect(typeof a?.explanation?.ratioAtAssignment).toBe('number');
+  });
+
+  it('attaches per-candidate rejection reasons to an unfilled slot', () => {
+    const slots = [callSlot('s1', '2026-01-07', 'C1')];
+    // single provider, but make them a CRNA so the physician slot rejects them
+    const ctx = buildCtx(slots, [{ ...prov('p1'), provider_type: 'crna' }]);
+    const plan = solve(ctx);
+    expect(plan.assignments).toHaveLength(0);
+    const u = plan.unfilled.find(x => x.slot_id === 's1');
+    expect(u?.candidates).toBeDefined();
+    expect(u?.candidates).toHaveLength(1);
+    expect(u?.candidates?.[0]).toEqual({
+      provider_id: 'p1', provider_name: 'p1', reason: 'group-mismatch',
+    });
+  });
+});
