@@ -1,5 +1,6 @@
 import { createClient } from '@supabase/supabase-js';
 import { NextRequest, NextResponse } from 'next/server';
+import { safeJson, missingFields } from '@/lib/boardApi';
 
 function server() {
   return createClient(
@@ -24,55 +25,40 @@ export async function GET(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
-  const sb   = server();
-  const body = await req.json();
-  const date = body.board_date || new Date().toISOString().split('T')[0];
+  const body = await safeJson(req);
+  if (!body) return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
+  const missing = missingFields(body, ['staff_id', 'room_id']);
+  if (missing.length) return NextResponse.json({ error: `Missing: ${missing.join(', ')}` }, { status: 400 });
 
-  // Physicians can cover multiple rooms simultaneously — don't remove their other assignments.
-  // All other roles move from room to room (one assignment at a time).
+  const sb = server();
+  const date = (body.board_date as string) || new Date().toISOString().split('T')[0];
+
+  // Physicians can cover multiple rooms simultaneously — keep their other
+  // assignments. Everyone else moves room-to-room: clear prior, then place.
   if (body.role !== 'physician') {
-    await sb
-      .from('assignments')
-      .delete()
-      .eq('staff_id', body.staff_id)
-      .eq('board_date', date);
-  }
-
-  // Prevent duplicate: physician already in this exact room today
-  if (body.role === 'physician') {
-    const { data: existing } = await sb
-      .from('assignments')
-      .select('id')
-      .eq('staff_id', body.staff_id)
-      .eq('room_id', body.room_id)
-      .eq('board_date', date)
-      .maybeSingle();
-    if (existing) {
-      // Already assigned here — return it as-is
-      const { data: full } = await sb
-        .from('assignments')
-        .select('*, staff(*)')
-        .eq('id', existing.id)
-        .single();
-      return NextResponse.json(full);
-    }
+    const { error: delErr } = await sb
+      .from('assignments').delete()
+      .eq('staff_id', body.staff_id).eq('board_date', date);
+    // Surface the delete failure instead of silently upserting on top of it.
+    if (delErr) return NextResponse.json({ error: delErr.message }, { status: 500 });
   }
 
   const { data, error } = await sb
     .from('assignments')
-    .insert({ room_id: body.room_id, staff_id: body.staff_id, board_date: date })
+    .upsert(
+      { room_id: body.room_id, staff_id: body.staff_id, board_date: date },
+      { onConflict: 'staff_id,room_id,board_date' },
+    )
     .select('*, staff(*)')
     .single();
-
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
   return NextResponse.json(data);
 }
 
 export async function DELETE(req: NextRequest) {
-  const sb  = server();
-  const { searchParams } = new URL(req.url);
-  const id  = searchParams.get('id');
-  const { error } = await sb.from('assignments').delete().eq('id', id!);
+  const id = new URL(req.url).searchParams.get('id');
+  if (!id) return NextResponse.json({ error: 'Missing id' }, { status: 400 });
+  const { error } = await server().from('assignments').delete().eq('id', id);
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
   return NextResponse.json({ ok: true });
 }
