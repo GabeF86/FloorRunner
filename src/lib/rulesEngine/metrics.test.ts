@@ -104,4 +104,17 @@ describe('scoreSolution', () => {
     const m = scoreSolution(plan, ctx([prov('pA')]));
     expect(m.burnout).toBe(0);
   });
+
+  it('does NOT count a Fri+Sat weekend-block pair as burnout (intended chain)', () => {
+    // Fri 2026-01-02 (C2) + Sat 2026-01-03 (C1) is the weekend chain, not burnout.
+    const plan: SolutionPlan = {
+      assignments: [
+        callA({ slot_id: 'a', slot_date: '2026-01-02', derived_day_type: 'friday', provider_id: 'pA' }),
+        callA({ slot_id: 'b', slot_date: '2026-01-03', derived_day_type: 'saturday', provider_id: 'pA' }),
+      ],
+      unfilled: [],
+    };
+    const m = scoreSolution(plan, ctx([prov('pA')]));
+    expect(m.burnout).toBe(0);
+  });
 });

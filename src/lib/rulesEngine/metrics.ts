@@ -3,9 +3,11 @@ import type { GenerationContext, SolutionPlan, SolutionMetrics } from './genType
 
 const CALL_CODES = ['C1', 'C2', 'C3'];
 // Two call dates closer than this (in days) count as a burnout, UNLESS both
-// fall on a weekend (the intended Sat/Sun weekend chain is adjacent by design).
+// fall on the Fri–Sun weekend block (the intended weekend call chain gives one
+// provider Fri-C2 → Sat-C1 → Sun-C2, so adjacent calls within this block are
+// by design, not burnout).
 const BURNOUT_MIN_GAP_DAYS = 2;
-const WEEKEND_DAY_TYPES = new Set(['saturday', 'sunday']);
+const WEEKEND_BLOCK_DAY_TYPES = new Set(['friday', 'saturday', 'sunday']);
 
 // Sum a provider's historical call count across all buckets.
 function historicalCallTotal(ctx: GenerationContext, pid: string): number {
@@ -36,7 +38,7 @@ export function scoreSolution(plan: SolutionPlan, ctx: GenerationContext): Solut
     if (!CALL_CODES.includes(a.shift_type_code)) continue;
     blockCallCount.set(a.provider_id, (blockCallCount.get(a.provider_id) || 0) + 1);
     const list = callDates.get(a.provider_id) || [];
-    list.push({ date: a.slot_date, weekend: WEEKEND_DAY_TYPES.has(a.derived_day_type) });
+    list.push({ date: a.slot_date, weekend: WEEKEND_BLOCK_DAY_TYPES.has(a.derived_day_type) });
     callDates.set(a.provider_id, list);
   }
 
