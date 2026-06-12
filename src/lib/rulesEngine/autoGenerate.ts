@@ -5,6 +5,7 @@ import { loadGenerationContext } from './genContext';
 import { solve } from './solve';
 import { commitPlan, commitValidation } from './commit';
 import type { SupabaseClient } from './shared';
+import type { UnfilledSlot } from './genTypes';
 
 export interface AutoGenerateOptions {
   overrideProviderIds?: string[];
@@ -18,9 +19,7 @@ export interface GenerationResult {
     slot_id: string; slot_date: string; shift_type_code: string;
     provider_id: string; provider_name: string;
   }>;
-  unfilled: Array<{
-    slot_id: string; slot_date: string; shift_type_code: string; reason: string;
-  }>;
+  unfilled: UnfilledSlot[];
   // Distinguishes a hard failure (no slots / empty pool / DB error) from a
   // legitimate partial fill. The route maps this to an HTTP status.
   ok: boolean;
@@ -47,15 +46,35 @@ export async function autoGenerate(
   }
   const ctx = load.ctx;
 
-  const plan = solve(ctx);
-
-  const commit = await commitPlan(sb, plan);
-  result.errors.push(...commit.errors);
-  if (commit.errors.length > 0) {
-    return result; // commit failure -> ok false -> route 5xx
+  let plan;
+  let commit;
+  try {
+    plan = solve(ctx);
+    commit = await commitPlan(sb, plan);
+  } catch (e: unknown) {
+    result.errors.push(
+      `Unexpected error during generation: ${e instanceof Error ? e.message : String(e)}`,
+    );
+    return result; // ok stays false
   }
 
-  const validation = await commitValidation(sb, ctx.siteId, plan.assignments);
+  result.errors.push(...commit.errors);
+  if (commit.errors.length > 0) {
+    return result; // commit failure -> ok false (assignments not reliably written)
+  }
+
+  // Validation is best-effort: the assignments are ALREADY committed at this
+  // point, so a validation-pass failure must NOT flip the run to ok=false — it
+  // only means validation_flags couldn't be written. Surface a soft note.
+  let validationQueries = 0;
+  try {
+    const validation = await commitValidation(sb, ctx.siteId, plan.assignments);
+    validationQueries = validation.dbQueries;
+  } catch (e: unknown) {
+    result.errors.push(
+      `Validation pass failed (assignments were still saved): ${e instanceof Error ? e.message : String(e)}`,
+    );
+  }
 
   // Map plan -> the legacy result shape the UI expects.
   result.filled = commit.filled;
@@ -68,11 +87,11 @@ export async function autoGenerate(
   result.ok = true;
   result.perf = {
     par_level: ctx.parLevel,
-    total_slots: ctx.slotsToFill.length + plan.assignments.length,
-    call_slots: ctx.slotsToFill.length,
+    total_slots: load.totalSlots,
+    call_slots: ctx.slotsToFill.length, // open (unfilled) call slots at generation time
     providers: ctx.providers.length,
     elapsed_ms: Date.now() - t0,
-    db_queries: load.dbQueries + commit.dbQueries + validation.dbQueries,
+    db_queries: load.dbQueries + commit.dbQueries + validationQueries,
   };
   return result;
 }

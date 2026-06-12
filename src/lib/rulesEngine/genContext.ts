@@ -66,6 +66,7 @@ export interface LoadResult {
   ctx: GenerationContext | null;
   error?: string;
   dbQueries: number;
+  totalSlots: number;
 }
 
 // ── Main I/O function ─────────────────────────────────────────────────────────
@@ -96,6 +97,7 @@ export async function loadGenerationContext(
       ctx: null,
       error: `Failed to load slots: ${slotsErr?.message || 'no slots in version'}`,
       dbQueries,
+      totalSlots: 0,
     };
   }
   const siteId = (rawSlots[0] as { site_id: string }).site_id;
@@ -199,6 +201,7 @@ export async function loadGenerationContext(
         seedAssignments: [],
       },
       dbQueries,
+      totalSlots: rawSlots.length,
     };
   }
 
@@ -249,6 +252,7 @@ export async function loadGenerationContext(
           `Providers must have home_site_id set to this site AND "Call Taker" ` +
           `or "Partial Call Taker" checked on their Employment & Scheduling tab.`,
       dbQueries,
+      totalSlots: rawSlots.length,
     };
   }
 
@@ -471,5 +475,6 @@ export async function loadGenerationContext(
       seedAssignments,
     },
     dbQueries,
+    totalSlots: rawSlots.length,
   };
 }
