@@ -178,7 +178,7 @@ export async function loadGenerationContext(
     return ca - cb;
   });
 
-  console.log(`[autoGen] ${slotsToFill.length} call slots to fill, par_level=${parLevel}`);
+  console.log(`[genContext] ${slotsToFill.length} call slots to fill, par_level=${parLevel}`);
   if (slotsToFill.length === 0) {
     // Return a valid (empty) context — no slots, nothing to do.
     return {
@@ -260,17 +260,20 @@ export async function loadGenerationContext(
     .eq('status', 'active')
     .order('id');
 
-  const providers: CandidateProvider[] = ((providerRows || []) as Array<Record<string, unknown>>).map(p => {
-    const prof = profileByPid.get(p.id as string)!;
-    return {
-      id: p.id as string,
-      provider_type: p.provider_type as string,
-      short_display_name: p.short_display_name as string,
-      fte_value: prof.fte_value,
-      home_site_id: prof.home_site_id,
-      available_weekdays: prof.available_weekdays,
-    };
-  });
+  const providers: CandidateProvider[] = (
+    ((providerRows || []) as Array<Record<string, unknown>>).map(p => {
+      const prof = profileByPid.get(p.id as string);
+      if (!prof) return null;
+      return {
+        id: p.id as string,
+        provider_type: p.provider_type as string,
+        short_display_name: p.short_display_name as string,
+        fte_value: prof.fte_value,
+        home_site_id: prof.home_site_id,
+        available_weekdays: prof.available_weekdays,
+      } as CandidateProvider;
+    }) as Array<CandidateProvider | null>
+  ).filter((p): p is CandidateProvider => p !== null);
 
   // ── 4. Preload site credentials for all home-site providers ───────────────
   countQ();
@@ -334,7 +337,7 @@ export async function loadGenerationContext(
     .lte('schedule_slots.slot_date', maxDate)
     .neq('schedule_slots.site_id', siteId);
 
-  // crossSiteByDate[pid][date] = true if provider is already on a different site that day
+  // crossSiteByDate: pid -> Set<date> — provider is assigned at a different site on these dates
   const crossSiteByDate = new Map<string, Set<string>>();
   for (const a of (crossSite || []) as Array<Record<string, unknown>>) {
     const s = a.schedule_slots as { slot_date: string };
