@@ -19,15 +19,29 @@ const tok = {
   card: 'var(--bg-surface)',
   surface: 'var(--bg-deep)',
   border: 'var(--border)',
-  hairline: '0.5px solid var(--border)',
+  hairline: '1px solid var(--border)',
   text: 'var(--text)',
   textMuted: 'var(--text-muted)',
   textDim: 'var(--text-dim)',
   mono: 'var(--font-mono), ui-monospace, monospace',
-  md: { fg: '#3C3489', bg: '#EEEDFE', bd: '#CECBF6' },
-  crna: { fg: '#0C447C', bg: '#E6F1FB', bd: '#B5D4F4' },
-  accent: '#0ea5e9',
+  md: { fg: '#4338CA', bg: '#EEF1FE', bd: '#CBD2F7' },
+  crna: { fg: '#0A6CB4', bg: '#E7F2FB', bd: '#B2D8F1' },
+  accent: '#0284c7',
   warning: '#E8C854',
+  radius: 14,
+  radiusSm: 9,
+  // Soft, layered elevation — a single source of truth for card depth.
+  shadow: '0 1px 2px rgba(15,23,42,0.05), 0 10px 28px -16px rgba(15,23,42,0.18)',
+};
+
+// One premium card surface used by every panel — generous padding, soft
+// elevation, larger radius. Spread it and override per-panel where needed.
+const cardStyle: React.CSSProperties = {
+  background: tok.card,
+  border: '1px solid var(--border)',
+  borderRadius: tok.radius,
+  boxShadow: tok.shadow,
+  padding: '18px 20px',
 };
 
 /* ── Page ────────────────────────────────────────────────────────────────── */
@@ -68,26 +82,26 @@ export default function StaffingCalculatorPage() {
   };
 
   return (
-    <div style={{ padding: '14px 22px 28px', maxWidth: 1280 }}>
+    <div style={{ padding: '28px 32px 48px', maxWidth: 1200, margin: '0 auto' }}>
       {/* Breadcrumb */}
-      <div style={{ fontSize: 11, color: 'var(--text-dim)', marginBottom: 10, fontFamily: tok.mono, display: 'flex', alignItems: 'center', gap: 6 }}>
+      <div style={{ fontSize: 11, color: 'var(--text-dim)', marginBottom: 14, fontFamily: tok.mono, display: 'flex', alignItems: 'center', gap: 6, textTransform: 'uppercase', letterSpacing: 0.4 }}>
         <span style={{ color: tok.textMuted }}>scheduling</span>
-        <span>/</span>
+        <span style={{ opacity: 0.5 }}>/</span>
         <span style={{ color: tok.textMuted }}>staffing calculator</span>
       </div>
 
       {/* Header */}
       <div style={{
-        display: 'flex', alignItems: 'center', gap: 14,
-        padding: '12px 14px', marginBottom: 14,
-        background: tok.card, border: tok.hairline, borderRadius: 6,
+        display: 'flex', alignItems: 'center', gap: 16,
+        padding: '20px 22px', marginBottom: 18,
+        ...cardStyle,
       }}>
         <div>
-          <h1 style={{ fontSize: 16, fontWeight: 700, color: tok.text, letterSpacing: -0.2 }}>
+          <h1 style={{ fontSize: 24, fontWeight: 750, color: tok.text, letterSpacing: -0.6, lineHeight: 1.1 }}>
             Staffing Calculator
           </h1>
-          <div style={{ fontSize: 11, color: tok.textDim, marginTop: 2, fontFamily: tok.mono }}>
-            Plan tomorrow's staffing — enter site config, drag MDs &amp; CRNAs to test scenarios.
+          <div style={{ fontSize: 13, color: tok.textMuted, marginTop: 5, lineHeight: 1.4 }}>
+            Plan tomorrow&apos;s staffing — enter site config, drag MDs &amp; CRNAs to test scenarios.
           </div>
         </div>
 
@@ -132,9 +146,9 @@ export default function StaffingCalculatorPage() {
       )}
 
       {/* Main grid: inputs (left) | output (right) */}
-      <div style={{ display: 'grid', gridTemplateColumns: '300px 1fr', gap: 14, alignItems: 'start' }}>
+      <div style={{ display: 'grid', gridTemplateColumns: '312px 1fr', gap: 18, alignItems: 'start' }}>
         {/* Left: inputs */}
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 14, position: 'sticky', top: 16 }}>
           {!isPlaceholder && calc && (
             <ConfigPanel schema={calc.schema} cfg={cfg} onChange={setCfgValue} />
           )}
@@ -142,7 +156,7 @@ export default function StaffingCalculatorPage() {
         </div>
 
         {/* Right: output */}
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
           {result && <TotalsPanel out={result} avail={avail} />}
           {result && calc && (
             <StaffingDiagram
@@ -183,20 +197,20 @@ function ConfigPanel({ schema, cfg, onChange }: {
   }
 
   return (
-    <div style={{ background: tok.card, border: tok.hairline, borderRadius: 6, padding: '10px 12px' }}>
+    <div style={cardStyle}>
       <SectionTitle>📋 Site configuration</SectionTitle>
       {Object.entries(grouped).map(([section, fields]) => (
-        <div key={section} style={{ marginTop: 8 }}>
+        <div key={section} style={{ marginTop: 14 }}>
           <div style={{
-            fontSize: 9, fontWeight: 700, color: tok.textMuted,
-            letterSpacing: 0.5, textTransform: 'uppercase', fontFamily: tok.mono,
-            paddingBottom: 3, borderBottom: tok.hairline, marginBottom: 4,
+            fontSize: 10, fontWeight: 700, color: tok.textDim,
+            letterSpacing: 0.7, textTransform: 'uppercase',
+            marginBottom: 6,
           }}>
             {section}
           </div>
           {fields.map((f) => (
-            <div key={f.key} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '4px 2px' }}>
-              <span style={{ fontSize: 11, color: tok.textMuted, fontWeight: 600 }}>{f.label}</span>
+            <div key={f.key} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '5px 2px' }}>
+              <span style={{ fontSize: 12.5, color: tok.text, fontWeight: 500 }}>{f.label}</span>
               {f.kind === 'number' ? (
                 <Stepper
                   value={Number(cfg[f.key] ?? 0)}
@@ -226,17 +240,14 @@ function AvailableStaffPanel({ avail, setAvail, disabled }: {
   disabled?: boolean;
 }) {
   return (
-    <div style={{
-      background: tok.card, border: tok.hairline, borderRadius: 6, padding: '10px 12px',
-      opacity: disabled ? 0.5 : 1,
-    }}>
+    <div style={{ ...cardStyle, opacity: disabled ? 0.5 : 1 }}>
       <SectionTitle>👥 Available staff</SectionTitle>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '4px 2px', marginTop: 4 }}>
-        <span style={{ fontSize: 11, color: tok.textMuted, fontWeight: 600 }}>MDs available</span>
+        <span style={{ fontSize: 12.5, color: tok.text, fontWeight: 500 }}>MDs available</span>
         <Stepper value={avail.mds} onChange={(v) => setAvail({ ...avail, mds: v })} min={0} max={30} color={tok.md.fg} />
       </div>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '4px 2px' }}>
-        <span style={{ fontSize: 11, color: tok.textMuted, fontWeight: 600 }}>CRNAs available</span>
+        <span style={{ fontSize: 12.5, color: tok.text, fontWeight: 500 }}>CRNAs available</span>
         <Stepper value={avail.crnas} onChange={(v) => setAvail({ ...avail, crnas: v })} min={0} max={30} color={tok.crna.fg} />
       </div>
     </div>
@@ -251,31 +262,28 @@ function Stepper({ value, onChange, min, max, color }: {
   color?: string;
 }) {
   const c = color || '#0ea5e9';
+  const btn: React.CSSProperties = {
+    width: 26, height: 26, borderRadius: 7, border: `1px solid color-mix(in srgb, ${c} 45%, var(--border))`,
+    background: `color-mix(in srgb, ${c} 7%, transparent)`, color: c, fontSize: 15, cursor: 'pointer',
+    display: 'flex', alignItems: 'center', justifyContent: 'center', lineHeight: 1, fontWeight: 600,
+  };
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+    <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
       <button
+        aria-label="decrease"
         onClick={() => onChange(Math.max(min, value - 1))}
         disabled={value <= min}
-        style={{
-          width: 22, height: 22, borderRadius: 4, border: `0.5px solid ${c}`,
-          background: 'transparent', color: c, fontSize: 13, cursor: 'pointer',
-          display: 'flex', alignItems: 'center', justifyContent: 'center',
-          opacity: value <= min ? 0.4 : 1,
-        }}
+        style={{ ...btn, opacity: value <= min ? 0.35 : 1 }}
       >−</button>
       <span style={{
-        color: tok.text, fontSize: 13, fontWeight: 700, fontFamily: tok.mono,
+        color: tok.text, fontSize: 15, fontWeight: 700, fontVariantNumeric: 'tabular-nums',
         minWidth: 22, textAlign: 'center',
       }}>{value}</span>
       <button
+        aria-label="increase"
         onClick={() => onChange(Math.min(max, value + 1))}
         disabled={value >= max}
-        style={{
-          width: 22, height: 22, borderRadius: 4, border: `0.5px solid ${c}`,
-          background: 'transparent', color: c, fontSize: 13, cursor: 'pointer',
-          display: 'flex', alignItems: 'center', justifyContent: 'center',
-          opacity: value >= max ? 0.4 : 1,
-        }}
+        style={{ ...btn, opacity: value >= max ? 0.35 : 1 }}
       >+</button>
     </div>
   );
@@ -304,7 +312,7 @@ function TotalsPanel({ out, avail }: { out: CalculatorOutput; avail: AvailableSt
   const mdGap = out.totalMDs - avail.mds;
   const crnaGap = out.totalCRNAs - avail.crnas;
   return (
-    <div style={{ background: tok.card, border: tok.hairline, borderRadius: 6, padding: '12px 14px' }}>
+    <div style={cardStyle}>
       <SectionTitle>🎯 Staffing needs</SectionTitle>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10, marginTop: 8 }}>
         <BigStat label="MDs needed" value={out.totalMDs} fg={tok.md.fg} bg={tok.md.bg} bd={tok.md.bd} subtitle={gapLine(mdGap)} subtitleColor={mdGap > 0 ? '#dc2626' : '#16a34a'} />
@@ -327,17 +335,22 @@ function BigStat({ label, value, fg, bg, bd, subtitle, subtitleColor }: {
 }) {
   return (
     <div style={{
-      padding: '10px 12px', borderRadius: 5,
-      background: bg, border: `0.5px solid ${bd}`,
+      padding: '16px 16px 14px', borderRadius: tok.radiusSm,
+      background: bg, border: `1px solid ${bd}`,
+      display: 'flex', flexDirection: 'column', gap: 6,
     }}>
       <div style={{
-        fontSize: 9, color: fg, opacity: 0.75,
-        textTransform: 'uppercase', letterSpacing: 0.5, fontWeight: 700, fontFamily: tok.mono,
+        fontSize: 10.5, color: fg, opacity: 0.8,
+        textTransform: 'uppercase', letterSpacing: 0.6, fontWeight: 700,
       }}>{label}</div>
-      <div style={{ fontSize: 28, fontWeight: 800, color: fg, fontFamily: tok.mono, lineHeight: 1.1, marginTop: 2 }}>
+      <div style={{ fontSize: 42, fontWeight: 800, color: fg, lineHeight: 0.95, letterSpacing: -1.5, fontVariantNumeric: 'tabular-nums' }}>
         {value}
       </div>
-      <div style={{ fontSize: 10, color: subtitleColor, marginTop: 2, fontFamily: tok.mono }}>
+      <div style={{
+        fontSize: 11, color: subtitleColor, fontWeight: 600,
+        background: `color-mix(in srgb, ${subtitleColor} 12%, transparent)`,
+        alignSelf: 'flex-start', padding: '2px 8px', borderRadius: 999,
+      }}>
         {subtitle}
       </div>
     </div>
@@ -537,7 +550,7 @@ function StaffingDiagram({ result, setResult, siteCatalog }: {
   const onDragLeave = () => setDropTarget(null);
 
   return (
-    <div style={{ background: tok.card, border: tok.hairline, borderRadius: 6, padding: '12px 14px' }}>
+    <div style={cardStyle}>
       <SectionTitle>🏥 By site — supervision map</SectionTitle>
 
       {selectedCRNA && (
@@ -1030,7 +1043,7 @@ function ContingencyCoverage({ contingencies, assignments }: {
   assignments: StaffAssignment[];
 }) {
   return (
-    <div style={{ background: tok.card, border: tok.hairline, borderRadius: 6, padding: '12px 14px' }}>
+    <div style={cardStyle}>
       <SectionTitle>🚨 Contingency coverage</SectionTitle>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gap: 8, marginTop: 8 }}>
         {contingencies.map((cg, i) => {
@@ -1095,7 +1108,7 @@ function contingencyType(type: string): { col: string; bg: string; icon: string 
 
 function NotesPanel({ notes }: { notes: string[] }) {
   return (
-    <div style={{ background: tok.card, border: tok.hairline, borderRadius: 6, padding: '12px 14px' }}>
+    <div style={cardStyle}>
       <SectionTitle>📝 Notes &amp; warnings</SectionTitle>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginTop: 6 }}>
         {notes.map((n, i) => (
@@ -1125,7 +1138,7 @@ function BreakAnalysisPanel({ breakAnalysis }: { breakAnalysis: CalculatorOutput
   } as const;
   const c = colorMap[sev];
   return (
-    <div style={{ background: tok.card, border: tok.hairline, borderRadius: 6, padding: '12px 14px' }}>
+    <div style={cardStyle}>
       <SectionTitle>☕ Break coverage</SectionTitle>
       <div style={{
         marginTop: 8, padding: '8px 12px', borderRadius: 5,
@@ -1163,8 +1176,9 @@ function BreakAnalysisPanel({ breakAnalysis }: { breakAnalysis: CalculatorOutput
 function SectionTitle({ children }: { children: React.ReactNode }) {
   return (
     <div style={{
-      fontSize: 12, fontWeight: 700, color: '#0ea5e9',
-      paddingBottom: 4, borderBottom: tok.hairline, marginBottom: 4,
+      fontSize: 13.5, fontWeight: 650, color: tok.text, letterSpacing: -0.15,
+      paddingBottom: 10, marginBottom: 14, borderBottom: '1px solid var(--border)',
+      display: 'flex', alignItems: 'center', gap: 8,
     }}>
       {children}
     </div>
