@@ -170,3 +170,10 @@ export function emptySolveState(): SolveState {
     callDatesByProvider: new Map(),
   };
 }
+
+// Options for solve(). callOverrides forces a provider onto a CALL slot (by
+// slot_id -> provider_id) when that provider passes the canonical 'call' gate;
+// used by the local-search optimizer to re-solve a perturbed call assignment.
+export interface SolveOptions {
+  callOverrides?: Map<string, string>;
+}

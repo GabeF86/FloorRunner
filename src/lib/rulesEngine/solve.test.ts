@@ -316,3 +316,44 @@ describe('solve — explainability (Phase 2a)', () => {
     });
   });
 });
+
+describe('solve — callOverrides (re-solve mechanism)', () => {
+  function bigCtx() {
+    // A small but non-trivial block: two weekday C1 slots, two providers.
+    const slots = [
+      callSlot('s1', '2026-01-06', 'C1'), // Tue
+      callSlot('s2', '2026-01-13', 'C1'), // Tue next week
+    ];
+    return buildCtx(slots, [prov('pA'), prov('pB')]);
+  }
+
+  it('empty override is identical to no options', () => {
+    const a = solve(bigCtx());
+    const b = solve(bigCtx(), {});
+    const c = solve(bigCtx(), { callOverrides: new Map() });
+    const ids = (p: typeof a) => p.assignments.map(x => `${x.slot_id}:${x.provider_id}`).sort();
+    expect(ids(b)).toEqual(ids(a));
+    expect(ids(c)).toEqual(ids(a));
+  });
+
+  it('forces the given provider onto a call slot when eligible', () => {
+    const ctx = bigCtx();
+    const seed = solve(ctx);
+    // Flip s1 to whichever provider did NOT get it in the seed.
+    const got = seed.assignments.find(a => a.slot_id === 's1')!.provider_id;
+    const other = got === 'pA' ? 'pB' : 'pA';
+    const forced = solve(bigCtx(), { callOverrides: new Map([['s1', other]]) });
+    expect(forced.assignments.find(a => a.slot_id === 's1')?.provider_id).toBe(other);
+  });
+
+  it('leaves a slot unfilled when the forced provider is ineligible (self-rejecting)', () => {
+    // Force a CRNA-typed provider id that cannot take the physician slot.
+    const ctx2 = buildCtx(
+      [callSlot('s1', '2026-01-06', 'C1')],
+      [{ ...prov('pA'), provider_type: 'crna' }],
+    );
+    const forced = solve(ctx2, { callOverrides: new Map([['s1', 'pA']]) });
+    expect(forced.assignments.some(a => a.slot_id === 's1')).toBe(false);
+    expect(forced.unfilled.some(u => u.slot_id === 's1')).toBe(true);
+  });
+});

@@ -4,9 +4,10 @@ import { emptySolveState } from './genTypes';
 import type {
   GenerationContext, SlotToFill, CandidateProvider, SolveState,
   SolutionPlan, PlacementSource, AssignmentExplanation, CandidateRejection,
+  SolveOptions,
 } from './genTypes';
 
-export function solve(ctx: GenerationContext): SolutionPlan {
+export function solve(ctx: GenerationContext, opts: SolveOptions = {}): SolutionPlan {
   const plan: SolutionPlan = { assignments: [], unfilled: [] };
   const state = emptySolveState();
 
@@ -22,6 +23,17 @@ export function solve(ctx: GenerationContext): SolutionPlan {
   const RELIEF_CODES = ['D4', 'D5', 'D6', 'D7', 'D8', 'D9'];
 
   const providerById = new Map(ctx.providers.map(p => [p.id, p]));
+
+  const overrides = opts.callOverrides;
+  // If this call slot is overridden, return the forced provider WHEN eligible,
+  // else null. A null return means "fall through to normal scoring"; an
+  // overridden-but-ineligible slot is handled by the caller (left unfilled).
+  const overrideFor = (slot: SlotToFill): CandidateProvider | null | undefined => {
+    if (!overrides || !overrides.has(slot.slot_id)) return undefined; // not overridden
+    const p = providerById.get(overrides.get(slot.slot_id)!);
+    if (!p) return null;
+    return evaluateEligibility(slot, p, state, ctx, 'call').eligible ? p : null;
+  };
 
   const record = (
     slot: SlotToFill, p: CandidateProvider, source: PlacementSource,
@@ -77,6 +89,43 @@ export function solve(ctx: GenerationContext): SolutionPlan {
     }
   };
 
+  // ── weekend block chain (H1 fix) — extracted so both forced and scored paths share one copy ──
+  const maybeWeekendBlock = (slot: SlotToFill, chosen: CandidateProvider) => {
+    if (slot.derived_day_type !== 'saturday') return;
+    const sundayMap = ctx.slotIndex.get(addDays(slot.slot_date, 1));
+    const fridayMap = ctx.slotIndex.get(addDays(slot.slot_date, -1));
+
+    const chainAssign = (
+      slotMap: Map<string, SlotToFill> | undefined, code: string,
+    ) => {
+      const target = slotMap?.get(code);
+      if (!target) return;
+      if (state.handledSlotIds.has(target.slot_id)) return;
+      if (overrides?.has(target.slot_id)) {
+        const f = overrideFor(target);
+        if (f) { record(target, f, 'weekend-chain'); chainDFills(target, f); }
+        return; // overridden slot handled (placed if eligible, else left for main loop/unfilled)
+      }
+      // H1 FIX: route through the canonical predicate. Call slots use the
+      // 'call' gate (quota + weekend-call credential + adjacent PTO); the
+      // Fri-D2 non-call fill uses 'derived'.
+      const gate = target.shift_type_category === 'call' ? 'call' : 'derived';
+      if (!evaluateEligibility(target, chosen, state, ctx, gate).eligible) return;
+      record(target, chosen, 'weekend-chain');
+      chainDFills(target, chosen);
+    };
+
+    if (slot.shift_type_code === 'C3') {
+      chainAssign(sundayMap, 'C3');
+    } else if (slot.shift_type_code === 'C1') {
+      chainAssign(sundayMap, 'C2');
+      chainAssign(fridayMap, 'C2');
+    } else if (slot.shift_type_code === 'C2') {
+      chainAssign(sundayMap, 'C1');
+      chainAssign(fridayMap, 'D2');
+    }
+  };
+
   // ── pre-PTO Thursday pass (before main loop) ──
   // Build Thursday -> providers-with-PTO-that-week map.
   const prePtoByThursday = new Map<string, Set<string>>();
@@ -93,6 +142,7 @@ export function solve(ctx: GenerationContext): SolutionPlan {
   }
   const tryPlacePrePto = (slot: SlotToFill | undefined, p: CandidateProvider): boolean => {
     if (!slot) return false;
+    if (overrides?.has(slot.slot_id)) return false; // override is authoritative; main loop handles it
     if (state.handledSlotIds.has(slot.slot_id)) return false;
     if (!evaluateEligibility(slot, p, state, ctx, 'call').eligible) return false;
     record(slot, p, 'pre-pto-thursday');
@@ -121,6 +171,23 @@ export function solve(ctx: GenerationContext): SolutionPlan {
     // puts only call-category slots in slotsToFill; this guard makes that invariant
     // explicit and keeps derived (D-shift) slots out of the call-scoring path.
     if (slot.shift_type_category !== 'call') continue;
+
+    const forced = overrideFor(slot);
+    if (forced === null) {
+      // Overridden to an ineligible provider -> leave unfilled (self-rejecting move).
+      plan.unfilled.push({
+        slot_id: slot.slot_id, slot_date: slot.slot_date,
+        shift_type_code: slot.shift_type_code, reason: 'Forced provider ineligible',
+      });
+      continue;
+    }
+    if (forced) {
+      record(slot, forced, 'main-loop');
+      chainDFills(slot, forced);
+      // weekend block off a forced Saturday pick (same logic as the scored path)
+      maybeWeekendBlock(slot, forced);
+      continue;
+    }
 
     const candidates = ctx.providers.filter(
       p => evaluateEligibility(slot, p, state, ctx, 'call').eligible,
@@ -163,38 +230,7 @@ export function solve(ctx: GenerationContext): SolutionPlan {
       competingCandidates: candidates.length,
     });
     chainDFills(slot, winner.p);
-
-    // ── weekend block chain (H1 fix) ──
-    if (slot.derived_day_type === 'saturday') {
-      const sundayMap = ctx.slotIndex.get(addDays(slot.slot_date, 1));
-      const fridayMap = ctx.slotIndex.get(addDays(slot.slot_date, -1));
-      const chosen = scored[0].p;
-
-      const chainAssign = (
-        slotMap: Map<string, SlotToFill> | undefined, code: string,
-      ) => {
-        const target = slotMap?.get(code);
-        if (!target) return;
-        if (state.handledSlotIds.has(target.slot_id)) return;
-        // H1 FIX: route through the canonical predicate. Call slots use the
-        // 'call' gate (quota + weekend-call credential + adjacent PTO); the
-        // Fri-D2 non-call fill uses 'derived'.
-        const gate = target.shift_type_category === 'call' ? 'call' : 'derived';
-        if (!evaluateEligibility(target, chosen, state, ctx, gate).eligible) return;
-        record(target, chosen, 'weekend-chain');
-        chainDFills(target, chosen);
-      };
-
-      if (slot.shift_type_code === 'C3') {
-        chainAssign(sundayMap, 'C3');
-      } else if (slot.shift_type_code === 'C1') {
-        chainAssign(sundayMap, 'C2');
-        chainAssign(fridayMap, 'C2');
-      } else if (slot.shift_type_code === 'C2') {
-        chainAssign(sundayMap, 'C1');
-        chainAssign(fridayMap, 'D2');
-      }
-    }
+    maybeWeekendBlock(slot, winner.p);
   }
 
   // ── D4–D9 relief pass (H2 fix) ──
