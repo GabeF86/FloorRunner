@@ -14,6 +14,7 @@ import {
   FacilityCalculator,
   StaffAssignment,
 } from './types';
+import { clampConfig, buildBreakAnalysis, breakCoverageNotes, feasibilityNotes, BREAKS_PER_FLOAT } from './shared';
 
 const SCHEMA: ConfigField[] = [
   // MAIN OR
@@ -45,19 +46,20 @@ interface MutableAssignment extends StaffAssignment {
 }
 
 function calculateLankenau(cfgIn: CalculatorConfig, avail: AvailableStaff): CalculatorOutput {
-  // Coerce to a typed shape so the algorithm is easier to read. The page
-  // ensures the user passes valid keys via the schema, but defensive defaults
-  // here mean a partial cfg (legacy persisted state) can't crash the calc.
+  // Clamp + coerce to a typed shape so the algorithm is easier to read. The
+  // shared clampConfig validates against the schema (NaN/missing → default,
+  // numbers clamped to [min,max], toggles coerced to boolean).
+  const clamped = clampConfig(SCHEMA, cfgIn);
   const cfg = {
-    mainOR:     Number(cfgIn.mainOR ?? 0),
-    addOnRooms: Number(cfgIn.addOnRooms ?? 0),
-    apc:        Number(cfgIn.apc ?? 0),
-    cardiac:    Number(cfgIn.cardiac ?? 0),
-    endo:       Number(cfgIn.endo ?? 0),
-    ep:         Number(cfgIn.ep ?? 0),
-    epTEE:      Boolean(cfgIn.epTEE ?? false),
-    csections:  Number(cfgIn.csections ?? 0),
-    ir:         Boolean(cfgIn.ir ?? false),
+    mainOR:     Number(clamped.mainOR),
+    addOnRooms: Number(clamped.addOnRooms),
+    apc:        Number(clamped.apc),
+    cardiac:    Number(clamped.cardiac),
+    endo:       Number(clamped.endo),
+    ep:         Number(clamped.ep),
+    epTEE:      Boolean(clamped.epTEE),
+    csections:  Number(clamped.csections),
+    ir:         Boolean(clamped.ir),
   };
 
   const asgn: MutableAssignment[] = [];
@@ -376,7 +378,7 @@ function calculateLankenau(cfgIn: CalculatorConfig, avail: AvailableStaff): Calc
   );
   const breakDemand = provNeedingBreaks.length;
 
-  const bkFloats = floats.length * 5;
+  const bkFloats = floats.length * BREAKS_PER_FLOAT;
   const bkTEE = cfg.epTEE ? 2 : 0;
   const bk8101 = 1;
   const bkOB = 1;
@@ -395,27 +397,11 @@ function calculateLankenau(cfgIn: CalculatorConfig, avail: AvailableStaff): Calc
     ...(bkSupMDs > 0 ? [{ label: 'Supv MDs (≥1:3)', count: supMDsWith3, breaks: bkSupMDs, detail: `${supMDsWith3} × 1` }] : []),
   ];
 
-  const breakCapacity = bkFloats + bkTEE + bk8101 + bkOB + bkEP + bkSupMDs;
-  const breakGap = breakDemand - breakCapacity;
-  const breakPct = breakDemand > 0 ? Math.round((breakCapacity / breakDemand) * 100) : 100;
+  const breakAnalysis = buildBreakAnalysis(breakDemand, breakSources);
 
-  const breakAnalysis = {
-    demand: breakDemand,
-    capacity: breakCapacity,
-    sources: breakSources,
-    gap: breakGap,
-    pct: Math.min(breakPct, 100),
-    severity: (breakPct >= 100 ? 'ok' : breakPct >= 75 ? 'tight' : breakPct >= 50 ? 'warning' : 'critical') as 'ok' | 'tight' | 'warning' | 'critical',
-    unrelieved: Math.max(0, breakGap),
-  };
+  notes.push(...breakCoverageNotes(breakAnalysis));
 
-  notes.push('── BREAK COVERAGE ──');
-  breakSources.forEach(s => notes.push(`  ☕ ${s.label}: ${s.breaks} break${s.breaks !== 1 ? 's' : ''} (${s.detail})`));
-  notes.push(`  📊 Total: ${breakCapacity} break slots for ${breakDemand} providers needing breaks`);
-  if (breakAnalysis.severity === 'ok') notes.push(`  ✅ Coverage sufficient (${breakPct}%).`);
-  if (breakAnalysis.severity === 'tight') notes.push(`  ⚠️ Coverage tight (${breakPct}%). Some breaks may be delayed.`);
-  if (breakAnalysis.severity === 'warning') notes.push(`  🔴 Coverage strained (${breakPct}%). ${breakAnalysis.unrelieved} providers may not get timely breaks.`);
-  if (breakAnalysis.severity === 'critical') notes.push(`  🚨 CRITICAL (${breakPct}%). ${breakAnalysis.unrelieved} providers will not get breaks without pulling coverage.`);
+  notes.push(...feasibilityNotes(mds.length, crnas.length, avail));
 
   return {
     totalMDs: mds.length,
