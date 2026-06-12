@@ -20,14 +20,64 @@ function addDays(iso: string, delta: number): string {
   return d.toISOString().slice(0, 10);
 }
 
+// Pre-loaded per-site validation context. When provided to loadContext, the
+// shift-type and rule-definition queries are skipped (N+1 fix for batch validation).
+export interface SiteValidationContext {
+  shiftTypesById: Map<string, ShiftTypeRow>;
+  shiftTypesByCode: Map<string, ShiftTypeRow>;
+  rules: RuleDefinition[];
+}
+
+// Load the per-site shift-types + active rules ONCE, for reuse across a batch
+// of evaluateAssignment calls on the same site.
+export async function loadSiteValidationContext(
+  sb: SupabaseClient,
+  siteId: string,
+): Promise<SiteValidationContext> {
+  const { data: shiftTypes } = await sb
+    .from('shift_types')
+    .select('id, site_id, code, name, category, requires_credential, requires_specific_skills')
+    .eq('site_id', siteId);
+  const shiftTypeRows: ShiftTypeRow[] = (shiftTypes || []).map((s: Record<string, unknown>) => ({
+    id: s.id as string,
+    site_id: s.site_id as string,
+    code: s.code as string,
+    name: s.name as string,
+    category: s.category as ShiftTypeRow['category'],
+    requires_credential: (s.requires_credential as string | null) ?? null,
+    requires_specific_skills: Array.isArray(s.requires_specific_skills)
+      ? (s.requires_specific_skills as string[]) : [],
+  }));
+  const { data: ruleSets } = await sb
+    .from('rule_sets').select('id').eq('site_id', siteId).eq('status', 'active');
+  const ruleSetIds = (ruleSets || []).map((r: { id: string }) => r.id);
+  let rules: RuleDefinition[] = [];
+  if (ruleSetIds.length > 0) {
+    const { data: ruleRows } = await sb
+      .from('rule_definitions')
+      .select('id, rule_set_id, rule_name, rule_category, hard_constraint, priority_rank, applies_to_provider_group, applies_to_shift_types, applies_to_day_types, condition, action, explanation_text, is_active')
+      .in('rule_set_id', ruleSetIds).eq('is_active', true);
+    rules = (ruleRows || []) as RuleDefinition[];
+  }
+  return {
+    shiftTypesById: new Map(shiftTypeRows.map(s => [s.id, s])),
+    shiftTypesByCode: new Map(shiftTypeRows.map(s => [s.code, s])),
+    rules,
+  };
+}
+
 /**
  * Load everything an evaluator might need to validate a single (slot, provider).
  * One round-trip per logical entity — we accept the chattiness for clarity.
+ *
+ * When `siteCtx` is provided, the shift-types and rule-definitions queries are
+ * skipped and the preloaded maps/rules are used instead (N+1 fix for batch validation).
  */
 export async function loadContext(
   sb: SupabaseClient,
   slotId: string,
   providerId: string | null,
+  siteCtx?: SiteValidationContext,
 ): Promise<EvaluationContext | null> {
   // 1. The slot itself
   const { data: slot, error: slotErr } = await sb
@@ -39,46 +89,59 @@ export async function loadContext(
   const slotRow = slot as SlotRow;
   const scheduleVersionId = (slot as Record<string, unknown>).schedule_version_id as string | null;
 
-  // 2. All shift types for this site (small table; one query is fine)
-  const { data: shiftTypes } = await sb
-    .from('shift_types')
-    .select('id, site_id, code, name, category, requires_credential, requires_specific_skills')
-    .eq('site_id', slotRow.site_id);
-  const shiftTypeRows: ShiftTypeRow[] = (shiftTypes || []).map((s: Record<string, unknown>) => ({
-    id: s.id as string,
-    site_id: s.site_id as string,
-    code: s.code as string,
-    name: s.name as string,
-    category: s.category as ShiftTypeRow['category'],
-    requires_credential: (s.requires_credential as string | null) ?? null,
-    requires_specific_skills: Array.isArray(s.requires_specific_skills)
-      ? (s.requires_specific_skills as string[])
-      : [],
-  }));
-  const shiftTypesById = new Map(shiftTypeRows.map(s => [s.id, s]));
-  const shiftTypesByCode = new Map(shiftTypeRows.map(s => [s.code, s]));
+  // 2. All shift types for this site + active rules.
+  //    When a preloaded siteCtx is provided, skip both queries (N+1 fix).
+  let shiftTypesById: Map<string, ShiftTypeRow>;
+  let shiftTypesByCode: Map<string, ShiftTypeRow>;
+  let rules: RuleDefinition[];
+
+  if (siteCtx) {
+    // Fast path: reuse the caller-supplied preloaded context.
+    shiftTypesById = siteCtx.shiftTypesById;
+    shiftTypesByCode = siteCtx.shiftTypesByCode;
+    rules = siteCtx.rules;
+  } else {
+    // Slow path: query inline (preserves behavior for non-batched callers).
+    const { data: shiftTypes } = await sb
+      .from('shift_types')
+      .select('id, site_id, code, name, category, requires_credential, requires_specific_skills')
+      .eq('site_id', slotRow.site_id);
+    const shiftTypeRows: ShiftTypeRow[] = (shiftTypes || []).map((s: Record<string, unknown>) => ({
+      id: s.id as string,
+      site_id: s.site_id as string,
+      code: s.code as string,
+      name: s.name as string,
+      category: s.category as ShiftTypeRow['category'],
+      requires_credential: (s.requires_credential as string | null) ?? null,
+      requires_specific_skills: Array.isArray(s.requires_specific_skills)
+        ? (s.requires_specific_skills as string[])
+        : [],
+    }));
+    shiftTypesById = new Map(shiftTypeRows.map(s => [s.id, s]));
+    shiftTypesByCode = new Map(shiftTypeRows.map(s => [s.code, s]));
+
+    const { data: ruleSets } = await sb
+      .from('rule_sets')
+      .select('id')
+      .eq('site_id', slotRow.site_id)
+      .eq('status', 'active');
+    const ruleSetIds = (ruleSets || []).map((r: { id: string }) => r.id);
+
+    rules = [];
+    if (ruleSetIds.length > 0) {
+      const { data: ruleRows } = await sb
+        .from('rule_definitions')
+        .select(
+          'id, rule_set_id, rule_name, rule_category, hard_constraint, priority_rank, applies_to_provider_group, applies_to_shift_types, applies_to_day_types, condition, action, explanation_text, is_active',
+        )
+        .in('rule_set_id', ruleSetIds)
+        .eq('is_active', true);
+      rules = (ruleRows || []) as RuleDefinition[];
+    }
+  }
+
   const shiftType = shiftTypesById.get(slotRow.shift_type_id);
   if (!shiftType) return null;
-
-  // 3. Active rules for this site
-  const { data: ruleSets } = await sb
-    .from('rule_sets')
-    .select('id')
-    .eq('site_id', slotRow.site_id)
-    .eq('status', 'active');
-  const ruleSetIds = (ruleSets || []).map((r: { id: string }) => r.id);
-
-  let rules: RuleDefinition[] = [];
-  if (ruleSetIds.length > 0) {
-    const { data: ruleRows } = await sb
-      .from('rule_definitions')
-      .select(
-        'id, rule_set_id, rule_name, rule_category, hard_constraint, priority_rank, applies_to_provider_group, applies_to_shift_types, applies_to_day_types, condition, action, explanation_text, is_active',
-      )
-      .in('rule_set_id', ruleSetIds)
-      .eq('is_active', true);
-    rules = (ruleRows || []) as RuleDefinition[];
-  }
 
   // 4. Provider-specific data (only if a provider is assigned)
   let credentials: ProviderSiteCredentials | null = null;

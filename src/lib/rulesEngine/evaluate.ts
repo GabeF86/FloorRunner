@@ -3,6 +3,7 @@
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type SupabaseClient = any;
 import { loadContext } from './loadContext';
+import type { SiteValidationContext } from './loadContext';
 import { evaluators } from './evaluators';
 import type { RuleViolation } from './types';
 
@@ -18,13 +19,17 @@ export interface EvaluateResult {
  * Evaluate a single (slot, provider) assignment against all active rules.
  * Returns the violation list — never throws on rule errors; an unloadable
  * context simply yields zero violations.
+ *
+ * When `siteCtx` is provided, the shift-type and rule-definition queries
+ * inside loadContext are skipped (N+1 fix for batch validation via commitValidation).
  */
 export async function evaluateAssignment(
   sb: SupabaseClient,
   slotId: string,
   providerId: string | null,
+  siteCtx?: SiteValidationContext,
 ): Promise<EvaluateResult> {
-  const ctx = await loadContext(sb, slotId, providerId);
+  const ctx = await loadContext(sb, slotId, providerId, siteCtx);
   if (!ctx) {
     return { slotId, providerId, violations: [], hardCount: 0, softCount: 0 };
   }
