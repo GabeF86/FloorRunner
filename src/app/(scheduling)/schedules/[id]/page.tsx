@@ -1865,7 +1865,8 @@ function PoolSelectorModal({
       <div
         onClick={e => e.stopPropagation()}
         style={{
-          background: 'var(--bg-surface)', border: '1px solid var(--border)', borderRadius: 14,
+          background: 'var(--bg-surface)', border: '1px solid var(--border)', borderRadius: 12,
+          boxShadow: '0 24px 60px rgba(0,0,0,0.5)',
           padding: 24, width: 560, maxHeight: '85vh', display: 'flex', flexDirection: 'column',
         }}
       >
@@ -1949,7 +1950,7 @@ function PoolSelectorModal({
                     return (
                       <label key={p.id} style={{
                         display: 'flex', alignItems: 'center', gap: 10,
-                        padding: '6px 12px 6px 34px', cursor: 'pointer',
+                        padding: '8px 12px 8px 34px', cursor: 'pointer', borderRadius: 8,
                       }}>
                         <input
                           type="checkbox"
@@ -1989,20 +1990,16 @@ function PoolSelectorModal({
             Use Default Pool
           </button>
           <div style={{ display: 'flex', gap: 8 }}>
-            <button onClick={onClose} style={{
-              padding: '8px 16px', borderRadius: 6, background: 'transparent',
-              color: 'var(--text-muted)', border: '1px solid var(--border)',
-              fontWeight: 600, fontSize: 13, cursor: 'pointer',
-            }}>
+            <button onClick={onClose} style={smallBtn}>
               Cancel
             </button>
             <button
               onClick={() => save(false)}
               disabled={saving || totalSelected === 0}
               style={{
-                padding: '8px 18px', borderRadius: 6, fontWeight: 700, fontSize: 13,
+                padding: '7px 16px', fontSize: 12.5, fontWeight: 700, border: 'none', borderRadius: 8,
                 background: 'linear-gradient(135deg,#0ea5e9,#6366f1)',
-                color: '#fff', border: 'none',
+                color: '#fff', boxShadow: '0 4px 14px rgba(56,130,246,0.35)',
                 opacity: (saving || totalSelected === 0) ? 0.5 : 1,
                 cursor: (saving || totalSelected === 0) ? 'not-allowed' : 'pointer',
               }}
@@ -2017,8 +2014,8 @@ function PoolSelectorModal({
 }
 
 const smallBtn: React.CSSProperties = {
-  padding: '6px 12px', fontSize: 11, fontWeight: 600, borderRadius: 6,
-  background: 'var(--bg-deep)', color: 'var(--text-muted)',
+  padding: '7px 15px', fontSize: 12.5, fontWeight: 700, borderRadius: 8,
+  background: 'transparent', color: 'var(--text-muted)',
   border: '1px solid var(--border)', cursor: 'pointer',
 };
 
@@ -2159,14 +2156,15 @@ function CallCountsModal({ grid, onClose }: { grid: GridData; onClose: () => voi
     <div
       onClick={onClose}
       style={{
-        position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)',
+        position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.75)',
         zIndex: 800, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20,
       }}
     >
       <div
         onClick={e => e.stopPropagation()}
         style={{
-          background: 'var(--bg-deep)', borderRadius: 10, border: '1px solid var(--border)',
+          background: 'var(--bg-deep)', borderRadius: 12, border: '1px solid var(--border)',
+          boxShadow: '0 24px 60px rgba(0,0,0,0.5)',
           padding: 20, maxWidth: '95vw', maxHeight: '90vh', overflow: 'auto', minWidth: 720,
         }}
       >
@@ -2195,32 +2193,32 @@ function CallCountsModal({ grid, onClose }: { grid: GridData; onClose: () => voi
         <div id="call-counts-print">
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
           <div>
-            <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--text)' }}>Call Counts</div>
+            <div style={{ fontSize: 16, fontWeight: 800, color: 'var(--text)' }}>Call Counts</div>
             <div style={{ fontSize: 12, color: 'var(--text-dim)', marginTop: 2 }}>
               {grid.schedule.schedule_name} — per provider, per day bucket, per call tier. PTO days (M–F only) shown separately.
             </div>
           </div>
           <div className="no-print" style={{ display: 'flex', gap: 6 }}>
             <button onClick={handlePrint} style={{
-              background: 'linear-gradient(135deg,#0ea5e9,#6366f1)', border: 'none',
-              color: '#fff', padding: '6px 14px', borderRadius: 6, cursor: 'pointer',
-              fontSize: 13, fontWeight: 700,
+              padding: '7px 16px', fontSize: 12.5, fontWeight: 700, border: 'none', borderRadius: 8, cursor: 'pointer',
+              background: 'linear-gradient(135deg,#0ea5e9,#6366f1)', color: '#fff', boxShadow: '0 4px 14px rgba(56,130,246,0.35)',
             }}>Print / Save PDF</button>
             <button onClick={onClose} style={{
-              background: 'none', border: '1px solid var(--border)', color: 'var(--text)',
-              padding: '4px 10px', borderRadius: 6, cursor: 'pointer', fontSize: 13,
+              padding: '7px 15px', fontSize: 12.5, fontWeight: 700, borderRadius: 8, cursor: 'pointer',
+              background: 'transparent', border: '1px solid var(--border)', color: 'var(--text-muted)',
             }}>Close</button>
           </div>
         </div>
 
         <table style={{ borderCollapse: 'collapse', width: '100%', fontSize: 12 }}>
           <thead>
-            <tr style={{ background: 'var(--bg)', color: 'var(--text-dim)' }}>
-              <th rowSpan={2} style={{ padding: '6px 10px', textAlign: 'left', borderBottom: '1px solid var(--border)' }}>Provider</th>
+            <tr style={{ background: 'var(--bg)', color: 'var(--text-muted)' }}>
+              <th rowSpan={2} style={{ padding: '6px 10px', textAlign: 'left', borderBottom: '1px solid var(--border)', fontWeight: 700 }}>Provider</th>
               {BUCKETS.map(b => (
                 <th key={b.key} colSpan={3} style={{
-                  padding: '6px 10px', textAlign: 'center',
+                  padding: '6px 10px', textAlign: 'center', fontWeight: 700,
                   borderBottom: '1px solid var(--border)', borderLeft: '1px solid var(--border)',
+                  color: 'var(--text-muted)',
                 }}>{b.label}</th>
               ))}
               <th colSpan={3} style={{
@@ -2240,10 +2238,10 @@ function CallCountsModal({ grid, onClose }: { grid: GridData; onClose: () => voi
                 color: '#fbbf24',
               }}>PTO Days<br/><span style={{ fontSize: 10, fontWeight: 500, opacity: 0.7 }}>(M–F only)</span></th>
             </tr>
-            <tr style={{ background: 'var(--bg)', color: 'var(--text-dim)' }}>
+            <tr style={{ background: 'var(--bg)', color: 'var(--text-muted)' }}>
               {BUCKETS.map(b => CODES.map(c => (
                 <th key={`${b.key}|${c}`} style={{
-                  padding: '4px 8px', textAlign: 'center', fontWeight: 600,
+                  padding: '4px 8px', textAlign: 'center', fontWeight: 700,
                   borderBottom: '1px solid var(--border)',
                   borderLeft: c === 'C1' ? '1px solid var(--border)' : 'none',
                   color: c === 'C1' ? '#0ea5e9' : c === 'C2' ? '#34d399' : '#a855f7',
@@ -2251,7 +2249,7 @@ function CallCountsModal({ grid, onClose }: { grid: GridData; onClose: () => voi
               )))}
               {CODES.map(c => (
                 <th key={`extra|${c}`} style={{
-                  padding: '4px 8px', textAlign: 'center', fontWeight: 600,
+                  padding: '4px 8px', textAlign: 'center', fontWeight: 700,
                   borderBottom: '1px solid var(--border)',
                   borderLeft: c === 'C1' ? '1px solid var(--border)' : 'none',
                   color: c === 'C1' ? '#0ea5e9' : c === 'C2' ? '#34d399' : '#a855f7',
@@ -2428,28 +2426,28 @@ function CalendarView({
           onClick={onPrevMonth}
           disabled={!hasPrev}
           style={{
-            padding: '4px 12px', fontSize: 12, fontWeight: 600, borderRadius: 6,
-            border: '1px solid #1e3a5f', background: 'transparent',
-            color: hasPrev ? '#94a3b8' : '#334155',
+            width: 30, height: 30, borderRadius: 8, border: '1px solid var(--border)',
+            background: 'transparent', color: hasPrev ? 'var(--text-muted)' : '#334155',
             cursor: hasPrev ? 'pointer' : 'not-allowed',
+            fontSize: 14, display: 'flex', alignItems: 'center', justifyContent: 'center',
           }}
         >
-          ← Prev
+          &#8592;
         </button>
-        <div style={{ fontSize: 16, fontWeight: 700, letterSpacing: '0.02em' }}>
+        <div style={{ fontSize: 16, fontWeight: 800, letterSpacing: '0.02em' }}>
           {monthName} {year}
         </div>
         <button
           onClick={onNextMonth}
           disabled={!hasNext}
           style={{
-            padding: '4px 12px', fontSize: 12, fontWeight: 600, borderRadius: 6,
-            border: '1px solid #1e3a5f', background: 'transparent',
-            color: hasNext ? '#94a3b8' : '#334155',
+            width: 30, height: 30, borderRadius: 8, border: '1px solid var(--border)',
+            background: 'transparent', color: hasNext ? 'var(--text-muted)' : '#334155',
             cursor: hasNext ? 'pointer' : 'not-allowed',
+            fontSize: 14, display: 'flex', alignItems: 'center', justifyContent: 'center',
           }}
         >
-          Next →
+          &#8594;
         </button>
       </div>
 
@@ -2493,10 +2491,10 @@ function CalendarView({
           const cellBg = !cell.inMonth
             ? 'rgba(15,23,42,0.4)'
             : holiday
-              ? 'rgba(251,191,36,0.08)'
+              ? gridTokens.bodyHoliday
               : isWeekend
-                ? 'rgba(99,102,241,0.04)'
-                : 'var(--bg-surface)';
+                ? gridTokens.bodyWeekend
+                : gridTokens.bodyCell;
 
           return (
             <div key={date} style={{
@@ -2507,14 +2505,14 @@ function CalendarView({
               opacity: !cell.inMonth ? 0.4 : !cell.inSchedule ? 0.55 : 1,
               display: 'flex', flexDirection: 'column', gap: 4,
               overflow: 'hidden',
-              outline: isToday ? '2px solid rgba(14,165,233,0.5)' : 'none',
+              outline: isToday ? ('2px solid ' + gridTokens.accentStrong) : 'none',
               outlineOffset: -2,
             }}>
               {/* Day number + holiday tag + counts */}
               <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 4 }}>
                 <div style={{ display: 'flex', flexDirection: 'column' }}>
                   <span style={{
-                    fontSize: 13, fontWeight: 700,
+                    fontSize: 12.5, fontWeight: 700,
                     color: isToday ? '#0ea5e9' : holiday ? '#fbbf24' : 'var(--text)',
                   }}>
                     {dayNum}
@@ -2574,7 +2572,7 @@ function CalendarView({
                           fontSize: 10, lineHeight: 1.25,
                           color: 'var(--text)',
                           whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
-                          background: isOverPar ? 'rgba(239,68,68,0.15)' : 'transparent',
+                          background: isOverPar ? gridTokens.overPar : 'transparent',
                           borderRadius: 3,
                           padding: isOverPar ? '0 2px' : 0,
                         }}
