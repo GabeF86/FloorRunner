@@ -9,3 +9,6 @@ out/
 # TypeScript incremental build cache
 tsconfig.tsbuildinfo
 *.tsbuildinfo
+
+# Superpowers brainstorming scratch (mockups, visual companion sessions)
+.superpowers/
