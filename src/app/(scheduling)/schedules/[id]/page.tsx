@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback, useRef, useMemo, Fragment } from 'react';
 import Link from 'next/link';
+import { gridTokens } from './gridTheme';
 
 /* ── Interfaces ──────────────────────────────────────────────────────────── */
 
@@ -1108,8 +1109,8 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
       }}>
         <div style={{
           display: 'grid',
-          gridTemplateColumns: `160px repeat(${colCount}, minmax(100px, 1fr))`,
-          minWidth: colCount > 7 ? `${160 + colCount * 100}px` : undefined,
+          gridTemplateColumns: `84px repeat(${colCount}, minmax(74px, 1fr))`,
+          minWidth: colCount > 7 ? `${84 + colCount * 74}px` : undefined,
         }}>
 
           {/* ── Row 0: Day-of-week header ─────────────────────────────────── */}
@@ -1117,7 +1118,7 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
           {/* Corner cell */}
           <div style={{
             position: 'sticky', top: 0, left: 0, zIndex: 4,
-            background: '#0d1b30', borderBottom: '1px solid #1e3a5f',
+            background: gridTokens.chrome, borderBottom: '1px solid #1e3a5f',
             borderRight: '1px solid #1e3a5f', padding: '6px 12px',
             minHeight: 35,
           }} />
@@ -1134,13 +1135,13 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
                 position: 'sticky', top: 0, zIndex: 3,
                 // Holidays get a distinctly yellow-tinted dark header so
                 // the whole column reads as "holiday" at a glance.
-                background: isHoliday ? '#3a3010' : isWeekend ? '#0e1430' : '#0d1b30',
+                background: isHoliday ? '#3a3010' : isWeekend ? gridTokens.chromeWeekend : gridTokens.chrome,
                 borderBottom: '1px solid #1e3a5f',
                 borderRight: '1px solid #1e3a5f',
-                borderLeft: isToday ? '2px solid rgba(14,165,233,0.4)' : isSatBorder ? '2px solid rgba(30,58,95,0.6)' : 'none',
+                borderLeft: isToday ? '2px solid ' + gridTokens.accent : isSatBorder ? '2px solid rgba(30,58,95,0.6)' : 'none',
                 padding: '6px 8px', textAlign: 'center',
-                fontSize: 11, fontWeight: 700,
-                color: isHoliday ? '#fbbf24' : isWeekend ? '#818cf8' : '#64748b',
+                fontSize: 10, fontWeight: 700,
+                color: isHoliday ? '#fbbf24' : isWeekend ? '#cbd5e1' : gridTokens.chromeMuted,
                 textTransform: 'uppercase', letterSpacing: '0.05em',
                 minHeight: 35, display: 'flex', alignItems: 'center', justifyContent: 'center',
               }}>
@@ -1154,9 +1155,9 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
           {/* Corner cell "Shifts" */}
           <div style={{
             position: 'sticky', top: 35, left: 0, zIndex: 4,
-            background: '#0d1b30', borderBottom: '2px solid #1e3a5f',
+            background: gridTokens.chrome, borderBottom: '2px solid #1e3a5f',
             borderRight: '1px solid #1e3a5f', padding: '6px 12px',
-            fontSize: 12, fontWeight: 700, color: '#64748b',
+            fontSize: 11, fontWeight: 700, color: gridTokens.chromeMuted,
           }}>
             Shifts
           </div>
@@ -1173,13 +1174,14 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
             return (
               <div key={`date-${date}`} title={holiday ? holiday.holiday_name : undefined} style={{
                 position: 'sticky', top: 35, zIndex: 3,
-                background: holiday ? '#3a3010' : isWeekend ? '#0e1430' : '#0d1b30',
+                background: holiday ? '#3a3010' : isWeekend ? gridTokens.chromeWeekend : gridTokens.chrome,
                 borderBottom: '2px solid #1e3a5f',
                 borderRight: '1px solid #1e3a5f',
-                borderLeft: isToday ? '2px solid rgba(14,165,233,0.4)' : isSatBorder ? '2px solid rgba(30,58,95,0.6)' : 'none',
+                borderLeft: isToday ? '2px solid ' + gridTokens.accent : isSatBorder ? '2px solid rgba(30,58,95,0.6)' : 'none',
                 padding: '6px 8px', textAlign: 'center',
-                fontSize: 12, fontWeight: 600,
-                color: isToday ? '#0ea5e9' : holiday ? '#fbbf24' : '#e2e8f0',
+                fontSize: 12.5, fontWeight: 700,
+                color: isToday ? gridTokens.accent : holiday ? '#fbbf24' : gridTokens.chromeText,
+                boxShadow: isToday ? 'inset 0 -3px 0 ' + gridTokens.accentStrong : undefined,
               }}>
                 {formatMMDD(date)}
                 {holiday && (
