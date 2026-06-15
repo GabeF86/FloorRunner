@@ -1208,15 +1208,15 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
               {/* Shift label cell */}
               <div key={`label-${st.id}`} style={{
                 position: 'sticky', left: 0, zIndex: 2,
-                background: '#0d1b30',
-                borderLeft: `4px solid ${st.color_hex || '#64748b'}`,
+                background: gridTokens.chrome,
+                borderLeft: '4px solid ' + gridTokens.accent,
                 borderBottom: '1px solid #1e3a5f',
                 borderRight: '1px solid #1e3a5f',
                 padding: '8px 10px', display: 'flex', flexDirection: 'column', justifyContent: 'center',
-                minHeight: 44,
+                minHeight: 32,
               }}>
-                <div style={{ fontSize: 13, fontWeight: 700, color: '#e2e8f0', whiteSpace: 'nowrap' }}>{st.code}</div>
-                <div style={{ fontSize: 10, color: '#334155', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{st.name}</div>
+                <div style={{ fontSize: 13, fontWeight: 800, color: '#ffffff', whiteSpace: 'nowrap' }}>{st.code}</div>
+                <div style={{ fontSize: 9.5, color: gridTokens.chromeMuted, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{st.name}</div>
               </div>
 
               {/* Assignment cells */}
