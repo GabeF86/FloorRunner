@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import { useState, useEffect, useCallback, useRef, useMemo, Fragment } from 'react';
 import Link from 'next/link';
 
 /* ── Interfaces ──────────────────────────────────────────────────────────── */
@@ -1195,7 +1195,7 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
           {/* ── Data Rows: one per shift type ─────────────────────────────── */}
 
           {shiftTypes.map(st => (
-            <>
+            <Fragment key={st.id}>
               {/* Shift label cell */}
               <div key={`label-${st.id}`} style={{
                 position: 'sticky', left: 0, zIndex: 2,
@@ -1313,7 +1313,7 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
                         OPEN
                       </span>
                     ) : (
-                      <span style={{ fontSize: 11, color: '#cbd5e1' }}>OPEN</span>
+                      <span style={{ fontSize: 13, color: '#cbd5e1' }} aria-label="Unassigned">&mdash;</span>
                     )}
 
                     {/* Extra-call notice */}
@@ -1342,19 +1342,22 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
                     {/* Validation badge */}
                     {(hardFlag || softFlag) && (
                       <span
+                        aria-label={hardFlag ? 'Hard rule violation' : 'Soft rule warning'}
                         title={flags.map(f => `${f.severity === 'hard' ? '!' : '?'} ${f.message}`).join('\n')}
                         style={{
-                          position: 'absolute', top: 2, left: 4,
-                          width: 8, height: 8, borderRadius: '50%',
+                          position: 'absolute', top: 1, left: 3,
+                          minWidth: 11, height: 11, padding: '0 1px', borderRadius: 3,
+                          display: 'flex', alignItems: 'center', justifyContent: 'center',
+                          fontSize: 9, fontWeight: 900, lineHeight: 1, color: '#fff',
                           background: hardFlag ? '#ef4444' : '#f59e0b',
                           boxShadow: hardFlag ? '0 0 4px rgba(239,68,68,0.6)' : '0 0 4px rgba(245,158,11,0.5)',
                         }}
-                      />
+                      >{hardFlag ? '!' : '?'}</span>
                     )}
                   </div>
                 );
               })}
-            </>
+            </Fragment>
           ))}
 
           {/* ── Virtual rows: Available / Post-Call / Off / PTO ──────────── */}
