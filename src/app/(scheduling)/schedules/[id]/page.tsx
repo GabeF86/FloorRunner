@@ -819,7 +819,15 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
   const colCount = visibleDates.length;
 
   return (
-    <div style={{ padding: '24px 32px', height: '100%', display: 'flex', flexDirection: 'column' }}>
+    <div className="schedule-builder-page" style={{ padding: '24px 32px', height: '100%', display: 'flex', flexDirection: 'column' }}>
+      <style>{`
+        .schedule-builder-page button:focus-visible,
+        .schedule-builder-page input:focus-visible {
+          outline: 2px solid ${gridTokens.accent};
+          outline-offset: 1px;
+          border-radius: 6px;
+        }
+      `}</style>
       {/* Breadcrumb */}
       <div style={{ fontSize: 12, color: 'var(--text-dim)', marginBottom: 12 }}>
         <Link href="/schedules" style={{ color: '#0ea5e9', textDecoration: 'none' }}>Schedules</Link>
@@ -1319,7 +1327,7 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
 
                     {/* Lock icon */}
                     {isLocked && (
-                      <span style={{
+                      <span aria-label="Locked slot" style={{
                         position: 'absolute', top: 2, right: 4, fontSize: 10, lineHeight: 1,
                       }}>
                         &#x1F512;

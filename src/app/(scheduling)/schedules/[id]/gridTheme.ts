@@ -24,7 +24,7 @@ export const gridTokens = {
   name: '#0f172a',
   open: '#dc2626',
   unassigned: '#cbd5e1',
-  statusName: '#64748b',
+  statusName: '#475569',
   line: '#e8edf3',
   hard: '#ef4444',
   soft: '#f59e0b',
