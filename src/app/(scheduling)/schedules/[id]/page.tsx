@@ -1352,12 +1352,12 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
             label: 'Available',
             count: maxAvailable,
             dataByDate: availableByDate,
-            color: '#34d399',
-            bg: 'rgba(52,211,153,0.08)',
+            color: gridTokens.category.Available,
             visibleDates,
             todayStr,
             holidayMap,
             getDayOfWeek,
+            zoneTop: true,
           })}
           {/* Post-Call row: providers who had a call shift the day before
               and have no assignment today. They're effectively off-duty
@@ -1367,8 +1367,7 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
             label: 'Post-Call',
             count: maxPostCall,
             dataByDate: postCallByDate,
-            color: '#a78bfa',
-            bg: 'rgba(167,139,250,0.1)',
+            color: gridTokens.category['Post-Call'],
             visibleDates,
             todayStr,
             holidayMap,
@@ -1378,8 +1377,7 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
             label: 'Off',
             count: maxOff,
             dataByDate: offByDate,
-            color: '#94a3b8',
-            bg: 'rgba(148,163,184,0.08)',
+            color: gridTokens.category.Off,
             visibleDates,
             todayStr,
             holidayMap,
@@ -1389,8 +1387,7 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
             label: 'PTO',
             count: maxPto,
             dataByDate: ptoByDate,
-            color: '#fbbf24',
-            bg: 'rgba(251,191,36,0.1)',
+            color: gridTokens.category.PTO,
             visibleDates,
             todayStr,
             holidayMap,
@@ -1612,14 +1609,13 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
 /* ── Virtual Row Renderer (PTO / Available / Off) ─────────────────────────── */
 
 function renderVirtualRows({
-  label, count, dataByDate, color, bg, visibleDates, todayStr, holidayMap, getDayOfWeek,
-  alwaysRender = false,
+  label, count, dataByDate, color, visibleDates, todayStr, holidayMap, getDayOfWeek,
+  alwaysRender = false, zoneTop = false,
 }: {
   label: string;
   count: number;
   dataByDate: Record<string, Provider[]>;
   color: string;
-  bg: string;
   visibleDates: string[];
   todayStr: string;
   holidayMap: Record<string, Holiday>;
@@ -1627,22 +1623,27 @@ function renderVirtualRows({
   // When true, render a single empty row even if no providers occupy it,
   // so the label stays visible as a cue that nobody is on this row.
   alwaysRender?: boolean;
+  // When true (first zone row only), adds a stronger top border marking the
+  // assignment→status boundary.
+  zoneTop?: boolean;
 }) {
   if (count === 0 && !alwaysRender) return null;
   const rowCount = Math.max(count, alwaysRender ? 1 : 0);
   const rows = [];
   for (let idx = 0; idx < rowCount; idx++) {
+    const isFirstRow = idx === 0;
     rows.push(
       <div key={`virt-label-${label}-${idx}`} style={{
         position: 'sticky', left: 0, zIndex: 2,
-        background: '#0d1b30',
+        background: gridTokens.chrome,
         borderLeft: `4px solid ${color}`,
         borderBottom: '1px solid #1e3a5f',
         borderRight: '1px solid #1e3a5f',
+        ...(zoneTop && isFirstRow ? { borderTop: '2px solid #33455f' } : {}),
         padding: '6px 10px', display: 'flex', alignItems: 'center',
-        minHeight: 34,
+        minHeight: 28,
       }}>
-        <div style={{ fontSize: 12, fontWeight: 600, color: '#e2e8f0', whiteSpace: 'nowrap' }}>
+        <div style={{ fontSize: 11.5, fontWeight: 700, color: '#e2e8f0', whiteSpace: 'nowrap' }}>
           {label}{count > 1 ? ` ${idx + 1}` : ''}
         </div>
       </div>
@@ -1656,21 +1657,22 @@ function renderVirtualRows({
       const isHoliday = !!holidayMap[date];
       const isToday = date === todayStr;
       const isSatBorder = dow === 6 && i > 0;
-      const virtCellBg = isHoliday ? 'rgba(251,191,36,0.22)' : isWeekend ? 'rgba(99,102,241,0.06)' : '#ffffff';
+      const virtCellBg = cellBackground({ isOverPar: false, isExtraCall: false, isHoliday, isWeekend });
       rows.push(
         <div key={`virt-cell-${label}-${idx}-${date}`} style={{
           background: virtCellBg,
-          borderBottom: '1px solid #e2e8f0',
-          borderRight: '1px solid #e2e8f0',
-          borderLeft: isToday ? '2px solid rgba(14,165,233,0.5)' : isSatBorder ? '2px solid #1e3a5f' : 'none',
-          padding: '3px 6px',
-          minHeight: 34,
+          borderBottom: '1px solid ' + gridTokens.line,
+          borderRight: '1px solid ' + gridTokens.line,
+          borderLeft: isToday ? '2px solid ' + gridTokens.accentStrong : isSatBorder ? '2px solid #1e3a5f' : 'none',
+          ...(zoneTop && isFirstRow ? { borderTop: '2px solid #cbd5e1' } : {}),
+          padding: '2px 4px',
+          minHeight: 28,
           display: 'flex', alignItems: 'center', justifyContent: 'center',
         }}>
           {provider ? (
             <span style={{
-              fontSize: 11, fontWeight: 500, padding: '1px 8px', borderRadius: 4,
-              background: bg, color,
+              fontSize: 11.5, fontWeight: 500,
+              color: gridTokens.statusName,
               whiteSpace: 'nowrap',
             }}>
               {provider.short_display_name}
