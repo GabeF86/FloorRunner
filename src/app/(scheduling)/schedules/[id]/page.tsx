@@ -2462,16 +2462,16 @@ function CalendarView({
       {/* Weekday header */}
       <div style={{
         display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)',
-        background: '#0d1b30', borderBottom: '1px solid #1e3a5f',
+        background: gridTokens.chrome, borderBottom: '1px solid ' + gridTokens.chromeBorder,
       }}>
         {DAYS_SHORT.map((d, i) => {
           const isWeekend = i === 0 || i === 6;
           return (
             <div key={d} style={{
               padding: '8px 4px', textAlign: 'center', fontSize: 11, fontWeight: 700,
-              color: isWeekend ? '#818cf8' : '#64748b',
+              color: isWeekend ? '#cbd5e1' : gridTokens.chromeMuted,
               textTransform: 'uppercase', letterSpacing: '0.05em',
-              borderRight: i < 6 ? '1px solid #1e3a5f' : 'none',
+              borderRight: i < 6 ? '1px solid ' + gridTokens.chromeBorder : 'none',
             }}>
               {d}
             </div>
