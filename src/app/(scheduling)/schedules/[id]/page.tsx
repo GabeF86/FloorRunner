@@ -826,28 +826,30 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
         <span style={{ color: 'var(--text-muted)' }}>{schedule.schedule_name}</span>
       </div>
 
-      {/* Top Bar */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 16, marginBottom: 20, flexWrap: 'wrap' }}>
-        <h1 style={{ fontSize: 22, fontWeight: 800, color: 'var(--text)', margin: 0 }}>{schedule.schedule_name}</h1>
+      {/* Top Bar — identity row */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', marginBottom: 14 }}>
+        <h1 style={{ fontSize: 21, fontWeight: 800, color: 'var(--text)', margin: 0, letterSpacing: '-0.01em' }}>{schedule.schedule_name}</h1>
 
         {/* Status badge */}
         <span style={{
-          fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em',
-          padding: '3px 10px', borderRadius: 999,
+          fontSize: 10.5, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.05em',
+          padding: '3px 9px', borderRadius: 999,
           color: sc.color, background: sc.bg,
         }}>
           {schedule.status}
         </span>
 
-        {/* Version badge */}
+        {/* Version chip */}
         <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>
           v{version.version_number} ({version.version_status})
         </span>
 
         {/* Date range */}
-        <span style={{ fontSize: 13, color: 'var(--text-muted)' }}>
+        <span style={{ fontSize: 12.5, color: 'var(--text-muted)' }}>
           {formatDateRange(schedule.date_start, schedule.date_end)}
         </span>
+
+        <div style={{ flex: 1 }} />
 
         {/* Rules summary — verify the algorithm is enforcing your rules */}
         <div style={{ position: 'relative' }}>
@@ -855,9 +857,9 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
             onClick={() => setShowRulesSummary(v => !v)}
             title="Aggregate of validation_flags across every assignment in this schedule"
             style={{
-              display: 'inline-flex', alignItems: 'center', gap: 6,
-              padding: '3px 10px', borderRadius: 999, cursor: 'pointer',
-              fontSize: 11, fontFamily: 'var(--font-mono), ui-monospace, monospace',
+              display: 'inline-flex', alignItems: 'center', gap: 7,
+              padding: '5px 11px', borderRadius: 999, cursor: 'pointer',
+              fontSize: 11.5, fontFamily: 'var(--font-mono), ui-monospace, monospace',
               background: rulesSummary.hardCount > 0
                 ? 'rgba(239,68,68,0.10)'
                 : rulesSummary.softCount > 0
@@ -940,11 +942,13 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
             </div>
           )}
         </div>
+      </div>
 
-        <div style={{ flex: 1 }} />
+      {/* Top Bar — toolbar row */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 20, paddingTop: 14, borderTop: '1px solid var(--border)' }}>
 
         {/* View toggle */}
-        <div style={{ display: 'flex', borderRadius: 6, overflow: 'hidden', border: '1px solid var(--border)' }}>
+        <div style={{ display: 'inline-flex', border: '1px solid var(--border)', borderRadius: 8, overflow: 'hidden' }}>
           {(['week', 'month', 'calendar'] as const).map(m => (
             <button
               key={m}
@@ -954,9 +958,9 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
                 setCalendarMonthOffset(0);
               }}
               style={{
-                padding: '5px 14px', fontSize: 12, fontWeight: 600, border: 'none', cursor: 'pointer',
-                background: viewMode === m ? 'rgba(14,165,233,0.2)' : 'var(--bg-surface)',
-                color: viewMode === m ? '#0ea5e9' : 'var(--text-muted)',
+                padding: '6px 14px', fontSize: 12, fontWeight: 600, border: 'none', cursor: 'pointer',
+                background: viewMode === m ? 'rgba(56,189,248,0.18)' : 'transparent',
+                color: viewMode === m ? '#7dd3fc' : 'var(--text-muted)',
               }}
             >
               {m === 'week' ? 'Week' : m === 'month' ? 'Month' : 'Calendar'}
@@ -970,9 +974,9 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
             <button
               onClick={() => setWeekOffset(o => Math.max(0, o - 1))}
               style={{
-                width: 28, height: 28, borderRadius: 6, border: '1px solid var(--border)',
-                background: 'var(--bg-surface)', color: 'var(--text-muted)', cursor: 'pointer',
-                display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 14,
+                width: 30, height: 30, borderRadius: 8, border: '1px solid var(--border)',
+                background: 'transparent', color: 'var(--text-muted)', cursor: 'pointer',
+                fontSize: 14, display: 'flex', alignItems: 'center', justifyContent: 'center',
               }}
             >
               &#8592;
@@ -983,9 +987,9 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
                 setWeekOffset(o => Math.min(maxWeeks - 1, o + 1));
               }}
               style={{
-                width: 28, height: 28, borderRadius: 6, border: '1px solid var(--border)',
-                background: 'var(--bg-surface)', color: 'var(--text-muted)', cursor: 'pointer',
-                display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 14,
+                width: 30, height: 30, borderRadius: 8, border: '1px solid var(--border)',
+                background: 'transparent', color: 'var(--text-muted)', cursor: 'pointer',
+                fontSize: 14, display: 'flex', alignItems: 'center', justifyContent: 'center',
               }}
             >
               &#8594;
@@ -993,13 +997,15 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
           </div>
         )}
 
+        <div style={{ flex: 1 }} />
+
         {/* Call Counts button */}
         <button
           onClick={() => setShowCounts(true)}
           style={{
-            padding: '6px 14px', fontSize: 13, fontWeight: 600, borderRadius: 6,
-            background: 'rgba(99,102,241,0.12)', color: '#a5b4fc',
-            border: '1px solid rgba(99,102,241,0.3)', cursor: 'pointer',
+            padding: '7px 15px', fontSize: 12.5, fontWeight: 700, borderRadius: 8,
+            background: 'transparent', border: '1px solid var(--border)', color: 'var(--text-muted)',
+            cursor: 'pointer',
           }}
         >
           Call Counts
@@ -1015,16 +1021,16 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
               onClick={() => setShowPoolModal(true)}
               title="Override the default auto-gen candidate pool"
               style={{
-                padding: '6px 14px', fontSize: 13, fontWeight: 600, borderRadius: 6,
+                padding: '7px 15px', fontSize: 12.5, fontWeight: 700, borderRadius: 8,
                 background: (schedule.included_provider_ids && schedule.included_provider_ids.length > 0)
                   ? 'rgba(14,165,233,0.15)'
-                  : 'var(--bg-deep)',
+                  : 'rgba(99,102,241,0.14)',
                 color: (schedule.included_provider_ids && schedule.included_provider_ids.length > 0)
                   ? '#0ea5e9'
-                  : 'var(--text-muted)',
+                  : '#a5b4fc',
                 border: (schedule.included_provider_ids && schedule.included_provider_ids.length > 0)
                   ? '1px solid rgba(14,165,233,0.4)'
-                  : '1px solid var(--border)',
+                  : '1px solid rgba(99,102,241,0.35)',
                 cursor: 'pointer',
               }}
             >
@@ -1036,10 +1042,10 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
               onClick={autoGenerateSchedule}
               disabled={generating}
               style={{
-                padding: '6px 18px', fontSize: 13, fontWeight: 700, borderRadius: 6,
-                background: generating ? 'var(--bg-deep)' : 'rgba(16,185,129,0.15)',
-                color: generating ? 'var(--text-dim)' : '#10b981',
-                border: '1px solid rgba(16,185,129,0.3)', cursor: generating ? 'not-allowed' : 'pointer',
+                padding: '7px 16px', fontSize: 12.5, fontWeight: 700, borderRadius: 8,
+                background: generating ? 'var(--bg-deep)' : 'rgba(16,185,129,0.16)',
+                color: generating ? 'var(--text-dim)' : '#34d399',
+                border: '1px solid rgba(16,185,129,0.4)', cursor: generating ? 'not-allowed' : 'pointer',
               }}
             >
               {generating ? 'Generating...' : 'Auto-Generate'}
@@ -1052,8 +1058,9 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
           <button
             onClick={publishSchedule}
             style={{
-              padding: '6px 18px', fontSize: 13, fontWeight: 700, border: 'none', borderRadius: 6,
-              background: 'linear-gradient(135deg, #0ea5e9, #6366f1)', color: '#fff', cursor: 'pointer',
+              padding: '7px 16px', fontSize: 12.5, fontWeight: 700, border: 'none', borderRadius: 8,
+              background: 'linear-gradient(135deg,#0ea5e9,#6366f1)', color: '#fff', cursor: 'pointer',
+              boxShadow: '0 4px 14px rgba(56,130,246,0.35)',
             }}
           >
             Publish
