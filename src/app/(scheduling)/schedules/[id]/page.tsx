@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback, useRef, useMemo, Fragment } from 'react';
 import Link from 'next/link';
-import { gridTokens } from './gridTheme';
+import { gridTokens, cellBackground } from './gridTheme';
 
 /* ── Interfaces ──────────────────────────────────────────────────────────── */
 
@@ -1248,17 +1248,7 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
                 // Doesn't include deficit carry-forward — see useMemo notes.
                 const isOverPar = isAssigned && !!assignment && overParAssignmentIds.has(assignment.id);
 
-                // Holidays: a noticeably yellow wash across the whole
-                // column so the day reads as "closed / holiday" instantly.
-                // Previous value was 0.08 alpha, barely visible.
-                const baseCellBg = isHoliday ? 'rgba(251,191,36,0.22)' : isWeekend ? 'rgba(99,102,241,0.06)' : '#ffffff';
-                const extraBg = 'rgba(14,165,233,0.18)';
-                const extraHoverBg = 'rgba(14,165,233,0.28)';
-                const overParBg = 'rgba(239,68,68,0.18)';
-                const overParHoverBg = 'rgba(239,68,68,0.28)';
-                // Precedence: over-par wins over extra-call (it's a more
-                // urgent signal — extra-call is just informational).
-                const cellBg = isOverPar ? overParBg : isExtraCall ? extraBg : baseCellBg;
+                const cellFlags = { isOverPar, isExtraCall, isHoliday, isWeekend };
 
                 return (
                   <div
@@ -1281,12 +1271,12 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
                           : undefined
                     }
                     style={{
-                      background: cellBg,
-                      borderBottom: '1px solid #e2e8f0',
-                      borderRight: '1px solid #e2e8f0',
-                      borderLeft: isToday ? '2px solid rgba(14,165,233,0.5)' : isSatBorder ? '2px solid #1e3a5f' : 'none',
-                      padding: '4px 6px',
-                      minHeight: 44,
+                      background: cellBackground(cellFlags),
+                      borderBottom: '1px solid ' + gridTokens.line,
+                      borderRight: '1px solid ' + gridTokens.line,
+                      borderLeft: isToday ? '2px solid ' + gridTokens.accentStrong : isSatBorder ? '2px solid #1e3a5f' : 'none',
+                      padding: '3px 4px',
+                      minHeight: 32,
                       display: 'flex', alignItems: 'center', justifyContent: 'center',
                       cursor: slot ? 'pointer' : 'default',
                       position: 'relative',
@@ -1294,50 +1284,38 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
                     }}
                     onMouseEnter={(e) => {
                       if (!slot) return;
-                      (e.currentTarget as HTMLDivElement).style.background = isOverPar
-                        ? overParHoverBg
-                        : isExtraCall
-                          ? extraHoverBg
-                          : (isHoliday ? 'rgba(251,191,36,0.32)' : isWeekend ? 'rgba(99,102,241,0.10)' : 'rgba(14,165,233,0.06)');
+                      (e.currentTarget as HTMLDivElement).style.background = cellBackground(cellFlags, true);
                     }}
                     onMouseLeave={(e) => {
-                      (e.currentTarget as HTMLDivElement).style.background = cellBg;
+                      (e.currentTarget as HTMLDivElement).style.background = cellBackground(cellFlags);
                     }}
                   >
                     {!slot ? null : isAssigned ? (
-                      <span style={{
-                        fontSize: 12, fontWeight: 800, padding: '2px 8px', borderRadius: 4,
-                        background: colorWithAlpha(st.color_hex, 0.15),
-                        color: st.color_hex || 'var(--text)',
-                        whiteSpace: 'nowrap',
-                        letterSpacing: '-0.01em',
-                      }}>
+                      <span style={{ fontSize: 13, fontWeight: 800, color: gridTokens.name, whiteSpace: 'nowrap' }}>
                         {provider!.short_display_name}
                       </span>
                     ) : isOpenCall ? (
-                      <span style={{
-                        fontSize: 11, fontWeight: 600, color: '#f87171',
-                        background: 'rgba(248,113,113,0.1)', padding: '2px 8px', borderRadius: 4,
-                      }}>
-                        OPEN
-                      </span>
+                      <span style={{ fontSize: 11, fontWeight: 800, letterSpacing: '0.03em', color: gridTokens.open }}>OPEN</span>
                     ) : (
-                      <span style={{ fontSize: 13, color: '#cbd5e1' }} aria-label="Unassigned">&mdash;</span>
+                      <span style={{ fontSize: 13, color: gridTokens.unassigned }} aria-label="Unassigned">&mdash;</span>
                     )}
 
-                    {/* Extra-call notice */}
-                    {isExtraCall && (
-                      <span style={{
+                    {/* Bottom-right status tag — over-par wins over extra-call,
+                        mirroring the cell-background precedence so the two tags
+                        (which can co-occur) never overlap. */}
+                    {isOverPar ? (
+                      <span aria-label="Over par for this shift" style={{
                         position: 'absolute', bottom: 1, right: 3,
-                        fontSize: 8, fontWeight: 800, letterSpacing: 0.5,
-                        color: '#0369a1',
-                        background: 'rgba(14,165,233,0.15)',
-                        padding: '1px 4px', borderRadius: 3,
-                        pointerEvents: 'none',
-                      }}>
-                        EXTRA
-                      </span>
-                    )}
+                        fontSize: 7.5, fontWeight: 800, letterSpacing: '0.03em',
+                        color: '#b91c1c', pointerEvents: 'none',
+                      }}>OVER</span>
+                    ) : isExtraCall ? (
+                      <span aria-label="Extra call" style={{
+                        position: 'absolute', bottom: 1, right: 3,
+                        fontSize: 8, fontWeight: 800, letterSpacing: '0.5px',
+                        color: '#0369a1', pointerEvents: 'none',
+                      }}>EXTRA</span>
+                    ) : null}
 
                     {/* Lock icon */}
                     {isLocked && (
@@ -1354,12 +1332,12 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
                         aria-label={hardFlag ? 'Hard rule violation' : 'Soft rule warning'}
                         title={flags.map(f => `${f.severity === 'hard' ? '!' : '?'} ${f.message}`).join('\n')}
                         style={{
-                          position: 'absolute', top: 1, left: 3,
-                          minWidth: 11, height: 11, padding: '0 1px', borderRadius: 3,
+                          position: 'absolute', top: 2, left: 2,
+                          minWidth: 12, height: 12, padding: '0 1px', borderRadius: 4,
                           display: 'flex', alignItems: 'center', justifyContent: 'center',
                           fontSize: 9, fontWeight: 900, lineHeight: 1, color: '#fff',
-                          background: hardFlag ? '#ef4444' : '#f59e0b',
-                          boxShadow: hardFlag ? '0 0 4px rgba(239,68,68,0.6)' : '0 0 4px rgba(245,158,11,0.5)',
+                          background: hardFlag ? gridTokens.hard : gridTokens.soft,
+                          boxShadow: hardFlag ? '0 0 4px rgba(239,68,68,0.6)' : '0 0 4px rgba(245,158,11,0.55)',
                         }}
                       >{hardFlag ? '!' : '?'}</span>
                     )}
