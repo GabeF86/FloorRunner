@@ -1424,35 +1424,46 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
           style={{
             position: 'fixed',
             left: Math.min(activeCell.x, window.innerWidth - 280),
-            top: Math.min(activeCell.y, window.innerHeight - 360),
-            width: 260,
-            maxHeight: 340,
+            top: Math.min(activeCell.y, window.innerHeight - 400),
+            width: 268,
             background: 'var(--bg-surface)',
             border: '1px solid var(--border)',
-            borderRadius: 8,
-            boxShadow: '0 8px 32px rgba(0,0,0,0.5)',
+            borderRadius: 12,
+            boxShadow: '0 16px 40px rgba(0,0,0,0.5)',
             zIndex: 500,
             display: 'flex', flexDirection: 'column',
             overflow: 'hidden',
           }}
         >
+          {/* ── Slot-context header (read-only label) ──────────────────────── */}
+          {activeSlot && (
+            <div style={{
+              padding: '9px 13px', background: 'var(--bg-deep)', borderBottom: '1px solid var(--border)',
+              fontSize: 10.5, fontWeight: 700, letterSpacing: '0.04em', textTransform: 'uppercase', color: 'var(--text-muted)',
+              display: 'flex', alignItems: 'center', gap: 7,
+            }}>
+              <span style={{ width: 9, height: 9, borderRadius: 3, background: gridTokens.accent, flexShrink: 0 }} />
+              {activeSlot.shift_types.code} · {activeSlot.shift_types.name} — {formatMMDD(activeSlot.slot_date)}
+            </div>
+          )}
+
           {isAssignedCell ? (
             /* ── Assigned cell: action popover ──────────────────────────────── */
             <div style={{ padding: 12 }}>
-              <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)', marginBottom: 8 }}>
+              <div style={{ fontSize: 16, fontWeight: 800, color: 'var(--text)', marginBottom: 4 }}>
                 {activeAssignment?.providers?.short_display_name ?? 'Unknown'}
               </div>
               <div style={{
-                fontSize: 10, fontWeight: 600, color: 'var(--text-dim)',
+                fontSize: 10, fontWeight: 700, letterSpacing: '0.06em', color: 'var(--text-dim)',
                 textTransform: 'uppercase', marginBottom: 12,
               }}>
                 {activeAssignment?.providers?.provider_type}
               </div>
               {activeAssignment?.validation_flags && activeAssignment.validation_flags.length > 0 && (
                 <div style={{
-                  marginBottom: 12, padding: 8, borderRadius: 6,
+                  marginBottom: 12, padding: 8, borderRadius: 9,
                   background: 'rgba(239,68,68,0.06)',
-                  border: '1px solid rgba(239,68,68,0.25)',
+                  border: '1px solid rgba(239,68,68,0.28)',
                   maxHeight: 140, overflowY: 'auto',
                 }}>
                   <div style={{
@@ -1463,15 +1474,17 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
                   </div>
                   {activeAssignment.validation_flags.map((f, idx) => (
                     <div key={idx} style={{
-                      fontSize: 11, color: 'var(--text)', marginBottom: 6, lineHeight: 1.4,
+                      marginBottom: 6, lineHeight: 1.4,
                     }}>
-                      <span style={{
-                        display: 'inline-block', width: 6, height: 6, borderRadius: '50%',
-                        background: f.severity === 'hard' ? '#ef4444' : '#f59e0b',
-                        marginRight: 6, verticalAlign: 'middle',
-                      }} />
-                      <span style={{ fontWeight: 600 }}>{f.rule_name}</span>
-                      <div style={{ fontSize: 10, color: 'var(--text-dim)', marginLeft: 12 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                        <span style={{
+                          display: 'inline-block', width: 6, height: 6, borderRadius: '50%',
+                          background: f.severity === 'hard' ? gridTokens.hard : gridTokens.soft,
+                          flexShrink: 0,
+                        }} />
+                        <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--text)' }}>{f.rule_name}</span>
+                      </div>
+                      <div style={{ fontSize: 11, color: 'var(--text-muted)', marginLeft: 12 }}>
                         {f.message}
                       </div>
                     </div>
@@ -1482,8 +1495,8 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
                 <button
                   onClick={() => activeAssignment && removeAssignment(activeAssignment.id)}
                   style={{
-                    padding: '6px 12px', fontSize: 12, fontWeight: 600, border: '1px solid rgba(248,113,113,0.3)',
-                    borderRadius: 6, background: 'rgba(248,113,113,0.1)', color: '#f87171', cursor: 'pointer',
+                    padding: '9px 12px', fontSize: 12.5, fontWeight: 700, border: '1px solid rgba(239,68,68,0.35)',
+                    borderRadius: 8, background: 'rgba(239,68,68,0.10)', color: '#f87171', cursor: 'pointer',
                     textAlign: 'left',
                   }}
                 >
@@ -1494,8 +1507,8 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
                     if (activeSlot) toggleLock(activeSlot.id, activeSlot.locked);
                   }}
                   style={{
-                    padding: '6px 12px', fontSize: 12, fontWeight: 600, border: '1px solid var(--border)',
-                    borderRadius: 6, background: 'var(--bg-deep)', color: 'var(--text-muted)', cursor: 'pointer',
+                    padding: '9px 12px', fontSize: 12.5, fontWeight: 700, border: '1px solid var(--border)',
+                    borderRadius: 8, background: 'transparent', color: 'var(--text-muted)', cursor: 'pointer',
                     textAlign: 'left',
                   }}
                 >
@@ -1514,7 +1527,7 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
                   value={pickerSearch}
                   onChange={e => setPickerSearch(e.target.value)}
                   style={{
-                    width: '100%', padding: '6px 10px', fontSize: 12, borderRadius: 6,
+                    width: '100%', padding: '8px 11px', fontSize: 12.5, borderRadius: 8,
                     border: '1px solid var(--border)', background: 'var(--bg-deep)',
                     color: 'var(--text)', outline: 'none', boxSizing: 'border-box',
                   }}
@@ -1536,33 +1549,33 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
                         if (activeSlot) assignProvider(activeSlot.id, p.id);
                       }}
                       style={{
-                        display: 'flex', alignItems: 'center', gap: 8,
-                        padding: '7px 14px',
+                        display: 'flex', alignItems: 'center', gap: 10,
+                        padding: '8px', borderRadius: 8,
                         cursor: alreadyAssigned ? 'not-allowed' : 'pointer',
-                        opacity: alreadyAssigned ? 0.35 : 1,
+                        opacity: alreadyAssigned ? 0.4 : 1,
                         transition: 'background 0.1s',
                       }}
-                      onMouseEnter={e => { if (!alreadyAssigned) e.currentTarget.style.background = 'rgba(14,165,233,0.08)'; }}
+                      onMouseEnter={e => { if (!alreadyAssigned) e.currentTarget.style.background = 'rgba(56,189,248,0.10)'; }}
                       onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
                     >
                       {/* Initials avatar */}
                       <div style={{
-                        width: 24, height: 24, borderRadius: '50%', fontSize: 10, fontWeight: 700,
+                        width: 28, height: 28, borderRadius: '50%', fontSize: 10.5, fontWeight: 800,
                         display: 'flex', alignItems: 'center', justifyContent: 'center',
-                        background: 'rgba(14,165,233,0.15)', color: '#0ea5e9',
+                        background: 'rgba(56,189,248,0.16)', color: '#7dd3fc',
                         flexShrink: 0,
                       }}>
                         {p.initials}
                       </div>
                       <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                        <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                           {p.short_display_name}
                           {alreadyAssigned && <span style={{ fontWeight: 400, color: 'var(--text-dim)', marginLeft: 4 }}>(assigned)</span>}
                         </div>
                       </div>
                       <span style={{
-                        fontSize: 9, fontWeight: 700, padding: '1px 5px', borderRadius: 3,
-                        background: 'rgba(100,116,139,0.2)', color: 'var(--text-dim)',
+                        fontSize: 9, fontWeight: 800, padding: '2px 6px', borderRadius: 4,
+                        background: 'rgba(100,116,139,0.22)', color: 'var(--text-dim)',
                         textTransform: 'uppercase', flexShrink: 0,
                       }}>
                         {p.provider_type}
