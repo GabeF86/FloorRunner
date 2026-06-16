@@ -14,38 +14,22 @@ export async function POST(req: NextRequest) {
   // the assignment in a single round-trip.
   const evalResult = await evaluateAssignment(sb, body.schedule_slot_id, body.provider_id);
 
-  // Update existing assignment for this slot
-  const { data: updated, error: updErr } = await sb
-    .from('assignments')
-    .update({
-      provider_id: body.provider_id,
-      assignment_status: 'assigned',
-      source_type: 'manual',
-      assigned_at: new Date().toISOString(),
-      validation_flags: evalResult.violations,
-    })
-    .eq('schedule_slot_id', body.schedule_slot_id)
-    .select()
-    .maybeSingle();
-
-  if (updErr) return NextResponse.json({ error: updErr.message }, { status: 500 });
-  if (updated) {
-    await applySequenceAutoFill(sb, body.schedule_slot_id, body.provider_id);
-    await revalidateNeighbors(sb, body.schedule_slot_id, body.provider_id);
-    return NextResponse.json({ ...updated, validation: evalResult });
-  }
-
-  // No existing assignment — insert new
+  // One assignment row per slot, enforced by the UNIQUE (schedule_slot_id)
+  // constraint. Upsert is atomic, so two concurrent edits can't both insert a
+  // duplicate row for the same slot (the previous update-else-insert raced).
   const { data, error } = await sb
     .from('assignments')
-    .insert({
-      schedule_slot_id: body.schedule_slot_id,
-      provider_id: body.provider_id,
-      assignment_status: 'assigned',
-      source_type: 'manual',
-      assigned_at: new Date().toISOString(),
-      validation_flags: evalResult.violations,
-    })
+    .upsert(
+      {
+        schedule_slot_id: body.schedule_slot_id,
+        provider_id: body.provider_id,
+        assignment_status: 'assigned',
+        source_type: 'manual',
+        assigned_at: new Date().toISOString(),
+        validation_flags: evalResult.violations,
+      },
+      { onConflict: 'schedule_slot_id' },
+    )
     .select()
     .single();
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
