@@ -1,0 +1,210 @@
+{
+  "$schema": "./baseline.schema.md",
+  "version": 1,
+  "lockedAt": "2026-06-17",
+  "lockedBy": "Gabriel Farkas",
+  "source": "docs/aesthetic-checkpoints/A9-initial.md",
+  "owner": "A10 — Aesthetic Review Loop",
+  "describes": "Locked visual baseline for the Anesthesia Coverage Grid Calculator. Future aesthetic-audit runs diff the live code against this snapshot and flag any drift. Update only on a fresh aesthetic checkpoint approved by Gabriel.",
+
+  "variant": {
+    "flag": "hybrid",
+    "constantName": "LAYOUT_VARIANT",
+    "constantFile": "src/app/(scheduling)/grid-calculator/state.ts",
+    "allowedValues": ["dense", "airy", "hybrid"]
+  },
+
+  "dimensions": {
+    "laneHeaderWidthPx": 160,
+    "roomCardMinWidthPx": 220,
+    "shimmerMs": 200,
+    "constantName": "LAYOUT_DIMENSIONS",
+    "constantFile": "src/app/(scheduling)/grid-calculator/state.ts"
+  },
+
+  "shimmer": {
+    "spec": "200ms fade-up + blur-out",
+    "keyframeName": "grid-calc-shimmer",
+    "homeFile": "src/app/(scheduling)/grid-calculator/GridCanvas.tsx",
+    "expectedAttributes": ["opacity", "transform", "filter"],
+    "expectedDurationMs": 200
+  },
+
+  "colors": {
+    "anesthesiologist": {
+      "family": "amber",
+      "hex": "#f59e0b",
+      "note": "PRD §7.6. Card border, badge accent, supervision count chip."
+    },
+    "crna": {
+      "family": "cyan",
+      "hex": "#0ea5e9",
+      "note": "PRD §7.6. Pill background, chip dot, accent button."
+    },
+    "crossSiteSupervision": {
+      "family": "purple",
+      "hex": "#a855f7",
+      "borderStyle": "dashed",
+      "note": "PRD §7.3 + §7.6. Cross-site supervision link & label."
+    },
+    "float": {
+      "family": "slate",
+      "borderStyle": "dashed",
+      "note": "PRD §7.5 + §7.6. Outlined dashed-gray for unassigned-but-available."
+    },
+    "overRatioViolation": {
+      "family": "red",
+      "hex": "#ef4444",
+      "borderStyle": "solid",
+      "note": "PRD §7.6. Red border when supervisionCount > ratioCap."
+    }
+  },
+
+  "labels": {
+    "required": {
+      "anesthesiologist": "Anesthesiologist",
+      "crna": "CRNA",
+      "note": "PRD §5 + §7.5. Always rendered exactly as written here in the visible UI."
+    },
+    "forbiddenInRenderedUi": [
+      {
+        "string": "MD",
+        "context": "Any user-visible label, button text, tooltip, or chip caption.",
+        "allowedIn": [
+          "Internal TypeScript identifiers (e.g. CoverageStyle 'md_heavy', enum values).",
+          "SQL column names.",
+          "Source-code comments and developer documentation.",
+          "URL query param values (e.g. ?cs=md_heavy)."
+        ],
+        "note": "PRD §5. Internal types may keep physician/md enums for FloorRunner type compatibility; rendered UI never does."
+      },
+      {
+        "string": "Physician",
+        "context": "User-visible label.",
+        "note": "PRD §5. UI canonical label is 'Anesthesiologist'."
+      }
+    ]
+  },
+
+  "rules": [
+    {
+      "id": "rule-7.1-lanes-over-tables",
+      "prdRef": "§7.1",
+      "description": "Each site is a horizontal lane with a left-edge header carrying icon + name + distance indicator.",
+      "check": {
+        "kind": "fileShape",
+        "file": "src/app/(scheduling)/grid-calculator/SiteLane.tsx",
+        "mustContainAll": ["width: 160", "borderLeft", "label.icon", "label.name"]
+      }
+    },
+    {
+      "id": "rule-7.2-cards-over-text",
+      "prdRef": "§7.2",
+      "description": "Anesthesiologist = larger rectangular card with role badge + supervision count. CRNA = smaller pill.",
+      "check": {
+        "kind": "tokenInFile",
+        "files": [
+          {
+            "file": "src/app/(scheduling)/grid-calculator/AnesthesiologistCard.tsx",
+            "mustContain": ["ANES", "borderRadius: 8", "supervisionCount"]
+          },
+          {
+            "file": "src/app/(scheduling)/grid-calculator/CrnaChip.tsx",
+            "mustContain": ["borderRadius: 999"]
+          }
+        ]
+      }
+    },
+    {
+      "id": "rule-7.3-cross-site-dashed",
+      "prdRef": "§7.3",
+      "description": "Cross-site supervision is rendered with a dashed purple connector + destination site badge.",
+      "check": {
+        "kind": "tokenInFile",
+        "file": "src/app/(scheduling)/grid-calculator/SiteLane.tsx",
+        "mustContain": ["#a855f7", "cross-site"]
+      }
+    },
+    {
+      "id": "rule-7.4-cross-site-badge",
+      "prdRef": "§7.4 (implied from §7.3)",
+      "description": "Cross-site CRNAs carry a destination-site badge so the link reads inside the chip alone.",
+      "check": {
+        "kind": "tokenInFile",
+        "file": "src/app/(scheduling)/grid-calculator/CrnaChip.tsx",
+        "mustContain": ["crossSite", "siteShortLabel"]
+      }
+    },
+    {
+      "id": "rule-7.5-float-lane-last",
+      "prdRef": "§7.5",
+      "description": "Float lane is pinned last; floats render as outlined (dashed-gray, transparent bg) cards.",
+      "check": {
+        "kind": "tokenInFile",
+        "file": "src/app/(scheduling)/grid-calculator/GridCanvas.tsx",
+        "mustContain": ["variant=\"float\"", "Float lane always last"]
+      }
+    },
+    {
+      "id": "rule-7.5-labels-canonical",
+      "prdRef": "§5 + §7.5",
+      "description": "UI labels are ALWAYS 'Anesthesiologist' and 'CRNA' in rendered JSX. Never 'MD' in user-visible text.",
+      "check": {
+        "kind": "forbiddenInJsxText",
+        "scanDir": "src/app/(scheduling)/grid-calculator",
+        "forbiddenJsxText": ["MD", "MD-heavy", "Physician"],
+        "allowedJsxText": ["Anesthesiologist", "CRNA", "ANES"]
+      }
+    },
+    {
+      "id": "rule-7.6-color-tokens",
+      "prdRef": "§7.6",
+      "description": "Amber #f59e0b for Anesthesiologists, cyan #0ea5e9 for CRNAs, purple #a855f7 for cross-site, red #ef4444 for over-ratio.",
+      "check": {
+        "kind": "tokensPresent",
+        "scanDir": "src/app/(scheduling)/grid-calculator",
+        "requiredTokens": ["#f59e0b", "#0ea5e9", "#a855f7", "#ef4444"],
+        "warnTokens": [
+          { "token": "#3b82f6", "note": "Blue family — should be cyan #0ea5e9." },
+          { "token": "#2563eb", "note": "Blue family — should be cyan #0ea5e9." },
+          { "token": "text-blue-", "note": "Tailwind blue token — should be cyan." }
+        ]
+      }
+    },
+    {
+      "id": "rule-7.7-toggle-bar-sticky-shimmer",
+      "prdRef": "§7.7",
+      "description": "Toggle bar is sticky at the top of the canvas. Grid re-solves with a 200ms shimmer animation.",
+      "check": {
+        "kind": "tokenInFile",
+        "files": [
+          { "file": "src/app/(scheduling)/grid-calculator/ToggleBar.tsx", "mustContain": ["position: 'sticky'", "top: 0"] },
+          { "file": "src/app/(scheduling)/grid-calculator/GridCanvas.tsx", "mustContain": ["200ms", "grid-calc-shimmer", "blur"] }
+        ]
+      }
+    },
+    {
+      "id": "rule-7.8-fte-panel-persistent",
+      "prdRef": "§7.8",
+      "description": "FTE panel is the persistent right-rail card with 3 numbers (Anesthesiologists, CRNAs, Backup-call FTE) each with Worst/Expected tabs.",
+      "check": {
+        "kind": "tokenInFile",
+        "files": [
+          { "file": "src/app/(scheduling)/grid-calculator/GridCanvas.tsx", "mustContain": ["position: 'sticky'", "FTEPanel"] },
+          { "file": "src/app/(scheduling)/grid-calculator/FTEPanel.tsx", "mustContain": ["Anesthesiologists", "CRNAs", "Backup call FTE", "Worst case", "Expected"] }
+        ]
+      }
+    }
+  ],
+
+  "driftWatchList": [
+    "Tailwind blue tokens (text-blue-500, bg-blue-500) used instead of cyan-500.",
+    "New buttons or chips with literal 'MD' text in JSX (e.g. 'MD-heavy', 'MD pool', 'solo MD').",
+    "Lane header width drift: a contributor changes width: 160 to width: 180 or similar.",
+    "Card min-width drift: minWidth: 220 nudged to 240/200.",
+    "Shimmer duration drift: 200ms changed to 150/300ms during a tweak.",
+    "Cross-site color swapped from #a855f7 to a different purple (e.g. #9333ea, #c084fc).",
+    "Float lane rendered with solid (filled) cards instead of dashed outlined.",
+    "FTE panel converted from sticky to scrolling (loses persistence)."
+  ]
+}
