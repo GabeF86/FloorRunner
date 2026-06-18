@@ -35,6 +35,12 @@ import ToggleBar from './ToggleBar';
 import SiteLane from './SiteLane';
 import FTEPanel from './FTEPanel';
 import SitesPanel, { pickSiteColor } from './SitesPanel';
+import ContractualHoursGrid from './ContractualHoursGrid';
+
+// View modes for the right-hand canvas column. "Hours grid" is the default
+// admin-facing contractual-hours spreadsheet; "Supervision map" is the
+// site-lane card we shipped first.
+type RightViewMode = 'hours_grid' | 'supervision_map';
 
 // Shared token object — mirrors /staffing-calculator (lines 18-35) verbatim.
 const tok = {
@@ -72,6 +78,11 @@ export interface GridCanvasProps {
 
 export default function GridCanvas({ fixture = DEMO_PAOLI_FIXTURE }: GridCanvasProps) {
   const { toggles, setToggle } = useGridToggles();
+
+  // Right-column view mode — defaults to the contractual Hours grid view (what
+  // hospital administration actually reads); the existing supervision map is
+  // still one click away. Local state — no URL plumbing for v1.
+  const [rightView, setRightView] = useState<RightViewMode>('hours_grid');
 
   // Editable site state — initialized from the provided fixture (default = the
   // demo Paoli set) and mutated through the SitesPanel handlers below. Roster,
@@ -333,58 +344,64 @@ export default function GridCanvas({ fixture = DEMO_PAOLI_FIXTURE }: GridCanvasP
           />
         </div>
 
-        {/* Right column — site lanes. */}
+        {/* Right column — view toggle + the chosen view (hours grid OR supervision map). */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-          <div style={cardStyle}>
-            <SectionTitle>By site — supervision map</SectionTitle>
-            <div
-              key={shimmerKey}
-              className="grid-shimmer"
-              style={{
-                position: 'relative',
-                display: 'flex',
-                flexDirection: 'column',
-                gap: 4,
-                marginTop: 6,
-                minWidth: 0,
-              }}
-            >
-              {editableFixture.sites
-                .slice()
-                .sort((a, b) => a.position - b.position)
-                .map((site) => {
-                  const rooms = (assignmentsBySite.get(site.id) ?? []).map((a) => ({
-                    assignment: a,
-                    roomName: roomNameById.get(a.roomId) ?? a.roomId,
-                    roomId: a.roomId,
-                    roomHours: roomHoursById.get(a.roomId),
-                  }));
-                  return (
-                    <SiteLane
-                      key={site.id}
-                      site={site}
-                      variant="site"
-                      roomAssignments={rooms}
-                      providerLabels={editableFixture.providerLabels}
-                      siteLookup={siteLookup}
-                      ratioCap={ratioCap}
-                    />
-                  );
-                })}
+          <RightViewToggle value={rightView} onChange={setRightView} />
 
-              {/* Float lane always last per PRD §7.5. */}
-              <SiteLane
-                laneLabel={floatLaneLabel}
-                variant="float"
-                floats={solveResult.grid.floats}
-                providerLabels={editableFixture.providerLabels}
-                siteLookup={siteLookup}
-                ratioCap={ratioCap}
-              />
+          {rightView === 'hours_grid' ? (
+            <ContractualHoursGrid sites={sites} />
+          ) : (
+            <div style={cardStyle}>
+              <SectionTitle>By site — supervision map</SectionTitle>
+              <div
+                key={shimmerKey}
+                className="grid-shimmer"
+                style={{
+                  position: 'relative',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: 4,
+                  marginTop: 6,
+                  minWidth: 0,
+                }}
+              >
+                {editableFixture.sites
+                  .slice()
+                  .sort((a, b) => a.position - b.position)
+                  .map((site) => {
+                    const rooms = (assignmentsBySite.get(site.id) ?? []).map((a) => ({
+                      assignment: a,
+                      roomName: roomNameById.get(a.roomId) ?? a.roomId,
+                      roomId: a.roomId,
+                      roomHours: roomHoursById.get(a.roomId),
+                    }));
+                    return (
+                      <SiteLane
+                        key={site.id}
+                        site={site}
+                        variant="site"
+                        roomAssignments={rooms}
+                        providerLabels={editableFixture.providerLabels}
+                        siteLookup={siteLookup}
+                        ratioCap={ratioCap}
+                      />
+                    );
+                  })}
+
+                {/* Float lane always last per PRD §7.5. */}
+                <SiteLane
+                  laneLabel={floatLaneLabel}
+                  variant="float"
+                  floats={solveResult.grid.floats}
+                  providerLabels={editableFixture.providerLabels}
+                  siteLookup={siteLookup}
+                  ratioCap={ratioCap}
+                />
+              </div>
+
+              <Legend />
             </div>
-
-            <Legend />
-          </div>
+          )}
         </div>
       </div>
 
@@ -492,6 +509,78 @@ function LegendDot({
       />
       <span>{label}</span>
     </span>
+  );
+}
+
+/**
+ * Pill-button view-mode switch for the right column. Matches the ToggleBar
+ * pill aesthetic — accent background on the active pill, hairline border
+ * around the inactive one, mono caps for the button label.
+ */
+function RightViewToggle({
+  value,
+  onChange,
+}: {
+  value: RightViewMode;
+  onChange: (v: RightViewMode) => void;
+}) {
+  const items: Array<{ key: RightViewMode; label: string; description: string }> = [
+    { key: 'hours_grid', label: 'Hours grid', description: 'Contractual hours per location' },
+    { key: 'supervision_map', label: 'Supervision map', description: 'Site lanes + supervision' },
+  ];
+  return (
+    <div
+      role="toolbar"
+      aria-label="Right view mode"
+      style={{
+        ...cardStyle,
+        padding: '12px 16px',
+        display: 'flex',
+        alignItems: 'center',
+        gap: 10,
+      }}
+    >
+      <span
+        style={{
+          fontSize: 10,
+          fontWeight: 700,
+          color: tok.textDim,
+          letterSpacing: 0.7,
+          textTransform: 'uppercase',
+        }}
+      >
+        View
+      </span>
+      <div style={{ display: 'flex', gap: 4 }}>
+        {items.map((item) => {
+          const active = item.key === value;
+          return (
+            <button
+              key={item.key}
+              type="button"
+              onClick={() => onChange(item.key)}
+              aria-pressed={active}
+              title={item.description}
+              style={{
+                padding: '4px 12px',
+                borderRadius: 999,
+                fontSize: 10,
+                fontWeight: 700,
+                fontFamily: tok.mono,
+                background: active ? `${tok.accent}1F` : 'transparent',
+                color: active ? tok.accent : tok.textMuted,
+                border: `0.5px solid ${active ? tok.accent + '80' : tok.border}`,
+                cursor: 'pointer',
+                transition: 'all 0.12s',
+                whiteSpace: 'nowrap',
+              }}
+            >
+              {item.label}
+            </button>
+          );
+        })}
+      </div>
+    </div>
   );
 }
 
