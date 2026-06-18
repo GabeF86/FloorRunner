@@ -120,13 +120,18 @@ function makeRooms(
   siteId: string,
   count: number,
   namePrefix: string,
+  hoursByIndex?: (i: number) => { weekdayCloseHour?: number; weekendOpen?: boolean },
 ): GridSite['rooms'] {
-  return Array.from({ length: count }, (_, i) => ({
-    id: `${siteId}-r${i + 1}`,
-    siteId,
-    name: count === 1 ? namePrefix : `${namePrefix} ${i + 1}`,
-    position: i,
-  }));
+  return Array.from({ length: count }, (_, i) => {
+    const hours = hoursByIndex?.(i) ?? {};
+    return {
+      id: `${siteId}-r${i + 1}`,
+      siteId,
+      name: count === 1 ? namePrefix : `${namePrefix} ${i + 1}`,
+      position: i,
+      ...hours,
+    };
+  });
 }
 
 /**
@@ -144,7 +149,13 @@ export const paoliSites: GridSite[] = [
     icon: '🏥',
     position: 0,
     caption: '4th Floor',
-    rooms: makeRooms(PAOLI_SITE_IDS.mainOR, 15, 'OR'),
+    // Paoli Main OR mix: a few late rooms (until 7pm), bulk standard (5pm),
+    // and a tail of early-close rooms (3pm). Approximate the real schedule.
+    rooms: makeRooms(PAOLI_SITE_IDS.mainOR, 15, 'OR', (i) => {
+      if (i < 3) return { weekdayCloseHour: 19 };
+      if (i < 9) return { weekdayCloseHour: 17 };
+      return { weekdayCloseHour: 15 };
+    }),
   },
   {
     id: PAOLI_SITE_IDS.endoscopy,
@@ -154,7 +165,9 @@ export const paoliSites: GridSite[] = [
     icon: '🔬',
     position: 1,
     caption: 'GI suite',
-    rooms: makeRooms(PAOLI_SITE_IDS.endoscopy, 2, 'Endo'),
+    rooms: makeRooms(PAOLI_SITE_IDS.endoscopy, 2, 'Endo', () => ({
+      weekdayCloseHour: 15,
+    })),
   },
   {
     id: PAOLI_SITE_IDS.neuro,
@@ -164,7 +177,9 @@ export const paoliSites: GridSite[] = [
     icon: '🧠',
     position: 2,
     caption: 'Neurointerventional',
-    rooms: makeRooms(PAOLI_SITE_IDS.neuro, 1, 'Neuro'),
+    rooms: makeRooms(PAOLI_SITE_IDS.neuro, 1, 'Neuro', () => ({
+      weekdayCloseHour: 17,
+    })),
   },
   {
     id: PAOLI_SITE_IDS.epLab,
@@ -174,7 +189,9 @@ export const paoliSites: GridSite[] = [
     icon: '⚡',
     position: 3,
     caption: 'Electrophysiology',
-    rooms: makeRooms(PAOLI_SITE_IDS.epLab, 1, 'EP'),
+    rooms: makeRooms(PAOLI_SITE_IDS.epLab, 1, 'EP', () => ({
+      weekdayCloseHour: 17,
+    })),
   },
   {
     id: PAOLI_SITE_IDS.ob,
@@ -184,7 +201,11 @@ export const paoliSites: GridSite[] = [
     icon: '👶',
     position: 4,
     caption: 'L&D / one wing away',
-    rooms: makeRooms(PAOLI_SITE_IDS.ob, 1, 'OB'),
+    // OB runs 24/7 — approximate as weekday-open until 23 + weekend open.
+    rooms: makeRooms(PAOLI_SITE_IDS.ob, 1, 'OB', () => ({
+      weekdayCloseHour: 23,
+      weekendOpen: true,
+    })),
   },
   // Float lane — pinned last per PRD §7 visual rule. Holds zero rooms; the
   // float strategy emits FloatAssignments under leansToSiteId, not rooms.

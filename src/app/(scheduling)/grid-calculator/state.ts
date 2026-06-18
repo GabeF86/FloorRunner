@@ -48,6 +48,7 @@ import {
   crnaFteFromHours,
   totalWeeklyHours,
 } from '@/lib/gridCalculator/operatingHours';
+import { paoliSites } from '@/lib/gridCalculator/seeds/paoli';
 import type {
   BackupCallPosture,
   CoverageRuleSet,
@@ -274,34 +275,13 @@ export function buildRoleSlotLabels(
 
 const DEMO_CONFIG_ID = 'demo-paoli-fixture';
 
-const DEMO_SITES: GridSite[] = [
-  {
-    id: 'site-mainor',
-    name: 'Main OR',
-    shortName: 'OR',
-    color: '#0ea5e9',
-    icon: '🏥',
-    position: 0,
-    caption: 'ground floor',
-    rooms: [
-      { id: 'room-or-1', siteId: 'site-mainor', name: 'OR 1', position: 0, weekdayCloseHour: 19 },
-      { id: 'room-or-2', siteId: 'site-mainor', name: 'OR 2', position: 1, weekdayCloseHour: 17 },
-      { id: 'room-or-3', siteId: 'site-mainor', name: 'OR 3', position: 2, weekdayCloseHour: 15 },
-    ],
-  },
-  {
-    id: 'site-endo',
-    name: 'Endo',
-    shortName: 'Endo',
-    color: '#a855f7',
-    icon: '🔬',
-    position: 1,
-    caption: 'tower-2',
-    rooms: [
-      { id: 'room-endo-a', siteId: 'site-endo', name: 'Endo A', position: 0, weekdayCloseHour: 15 },
-    ],
-  },
-];
+// Pull the real Paoli site list (Main OR ×15, Endoscopy ×2, Neuro, EP, OB,
+// Float) from the A11 seed so the calculator opens on a realistic baseline.
+// The roster / rules / edges are auto-derived from sites alone in
+// buildFixtureFromSites — see GridCanvas — so importing only the site list
+// is enough; the seed's roster names never reach the UI (PRD §5 anonymous
+// labels and Gabriel's feedback both apply).
+const DEMO_SITES: GridSite[] = paoliSites;
 
 const DEMO_EDGES: DistanceEdge[] = [
   { siteA: 'site-mainor', siteB: 'site-endo', band: 'near', supervisable: true },
