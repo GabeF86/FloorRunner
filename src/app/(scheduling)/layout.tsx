@@ -11,6 +11,7 @@ const NAV_ITEMS = [
   { href: '/rules',      label: 'Rules',        icon: '\u2696' },
   { href: '/requests',   label: 'Requests',     icon: '✉' },
   { href: '/staffing-calculator', label: 'Staffing Calc', icon: '∑' },
+  { href: '/grid-calculator', label: 'Grid Calculator', icon: '⊞' },
   { href: '/board',      label: 'Floor Runner', icon: '⚡' },
   { href: '/reports',    label: 'Reports',      icon: '▤' },
   { href: '/settings',   label: 'Settings',     icon: '⚙' },
