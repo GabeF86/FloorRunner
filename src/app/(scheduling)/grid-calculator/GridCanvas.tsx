@@ -30,6 +30,7 @@ import {
 import type { DemoFixture, GridToggles } from './state';
 import type { RoomAssignment } from '@/lib/gridCalculator/solver';
 import type { FTERecommendation, GridSite } from '@/lib/gridCalculator/types';
+import { formatRoomHours, totalWeeklyHours } from '@/lib/gridCalculator/operatingHours';
 import ToggleBar from './ToggleBar';
 import SiteLane from './SiteLane';
 import FTEPanel from './FTEPanel';
@@ -143,6 +144,28 @@ export default function GridCanvas({ fixture = DEMO_PAOLI_FIXTURE }: GridCanvasP
     );
   }, []);
 
+  const handleUpdateRoomHours = useCallback(
+    (
+      siteId: string,
+      roomId: string,
+      patch: { weekdayCloseHour?: number; weekendOpen?: boolean },
+    ) => {
+      setSites((prev) =>
+        prev.map((s) =>
+          s.id === siteId
+            ? {
+                ...s,
+                rooms: s.rooms.map((r) =>
+                  r.id === roomId ? { ...r, ...patch } : r,
+                ),
+              }
+            : s,
+        ),
+      );
+    },
+    [],
+  );
+
   // Shimmer key: bumps every time `toggles` change, which re-mounts the
   // keyframe and replays the 200ms animation. Avoids a setTimeout.
   const shimmerKey = useShimmerKey(toggles);
@@ -170,6 +193,15 @@ export default function GridCanvas({ fixture = DEMO_PAOLI_FIXTURE }: GridCanvasP
     const m = new Map<string, string>();
     for (const s of editableFixture.sites) {
       for (const r of s.rooms) m.set(r.id, r.name);
+    }
+    return m;
+  }, [editableFixture.sites]);
+
+  // Map roomId -> formatted hours ("M-F 7-15") for the lane row header.
+  const roomHoursById = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const s of editableFixture.sites) {
+      for (const r of s.rooms) m.set(r.id, formatRoomHours(r));
     }
     return m;
   }, [editableFixture.sites]);
@@ -289,6 +321,7 @@ export default function GridCanvas({ fixture = DEMO_PAOLI_FIXTURE }: GridCanvasP
             onAddRoom={handleAddRoom}
             onDeleteSite={handleDeleteSite}
             onDeleteRoom={handleDeleteRoom}
+            onUpdateRoomHours={handleUpdateRoomHours}
           />
           <ToggleBar toggles={toggles} onToggle={setToggle} />
           <FTEPanel
@@ -324,6 +357,7 @@ export default function GridCanvas({ fixture = DEMO_PAOLI_FIXTURE }: GridCanvasP
                     assignment: a,
                     roomName: roomNameById.get(a.roomId) ?? a.roomId,
                     roomId: a.roomId,
+                    roomHours: roomHoursById.get(a.roomId),
                   }));
                   return (
                     <SiteLane
@@ -571,9 +605,11 @@ function useShimmerKey(toggles: GridToggles): string {
  * real Monte Carlo on the client.
  */
 function makeMockedRecommendation(fixture: DemoFixture): FTERecommendation {
-  const totalRooms = fixture.sites.reduce((acc, s) => acc + s.rooms.length, 0);
-  const mds = Math.max(2, Math.ceil(totalRooms * 0.7));
-  const crnas = Math.max(2, Math.ceil(totalRooms * 1.3));
+  // Hours-aware mock: rooms that run later need more FTE than rooms that
+  // close early. Reflects PRD §5 "FTE hours are demand, not headcount".
+  const weeklyHours = totalWeeklyHours(fixture.sites);
+  const mds = Math.max(2, Math.ceil(weeklyHours / 100));
+  const crnas = Math.max(2, Math.ceil(weeklyHours / 35));
   return {
     anesthesiologist: {
       worstCase: mds + 2,

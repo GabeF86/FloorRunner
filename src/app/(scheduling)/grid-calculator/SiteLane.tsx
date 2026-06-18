@@ -38,7 +38,13 @@ export interface SiteLaneProps {
   laneLabel?: { name: string; shortName?: string; icon: string; color: string; caption?: string };
   variant: LaneVariant;
   /** Room assignments belonging to this site (ignored when variant='float'). */
-  roomAssignments?: Array<{ assignment: RoomAssignment; roomName: string; roomId: string }>;
+  roomAssignments?: Array<{
+    assignment: RoomAssignment;
+    roomName: string;
+    roomId: string;
+    /** Optional human-readable hours summary ("M-F 7-15", "7d 7-17", "closed"). */
+    roomHours?: string;
+  }>;
   /** Float assignments to render (only used when variant='float'). */
   floats?: FloatAssignment[];
   /** Lookup table mapping providerId → role-slot label. */
@@ -296,7 +302,7 @@ function renderRooms(props: SiteLaneProps): React.ReactNode {
     fromSite: GridSite | null;
   }> = [];
 
-  const renderedRooms = rooms.map(({ assignment, roomName, roomId }) => {
+  const renderedRooms = rooms.map(({ assignment, roomName, roomId, roomHours }) => {
     const mdId = assignment.anesthesiologistId;
     const mdLabel = mdId
       ? props.providerLabels[mdId] ?? { name: mdId, initials: '??' }
@@ -357,6 +363,19 @@ function renderRooms(props: SiteLaneProps): React.ReactNode {
           }}
         >
           {roomName}
+          {roomHours && (
+            <span
+              style={{
+                marginLeft: 6,
+                color: tok.textDim,
+                fontWeight: 600,
+                letterSpacing: 0.3,
+              }}
+              title="Operating hours"
+            >
+              · {roomHours}
+            </span>
+          )}
           {assignment.crossSiteSupervisor && (
             <span
               style={{

@@ -81,7 +81,32 @@ export interface GridRoom {
    * arbitrary descriptors like "high_acuity" or "trauma_bay".
    */
   acuityHint?: string;
+  /**
+   * Weekday close hour in 24-hour local time (e.g. 15 = 3pm, 17 = 5pm).
+   * Weekday start is assumed to be 7am (07:00) — universal default for first
+   * cases in US ORs. v1 collapses Mon-Fri to a single close time; if hospitals
+   * end up needing per-weekday control we'll split this into a `WeekdayHours`
+   * map. Default if absent: 17 (5pm).
+   */
+  weekdayCloseHour?: number;
+  /**
+   * Whether the room runs on weekends. v1 collapses Sat and Sun to a single
+   * boolean — most sites are either "weekday only" or "open all week".
+   * When true, weekend hours mirror weekday hours (7am to `weekdayCloseHour`).
+   * Default if absent: false (closed weekends).
+   */
+  weekendOpen?: boolean;
 }
+
+/**
+ * Universal defaults for operating hours when a room doesn't specify its own.
+ * Used by the demand calculator and the UI.
+ */
+export const DEFAULT_ROOM_HOURS = {
+  weekdayStartHour: 7,
+  weekdayCloseHour: 17,
+  weekendOpen: false,
+} as const;
 
 /**
  * Symmetric edge in the distance matrix. The matrix is stored sparsely as a

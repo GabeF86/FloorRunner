@@ -43,6 +43,11 @@ import type {
   FloatSurplusProvider,
 } from '@/lib/gridCalculator/floatStrategy';
 import { makeSupervisabilityResolver } from '@/lib/gridCalculator/supervisability';
+import {
+  anesFteFromHours,
+  crnaFteFromHours,
+  totalWeeklyHours,
+} from '@/lib/gridCalculator/operatingHours';
 import type {
   BackupCallPosture,
   CoverageRuleSet,
@@ -279,9 +284,9 @@ const DEMO_SITES: GridSite[] = [
     position: 0,
     caption: 'ground floor',
     rooms: [
-      { id: 'room-or-1', siteId: 'site-mainor', name: 'OR 1', position: 0 },
-      { id: 'room-or-2', siteId: 'site-mainor', name: 'OR 2', position: 1 },
-      { id: 'room-or-3', siteId: 'site-mainor', name: 'OR 3', position: 2 },
+      { id: 'room-or-1', siteId: 'site-mainor', name: 'OR 1', position: 0, weekdayCloseHour: 19 },
+      { id: 'room-or-2', siteId: 'site-mainor', name: 'OR 2', position: 1, weekdayCloseHour: 17 },
+      { id: 'room-or-3', siteId: 'site-mainor', name: 'OR 3', position: 2, weekdayCloseHour: 15 },
     ],
   },
   {
@@ -293,7 +298,7 @@ const DEMO_SITES: GridSite[] = [
     position: 1,
     caption: 'tower-2',
     rooms: [
-      { id: 'room-endo-a', siteId: 'site-endo', name: 'Endo A', position: 0 },
+      { id: 'room-endo-a', siteId: 'site-endo', name: 'Endo A', position: 0, weekdayCloseHour: 15 },
     ],
   },
 ];
@@ -358,15 +363,15 @@ export const DEMO_PAOLI_FIXTURE: DemoFixture = {
 // is a planning tool, not a roster manager.
 // ---------------------------------------------------------------------------
 
-/** Heuristic roster size given total room count. Generous so the solver
- * doesn't immediately surface shortages on every render. */
+/** Heuristic roster size given the weekly room-hours demand. Hours-aware so
+ * rooms that close early consume less FTE than rooms that run late. Generous
+ * so the solver doesn't immediately surface shortages on every render. */
 export function deriveRosterForSites(sites: GridSite[]): RosterProvider[] {
-  const roomCount = sites.reduce((n, s) => n + s.rooms.length, 0);
-  // 1 Anesthesiologist per ~3 rooms (1:3 supervision target) + 2 spare for
-  // floats / coordinator. Minimum 2 so a single-room hospital still has cover.
-  const mdCount = Math.max(2, Math.ceil(roomCount / 3) + 2);
-  // 1 CRNA per room + 2 floats so break coverage stays feasible.
-  const crnaCount = Math.max(2, roomCount + 2);
+  const weeklyHours = totalWeeklyHours(sites);
+  // Hours-weighted Anesthesiologist count: weeklyHours / supervisionTarget(3) / 40h-week.
+  const mdCount = anesFteFromHours(weeklyHours, 3);
+  // Hours-weighted CRNA count: 1 CRNA-hour per room-hour, plus float overhead.
+  const crnaCount = Math.max(2, crnaFteFromHours(weeklyHours, 0.25));
   const homeSiteId = sites[0]?.id ?? null;
   const roster: RosterProvider[] = [];
   for (let i = 1; i <= mdCount; i += 1) {

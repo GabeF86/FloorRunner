@@ -1,15 +1,23 @@
 'use client';
 
 // Sites & Rooms panel — lives in the left config rail of the Grid Calculator.
-// Lets the user add sites + add rooms within a site. Each mutation propagates
-// up to GridCanvas, which re-derives the roster/edges/rules and re-solves.
+// Lets the user add sites + add rooms within a site + set per-room operating
+// hours (weekday close + weekend on/off). Each mutation propagates up to
+// GridCanvas, which re-derives the roster/edges/rules and re-solves.
 //
 // Visual language mirrors staffing-calculator's premium card pattern so the
 // panel reads as native to the platform.
 
 import { useState } from 'react';
 
-import type { GridSite } from '@/lib/gridCalculator/types';
+import {
+  formatRoomHours,
+  roomWeekdayCloseHour,
+  roomWeekendOpen,
+  siteWeeklyHours,
+  totalWeeklyHours,
+} from '@/lib/gridCalculator/operatingHours';
+import type { GridRoom, GridSite } from '@/lib/gridCalculator/types';
 
 // Shared token object — mirrors the one in GridCanvas.tsx.
 const tok = {
@@ -45,6 +53,11 @@ export interface SitesPanelProps {
   onAddRoom: (siteId: string, roomName: string) => void;
   onDeleteSite?: (siteId: string) => void;
   onDeleteRoom?: (siteId: string, roomId: string) => void;
+  onUpdateRoomHours?: (
+    siteId: string,
+    roomId: string,
+    patch: { weekdayCloseHour?: number; weekendOpen?: boolean },
+  ) => void;
 }
 
 export default function SitesPanel({
@@ -53,6 +66,7 @@ export default function SitesPanel({
   onAddRoom,
   onDeleteSite,
   onDeleteRoom,
+  onUpdateRoomHours,
 }: SitesPanelProps) {
   const [addingSite, setAddingSite] = useState(false);
   const [newSiteName, setNewSiteName] = useState('');
@@ -60,6 +74,7 @@ export default function SitesPanel({
   const [newRoomName, setNewRoomName] = useState('');
 
   const totalRooms = sites.reduce((n, s) => n + s.rooms.length, 0);
+  const totalHours = totalWeeklyHours(sites);
 
   const submitSite = () => {
     const trimmed = newSiteName.trim();
@@ -110,8 +125,9 @@ export default function SitesPanel({
             color: tok.textDim,
             fontWeight: 600,
           }}
+          title="Sites · Rooms · weekly room-hours"
         >
-          {sites.length}S · {totalRooms}R
+          {sites.length}S · {totalRooms}R · {totalHours}h/wk
         </span>
       </div>
 
@@ -137,6 +153,7 @@ export default function SitesPanel({
               onSubmit={() => submitRoom(site.id)}
               onDeleteRoom={onDeleteRoom}
               onDeleteSite={onDeleteSite}
+              onUpdateRoomHours={onUpdateRoomHours}
             />
           ))}
       </div>
@@ -237,6 +254,11 @@ interface SiteRowProps {
   onSubmit: () => void;
   onDeleteRoom?: (siteId: string, roomId: string) => void;
   onDeleteSite?: (siteId: string) => void;
+  onUpdateRoomHours?: (
+    siteId: string,
+    roomId: string,
+    patch: { weekdayCloseHour?: number; weekendOpen?: boolean },
+  ) => void;
 }
 
 function SiteRow({
@@ -249,8 +271,11 @@ function SiteRow({
   onSubmit,
   onDeleteRoom,
   onDeleteSite,
+  onUpdateRoomHours,
 }: SiteRowProps) {
   const accent = site.color || tok.accent;
+  const [editingHoursFor, setEditingHoursFor] = useState<string | null>(null);
+  const weeklyHrs = siteWeeklyHours(site);
   return (
     <div
       style={{
@@ -280,8 +305,9 @@ function SiteRow({
             color: tok.textDim,
             fontWeight: 600,
           }}
+          title={`${site.rooms.length} rooms · ${weeklyHrs} room-hours/week`}
         >
-          {site.rooms.length}R
+          {site.rooms.length}R · {weeklyHrs}h
         </span>
         {onDeleteSite && (
           <button
@@ -304,46 +330,24 @@ function SiteRow({
         )}
       </div>
 
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
         {site.rooms
           .slice()
           .sort((a, b) => a.position - b.position)
           .map((room) => (
-            <span
+            <RoomRow
               key={room.id}
-              style={{
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: 4,
-                padding: '2px 8px',
-                borderRadius: 999,
-                background: tok.surface,
-                border: `1px solid ${tok.border}`,
-                fontSize: 10,
-                color: tok.text,
-                fontFamily: tok.mono,
-              }}
-            >
-              {room.name}
-              {onDeleteRoom && (
-                <button
-                  type="button"
-                  onClick={() => onDeleteRoom(site.id, room.id)}
-                  title={`Remove ${room.name}`}
-                  style={{
-                    background: 'transparent',
-                    border: 'none',
-                    color: tok.textDim,
-                    fontSize: 11,
-                    cursor: 'pointer',
-                    padding: 0,
-                    lineHeight: 1,
-                  }}
-                >
-                  ×
-                </button>
-              )}
-            </span>
+              siteId={site.id}
+              room={room}
+              accent={accent}
+              editing={editingHoursFor === room.id}
+              onStartEdit={() =>
+                setEditingHoursFor(editingHoursFor === room.id ? null : room.id)
+              }
+              onCancelEdit={() => setEditingHoursFor(null)}
+              onDeleteRoom={onDeleteRoom}
+              onUpdateRoomHours={onUpdateRoomHours}
+            />
           ))}
 
         {adding ? (
@@ -415,6 +419,185 @@ function SiteRow({
           </button>
         )}
       </div>
+    </div>
+  );
+}
+
+interface RoomRowProps {
+  siteId: string;
+  room: GridRoom;
+  accent: string;
+  editing: boolean;
+  onStartEdit: () => void;
+  onCancelEdit: () => void;
+  onDeleteRoom?: (siteId: string, roomId: string) => void;
+  onUpdateRoomHours?: (
+    siteId: string,
+    roomId: string,
+    patch: { weekdayCloseHour?: number; weekendOpen?: boolean },
+  ) => void;
+}
+
+function RoomRow({
+  siteId,
+  room,
+  accent,
+  editing,
+  onStartEdit,
+  onCancelEdit,
+  onDeleteRoom,
+  onUpdateRoomHours,
+}: RoomRowProps) {
+  const hoursLabel = formatRoomHours(room);
+  const closeHour = roomWeekdayCloseHour(room);
+  const weekend = roomWeekendOpen(room);
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+      <div
+        style={{
+          display: 'inline-flex',
+          alignItems: 'center',
+          gap: 6,
+          alignSelf: 'flex-start',
+          padding: '2px 8px',
+          borderRadius: 999,
+          background: tok.surface,
+          border: `1px solid ${editing ? accent : tok.border}`,
+          fontSize: 10,
+          color: tok.text,
+          fontFamily: tok.mono,
+        }}
+      >
+        <span style={{ fontWeight: 700 }}>{room.name}</span>
+        <button
+          type="button"
+          onClick={onStartEdit}
+          title="Edit operating hours"
+          style={{
+            background: 'transparent',
+            border: `1px solid ${tok.border}`,
+            borderRadius: 999,
+            padding: '0 6px',
+            fontSize: 9,
+            color: editing ? accent : tok.textMuted,
+            fontFamily: tok.mono,
+            cursor: 'pointer',
+            lineHeight: 1.4,
+          }}
+        >
+          {hoursLabel}
+        </button>
+        {onDeleteRoom && (
+          <button
+            type="button"
+            onClick={() => onDeleteRoom(siteId, room.id)}
+            title={`Remove ${room.name}`}
+            style={{
+              background: 'transparent',
+              border: 'none',
+              color: tok.textDim,
+              fontSize: 11,
+              cursor: 'pointer',
+              padding: 0,
+              lineHeight: 1,
+            }}
+          >
+            ×
+          </button>
+        )}
+      </div>
+
+      {editing && onUpdateRoomHours && (
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 8,
+            padding: '6px 8px',
+            borderRadius: 8,
+            background: tok.surface,
+            border: `1px solid ${tok.border}`,
+            fontSize: 10,
+            color: tok.text,
+            fontFamily: tok.mono,
+            alignSelf: 'flex-start',
+          }}
+        >
+          <label
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 4,
+              color: tok.textMuted,
+            }}
+          >
+            <span>Close</span>
+            <select
+              value={closeHour}
+              onChange={(e) =>
+                onUpdateRoomHours(siteId, room.id, {
+                  weekdayCloseHour: Number(e.target.value),
+                })
+              }
+              style={{
+                padding: '1px 4px',
+                borderRadius: 4,
+                border: `1px solid ${tok.border}`,
+                background: tok.card,
+                color: tok.text,
+                fontSize: 10,
+                fontFamily: tok.mono,
+                cursor: 'pointer',
+              }}
+            >
+              {Array.from({ length: 16 }, (_, i) => 8 + i).map((h) => (
+                <option key={h} value={h}>
+                  {h}:00
+                </option>
+              ))}
+            </select>
+          </label>
+          <label
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 4,
+              color: tok.textMuted,
+              cursor: 'pointer',
+            }}
+          >
+            <input
+              type="checkbox"
+              checked={weekend}
+              onChange={(e) =>
+                onUpdateRoomHours(siteId, room.id, {
+                  weekendOpen: e.target.checked,
+                })
+              }
+              style={{ cursor: 'pointer' }}
+            />
+            <span>Weekends</span>
+          </label>
+          <button
+            type="button"
+            onClick={onCancelEdit}
+            style={{
+              marginLeft: 'auto',
+              background: 'transparent',
+              border: 'none',
+              color: tok.textDim,
+              fontSize: 11,
+              cursor: 'pointer',
+              padding: '0 2px',
+              lineHeight: 1,
+            }}
+            title="Close editor"
+          >
+            ✕
+          </button>
+        </div>
+      )}
     </div>
   );
 }
