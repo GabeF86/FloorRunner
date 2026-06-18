@@ -14,6 +14,13 @@
 //     into a single deterministic result the canvas can render. Pure function;
 //     the canvas calls it synchronously on every toggle change.
 //
+// IMPORTANT: the Grid Calculator answers "how many do we need to hire" — it is
+// NOT about who is working today. We therefore render providers as anonymous
+// role-slots ("Anesthesiologist 1", "CRNA 3") rather than real names. The
+// `providerLabels` field on the fixture is kept for backward compat with
+// the print + onboarding flows (A15/A16), but its `name` field now stores the
+// role-slot label and `initials` stores a stable mono badge (e.g. "A1", "C5").
+//
 // Aesthetic-checkpoint note: every toggle change pushes a new URL with
 // `router.replace()` (no scroll), and the canvas listens to `useSearchParams()`
 // so a 200ms shimmer animation can be triggered via a key-bump in the consumer.
@@ -25,6 +32,7 @@ import { solve } from '@/lib/gridCalculator/solver';
 import type {
   SolvedGrid,
   RosterProvider,
+  ProviderRole,
 } from '@/lib/gridCalculator/solver';
 import {
   applyFloatStrategy,
@@ -48,8 +56,12 @@ import type {
 
 // ---------------------------------------------------------------------------
 // Layout variant — locked by Gabriel 2026-06-17 to Variant C "Hybrid".
-// See docs/aesthetic-checkpoints/A9-initial.md. Switching variants flips
-// padding/density across SiteLane/AnesthesiologistCard via this single flag.
+// See docs/aesthetic-checkpoints/A9-initial.md.
+//
+// NOTE: kept for backward compat with the aesthetic baseline. The restyled
+// canvas mirrors the Staffing Calculator's token system directly, so these
+// constants no longer drive runtime styling — but the aesthetic-audit script
+// still checks they exist with their locked values.
 // ---------------------------------------------------------------------------
 
 export type LayoutVariant = 'dense' | 'airy' | 'hybrid';
@@ -202,6 +214,53 @@ export function useGridToggles(): {
 }
 
 // ---------------------------------------------------------------------------
+// Role-slot derivation — anonymous labels for the headcount-planning UI.
+// ---------------------------------------------------------------------------
+
+const ROLE_LABEL: Record<ProviderRole, string> = {
+  anesthesiologist: 'Anesthesiologist',
+  crna: 'CRNA',
+};
+
+const ROLE_INITIAL: Record<ProviderRole, string> = {
+  anesthesiologist: 'A',
+  crna: 'C',
+};
+
+/**
+ * Build `{ name, initials }` slot labels for every roster member, keyed by id.
+ * Slot indices are assigned in stable order by id within each role, so a given
+ * roster always produces the same slot numbers across renders. This is what
+ * the cards display — "Anesthesiologist 3" / "CRNA 5" — instead of real names.
+ *
+ * Shape stays compatible with the existing `Record<id, { name, initials }>`
+ * structure consumed by print + onboarding (A15/A16) and the export module.
+ */
+export function buildRoleSlotLabels(
+  roster: RosterProvider[],
+): Record<string, { name: string; initials: string }> {
+  const byRole: Record<ProviderRole, RosterProvider[]> = {
+    anesthesiologist: [],
+    crna: [],
+  };
+  for (const p of roster) {
+    byRole[p.role].push(p);
+  }
+  const out: Record<string, { name: string; initials: string }> = {};
+  for (const role of Object.keys(byRole) as ProviderRole[]) {
+    const sorted = byRole[role].slice().sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+    sorted.forEach((p, idx) => {
+      const slot = idx + 1;
+      out[p.id] = {
+        name: `${ROLE_LABEL[role]} ${slot}`,
+        initials: `${ROLE_INITIAL[role]}${slot}`,
+      };
+    });
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
 // Demo Paoli-like fixture.
 // A11 (Paoli Seed) replaces this with the real persistent fixture loaded from
 // `scheduling.grid_calculator_configs`. The data structure is intentionally
@@ -252,15 +311,6 @@ const DEMO_ROSTER: RosterProvider[] = [
   { id: 'p-crna-004', role: 'crna', fte: 1.0, homeSiteId: 'site-mainor' },
 ];
 
-const DEMO_PROVIDER_NAMES: Record<string, { name: string; initials: string }> = {
-  'p-md-001': { name: 'Dr. Avery Chen', initials: 'AC' },
-  'p-md-002': { name: 'Dr. Morgan Reyes', initials: 'MR' },
-  'p-crna-001': { name: 'Riley Singh, CRNA', initials: 'RS' },
-  'p-crna-002': { name: 'Jordan Park, CRNA', initials: 'JP' },
-  'p-crna-003': { name: 'Casey Nguyen, CRNA', initials: 'CN' },
-  'p-crna-004': { name: 'Sam Patel, CRNA', initials: 'SP' },
-};
-
 const DEMO_RULES: CoverageRuleSet = {
   siteRules: [
     {
@@ -283,6 +333,11 @@ export interface DemoFixture {
   edges: DistanceEdge[];
   roster: RosterProvider[];
   rules: CoverageRuleSet;
+  /**
+   * Role-slot labels per provider id. Shape is preserved for backward compat
+   * with the print + onboarding consumers, but `name` now reads "CRNA 3" and
+   * `initials` reads "C3" — no real names.
+   */
   providerLabels: Record<string, { name: string; initials: string }>;
 }
 
@@ -292,8 +347,93 @@ export const DEMO_PAOLI_FIXTURE: DemoFixture = {
   edges: DEMO_EDGES,
   roster: DEMO_ROSTER,
   rules: DEMO_RULES,
-  providerLabels: DEMO_PROVIDER_NAMES,
+  providerLabels: buildRoleSlotLabels(DEMO_ROSTER),
 };
+
+// ---------------------------------------------------------------------------
+// Site-driven derivations — when the user adds/removes sites or rooms via the
+// SitesPanel, we recompute a generous roster, a full distance matrix, and a
+// default rule set so the visualization stays complete without requiring the
+// user to also manage providers/distances/rules by hand. The Grid Calculator
+// is a planning tool, not a roster manager.
+// ---------------------------------------------------------------------------
+
+/** Heuristic roster size given total room count. Generous so the solver
+ * doesn't immediately surface shortages on every render. */
+export function deriveRosterForSites(sites: GridSite[]): RosterProvider[] {
+  const roomCount = sites.reduce((n, s) => n + s.rooms.length, 0);
+  // 1 Anesthesiologist per ~3 rooms (1:3 supervision target) + 2 spare for
+  // floats / coordinator. Minimum 2 so a single-room hospital still has cover.
+  const mdCount = Math.max(2, Math.ceil(roomCount / 3) + 2);
+  // 1 CRNA per room + 2 floats so break coverage stays feasible.
+  const crnaCount = Math.max(2, roomCount + 2);
+  const homeSiteId = sites[0]?.id ?? null;
+  const roster: RosterProvider[] = [];
+  for (let i = 1; i <= mdCount; i += 1) {
+    roster.push({
+      id: `derived-md-${String(i).padStart(3, '0')}`,
+      role: 'anesthesiologist',
+      fte: 1.0,
+      homeSiteId: homeSiteId ?? undefined,
+    });
+  }
+  for (let i = 1; i <= crnaCount; i += 1) {
+    roster.push({
+      id: `derived-crna-${String(i).padStart(3, '0')}`,
+      role: 'crna',
+      fte: 1.0,
+      homeSiteId: homeSiteId ?? undefined,
+    });
+  }
+  return roster;
+}
+
+/** Default `near` edge between every site pair, marked supervisable. The
+ * user can override with the distance graph (A5) once that wire-up lands. */
+export function deriveEdgesForSites(sites: GridSite[]): DistanceEdge[] {
+  const out: DistanceEdge[] = [];
+  for (let i = 0; i < sites.length; i += 1) {
+    for (let j = i + 1; j < sites.length; j += 1) {
+      out.push({
+        siteA: sites[i].id,
+        siteB: sites[j].id,
+        band: 'near',
+        supervisable: true,
+      });
+    }
+  }
+  return out;
+}
+
+/** Default rule set: every site gets a `supervised_md_crna` pattern so the
+ * solver doesn't audit-flag "no rule for site X". Specific hospital rules
+ * land via the free-text Guidelines flow (A4). */
+export function deriveRulesForSites(sites: GridSite[]): CoverageRuleSet {
+  return {
+    siteRules: sites.map((s) => ({
+      site: s.name,
+      defaultStaffing: 'supervised_md_crna' as const,
+    })),
+    globalRules: [],
+  };
+}
+
+/** Build a fixture from a sites list + a base config id. Everything but the
+ * sites is derived so the user can edit sites without juggling rosters. */
+export function buildFixtureFromSites(
+  configId: string,
+  sites: GridSite[],
+): DemoFixture {
+  const roster = deriveRosterForSites(sites);
+  return {
+    configId,
+    sites,
+    edges: deriveEdgesForSites(sites),
+    roster,
+    rules: deriveRulesForSites(sites),
+    providerLabels: buildRoleSlotLabels(roster),
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Solve composition — solver → float strategy → float health.

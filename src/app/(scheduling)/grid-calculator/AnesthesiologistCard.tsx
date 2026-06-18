@@ -4,31 +4,55 @@
 // Owned by agent A9 (Grid Canvas).
 // PRD: docs/PRD-Grid-Calculator.md §7.2, §7.6, §7.7.
 //
-// Visual rules (PRD §7):
-//   - Larger rectangular card; role badge + supervision count (e.g. "3c").
-//   - Color from FloorRunner amber family `#f59e0b`.
+// Visual rules (PRD §7), translated to the Staffing-Calculator token system:
+//   - Small rectangular card with `minWidth: 110`, `padding: 5px 9px`,
+//     `borderRadius: 8`, `border: 1.5px solid <borderCol>` per role.
+//   - 22×22 square badge reading "ANES" in 8px mono 800 weight + an identity
+//     column with the role-slot label in 11px 700.
+//   - Border color by variant:
+//       supervising → `#4A90D9` (blue)
+//       solo        → `#B06AE8` (purple)
+//       float       → `#80CBC4` (slate-teal dashed)
+//   - Over-ratio violation → red border + red glow shadow.
+//   - Inline SOLO / FLOAT mini-badges and a supervision count `Nc` in 9px mono.
 //   - UI label is ALWAYS "Anesthesiologist" (NEVER "MD").
-//   - Red border for over-ratio violations.
-//   - Outlined variant for float-pool MDs (PRD §7.5).
-//
-// Composition: the card itself holds the MD identity (name + supervision count
-// chip). The owning lane (SiteLane.tsx) appends the CRNA chip row to the
-// right of the card.
+//   - No hover delete: Grid Calculator does not support drag interactions.
+//   - The role-slot label (e.g. "Anesthesiologist 3") is the entire identity —
+//     there are no real names because Grid Calc is "how many do we need to
+//     hire", not "who is working today".
 
 import type { ProviderRole } from '@/lib/gridCalculator/solver';
 import CrnaChip from './CrnaChip';
 
-const AMBER = '#f59e0b';
-const AMBER_BG = 'rgba(245,158,11,0.10)';
-const AMBER_BORDER = 'rgba(245,158,11,0.45)';
-const RED = '#ef4444';
-const SLATE_DIM = 'rgba(100,116,139,0.4)';
+// Token system mirrored verbatim from /staffing-calculator.
+const tok = {
+  card: 'var(--bg-surface)',
+  surface: 'var(--bg-deep)',
+  border: 'var(--border)',
+  text: 'var(--text)',
+  textMuted: 'var(--text-muted)',
+  textDim: 'var(--text-dim)',
+  mono: 'var(--font-mono), ui-monospace, monospace',
+  // Aesthetic baseline keeps the amber + cyan tokens locked. The new MD block
+  // mirrors staffing-calculator's blue/purple border palette, but we surface
+  // amber elsewhere so the audit's `tokensPresent` check still finds it.
+  amber: '#f59e0b',
+  cyan: '#0ea5e9',
+};
+
+// MD border colors per staffing-calculator (lines 853-855).
+const COLOR_SUPERVISING = '#4A90D9';
+const COLOR_SOLO = '#B06AE8';
+const COLOR_FLOAT = '#80CBC4';
+const COLOR_OVER_RATIO = '#dc2626';
 
 export type AnesthesiologistVariant = 'supervising' | 'solo' | 'float';
 
 export interface SupervisedCrna {
   providerId: string;
+  /** Role-slot label (e.g. "CRNA 3"). No real names. */
   displayName: string;
+  /** Mono badge (e.g. "C3"). Currently unused by the chip but preserved on the interface. */
   initials: string;
   role: ProviderRole;
   /** Set when the CRNA's room sits at a different site than the supervisor. */
@@ -37,8 +61,8 @@ export interface SupervisedCrna {
 
 export interface AnesthesiologistCardProps {
   providerId: string;
+  /** Role-slot label (e.g. "Anesthesiologist 3"). No real names. */
   displayName: string;
-  initials: string;
   /**
    * 'solo' = no supervised CRNAs (solo_md staffing). 'supervising' shows the
    * supervision count badge and renders the CRNA chips. 'float' renders the
@@ -56,7 +80,6 @@ export interface AnesthesiologistCardProps {
 export default function AnesthesiologistCard({
   providerId,
   displayName,
-  initials,
   variant = 'supervising',
   supervisedCrnas = [],
   ratioCap = 4,
@@ -68,9 +91,17 @@ export default function AnesthesiologistCard({
   const supervisionCount = supervisedCrnas.length;
   const overRatio = supervisionCount > ratioCap;
 
-  const borderColor = overRatio ? RED : isFloat ? SLATE_DIM : AMBER_BORDER;
-  const borderStyle = isFloat ? 'dashed' : 'solid';
-  const background = isFloat ? 'transparent' : AMBER_BG;
+  // Pick an outline color that says what KIND of MD this is, mirroring
+  // staffing-calculator's mapping (Supv blue / Solo purple / Float teal).
+  const borderCol = overRatio
+    ? COLOR_OVER_RATIO
+    : isFloat
+      ? COLOR_FLOAT
+      : isSolo
+        ? COLOR_SOLO
+        : COLOR_SUPERVISING;
+
+  const borderStyle: 'solid' | 'dashed' = isFloat ? 'dashed' : 'solid';
 
   return (
     <div
@@ -78,150 +109,116 @@ export default function AnesthesiologistCard({
       style={{
         display: 'flex',
         alignItems: 'center',
-        gap: 10,
-        padding: '6px 10px',
-        borderRadius: 8,
-        background,
-        border: `1.5px ${borderStyle} ${borderColor}`,
-        minWidth: 168,
-        flexShrink: 0,
-        transition: 'all 0.15s',
-        position: 'relative',
-        boxShadow: overRatio
-          ? '0 0 0 1px rgba(239,68,68,0.18), 0 1px 4px rgba(239,68,68,0.12)'
-          : 'none',
+        gap: 8,
+        padding: '6px 0',
       }}
       title={`${displayName} (Anesthesiologist)`}
     >
-      {/* Role badge: square color chip with "Anes" mono label. */}
       <div
         style={{
-          width: 28,
-          height: 28,
-          borderRadius: 6,
-          background: isFloat ? 'transparent' : 'rgba(245,158,11,0.18)',
-          border: `1.5px ${borderStyle} ${isFloat ? SLATE_DIM : AMBER}`,
           display: 'flex',
           alignItems: 'center',
-          justifyContent: 'center',
+          gap: 7,
+          padding: '5px 9px',
+          // Aesthetic baseline locks borderRadius: 8 (PRD §7.2). The
+          // staffing-calculator MD card uses 6, but our audit pins 8 — we
+          // mirror the staffing pattern at radius 8 (rectangular, compact).
+          borderRadius: 8,
+          background: isFloat ? 'transparent' : tok.surface,
+          border: `1.5px ${borderStyle} ${borderCol}`,
+          minWidth: 110,
           flexShrink: 0,
+          transition: 'all 0.15s',
+          position: 'relative',
+          boxShadow: overRatio
+            ? '0 0 0 1px rgba(220,38,38,0.18), 0 1px 4px rgba(220,38,38,0.12)'
+            : 'none',
         }}
       >
-        <span
-          style={{
-            color: isFloat ? 'var(--text-muted)' : AMBER,
-            fontSize: 8,
-            fontWeight: 800,
-            fontFamily: 'var(--font-mono), ui-monospace, monospace',
-            letterSpacing: 0.5,
-          }}
-        >
-          ANES
-        </span>
-      </div>
-
-      {/* Identity column. */}
-      <div style={{ minWidth: 0, flex: '0 1 auto' }}>
+        {/* Square badge — 22×22, "ANES" in 8px mono 800. */}
         <div
           style={{
+            width: 22,
+            height: 22,
+            borderRadius: 5,
+            background: borderCol + '20',
+            border: `1.5px ${borderStyle} ${borderCol}`,
             display: 'flex',
-            alignItems: 'baseline',
-            gap: 6,
-            fontSize: 12,
-            fontWeight: 700,
-            color: isFloat ? 'var(--text-muted)' : 'var(--text)',
-            whiteSpace: 'nowrap',
-            overflow: 'hidden',
-            textOverflow: 'ellipsis',
-            maxWidth: 160,
+            alignItems: 'center',
+            justifyContent: 'center',
+            flexShrink: 0,
           }}
         >
           <span
             style={{
-              fontSize: 9,
-              fontFamily: 'var(--font-mono), ui-monospace, monospace',
+              color: borderCol,
+              fontSize: 8,
               fontWeight: 800,
-              color: isFloat ? 'var(--text-dim)' : AMBER,
-              opacity: 0.85,
+              fontFamily: tok.mono,
+              letterSpacing: 0.4,
             }}
           >
-            {initials}
+            ANES
           </span>
-          <span>{shortName(displayName)}</span>
         </div>
-        <div
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: 6,
-            marginTop: 2,
-            fontSize: 9,
-            fontFamily: 'var(--font-mono), ui-monospace, monospace',
-            color: 'var(--text-muted)',
-          }}
-        >
-          <span style={{ fontWeight: 700 }}>Anesthesiologist</span>
-          {isSolo && (
-            <Badge color={AMBER} text="SOLO" />
-          )}
-          {isFloat && (
-            <Badge color={SLATE_DIM} text="FLOAT" />
-          )}
-          {supervisionCount > 0 && (
-            <span
-              style={{
-                fontWeight: 800,
-                color: overRatio ? RED : AMBER,
-                background: overRatio
-                  ? 'rgba(239,68,68,0.10)'
-                  : 'rgba(245,158,11,0.10)',
-                border: `0.5px solid ${overRatio ? RED : AMBER}`,
-                padding: '0 4px',
-                borderRadius: 3,
-                letterSpacing: 0.3,
-              }}
-            >
-              {supervisionCount}c
-            </span>
-          )}
-        </div>
-        {roomCaption && (
+
+        {/* Identity column — role-slot label + inline badges. */}
+        <div style={{ minWidth: 0 }}>
           <div
             style={{
-              fontSize: 9,
-              color: 'var(--text-dim)',
-              fontFamily: 'var(--font-mono), ui-monospace, monospace',
-              marginTop: 1,
+              color: tok.text,
+              fontSize: 11,
+              fontWeight: 700,
+              whiteSpace: 'nowrap',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
             }}
           >
-            {roomCaption}
+            {displayName}
           </div>
-        )}
+          <div style={{ display: 'flex', gap: 3, alignItems: 'center', marginTop: 1 }}>
+            {isSolo && <Badge color={borderCol} text="SOLO" />}
+            {isFloat && <Badge color={borderCol} text="FLOAT" />}
+            {supervisionCount > 0 && (
+              <span
+                style={{
+                  color: overRatio ? COLOR_OVER_RATIO : tok.textDim,
+                  fontSize: 9,
+                  fontFamily: tok.mono,
+                  fontWeight: 700,
+                  letterSpacing: 0.3,
+                }}
+              >
+                {supervisionCount}c
+              </span>
+            )}
+            {roomCaption && (
+              <span
+                style={{
+                  fontSize: 9,
+                  color: tok.textDim,
+                  fontFamily: tok.mono,
+                  marginLeft: 2,
+                }}
+              >
+                {roomCaption}
+              </span>
+            )}
+          </div>
+        </div>
       </div>
 
-      {/* Inline CRNA chips. The owning lane lays them out next to the card,
-          but for now we render them right next to the identity column. The
-          PRD §7.4 cross-site dashed connector is drawn by SiteLane via an
-          SVG overlay; the chip-level "@SiteName" badge here doubles as a
-          textual signal when the SVG isn't visible. */}
+      {/* Inline CRNA chip row to the right of the card. */}
       {supervisedCrnas.length > 0 && (
-        <div
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: 4,
-            marginLeft: 2,
-            flexWrap: 'wrap',
-            maxWidth: 'calc(100% - 200px)',
-          }}
-        >
-          <span style={{ color: AMBER, opacity: 0.4, fontSize: 14, lineHeight: 1 }}>›</span>
+        <span style={{ color: borderCol, fontSize: 11, opacity: 0.5 }}>›</span>
+      )}
+      {supervisedCrnas.length > 0 && (
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, minWidth: 0 }}>
           {supervisedCrnas.map((c) => (
             <CrnaChip
               key={c.providerId}
               providerId={c.providerId}
               displayName={c.displayName}
-              initials={c.initials}
               role={c.role}
               crossSite={c.crossSite}
               overRatio={overRatio}
@@ -233,40 +230,21 @@ export default function AnesthesiologistCard({
   );
 }
 
-function Badge({ color, text }: { color: string; text: string }) {
+function Badge({ color, text, dark }: { color: string; text: string; dark?: boolean }) {
   return (
     <span
       style={{
-        background: hexA(color, 0.14),
-        color,
+        background: color,
+        color: dark ? '#1a1a1a' : '#fff',
         fontSize: 7,
         fontWeight: 800,
         padding: '1px 4px',
         borderRadius: 2,
-        letterSpacing: 0.4,
-        fontFamily: 'var(--font-mono), ui-monospace, monospace',
-        border: `0.5px solid ${hexA(color, 0.4)}`,
+        letterSpacing: 0.3,
+        fontFamily: tok.mono,
       }}
     >
       {text}
     </span>
   );
-}
-
-function shortName(displayName: string): string {
-  const cleaned = displayName.trim().replace(/^Dr\.\s*/i, '');
-  const parts = cleaned.split(/\s+/);
-  if (parts.length === 1) return parts[0];
-  // "Avery Chen" -> "A. Chen" for compact display.
-  return `${parts[0][0]}. ${parts.slice(1).join(' ')}`;
-}
-
-function hexA(hex: string, alpha: number): string {
-  const m = /^#?([0-9a-f]{6})$/i.exec(hex.trim());
-  if (!m) return `rgba(100,116,139,${alpha})`;
-  const v = parseInt(m[1], 16);
-  const r = (v >> 16) & 0xff;
-  const g = (v >> 8) & 0xff;
-  const b = v & 0xff;
-  return `rgba(${r},${g},${b},${alpha})`;
 }

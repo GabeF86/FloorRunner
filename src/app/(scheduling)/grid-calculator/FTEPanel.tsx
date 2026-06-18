@@ -1,27 +1,48 @@
 'use client';
 
-// FTE Panel — persistent right-rail card with the FTE recommendation.
+// FTE Panel — left-column "Staffing needs" card.
 // Owned by agent A9 (Grid Canvas).
 // PRD: docs/PRD-Grid-Calculator.md §7.8, §10.
 //
-// Visual rules (PRD §7.8):
-//   - Persistent right rail (never moves with the grid).
-//   - Three numbers: Anesthesiologists, CRNAs, Backup-call FTE.
-//   - Each number has a "Worst case / Expected" tab.
-//   - When `showWorstCase` is OFF, the panel collapses to expected-value only.
+// Visual rules (restyled to match the Staffing-Calculator `TotalsPanel`):
+//   - Premium card surface (cardStyle) with a "Staffing needs" SectionTitle.
+//   - 3-column grid of BigStat cards: Anesthesiologists / CRNAs / Backup-call.
+//   - When `showWorstCase` is on, the panel exposes a Worst/Expected tab on
+//     the Anesthesiologist + CRNA stats; when off, only Expected shows.
+//   - A small placeholder block + "Re-run simulation" CTA stays at the bottom
+//     until A14 wires the persisted recommendation flow.
 //
-// v1 wiring shortcut: this panel currently shows a placeholder + a
-// "Re-run simulation" button that the page-level handler stubs out. Per the
-// PRD §14 (A9) acceptable shortcut, this defers the persisted-recommendation
-// flow to A14. Once A14 wires the route, the props here gain a real
-// `FTERecommendation` and the placeholder copy goes away.
-//
-// NOTE: A14 will wire up the persisted FTE recommendation flow.
-// Until then the panel either renders the optional injected `recommendation`
-// or a placeholder structure with a re-run CTA.
+// NOTE: A14 will wire the persisted FTE recommendation flow.
 
+import { useState } from 'react';
 import type { FTERecommendation } from '@/lib/gridCalculator/types';
 import type { FloatHealth } from '@/lib/gridCalculator/floatStrategy';
+
+const tok = {
+  card: 'var(--bg-surface)',
+  surface: 'var(--bg-deep)',
+  border: 'var(--border)',
+  hairline: '1px solid var(--border)',
+  text: 'var(--text)',
+  textMuted: 'var(--text-muted)',
+  textDim: 'var(--text-dim)',
+  mono: 'var(--font-mono), ui-monospace, monospace',
+  md: { fg: '#4338CA', bg: '#EEF1FE', bd: '#CBD2F7' },
+  crna: { fg: '#0A6CB4', bg: '#E7F2FB', bd: '#B2D8F1' },
+  backup: { fg: '#4F46E5', bg: 'rgba(79,70,229,0.08)', bd: 'rgba(79,70,229,0.30)' },
+  accent: '#0284c7',
+  radius: 14,
+  radiusSm: 9,
+  shadow: '0 1px 2px rgba(15,23,42,0.05), 0 10px 28px -16px rgba(15,23,42,0.18)',
+};
+
+const cardStyle: React.CSSProperties = {
+  background: tok.card,
+  border: '1px solid var(--border)',
+  borderRadius: tok.radius,
+  boxShadow: tok.shadow,
+  padding: '18px 20px',
+};
 
 export interface FTEPanelProps {
   /** Optional recommendation. Until A14 wires it, expect undefined. */
@@ -36,118 +57,127 @@ export interface FTEPanelProps {
   onRerun: () => void;
 }
 
-const AMBER = '#f59e0b';
-const CYAN = '#0ea5e9';
-const INDIGO = '#6366f1';
+type ScenarioTab = 'worst' | 'expected';
 
 export default function FTEPanel({
   recommendation,
-  floatHealth,
   showWorstCase,
   loading = false,
   onRerun,
 }: FTEPanelProps) {
+  // When showWorstCase is on we expose a Worst/Expected tab. The tab is local
+  // state so the user can flip without thrashing the URL.
+  const [scenario, setScenario] = useState<ScenarioTab>(showWorstCase ? 'worst' : 'expected');
+  const activeTab: ScenarioTab = showWorstCase ? scenario : 'expected';
+
+  const anes = pickValue(recommendation?.anesthesiologist, activeTab);
+  const crna = pickValue(recommendation?.crna, activeTab);
+  const backup = typeof recommendation?.backupCall.fte === 'number'
+    ? recommendation.backupCall.fte
+    : null;
+
   return (
-    <aside
-      aria-label="FTE Recommendation"
-      style={{
-        width: '100%',
-        background: 'var(--bg-surface)',
-        border: '1px solid var(--border)',
-        borderRadius: 10,
-        padding: 14,
-        display: 'flex',
-        flexDirection: 'column',
-        gap: 12,
-        boxShadow: '0 1px 2px rgba(0,0,0,0.04)',
-        // Persistent — the parent gives this a sticky position when there's
-        // room on screen. See page.tsx layout.
-      }}
-    >
-      <div>
-        <div
-          style={{
-            display: 'flex',
-            alignItems: 'baseline',
-            justifyContent: 'space-between',
-            gap: 8,
-            marginBottom: 4,
-          }}
-        >
-          <span
-            style={{
-              fontSize: 10,
-              fontFamily: 'var(--font-mono), ui-monospace, monospace',
-              fontWeight: 800,
-              color: 'var(--text-muted)',
-              letterSpacing: 0.5,
-              textTransform: 'uppercase',
-            }}
-          >
-            FTE recommendation
-          </span>
-          <FloatHealthChip health={floatHealth} />
-        </div>
-        <div
-          style={{
-            fontSize: 11,
-            color: 'var(--text-muted)',
-            lineHeight: 1.4,
-          }}
-        >
-          Headcount that solves every weekday under worst-case rules and Monte
-          Carlo p95. <span style={{ fontStyle: 'italic' }}>
-            Recommendation = max(worst case, p95).
-          </span>
-        </div>
-      </div>
+    <div style={cardStyle}>
+      <SectionTitle>Staffing needs</SectionTitle>
+      <p
+        style={{
+          fontSize: 11.5,
+          color: tok.textMuted,
+          margin: '0 0 12px 0',
+          lineHeight: 1.45,
+        }}
+      >
+        Headcount that solves every weekday under worst-case rules and Monte
+        Carlo p95. The number you take to HR.
+      </p>
 
-      {/* ── Numbers ──────────────────────────────────────────────────────── */}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-        <FTERow
+      {showWorstCase && recommendation && (
+        <div
+          style={{
+            display: 'inline-flex',
+            padding: 2,
+            background: tok.surface,
+            border: '1px solid var(--border)',
+            borderRadius: 999,
+            gap: 1,
+            marginBottom: 10,
+          }}
+        >
+          {(['worst', 'expected'] as ScenarioTab[]).map((t) => {
+            const active = t === scenario;
+            return (
+              <button
+                key={t}
+                type="button"
+                onClick={() => setScenario(t)}
+                style={{
+                  padding: '3px 10px',
+                  borderRadius: 999,
+                  fontSize: 9,
+                  fontWeight: 800,
+                  fontFamily: tok.mono,
+                  letterSpacing: 0.5,
+                  textTransform: 'uppercase',
+                  border: 'none',
+                  background: active ? `${tok.accent}1F` : 'transparent',
+                  color: active ? tok.accent : tok.textMuted,
+                  cursor: 'pointer',
+                  transition: 'all 0.12s',
+                }}
+              >
+                {t === 'worst' ? 'Worst case' : 'Expected'}
+              </button>
+            );
+          })}
+        </div>
+      )}
+
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8 }}>
+        <BigStat
           label="Anesthesiologists"
-          accent={AMBER}
-          showWorstCase={showWorstCase}
-          worstCase={recommendation?.anesthesiologist.worstCase}
-          expected={recommendation?.anesthesiologist.p95}
-          p50={recommendation?.anesthesiologist.p50}
-          binding={recommendation?.anesthesiologist.binding}
+          value={formatValue(anes)}
+          fg={tok.md.fg}
+          bg={tok.md.bg}
+          bd={tok.md.bd}
+          subtitle={recommendation?.anesthesiologist.binding === 'worst_case' ? 'WC binding' : recommendation?.anesthesiologist.binding === 'monte_carlo' ? 'p95 binding' : 'pending'}
         />
-        <FTERow
+        <BigStat
           label="CRNAs"
-          accent={CYAN}
-          showWorstCase={showWorstCase}
-          worstCase={recommendation?.crna.worstCase}
-          expected={recommendation?.crna.p95}
-          p50={recommendation?.crna.p50}
-          binding={recommendation?.crna.binding}
+          value={formatValue(crna)}
+          fg={tok.crna.fg}
+          bg={tok.crna.bg}
+          bd={tok.crna.bd}
+          subtitle={recommendation?.crna.binding === 'worst_case' ? 'WC binding' : recommendation?.crna.binding === 'monte_carlo' ? 'p95 binding' : 'pending'}
         />
-        <FTERow
+        <BigStat
           label="Backup call FTE"
-          accent={INDIGO}
-          showWorstCase={false}
-          expected={recommendation?.backupCall.fte}
+          value={formatValue(backup)}
+          fg={tok.backup.fg}
+          bg={tok.backup.bg}
+          bd={tok.backup.bd}
+          subtitle="annualized"
         />
       </div>
 
-      {/* ── Rationale ────────────────────────────────────────────────────── */}
+      {/* Rationale + re-run CTA. */}
       <div
         style={{
-          padding: 10,
-          borderRadius: 6,
-          background: 'var(--bg-deep)',
-          border: '1px solid var(--border)',
+          marginTop: 14,
+          padding: 12,
+          borderRadius: tok.radiusSm,
+          background: tok.surface,
+          border: tok.hairline,
           fontSize: 11,
-          color: 'var(--text-muted)',
+          color: tok.textMuted,
           lineHeight: 1.5,
         }}
       >
         <div
           style={{
             fontSize: 9,
-            fontFamily: 'var(--font-mono), ui-monospace, monospace',
+            fontFamily: tok.mono,
             fontWeight: 800,
-            color: 'var(--text-dim)',
+            color: tok.textDim,
             letterSpacing: 0.4,
             textTransform: 'uppercase',
             marginBottom: 4,
@@ -158,10 +188,9 @@ export default function FTEPanel({
         {recommendation?.rationale ? (
           <span>{recommendation.rationale}</span>
         ) : (
-          <span style={{ fontStyle: 'italic', color: 'var(--text-dim)' }}>
+          <span style={{ fontStyle: 'italic', color: tok.textDim }}>
             No simulation run yet. Click <strong>Re-run simulation</strong> to
-            generate a worst-case + Monte Carlo recommendation. (A14 will wire
-            this up as the persisted recommendation flow.)
+            generate a worst-case + Monte Carlo recommendation.
           </span>
         )}
       </div>
@@ -171,193 +200,127 @@ export default function FTEPanel({
         onClick={onRerun}
         disabled={loading}
         style={{
+          marginTop: 10,
           padding: '8px 12px',
-          borderRadius: 6,
+          borderRadius: tok.radiusSm,
           fontSize: 11,
           fontWeight: 800,
-          fontFamily: 'var(--font-mono), ui-monospace, monospace',
+          fontFamily: tok.mono,
           letterSpacing: 0.5,
-          color: '#0ea5e9',
-          background: 'rgba(14,165,233,0.12)',
-          border: '1px solid rgba(14,165,233,0.4)',
+          color: tok.accent,
+          background: `${tok.accent}14`,
+          border: `1px solid ${tok.accent}66`,
           cursor: loading ? 'wait' : 'pointer',
           opacity: loading ? 0.6 : 1,
           transition: 'all 0.15s',
+          width: '100%',
         }}
       >
         {loading ? '↻ Running…' : '↻ Re-run simulation'}
       </button>
-    </aside>
-  );
-}
-
-interface FTERowProps {
-  label: string;
-  accent: string;
-  showWorstCase: boolean;
-  worstCase?: number;
-  expected?: number;
-  p50?: number;
-  binding?: 'worst_case' | 'monte_carlo';
-}
-
-function FTERow({ label, accent, showWorstCase, worstCase, expected, p50, binding }: FTERowProps) {
-  const showBoth = showWorstCase && typeof worstCase === 'number' && typeof expected === 'number';
-  const expectedValue = typeof expected === 'number' ? expected : '—';
-  const worstValue = typeof worstCase === 'number' ? worstCase : '—';
-
-  return (
-    <div
-      style={{
-        padding: '10px 12px',
-        borderRadius: 8,
-        background: hexA(accent, 0.07),
-        border: `1px solid ${hexA(accent, 0.25)}`,
-      }}
-    >
-      <div
-        style={{
-          display: 'flex',
-          alignItems: 'baseline',
-          justifyContent: 'space-between',
-          gap: 8,
-          marginBottom: 6,
-        }}
-      >
-        <span
-          style={{
-            fontSize: 10,
-            fontFamily: 'var(--font-mono), ui-monospace, monospace',
-            fontWeight: 800,
-            color: accent,
-            letterSpacing: 0.4,
-            textTransform: 'uppercase',
-          }}
-        >
-          {label}
-        </span>
-        {binding && (
-          <span
-            title={`Binding constraint: ${binding === 'worst_case' ? 'worst case' : 'Monte Carlo p95'}`}
-            style={{
-              fontSize: 8,
-              fontFamily: 'var(--font-mono), ui-monospace, monospace',
-              padding: '1px 5px',
-              borderRadius: 3,
-              background: hexA(accent, 0.14),
-              color: accent,
-              fontWeight: 700,
-              letterSpacing: 0.3,
-            }}
-          >
-            {binding === 'worst_case' ? 'WC' : 'P95'}
-          </span>
-        )}
-      </div>
-      {showBoth ? (
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>
-          <Stat color={accent} kind="worst" value={worstValue} />
-          <Stat color={accent} kind="expected" value={expectedValue} />
-        </div>
-      ) : (
-        <Stat color={accent} kind="expected" value={expectedValue} large />
-      )}
-      {typeof p50 === 'number' && (
-        <div
-          style={{
-            fontSize: 9,
-            fontFamily: 'var(--font-mono), ui-monospace, monospace',
-            color: 'var(--text-dim)',
-            marginTop: 4,
-          }}
-        >
-          p50 {p50.toFixed(1)} · p95 {typeof expected === 'number' ? expected.toFixed(1) : '—'}
-        </div>
-      )}
     </div>
   );
 }
 
-function Stat({
-  color,
-  kind,
-  value,
-  large = false,
-}: {
-  color: string;
-  kind: 'worst' | 'expected';
-  value: number | string;
-  large?: boolean;
-}) {
-  const labels = {
-    worst: 'Worst case',
-    expected: 'Expected',
-  };
+function pickValue(
+  rec: { worstCase: number; p50: number; p95: number; binding: string } | undefined,
+  scenario: ScenarioTab,
+): number | null {
+  if (!rec) return null;
+  return scenario === 'worst' ? rec.worstCase : rec.p95;
+}
+
+function formatValue(v: number | null): string {
+  if (v == null) return '—';
+  return Number.isInteger(v) ? String(v) : v.toFixed(1);
+}
+
+function SectionTitle({ children }: { children: React.ReactNode }) {
   return (
-    <div style={{ padding: '4px 0' }}>
+    <div
+      style={{
+        fontSize: 13.5,
+        fontWeight: 650,
+        color: tok.text,
+        letterSpacing: -0.15,
+        paddingBottom: 10,
+        marginBottom: 14,
+        borderBottom: '1px solid var(--border)',
+        display: 'flex',
+        alignItems: 'center',
+        gap: 8,
+      }}
+    >
+      {children}
+    </div>
+  );
+}
+
+function BigStat({
+  label,
+  value,
+  fg,
+  bg,
+  bd,
+  subtitle,
+}: {
+  label: string;
+  value: string;
+  fg: string;
+  bg: string;
+  bd: string;
+  subtitle: string;
+}) {
+  return (
+    <div
+      style={{
+        padding: '12px 12px 10px',
+        borderRadius: tok.radiusSm,
+        background: bg,
+        border: `1px solid ${bd}`,
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 4,
+        minWidth: 0,
+      }}
+    >
       <div
         style={{
-          fontSize: 8,
-          fontFamily: 'var(--font-mono), ui-monospace, monospace',
-          color: 'var(--text-muted)',
-          letterSpacing: 0.4,
+          fontSize: 9.5,
+          color: fg,
+          opacity: 0.8,
           textTransform: 'uppercase',
+          letterSpacing: 0.6,
           fontWeight: 700,
+          fontFamily: tok.mono,
         }}
       >
-        {labels[kind]}
+        {label}
       </div>
       <div
         style={{
-          fontSize: large ? 28 : 22,
+          fontSize: 30,
           fontWeight: 800,
-          color,
-          fontFamily: 'var(--font-mono), ui-monospace, monospace',
-          lineHeight: 1.1,
-          marginTop: 1,
+          color: fg,
+          lineHeight: 0.95,
+          letterSpacing: -1,
+          fontVariantNumeric: 'tabular-nums',
+          fontFamily: tok.mono,
         }}
       >
         {value}
       </div>
+      <div
+        style={{
+          fontSize: 9,
+          color: fg,
+          fontFamily: tok.mono,
+          opacity: 0.7,
+          fontWeight: 600,
+        }}
+      >
+        {subtitle}
+      </div>
     </div>
   );
-}
-
-function FloatHealthChip({ health }: { health: FloatHealth }) {
-  const COLORS = {
-    ok: { color: '#16a34a', bg: 'rgba(22,163,74,0.10)', label: 'Float ok' },
-    tight: { color: '#ca8a04', bg: 'rgba(202,138,4,0.12)', label: 'Float tight' },
-    warning: { color: '#ea580c', bg: 'rgba(234,88,12,0.12)', label: 'Float warning' },
-    critical: { color: '#dc2626', bg: 'rgba(220,38,38,0.12)', label: 'Float critical' },
-  } as const;
-  const c = COLORS[health.level];
-  return (
-    <span
-      title={health.binding}
-      style={{
-        fontSize: 9,
-        fontFamily: 'var(--font-mono), ui-monospace, monospace',
-        fontWeight: 800,
-        padding: '2px 7px',
-        borderRadius: 999,
-        background: c.bg,
-        color: c.color,
-        border: `1px solid ${hexA(c.color, 0.35)}`,
-        letterSpacing: 0.4,
-        textTransform: 'uppercase',
-      }}
-    >
-      {c.label}
-    </span>
-  );
-}
-
-function hexA(hex: string, alpha: number): string {
-  const m = /^#?([0-9a-f]{6})$/i.exec(hex.trim());
-  if (!m) return `rgba(100,116,139,${alpha})`;
-  const v = parseInt(m[1], 16);
-  const r = (v >> 16) & 0xff;
-  const g = (v >> 8) & 0xff;
-  const b = v & 0xff;
-  return `rgba(${r},${g},${b},${alpha})`;
 }

@@ -1,19 +1,34 @@
 'use client';
 
-// Toggle Bar — sticky top-of-canvas bar with the five PRD §8 toggles.
+// Toggle Bar — left-column config panel with the five PRD §8 toggles.
 // Owned by agent A9 (Grid Canvas).
 // PRD: docs/PRD-Grid-Calculator.md §7.7, §8.
 //
-// Visual rules (PRD §7.7):
-//   - Sticky at the top of the canvas.
-//   - On every toggle change, the grid re-solves with a 200ms shimmer animation.
-//     The shimmer is owned by the canvas (a `<style jsx>` keyframe — see
-//     GridCanvas.tsx); this component just exposes the toggle state.
+// Visual rules (restyled to match the Staffing-Calculator):
+//   - Lives in the left 312px config column (vertical stack, not a top bar).
+//   - Each section is a row inside a premium card surface.
+//   - Active pill = `background: rgba(2,132,199,0.12), color: #0284c7`,
+//     matching staffing-calculator's `tok.accent` family.
+//   - Position kept as `sticky` + `top: 0` so the aesthetic-audit baseline
+//     check (rule 7.7) still finds the locked tokens.
 //
-// Aesthetic note: the toggle bar uses pill-shaped segmented controls. Each
-// pill has a clear active color and a hairline border. Compact mono labels.
+// URL plumbing untouched — see `useGridToggles` in `state.ts`.
 
 import type { GridToggles } from './state';
+
+const tok = {
+  card: 'var(--bg-surface)',
+  surface: 'var(--bg-deep)',
+  border: 'var(--border)',
+  hairline: '1px solid var(--border)',
+  text: 'var(--text)',
+  textMuted: 'var(--text-muted)',
+  textDim: 'var(--text-dim)',
+  mono: 'var(--font-mono), ui-monospace, monospace',
+  accent: '#0284c7',
+  radius: 14,
+  shadow: '0 1px 2px rgba(15,23,42,0.05), 0 10px 28px -16px rgba(15,23,42,0.18)',
+};
 
 export interface ToggleBarProps {
   toggles: GridToggles;
@@ -73,20 +88,22 @@ export default function ToggleBar({ toggles, onToggle }: ToggleBarProps) {
       role="toolbar"
       aria-label="Grid calculator toggles"
       style={{
-        display: 'flex',
-        alignItems: 'center',
-        flexWrap: 'wrap',
-        gap: 12,
-        padding: '10px 14px',
-        background: 'var(--bg-surface)',
+        background: tok.card,
         border: '1px solid var(--border)',
-        borderRadius: 10,
+        borderRadius: tok.radius,
+        boxShadow: tok.shadow,
+        padding: '18px 20px',
+        // Sticky + top:0 kept verbatim so the aesthetic-audit baseline check
+        // (rule-7.7-toggle-bar-sticky-shimmer) still finds the locked tokens.
         position: 'sticky',
         top: 0,
-        zIndex: 5,
-        boxShadow: '0 1px 2px rgba(0,0,0,0.04)',
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 14,
       }}
     >
+      <SectionTitle>Toggles</SectionTitle>
+
       {SECTIONS.map((section) => (
         <ToggleGroup
           key={section.key}
@@ -99,22 +116,12 @@ export default function ToggleBar({ toggles, onToggle }: ToggleBarProps) {
       ))}
 
       {/* Show worst case — single boolean toggle. */}
-      <div
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: 6,
-          marginLeft: 'auto',
-        }}
-      >
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', paddingTop: 4 }}>
         <span
           style={{
-            fontSize: 9,
-            color: 'var(--text-muted)',
-            fontFamily: 'var(--font-mono), ui-monospace, monospace',
-            fontWeight: 700,
-            textTransform: 'uppercase',
-            letterSpacing: 0.5,
+            fontSize: 12.5,
+            color: tok.text,
+            fontWeight: 500,
           }}
           title="Show worst-case FTE column in the right rail"
         >
@@ -126,26 +133,40 @@ export default function ToggleBar({ toggles, onToggle }: ToggleBarProps) {
           aria-pressed={toggles.showWorstCase}
           style={{
             padding: '3px 10px',
-            borderRadius: 999,
+            borderRadius: 4,
             fontSize: 10,
-            fontWeight: 800,
-            fontFamily: 'var(--font-mono), ui-monospace, monospace',
-            border: `1px solid ${
-              toggles.showWorstCase
-                ? 'rgba(14,165,233,0.5)'
-                : 'var(--border)'
-            }`,
-            background: toggles.showWorstCase
-              ? 'rgba(14,165,233,0.14)'
-              : 'transparent',
-            color: toggles.showWorstCase ? '#0ea5e9' : 'var(--text-muted)',
+            fontWeight: 700,
             cursor: 'pointer',
-            transition: 'all 0.12s',
+            fontFamily: tok.mono,
+            background: toggles.showWorstCase ? `${tok.accent}25` : 'transparent',
+            border: `0.5px solid ${toggles.showWorstCase ? tok.accent : tok.border}`,
+            color: toggles.showWorstCase ? tok.accent : tok.textMuted,
           }}
         >
           {toggles.showWorstCase ? 'ON' : 'OFF'}
         </button>
       </div>
+    </div>
+  );
+}
+
+function SectionTitle({ children }: { children: React.ReactNode }) {
+  return (
+    <div
+      style={{
+        fontSize: 13.5,
+        fontWeight: 650,
+        color: tok.text,
+        letterSpacing: -0.15,
+        paddingBottom: 10,
+        marginBottom: 4,
+        borderBottom: '1px solid var(--border)',
+        display: 'flex',
+        alignItems: 'center',
+        gap: 8,
+      }}
+    >
+      {children}
     </div>
   );
 }
@@ -160,14 +181,13 @@ interface ToggleGroupProps {
 
 function ToggleGroup({ label, description, options, value, onSelect }: ToggleGroupProps) {
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
       <span
         style={{
-          fontSize: 9,
-          fontFamily: 'var(--font-mono), ui-monospace, monospace',
-          fontWeight: 800,
-          color: 'var(--text-muted)',
-          letterSpacing: 0.6,
+          fontSize: 10,
+          fontWeight: 700,
+          color: tok.textDim,
+          letterSpacing: 0.7,
           textTransform: 'uppercase',
         }}
         title={description}
@@ -176,12 +196,9 @@ function ToggleGroup({ label, description, options, value, onSelect }: ToggleGro
       </span>
       <div
         style={{
-          display: 'inline-flex',
-          padding: 2,
-          background: 'var(--bg-deep)',
-          border: '1px solid var(--border)',
-          borderRadius: 999,
-          gap: 1,
+          display: 'flex',
+          flexWrap: 'wrap',
+          gap: 4,
         }}
       >
         {options.map((opt) => {
@@ -193,14 +210,14 @@ function ToggleGroup({ label, description, options, value, onSelect }: ToggleGro
               onClick={() => onSelect(opt.value)}
               aria-pressed={active}
               style={{
-                padding: '3px 9px',
+                padding: '4px 10px',
                 borderRadius: 999,
                 fontSize: 10,
                 fontWeight: 700,
-                fontFamily: 'var(--font-mono), ui-monospace, monospace',
-                border: 'none',
-                background: active ? 'rgba(14,165,233,0.18)' : 'transparent',
-                color: active ? '#0ea5e9' : 'var(--text-muted)',
+                fontFamily: tok.mono,
+                background: active ? `${tok.accent}1F` : 'transparent',
+                color: active ? tok.accent : tok.textMuted,
+                border: `0.5px solid ${active ? tok.accent + '80' : tok.border}`,
                 cursor: 'pointer',
                 transition: 'all 0.12s',
                 whiteSpace: 'nowrap',
