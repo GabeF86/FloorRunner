@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   clampConfig, severityFor, buildBreakAnalysis, breakCoverageNotes, feasibilityNotes,
+  resolveCrossCover, crossCoverNotes, readStaffingWeight, staffingWeightField,
 } from './shared';
 import type { ConfigField, BreakSource } from './types';
 
@@ -70,6 +71,54 @@ describe('breakCoverageNotes', () => {
     expect(notes.some(n => n.includes('Floats'))).toBe(true);
     expect(notes.some(n => n.includes('Total:'))).toBe(true);
     expect(notes.some(n => n.includes('%'))).toBe(true);
+  });
+});
+
+describe('staffing weight', () => {
+  it('readStaffingWeight defaults to balanced for missing/invalid values', () => {
+    expect(readStaffingWeight({})).toBe('balanced');
+    expect(readStaffingWeight({ staffingWeight: 'nonsense' })).toBe('balanced');
+    expect(readStaffingWeight({ staffingWeight: 'solo' })).toBe('solo');
+    expect(readStaffingWeight({ staffingWeight: 'crna' })).toBe('crna');
+  });
+  it('clampConfig keeps a valid select option and falls back otherwise', () => {
+    const schema = [staffingWeightField()];
+    expect(clampConfig(schema, { staffingWeight: 'crna' }).staffingWeight).toBe('crna');
+    expect(clampConfig(schema, { staffingWeight: 'bogus' }).staffingWeight).toBe('balanced');
+    expect(clampConfig(schema, {}).staffingWeight).toBe('balanced');
+  });
+});
+
+describe('resolveCrossCover', () => {
+  it('absorbs demand fully when flex capacity is sufficient', () => {
+    const r = resolveCrossCover(1, [{ label: 'Floats', capacity: 3 }]);
+    expect(r.flexCapacity).toBe(3);
+    expect(r.absorbed).toBe(1);
+    expect(r.shortfall).toBe(0);
+  });
+  it('reports a shortfall when flex is insufficient', () => {
+    const r = resolveCrossCover(3, [{ label: 'Floats', capacity: 1 }]);
+    expect(r.absorbed).toBe(1);
+    expect(r.shortfall).toBe(2);
+  });
+  it('treats zero demand as fully covered and ignores negative capacity', () => {
+    expect(resolveCrossCover(0, [{ label: 'x', capacity: 5 }]).shortfall).toBe(0);
+    expect(resolveCrossCover(2, [{ label: 'x', capacity: -3 }, { label: 'y', capacity: 2 }]).flexCapacity).toBe(2);
+  });
+});
+
+describe('crossCoverNotes', () => {
+  it('is empty when there is no demand', () => {
+    expect(crossCoverNotes('TEEs', resolveCrossCover(0, []))).toEqual([]);
+  });
+  it('explains full absorption with no dedicated staff', () => {
+    const notes = crossCoverNotes('DCCV/TEE', resolveCrossCover(1, [{ label: 'Floats', capacity: 2 }]));
+    expect(notes.some((n) => n.toLowerCase().includes('absorbed'))).toBe(true);
+    expect(notes.some((n) => n.toLowerCase().includes('no dedicated'))).toBe(true);
+  });
+  it('flags added dedicated staffing on a shortfall', () => {
+    const notes = crossCoverNotes('TEEs', resolveCrossCover(2, [{ label: 'Floats', capacity: 0 }]));
+    expect(notes.some((n) => n.toLowerCase().includes('dedicated'))).toBe(true);
   });
 });
 

@@ -14,9 +14,15 @@ import {
   FacilityCalculator,
   StaffAssignment,
 } from './types';
-import { clampConfig, buildBreakAnalysis, breakCoverageNotes, feasibilityNotes, BREAKS_PER_FLOAT } from './shared';
+import {
+  clampConfig, buildBreakAnalysis, breakCoverageNotes, feasibilityNotes, BREAKS_PER_FLOAT,
+  resolveCrossCover, crossCoverNotes, CrossCoverFlexSource, CrossCoverResolution,
+  staffingWeightField, readStaffingWeight,
+} from './shared';
 
 const SCHEMA: ConfigField[] = [
+  // STAFFING STRATEGY
+  staffingWeightField(),
   // MAIN OR
   { key: 'mainOR',     label: 'Main ORs',         section: 'Main OR (4th Floor)', kind: 'number', defaultValue: 7, min: 0, max: 9, accentColor: '#4A90D9' },
   { key: 'addOnRooms', label: 'Add-on rooms',     section: 'Main OR (4th Floor)', kind: 'number', defaultValue: 0, min: 0, max: 3, accentColor: '#E8C854' },
@@ -28,11 +34,13 @@ const SCHEMA: ConfigField[] = [
   { key: 'endo',       label: 'Endo rooms',       section: 'Endo (GI)',            kind: 'number', defaultValue: 0, min: 0, max: 4, accentColor: '#8BC34A' },
   // EP LAB
   { key: 'ep',         label: 'EP rooms',         section: 'EP Lab',               kind: 'number', defaultValue: 0, min: 0, max: 4, accentColor: '#29B6F6' },
-  { key: 'epTEE',      label: 'DCCV / TEEs',      section: 'EP Lab',               kind: 'toggle', defaultValue: false, helpText: 'Adds a dedicated DCCV/TEE CRNA in EP', visibleWhen: (cfg) => Number(cfg.ep) > 0 },
+  { key: 'epTEE',      label: 'DCCV / TEEs',      section: 'EP Lab',               kind: 'number', defaultValue: 0, min: 0, max: 2, helpText: 'Intermittent DCCV/TEE rooms within EP', visibleWhen: (cfg) => Number(cfg.ep) > 0, accentColor: '#29B6F6' },
+  { key: 'epTEECross', label: 'Cross cover',      section: 'EP Lab',               kind: 'toggle', defaultValue: false, helpText: 'Absorb DCCV/TEE with floats/8101/OB before adding a dedicated CRNA', attachTo: 'epTEE', visibleWhen: (cfg) => Number(cfg.ep) > 0, accentColor: '#F97316' },
   // OB
   { key: 'csections',  label: 'C-sections',       section: 'OB',                   kind: 'number', defaultValue: 0, min: 0, max: 8, accentColor: '#E88AD0' },
   // OTHER
-  { key: 'ir',         label: 'IR case booked',   section: 'Other',                kind: 'toggle', defaultValue: false, accentColor: '#FFAB40' },
+  { key: 'ir',         label: 'IR cases',         section: 'Other',                kind: 'number', defaultValue: 0, min: 0, max: 2, accentColor: '#FFAB40' },
+  { key: 'irCross',    label: 'Cross cover',      section: 'Other',                kind: 'toggle', defaultValue: false, helpText: 'Absorb IR with spare supervision / floats before adding a dedicated provider', attachTo: 'ir', accentColor: '#F97316' },
 ];
 
 const DEFAULT_CONFIG: CalculatorConfig = Object.fromEntries(
@@ -57,10 +65,13 @@ function calculateLankenau(cfgIn: CalculatorConfig, avail: AvailableStaff): Calc
     cardiac:    Number(clamped.cardiac),
     endo:       Number(clamped.endo),
     ep:         Number(clamped.ep),
-    epTEE:      Boolean(clamped.epTEE),
+    epTEE:      Number(clamped.epTEE),
+    epTEECross: Boolean(clamped.epTEECross),
     csections:  Number(clamped.csections),
-    ir:         Boolean(clamped.ir),
+    ir:         Number(clamped.ir),
+    irCross:    Boolean(clamped.irCross),
   };
+  const weight = readStaffingWeight(clamped);
 
   const asgn: MutableAssignment[] = [];
   let mdt = 0, crt = 0;
@@ -109,31 +120,42 @@ function calculateLankenau(cfgIn: CalculatorConfig, avail: AvailableStaff): Calc
     }
   }
 
-  // ── EP — MD supervising CRNAs, toggle for DCCV/TEE ──
+  // ── EP — MD supervising CRNAs; DCCV/TEE rooms dedicated unless cross-covered ──
+  // DCCV/TEE are intermittent. When `epTEECross` is on we don't allocate a
+  // dedicated CRNA here — the demand is resolved against flexible coverage
+  // after floats exist (see the cross-cover section below).
   let epMD: MutableAssignment | null = null;
+  const teeCount = Math.min(cfg.epTEE, cfg.ep);
   if (cfg.ep > 0) {
-    const procRooms = cfg.epTEE ? cfg.ep - 1 : cfg.ep;
-    epMD = push({ id: `md-${mdt++}`, type: 'MD', role: 'EP MD', site: 'EP Lab',
-      supervises: [], isSolo: false,
-      notes: 'EP Lab MD supervising procedure CRNAs.' + (cfg.epTEE ? ' DCCV/TEE room active.' : '') });
-    for (let i = 0; i < procRooms; i++) {
-      const c = push({ id: `crna-${crt++}`, type: 'CRNA', role: `EP ${i + 1}`, site: 'EP Lab',
-        supervisedBy: epMD.id, supervises: [] });
-      epMD.supervises.push(c.id);
+    const procRooms = cfg.ep - teeCount;
+    const dedicatedTEE = teeCount > 0 && !cfg.epTEECross;
+    // Only stand up an EP MD if there's a room they'd actually supervise. A
+    // single EP room that is a cross-covered DCCV/TEE needs no dedicated EP team.
+    if (procRooms > 0 || dedicatedTEE) {
+      epMD = push({ id: `md-${mdt++}`, type: 'MD', role: 'EP MD', site: 'EP Lab',
+        supervises: [], isSolo: false,
+        notes: 'EP Lab MD supervising procedure CRNAs.' + (teeCount > 0 ? ' DCCV/TEE room active.' : '') });
+      for (let i = 0; i < procRooms; i++) {
+        const c = push({ id: `crna-${crt++}`, type: 'CRNA', role: `EP ${i + 1}`, site: 'EP Lab',
+          supervisedBy: epMD.id, supervises: [] });
+        epMD.supervises.push(c.id);
+      }
+      if (dedicatedTEE) {
+        for (let i = 0; i < teeCount; i++) {
+          const teeC = push({ id: `crna-${crt++}`, type: 'CRNA', role: teeCount > 1 ? `DCCV/TEE ${i + 1}` : 'DCCV/TEE', site: 'EP Lab',
+            supervisedBy: epMD.id, isTEE: true, supervises: [],
+            notes: 'Dedicated DCCV/TEE CRNA. Available for break relief between cases.' });
+          epMD.supervises.push(teeC.id);
+        }
+      }
+      if (epMD.supervises.length === 0) epMD.isSolo = true;
     }
-    if (cfg.epTEE) {
-      const teeC = push({ id: `crna-${crt++}`, type: 'CRNA', role: 'DCCV/TEE', site: 'EP Lab',
-        supervisedBy: epMD.id, isTEE: true, supervises: [],
-        notes: 'Dedicated DCCV/TEE CRNA. Available for break relief between cases.' });
-      epMD.supervises.push(teeC.id);
-    }
-    if (epMD.supervises.length === 0) epMD.isSolo = true;
   }
 
-  // ── APC — staffing depends on MD budget ──
+  // ── APC — staffing depends on MD budget + staffing weight ──
   // Optimal (MDs plentiful): 1 supervising MD (1:3) + 1 solo MD = 2 MDs
-  // Conservative (MDs tight): 1 MD supervising all CRNAs (up to 1:4) = 1 MD
-  // CRNA shortage: all solo MDs
+  // Conservative (MDs tight / CRNA-weighted): 1 MD supervising all CRNAs (1:4) = 1 MD
+  // Solo (solo-weighted / CRNA shortage): one solo MD per room — most MD-heavy
   const apcMDs: MutableAssignment[] = [];
   const apcCRNAs: MutableAssignment[] = [];
   if (cfg.apc > 0) {
@@ -142,8 +164,16 @@ function calculateLankenau(cfgIn: CalculatorConfig, avail: AvailableStaff): Calc
     const crnaForFloats = 3;
     const crnaEstNeeded = crnasSoFar + crnaForMainOR + crnaForFloats;
     const crnaAvailForAPC = Math.max(0, avail.crnas - crnaEstNeeded);
+    const noCRNA = crnaAvailForAPC < cfg.apc;
 
-    if (crnaAvailForAPC >= cfg.apc && !mdTight) {
+    // Pick the staffing mode. Weight overrides the default heuristic, but a CRNA
+    // shortage always forces solo. 'balanced' reproduces the original behavior.
+    let mode: 'optimal' | 'conservation' | 'solo';
+    if (weight === 'solo' || noCRNA) mode = 'solo';
+    else if (weight === 'crna') mode = 'conservation';
+    else mode = mdTight ? 'conservation' : 'optimal';
+
+    if (mode === 'optimal') {
       const supMD = push({ id: `md-${mdt++}`, type: 'MD', role: 'APC Supv', site: 'APC',
         supervises: [], isSolo: false, notes: 'APC supervising MD. 1:3 optimal ratio.' });
       apcMDs.push(supMD);
@@ -157,7 +187,7 @@ function calculateLankenau(cfgIn: CalculatorConfig, avail: AvailableStaff): Calc
         supMD.supervises.push(c.id);
         apcCRNAs.push(c);
       }
-    } else if (crnaAvailForAPC >= cfg.apc) {
+    } else if (mode === 'conservation') {
       const supMD = push({ id: `md-${mdt++}`, type: 'MD', role: 'APC Supv', site: 'APC',
         supervises: [], isSolo: false,
         notes: `APC supervising MD. 1:${cfg.apc} ratio (MD conservation mode).` });
@@ -169,9 +199,10 @@ function calculateLankenau(cfgIn: CalculatorConfig, avail: AvailableStaff): Calc
         apcCRNAs.push(c);
       }
     } else {
+      const note = noCRNA ? 'APC solo MD (CRNAs unavailable).' : 'APC solo MD (solo-weighted).';
       for (let i = 0; i < cfg.apc; i++) {
         apcMDs.push(push({ id: `md-${mdt++}`, type: 'MD', role: `APC MD ${i + 1}`, site: 'APC',
-          supervises: [], isSolo: true, notes: 'APC solo MD (CRNAs unavailable).' }));
+          supervises: [], isSolo: true, notes: note }));
       }
     }
   }
@@ -227,19 +258,21 @@ function calculateLankenau(cfgIn: CalculatorConfig, avail: AvailableStaff): Calc
     }
   }
 
-  // ── IR — optional single case ──
-  let irProvider: MutableAssignment | null = null;
-  if (cfg.ir) {
-    const allSupMDs: MutableAssignment[] = [...orMDs];
-    if (md8101.supervises.length > 0 && md8101.supervises.length < 3) allSupMDs.push(md8101);
-    const avMD = allSupMDs.find(m => m.supervises.length < 4);
-    if (avMD) {
-      irProvider = push({ id: `crna-${crt++}`, type: 'CRNA', role: 'IR CRNA', site: 'IR',
-        supervisedBy: avMD.id, supervises: [] });
-      avMD.supervises.push(irProvider.id);
-    } else {
-      irProvider = push({ id: `md-${mdt++}`, type: 'MD', role: 'IR MD', site: 'IR',
-        supervises: [], isSolo: true, notes: 'IR solo — no OR MD capacity.' });
+  // ── IR — dedicated providers unless cross-covered ──
+  // Cross-covered IR is resolved after floats (see the cross-cover section).
+  if (cfg.ir > 0 && !cfg.irCross) {
+    for (let i = 0; i < cfg.ir; i++) {
+      const allSupMDs: MutableAssignment[] = [...orMDs];
+      if (md8101.supervises.length > 0 && md8101.supervises.length < 3) allSupMDs.push(md8101);
+      const avMD = allSupMDs.find(m => m.supervises.length < 4);
+      if (avMD) {
+        const c = push({ id: `crna-${crt++}`, type: 'CRNA', role: cfg.ir > 1 ? `IR CRNA ${i + 1}` : 'IR CRNA', site: 'IR',
+          supervisedBy: avMD.id, supervises: [] });
+        avMD.supervises.push(c.id);
+      } else {
+        push({ id: `md-${mdt++}`, type: 'MD', role: cfg.ir > 1 ? `IR MD ${i + 1}` : 'IR MD', site: 'IR',
+          supervises: [], isSolo: true, notes: 'IR solo — no OR MD capacity.' });
+      }
     }
   }
 
@@ -295,6 +328,76 @@ function calculateLankenau(cfgIn: CalculatorConfig, avail: AvailableStaff): Calc
     mdAvailStill--;
   }
 
+  // ── Cross-cover resolution ──
+  // Intermittent DCCV/TEE and IR demand flagged "cross cover" is absorbed by the
+  // flexible pool (floats, schedule runner's spare capacity, OB MD, spare OR
+  // supervision) before any dedicated provider is added. Runs after floats exist
+  // so the tally reflects the real board. Only the unabsorbed remainder becomes
+  // new headcount — which feasibilityNotes then flags if it overruns availability.
+  //
+  // The float pool and schedule-runner spare are a SINGLE shared budget drawn
+  // down as each site absorbs, so the same float/8101 is never credited to two
+  // intermittent sites at once. OB MD (TEE) and spare OR supervision (IR) are
+  // site-specific resources that don't overlap, so they aren't shared.
+  let floatBudget = floats.length; // CRNA + MD floats
+  let runnerBudget = md8101.supervises.length < 2 ? 1 : 0;
+
+  let teeResolution: CrossCoverResolution | null = null;
+  if (teeCount > 0 && cfg.epTEECross) {
+    const sources: CrossCoverFlexSource[] = [
+      { label: 'Floats', capacity: floatBudget },
+      { label: 'Schedule runner (8101)', capacity: runnerBudget },
+      { label: 'OB MD', capacity: 1 },
+    ];
+    teeResolution = resolveCrossCover(teeCount, sources);
+    // Draw down the budgets, consuming TEE's EXCLUSIVE resource (OB MD) before the
+    // SHARED float/runner pool, so floats stay available for IR where possible.
+    let drawn = teeResolution.absorbed;
+    drawn -= Math.min(drawn, 1); // OB MD (exclusive to TEE)
+    const f = Math.min(drawn, floatBudget); floatBudget -= f; drawn -= f;
+    const r = Math.min(drawn, runnerBudget); runnerBudget -= r; drawn -= r;
+    for (let i = 0; i < teeResolution.shortfall; i++) {
+      // Never leave a TEE CRNA unsupervised: prefer the EP MD, else an OR Supv MD
+      // below 1:4, else the schedule runner (8101 carries ≤2 rooms, so has room).
+      const host = epMD || orMDs.find(m => m.supervises.length < 4) || (md8101.supervises.length < 4 ? md8101 : null);
+      const teeC = push({ id: `crna-${crt++}`, type: 'CRNA', role: teeCount > 1 ? `DCCV/TEE ${i + 1}` : 'DCCV/TEE', site: 'EP Lab',
+        supervisedBy: host ? host.id : null, isTEE: true, supervises: [],
+        notes: 'Dedicated DCCV/TEE CRNA (flexible coverage insufficient).' });
+      if (host) { host.supervises.push(teeC.id); host.isSolo = false; }
+    }
+  }
+
+  let irResolution: CrossCoverResolution | null = null;
+  if (cfg.ir > 0 && cfg.irCross) {
+    // Spare OR supervision (an OR Supv MD below 1:4) can pick up an intermittent
+    // IR case without a new body, alongside the SHARED float / runner budget.
+    const supSpare = orMDs.reduce((sum, m) => sum + Math.max(0, 4 - m.supervises.length), 0);
+    const sources: CrossCoverFlexSource[] = [
+      { label: 'Floats', capacity: floatBudget },
+      { label: 'Spare OR supervision', capacity: supSpare },
+      { label: 'Schedule runner (8101)', capacity: runnerBudget },
+    ];
+    irResolution = resolveCrossCover(cfg.ir, sources);
+    // Consume IR's EXCLUSIVE resource (spare OR supervision) before the SHARED
+    // float/runner pool, mirroring the TEE drawdown above.
+    let drawn = irResolution.absorbed;
+    drawn -= Math.min(drawn, supSpare); // spare OR supervision (exclusive to IR)
+    const f = Math.min(drawn, floatBudget); floatBudget -= f; drawn -= f;
+    const r = Math.min(drawn, runnerBudget); runnerBudget -= r; drawn -= r;
+    for (let i = 0; i < irResolution.shortfall; i++) {
+      const avMD = orMDs.find(m => m.supervises.length < 4) || (md8101.supervises.length < 4 ? md8101 : undefined);
+      if (avMD) {
+        const c = push({ id: `crna-${crt++}`, type: 'CRNA', role: cfg.ir > 1 ? `IR CRNA ${i + 1}` : 'IR CRNA', site: 'IR',
+          supervisedBy: avMD.id, supervises: [] });
+        avMD.supervises.push(c.id);
+        avMD.isSolo = false;
+      } else {
+        push({ id: `md-${mdt++}`, type: 'MD', role: cfg.ir > 1 ? `IR MD ${i + 1}` : 'IR MD', site: 'IR',
+          supervises: [], isSolo: true, notes: 'IR solo — flexible coverage insufficient.' });
+      }
+    }
+  }
+
   // ── Contingencies ──
   if (floats.length > 0) {
     const traumaFloat = floats.find(f => f.type === 'CRNA') || floats[0];
@@ -313,14 +416,14 @@ function calculateLankenau(cfgIn: CalculatorConfig, avail: AvailableStaff): Calc
       type: 'emergCS', label: 'Emergency C-section (30%)',
     });
   }
-  if (cfg.epTEE && floats.length > 0) {
+  if (teeCount > 0 && floats.length > 0) {
     const teeFloat = floats.find(f => f.type === 'CRNA') || floats[0];
     contingencies.push({
       fromId: epMD ? epMD.id : md8101.id, toId: teeFloat.id,
-      type: 'epTEE', label: 'DCCV/TEE float backup',
+      type: 'epTEE', label: teeResolution ? 'DCCV/TEE cross-cover (float)' : 'DCCV/TEE float backup',
     });
   }
-  if (cfg.epTEE) {
+  if (teeCount > 0) {
     const teeCRNA = asgn.find(a => a.isTEE);
     if (teeCRNA) {
       contingencies.push({
@@ -328,6 +431,14 @@ function calculateLankenau(cfgIn: CalculatorConfig, avail: AvailableStaff): Calc
         type: 'teeBreaks', label: 'DCCV/TEE → break relief between cases',
       });
     }
+  }
+  if (irResolution && irResolution.absorbed > 0 && floats.length > 0) {
+    const irFloat = floats.find(f => f.type === 'CRNA') || floats[0];
+    const irSup = orMDs[0] || md8101;
+    contingencies.push({
+      fromId: irSup.id, toId: irFloat.id,
+      type: 'irFlex', label: 'IR case → float coverage',
+    });
   }
   if (cfg.addOnRooms > 0) {
     const addOnCRNA = asgn.find(a => a.isAddOn);
@@ -347,21 +458,31 @@ function calculateLankenau(cfgIn: CalculatorConfig, avail: AvailableStaff): Calc
   const totalFloats = floats.length;
   const notes: string[] = [];
 
+  if (weight !== 'balanced') {
+    notes.push(weight === 'solo'
+      ? '🔷 Staffing strategy: More Solo MD — favoring solo MDs over supervised CRNAs.'
+      : '🔶 Staffing strategy: More CRNA — favoring supervised CRNAs over solo MDs.');
+  }
+
   if (md8101.supervises.length > 0) {
     notes.push(`📋 8101 supervising ${md8101.supervises.length} OR room${md8101.supervises.length > 1 ? 's' : ''} to optimize staffing. Still available for emergencies.`);
   } else {
     notes.push('✅ 8101 free — available for emergencies, traumas, epidurals.');
   }
   if (cfg.cardiac > 0) notes.push(`❤️ ${cfg.cardiac} cardiac room${cfg.cardiac > 1 ? 's' : ''} — solo cardiac anesthesiologists.`);
-  if (cfg.apc > 0 && apcCRNAs.length === 0) notes.push('⚠️ APC staffed with solo MDs — no CRNAs available.');
+  if (cfg.apc > 0 && apcCRNAs.length === 0) notes.push(weight === 'solo'
+    ? `🔷 APC: ${apcMDs.length} solo MD${apcMDs.length > 1 ? 's' : ''} (solo-weighted).`
+    : '⚠️ APC staffed with solo MDs — no CRNAs available.');
   if (cfg.apc > 0 && apcCRNAs.length > 0 && apcMDs.length === 2) notes.push(`🏥 APC: 1 supervising MD (1:${apcCRNAs.length}) + 1 solo MD.`);
   if (cfg.apc > 0 && apcCRNAs.length > 0 && apcMDs.length === 1) notes.push(`🏥 APC: 1 MD supervising ${apcCRNAs.length} CRNAs (1:${apcCRNAs.length}) — MD conservation mode.`);
   if (totalORs >= 7) notes.push(`⚠️ High Main OR volume — ${totalORs} rooms.`);
   if (cfg.addOnRooms > 0) notes.push(`📌 ${cfg.addOnRooms} add-on room${cfg.addOnRooms > 1 ? 's' : ''} (${cfg.mainOR} scheduled + ${cfg.addOnRooms} add-on = ${totalORs} total).`);
-  if (cfg.ep > 0) notes.push(`⚡ EP Lab: ${cfg.ep} room${cfg.ep > 1 ? 's' : ''}${cfg.epTEE ? ' (includes DCCV/TEE)' : ''}.`);
-  if (cfg.epTEE) notes.push('☕ DCCV/TEE CRNA available for break relief between cases.');
+  if (cfg.ep > 0) notes.push(`⚡ EP Lab: ${cfg.ep} room${cfg.ep > 1 ? 's' : ''}${teeCount > 0 ? ` (incl. ${teeCount} DCCV/TEE)` : ''}.`);
+  if (asgn.some(a => a.isTEE)) notes.push('☕ DCCV/TEE CRNA available for break relief between cases.');
+  if (teeResolution) notes.push(...crossCoverNotes('DCCV/TEE', teeResolution));
   if (cfg.endo > 0) notes.push(`🔬 Endo: ${cfg.endo} room${cfg.endo > 1 ? 's' : ''} under dedicated Endo MD.`);
-  if (cfg.ir) notes.push('📋 IR case booked today.');
+  if (cfg.ir > 0) notes.push(`📋 ${cfg.ir} IR case${cfg.ir > 1 ? 's' : ''} booked today.`);
+  if (irResolution) notes.push(...crossCoverNotes('IR', irResolution));
   if (cfg.csections >= 1) notes.push(`👶 ${cfg.csections} C-section${cfg.csections > 1 ? 's' : ''} scheduled.`);
   if (cfg.csections >= 4) notes.push('🔴 High OB volume — strongly consider dedicated second OB provider.');
   notes.push('🔴 Trauma OR (30-40%): float provider responds.');
@@ -378,11 +499,12 @@ function calculateLankenau(cfgIn: CalculatorConfig, avail: AvailableStaff): Calc
   );
   const breakDemand = provNeedingBreaks.length;
 
+  const dedicatedTEEs = asgn.filter(a => a.isTEE).length;
   const bkFloats = floats.length * BREAKS_PER_FLOAT;
-  const bkTEE = cfg.epTEE ? 2 : 0;
+  const bkTEE = dedicatedTEEs * 2;
   const bk8101 = 1;
   const bkOB = 1;
-  const bkEP = cfg.ep > 0 ? 1 : 0;
+  const bkEP = epMD ? 1 : 0;
   const supMDsWith3 = mds.filter(m =>
     !m.is8101 && !m.isSolo && !m.isCardiac && m.supervises && m.supervises.length >= 3
   ).length;
@@ -390,7 +512,7 @@ function calculateLankenau(cfgIn: CalculatorConfig, avail: AvailableStaff): Calc
 
   const breakSources = [
     { label: 'Floats', count: floats.length, breaks: bkFloats, detail: `${floats.length} × 5` },
-    ...(bkTEE > 0 ? [{ label: 'DCCV/TEE CRNA', count: 1, breaks: bkTEE, detail: 'between cases' }] : []),
+    ...(bkTEE > 0 ? [{ label: 'DCCV/TEE CRNA', count: dedicatedTEEs, breaks: bkTEE, detail: 'between cases' }] : []),
     { label: '8101', count: 1, breaks: bk8101, detail: 'schedule runner' },
     { label: 'OB MD', count: 1, breaks: bkOB, detail: 'between cases' },
     ...(bkEP > 0 ? [{ label: 'EP MD', count: 1, breaks: bkEP, detail: 'between cases' }] : []),
