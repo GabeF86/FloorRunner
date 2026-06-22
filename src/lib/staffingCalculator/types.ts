@@ -59,7 +59,7 @@ export interface CalculatorOutput {
 // Paoli has Endo+TEE/Neuro Lab/EP Lab, etc. We keep it as a generic record so
 // each module can declare its own fields, and the page renders inputs based on
 // the schema below.
-export type CalculatorConfig = Record<string, number | boolean>;
+export type CalculatorConfig = Record<string, number | boolean | string>;
 
 export interface AvailableStaff {
   mds: number;
@@ -72,16 +72,25 @@ export interface ConfigField {
   key: string;
   label: string;
   section: string;          // group heading (e.g. "MAIN OR", "APC")
-  kind: 'number' | 'toggle';
-  defaultValue: number | boolean;
+  kind: 'number' | 'toggle' | 'select';
+  defaultValue: number | boolean | string;
   min?: number;
   max?: number;
+  // For `kind: 'select'` — the mutually-exclusive choices rendered as a
+  // segmented control. The config value is the chosen option's `value`.
+  options?: { value: string; label: string }[];
   helpText?: string;
   // If set, the field only renders when this predicate is true. Lets us
   // hide DCCV/TEE toggle when EP rooms = 0, etc.
   visibleWhen?: (cfg: CalculatorConfig) => boolean;
   // Optional accent color for the stepper buttons / toggle.
   accentColor?: string;
+  // If set, this field renders *inline beside* the parent field's row (keyed
+  // by the parent's `key`) instead of as its own standalone row. Used for the
+  // compact "Cross cover" toggle that sits next to an intermittent site's +/-
+  // stepper (e.g. DCCV/TEE, IR). The field is still a real schema entry so
+  // clampConfig + defaultConfig pick it up automatically.
+  attachTo?: string;
 }
 
 // Lane definition for the by-site visualization. Each entry corresponds to

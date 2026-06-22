@@ -1,10 +1,15 @@
 // Paoli Hospital staffing calculator.
-// Ported verbatim (TypeScript) from the standalone "UAS Staff Optimizer"
-// prototype (~/Desktop/UAS Staff Optimizer/index.html). Algorithm details
-// are Paoli-specific — Floor Runner role (capped at 3 CRNAs), Endo/OB
-// always staffed, EP/Neuro toggles, TEEs handled by Endo MD's CRNAs, and
-// the MD Solo Priority flag. Don't generalize without verifying each
-// branch against the original.
+// Ported (TypeScript) from the standalone "UAS Staff Optimizer" prototype
+// (~/Desktop/UAS Staff Optimizer/index.html). Algorithm details are
+// Paoli-specific — Floor Runner role (capped at 3 CRNAs), Endo/OB always
+// staffed, EP/Neuro room counts, and the MD Solo Priority flag.
+//
+// Off-site rooms (EP Lab, Neuro Lab) are numeric counts. TEEs/Cardio is an
+// intermittent site with a "cross cover" option: when on, the demand is
+// absorbed by the flexible pool (floats, idle Endo MD, OB MD) before any
+// dedicated CRNA is added; when off, a dedicated TEE CRNA runs under the Endo
+// MD. Don't generalize the room/ratio math without verifying against the
+// original.
 
 import {
   AvailableStaff,
@@ -15,20 +20,25 @@ import {
   FacilityCalculator,
   StaffAssignment,
 } from './types';
-import { clampConfig, buildBreakAnalysis, breakCoverageNotes, feasibilityNotes, BREAKS_PER_FLOAT } from './shared';
+import {
+  clampConfig, buildBreakAnalysis, breakCoverageNotes, feasibilityNotes, BREAKS_PER_FLOAT,
+  resolveCrossCover, crossCoverNotes, CrossCoverFlexSource, CrossCoverResolution,
+  staffingWeightField, readStaffingWeight,
+} from './shared';
 
 const FR_MAX = 3; // Floor Runner hard cap on supervised CRNAs
 
 const SCHEMA: ConfigField[] = [
+  // STAFFING STRATEGY — "More Solo MD" subsumes the old MD-Solo-Priority toggle.
+  staffingWeightField(),
   // MAIN OR
   { key: 'mainORCount', label: 'Main ORs',          section: 'Main OR (4th Floor)', kind: 'number', defaultValue: 7, min: 0, max: 11, accentColor: '#4A90D9' },
   { key: 'addOnRooms',  label: 'Add-on rooms',      section: 'Main OR (4th Floor)', kind: 'number', defaultValue: 0, min: 0, max: 3,  accentColor: '#E8C854' },
-  // OFF-SITE TOGGLES
-  { key: 'epLab',       label: 'EP Lab',            section: 'Off-sites',           kind: 'toggle', defaultValue: false, accentColor: '#29B6F6' },
-  { key: 'neuroLab',    label: 'Neuro Lab',         section: 'Off-sites',           kind: 'toggle', defaultValue: false, helpText: 'Neurointerventional', accentColor: '#FFD93D' },
-  { key: 'tees',        label: 'TEEs / Cardio',     section: 'Off-sites',           kind: 'toggle', defaultValue: false, helpText: 'Float CRNAs + Endo MD coverage', accentColor: '#CE93D8' },
-  // OPTIONS
-  { key: 'soloPri',     label: 'MD Solo Priority',  section: 'Options',             kind: 'toggle', defaultValue: false, helpText: 'Use solo MDs in EP / Neuro instead of supervised CRNAs', accentColor: '#B06AE8' },
+  // OFF-SITES
+  { key: 'epLab',     label: 'EP Lab rooms',    section: 'Off-sites', kind: 'number', defaultValue: 0, min: 0, max: 2, accentColor: '#29B6F6' },
+  { key: 'neuroLab',  label: 'Neuro Lab rooms', section: 'Off-sites', kind: 'number', defaultValue: 0, min: 0, max: 2, helpText: 'Neurointerventional', accentColor: '#FFD93D' },
+  { key: 'tees',      label: 'TEEs / Cardio',   section: 'Off-sites', kind: 'number', defaultValue: 0, min: 0, max: 3, helpText: 'Intermittent TEE / cardioversion rooms', accentColor: '#CE93D8' },
+  { key: 'teesCross', label: 'Cross cover',     section: 'Off-sites', kind: 'toggle', defaultValue: false, helpText: 'Absorb TEEs with floats / Endo MD / OB before adding a dedicated CRNA', attachTo: 'tees', accentColor: '#F97316' },
 ];
 
 const DEFAULT_CONFIG: CalculatorConfig = Object.fromEntries(
@@ -44,11 +54,15 @@ function calculatePaoli(cfgIn: CalculatorConfig, avail: AvailableStaff): Calcula
   const cfg = {
     mainORCount: Number(clamped.mainORCount),
     addOnRooms:  Number(clamped.addOnRooms),
-    epLab:       Boolean(clamped.epLab),
-    neuroLab:    Boolean(clamped.neuroLab),
-    tees:        Boolean(clamped.tees),
-    soloPri:     Boolean(clamped.soloPri),
+    epLab:       Number(clamped.epLab),
+    neuroLab:    Number(clamped.neuroLab),
+    tees:        Number(clamped.tees),
+    teesCross:   Boolean(clamped.teesCross),
   };
+  const weight = readStaffingWeight(clamped);
+  // "More Solo MD" reproduces the old MD-Solo-Priority behavior (solo MDs in
+  // EP/Neuro instead of supervised CRNAs); balanced/CRNA keep them supervised.
+  const soloPri = weight === 'solo';
 
   const totalORs = cfg.mainORCount + cfg.addOnRooms;
   const asgn: MutableAssignment[] = [];
@@ -63,20 +77,22 @@ function calculatePaoli(cfgIn: CalculatorConfig, avail: AvailableStaff): Calcula
 
   const endoMD = push({ id: `md-${mdt++}`, type: 'MD', role: 'Endo MD', site: 'Endoscopy',
     supervises: [], isSolo: true,
-    notes: 'Covers GI solo. Supervises float CRNAs for TEEs.' });
+    notes: 'Covers GI solo. Supervises float CRNAs for overflow / TEEs.' });
 
   const floor = push({ id: `md-${mdt++}`, type: 'MD', role: 'Floor Runner', site: 'Main OR',
     supervises: [], isSolo: false, isFloorRunner: true,
     notes: `Schedule mgmt, intubations, epidurals. Max ${FR_MAX} CRNAs.` });
 
   // ── Solo-priority off-sites ──
-  if (cfg.epLab && cfg.soloPri) {
-    push({ id: `md-${mdt++}`, type: 'MD', role: 'EP Lab MD', site: 'EP Lab',
-      supervises: [], isSolo: true, notes: 'EP solo (MD Priority).' });
-  }
-  if (cfg.neuroLab && cfg.soloPri) {
-    push({ id: `md-${mdt++}`, type: 'MD', role: 'Neuro Lab MD', site: 'Neuro Lab',
-      supervises: [], isSolo: true, notes: 'Neuro solo (MD Priority).' });
+  if (soloPri) {
+    for (let i = 0; i < cfg.epLab; i++) {
+      push({ id: `md-${mdt++}`, type: 'MD', role: cfg.epLab > 1 ? `EP Lab MD ${i + 1}` : 'EP Lab MD', site: 'EP Lab',
+        supervises: [], isSolo: true, notes: 'EP solo (MD Priority).' });
+    }
+    for (let i = 0; i < cfg.neuroLab; i++) {
+      push({ id: `md-${mdt++}`, type: 'MD', role: cfg.neuroLab > 1 ? `Neuro Lab MD ${i + 1}` : 'Neuro Lab MD', site: 'Neuro Lab',
+        supervises: [], isSolo: true, notes: 'Neuro solo (MD Priority).' });
+    }
   }
 
   // ── Main OR supervising MDs ──
@@ -140,7 +156,7 @@ function calculatePaoli(cfgIn: CalculatorConfig, avail: AvailableStaff): Calcula
   }
 
   // Helper: place a CRNA under any supervising MD with capacity, falling
-  // back to a solo MD if no supervisor has room (1:3 for OR MDs, 1:3 for FR).
+  // back to a solo MD if no supervisor has room (1:4 for OR MDs, 1:3 for FR).
   const tryAssignCRNA = (role: string, site: string): MutableAssignment => {
     const av = supMDs.find((m) => {
       const cap = m.isFloorRunner ? FR_MAX : 4;
@@ -156,19 +172,31 @@ function calculatePaoli(cfgIn: CalculatorConfig, avail: AvailableStaff): Calcula
       supervises: [], isSolo: true, notes: `${role} solo — no MD capacity.` });
   };
 
-  if (cfg.epLab && !cfg.soloPri) tryAssignCRNA('EP Lab', 'EP Lab');
-  if (cfg.neuroLab && !cfg.soloPri) tryAssignCRNA('Neuro Lab', 'Neuro Lab');
+  // ── Off-site CRNA rooms (supervised) — only when not in MD-solo mode ──
+  if (!soloPri) {
+    for (let i = 0; i < cfg.epLab; i++) {
+      tryAssignCRNA(cfg.epLab > 1 ? `EP Lab ${i + 1}` : 'EP Lab', 'EP Lab');
+    }
+    for (let i = 0; i < cfg.neuroLab; i++) {
+      tryAssignCRNA(cfg.neuroLab > 1 ? `Neuro Lab ${i + 1}` : 'Neuro Lab', 'Neuro Lab');
+    }
+  }
 
   // ── Float staffing — auto-decide MD float vs CRNA floats ──
   // Estimate: with 2 CRNA floats (normal), would we be short on CRNAs but
-  // have spare MDs? If so, drop in an MD float to save a CRNA slot.
+  // have spare MDs? If so, drop in an MD float to save a CRNA slot. Floats are
+  // general-purpose here; TEE coverage is resolved separately below.
   const mdsSoFar = asgn.filter((a) => a.type === 'MD').length;
   const crnasSoFar = asgn.filter((a) => a.type === 'CRNA').length;
 
   const crnasWith2Floats = crnasSoFar + 2;
   const mdSurplus = avail.mds - mdsSoFar;
   const crnaDeficit = crnasWith2Floats - avail.crnas;
-  const useMDFloat = mdSurplus >= 1 && crnaDeficit >= 1;
+  // Weight steers the float mix: solo → take an MD float whenever a surplus MD
+  // exists; CRNA → never (keep CRNA floats); balanced → the original heuristic.
+  const useMDFloat = weight === 'solo' ? mdSurplus >= 1
+    : weight === 'crna' ? false
+    : mdSurplus >= 1 && crnaDeficit >= 1;
 
   const floatCRNAs: MutableAssignment[] = [];
   let mdFloat: MutableAssignment | null = null;
@@ -176,58 +204,61 @@ function calculatePaoli(cfgIn: CalculatorConfig, avail: AvailableStaff): Calcula
   if (useMDFloat) {
     mdFloat = push({ id: `md-${mdt++}`, type: 'MD', role: 'Float MD', site: 'Float',
       supervises: [], isSolo: true, isFloat: true,
-      notes: 'MD float — covers TEEs solo, break relief, add-on cases. Saves 1 CRNA.' });
+      notes: 'MD float — break relief, add-on cases, intermittent coverage. Saves 1 CRNA.' });
 
     const crnasWith1Float = crnasSoFar + 1;
     const stillShort = crnasWith1Float > avail.crnas;
 
     if (!stillShort) {
       // 1 CRNA float for Endo coverage / break relief
-      if (cfg.tees) {
-        const endoCRNA = push({ id: `crna-${crt++}`, type: 'CRNA', role: 'Endo Float', site: 'Endoscopy',
-          supervisedBy: endoMD.id, supervises: [],
-          notes: 'Covers GI cases and break relief under Endo MD.' });
-        endoMD.supervises.push(endoCRNA.id);
-        floatCRNAs.push(endoCRNA);
-        endoMD.notes = 'Covers GI solo + supervises Endo float. Float MD handles TEEs.';
-      } else {
-        const c = push({ id: `crna-${crt++}`, type: 'CRNA', role: 'Float 1', site: 'Float',
-          supervisedBy: endoMD.id, supervises: [],
-          notes: 'Breaks, GI overflow, add-ons.' });
-        endoMD.supervises.push(c.id);
-        floatCRNAs.push(c);
-      }
+      const c = push({ id: `crna-${crt++}`, type: 'CRNA', role: 'Float 1', site: 'Float',
+        supervisedBy: endoMD.id, supervises: [],
+        notes: 'Breaks, GI overflow, add-ons.' });
+      endoMD.supervises.push(c.id);
+      floatCRNAs.push(c);
     } else {
-      mdFloat.notes = 'MD float — covers TEEs solo, Endo backup, break relief, add-ons. No CRNA floats available.';
-      if (cfg.tees) {
-        endoMD.notes = 'Covers GI solo. Float MD handles TEEs independently.';
-      }
+      mdFloat.notes = 'MD float — Endo backup, break relief, add-ons. No CRNA floats available.';
     }
   } else {
-    // Standard: 2 CRNA floats
-    if (cfg.tees) {
-      // TEEs ON → Float 1 covers TEEs, Float 2 covers Endo, both under Endo MD
-      const teeCRNA = push({ id: `crna-${crt++}`, type: 'CRNA', role: 'TEE Float', site: 'TEEs',
+    // Standard: 2 general-purpose CRNA floats under Endo MD
+    for (let i = 0; i < 2; i++) {
+      const c = push({ id: `crna-${crt++}`, type: 'CRNA', role: `Float ${i + 1}`, site: 'Float',
         supervisedBy: endoMD.id, supervises: [],
-        notes: 'Covers TEEs/Cardioversions under Endo MD.' });
-      endoMD.supervises.push(teeCRNA.id);
-      floatCRNAs.push(teeCRNA);
+        notes: i === 0 ? 'Breaks, add-ons, intermittent coverage.' : 'Breaks, GI overflow, trauma.' });
+      endoMD.supervises.push(c.id);
+      floatCRNAs.push(c);
+    }
+  }
 
-      const endoCRNA = push({ id: `crna-${crt++}`, type: 'CRNA', role: 'Endo Float', site: 'Endoscopy',
-        supervisedBy: endoMD.id, supervises: [],
-        notes: 'Covers GI cases, breaks, add-ons under Endo MD.' });
-      endoMD.supervises.push(endoCRNA.id);
-      floatCRNAs.push(endoCRNA);
-
-      endoMD.notes = 'Covers GI solo + supervises TEE and Endo floats.';
+  // ── TEEs / Cardio — dedicated CRNA(s) unless cross-covered ──
+  // Cross cover absorbs the intermittent demand with floats / an idle Endo MD /
+  // the OB MD before adding any dedicated body. Resolved after floats exist.
+  const teeCount = cfg.tees;
+  const teeCRNAs: MutableAssignment[] = [];
+  let teeResolution: CrossCoverResolution | null = null;
+  const addDedicatedTEE = (i: number, note: string) => {
+    const c = push({ id: `crna-${crt++}`, type: 'CRNA', role: teeCount > 1 ? `TEE ${i + 1}` : 'TEE Float', site: 'TEEs',
+      supervisedBy: endoMD.id, isTEE: true, supervises: [], notes: note });
+    endoMD.supervises.push(c.id);
+    teeCRNAs.push(c);
+  };
+  if (teeCount > 0) {
+    if (cfg.teesCross) {
+      const sources: CrossCoverFlexSource[] = [
+        { label: 'Floats', capacity: floatCRNAs.length + (mdFloat ? 1 : 0) },
+        { label: 'Endo MD', capacity: endoMD.supervises.length === 0 ? 1 : 0 },
+        { label: 'OB MD', capacity: 1 },
+      ];
+      teeResolution = resolveCrossCover(teeCount, sources);
+      // Safety net: Paoli's flexible pool (≥1 float + idle Endo MD + OB MD) almost
+      // always covers up to the max TEE count, so shortfall is rarely > 0 — but if
+      // flex ever falls short, add a dedicated TEE CRNA under the Endo MD.
+      for (let i = 0; i < teeResolution.shortfall; i++) {
+        addDedicatedTEE(i, 'Dedicated TEE/cardioversion CRNA (flexible coverage insufficient).');
+      }
     } else {
-      // TEEs OFF: both floats are general-purpose under Endo MD
-      for (let i = 0; i < 2; i++) {
-        const c = push({ id: `crna-${crt++}`, type: 'CRNA', role: `Float ${i + 1}`, site: 'Float',
-          supervisedBy: endoMD.id, supervises: [],
-          notes: i === 0 ? 'Breaks, TEEs, add-ons.' : 'Breaks, GI overflow, trauma.' });
-        endoMD.supervises.push(c.id);
-        floatCRNAs.push(c);
+      for (let i = 0; i < teeCount; i++) {
+        addDedicatedTEE(i, 'Dedicated TEE/cardioversion CRNA under Endo MD.');
       }
     }
   }
@@ -240,7 +271,8 @@ function calculatePaoli(cfgIn: CalculatorConfig, avail: AvailableStaff): Calcula
     return candidates[0] || floor;
   };
 
-  // Trauma: float CRNA → least-loaded Main OR MD. If MD float is in play, it covers directly.
+  // Trauma: float CRNA → least-loaded Main OR MD. If MD float is in play with
+  // no CRNA floats, it covers directly.
   if (useMDFloat && floatCRNAs.length === 0 && mdFloat) {
     contingencies.push({
       fromId: mdFloat.id, toId: mdFloat.id,
@@ -258,14 +290,14 @@ function calculatePaoli(cfgIn: CalculatorConfig, avail: AvailableStaff): Calcula
   }
 
   // Neuro add-on contingency only when Neuro isn't already staffed.
-  if (!cfg.neuroLab) {
+  if (cfg.neuroLab === 0) {
     if (useMDFloat && mdFloat) {
       contingencies.push({
         fromId: mdFloat.id, toId: mdFloat.id,
         type: 'neuro', label: 'Neuro add-on — Float MD covers solo',
       });
     } else {
-      const neuroFloat = cfg.tees ? (floatCRNAs[1] || floatCRNAs[0]) : floatCRNAs[0];
+      const neuroFloat = floatCRNAs[0];
       if (neuroFloat) {
         const traumaMDId = contingencies.find((c) => c.type === 'trauma')?.fromId;
         const neuroMD = pickLeastLoadedMD(traumaMDId ? [traumaMDId] : []);
@@ -277,11 +309,12 @@ function calculatePaoli(cfgIn: CalculatorConfig, avail: AvailableStaff): Calcula
     }
   }
 
-  // TEEs backup: when TEEs are on with no MD float, Floor Runner backs up the TEE float.
-  if (cfg.tees && !useMDFloat && floatCRNAs[0]) {
+  // TEE cross-cover backup: when TEEs are absorbed by flex, a float/Floor Runner
+  // is the standing backup if that float gets pulled.
+  if (teeResolution && teeResolution.absorbed > 0 && floatCRNAs[0]) {
     contingencies.push({
       fromId: floor.id, toId: floatCRNAs[0].id,
-      type: 'teeBackup', label: 'TEE backup — if float pulled',
+      type: 'teeBackup', label: 'TEE cross-cover — float backup',
     });
   }
 
@@ -301,25 +334,33 @@ function calculatePaoli(cfgIn: CalculatorConfig, avail: AvailableStaff): Calcula
   const crnas = asgn.filter((a) => a.type === 'CRNA');
   const notes: string[] = [];
 
-  if (useMDFloat) {
-    notes.push(`🩺 MD Float assigned — ${mdSurplus} surplus MD${mdSurplus > 1 ? 's' : ''}, ${crnaDeficit} CRNA${crnaDeficit > 1 ? 's' : ''} short. MD covers TEEs/breaks solo, saving ${floatCRNAs.length === 0 ? '2' : '1'} CRNA float${floatCRNAs.length === 0 ? 's' : ''}.`);
+  if (weight !== 'balanced') {
+    notes.push(weight === 'solo'
+      ? '🔷 Staffing strategy: More Solo MD — favoring solo MDs over supervised CRNAs.'
+      : '🔶 Staffing strategy: More CRNA — favoring supervised CRNAs over solo MDs.');
   }
-  if (cfg.soloPri) notes.push('🔷 MD Solo Priority — MDs solo in EP/Neuro instead of CRNAs.');
+  if (useMDFloat) {
+    const saved = floatCRNAs.length === 0 ? '2' : '1';
+    notes.push(crnaDeficit >= 1
+      ? `🩺 MD Float assigned — ${mdSurplus} surplus MD${mdSurplus > 1 ? 's' : ''}, ${crnaDeficit} CRNA${crnaDeficit > 1 ? 's' : ''} short. MD covers breaks/add-ons solo, saving ${saved} CRNA float${saved === '2' ? 's' : ''}.`
+      : `🩺 MD Float assigned (solo-weighted) — surplus MD covers breaks/add-ons solo, saving ${saved} CRNA float${saved === '2' ? 's' : ''}.`);
+  }
+  if (soloPri) notes.push('🔷 MD Solo Priority — MDs solo in EP/Neuro instead of CRNAs.');
   if (totalORs >= 10) notes.push('⚠️ High OR volume — 4 MDs on Main OR supervision.');
+  if (cfg.epLab > 0) notes.push(`⚡ EP Lab: ${cfg.epLab} room${cfg.epLab > 1 ? 's' : ''}${soloPri ? ' (solo MD)' : ' under Main OR MDs'}.`);
+  if (cfg.neuroLab > 0) notes.push(`🧠 Neuro Lab: ${cfg.neuroLab} room${cfg.neuroLab > 1 ? 's' : ''}${soloPri ? ' (solo MD)' : ' under Main OR MDs'}.`);
   if (cfg.addOnRooms > 0) {
     notes.push(`📌 ${cfg.addOnRooms} add-on room${cfg.addOnRooms > 1 ? 's' : ''} factored into staffing (${cfg.mainORCount} scheduled + ${cfg.addOnRooms} add-on = ${totalORs} total).`);
     notes.push('♻️ If add-on rooms don\'t run, those CRNAs can cover TEEs or breaks.');
   }
-  if (cfg.epLab && cfg.neuroLab && !cfg.soloPri) notes.push('EP & Neuro active — CRNAs under Main OR MDs.');
-  if (cfg.tees && !useMDFloat) notes.push('💜 TEEs active — Endo MD supervises both TEE Float and Endo Float.');
-  if (cfg.tees && useMDFloat) notes.push('💜 TEEs active — Float MD handles TEEs independently.');
-  if (cfg.tees && !useMDFloat) notes.push('🔶 If a float gets pulled (trauma/neuro), Floor Runner backs up TEEs.');
-  if (!cfg.tees && !useMDFloat) notes.push('TEEs not scheduled — both floats in general float pool.');
-  if (!cfg.tees && useMDFloat) notes.push('TEEs not scheduled — Float MD available for breaks/add-ons.');
+  if (teeCount > 0 && !cfg.teesCross) {
+    notes.push(`💜 TEEs/Cardio — ${teeCRNAs.length} dedicated CRNA${teeCRNAs.length !== 1 ? 's' : ''} under Endo MD.`);
+  }
+  if (teeResolution) notes.push(...crossCoverNotes('TEEs', teeResolution));
   notes.push(`Floor Runner hard-capped at ${FR_MAX} CRNAs.`);
-  notes.push('OB MD floats for TEEs/breaks when available.');
+  notes.push('OB MD floats for breaks / intermittent coverage when available.');
   notes.push('🔴 Trauma (20%): ' + (useMDFloat && floatCRNAs.length === 0 ? 'Float MD covers directly.' : 'Float CRNA supervised by Main OR MD.'));
-  if (!cfg.neuroLab) notes.push('🟡 Neuro add-on (35-50%): ' + (useMDFloat ? 'Float MD covers solo.' : 'Float CRNA covers under Main OR MD.'));
+  if (cfg.neuroLab === 0) notes.push('🟡 Neuro add-on (35-50%): ' + (useMDFloat ? 'Float MD covers solo.' : 'Float CRNA covers under Main OR MD.'));
 
   // ── Break Coverage Analysis ──
   // Same shape as Lankenau so the UI panel renders consistently.
@@ -333,7 +374,9 @@ function calculatePaoli(cfgIn: CalculatorConfig, avail: AvailableStaff): Calcula
   const breakDemand = provNeedingBreaks.length;
 
   const totalFloats = floatCRNAs.length + (mdFloat ? 1 : 0);
+  const dedicatedTEEs = teeCRNAs.length;
   const bkFloats = totalFloats * BREAKS_PER_FLOAT;
+  const bkTEE = dedicatedTEEs * 2;
   const bkOB = 1;
   const bkEndoMD = endoMD.supervises.length === 0 ? 1 : 0;
   const bkFloorRunner = floor.supervises.length < FR_MAX ? 1 : 0;
@@ -342,6 +385,7 @@ function calculatePaoli(cfgIn: CalculatorConfig, avail: AvailableStaff): Calcula
 
   const breakSources = [
     { label: 'Floats',         count: totalFloats,    breaks: bkFloats,       detail: `${totalFloats} × 5` },
+    ...(bkTEE > 0 ? [{ label: 'TEE CRNA', count: dedicatedTEEs, breaks: bkTEE, detail: 'between cases' }] : []),
     { label: 'OB MD',          count: 1,              breaks: bkOB,           detail: 'between cases' },
     ...(bkEndoMD > 0 ? [{ label: 'Endo MD', count: 1, breaks: bkEndoMD, detail: 'when GI quiet' }] : []),
     ...(bkFloorRunner > 0 ? [{ label: 'Floor Runner', count: 1, breaks: bkFloorRunner, detail: 'spare capacity' }] : []),
