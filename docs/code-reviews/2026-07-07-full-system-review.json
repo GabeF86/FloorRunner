@@ -1,0 +1,887 @@
+{
+  "summary": "Map all FloorRunner subsystems and review for performance, accuracy, customizability; adversarially verify findings",
+  "agentCount": 44,
+  "logs": [
+    "Mapping 5 subsystems and running 3 dimension reviews in parallel",
+    "customizability: 12 findings — verifying each adversarially",
+    "performance: 12 findings — verifying each adversarially",
+    "accuracy: 12 findings — verifying each adversarially",
+    "[verify:performance:evaluateEligibility re-parses dates and ] failed: You've hit your session limit · resets 11:30pm (America/New_York)",
+    "[verify:performance:Historical fairness data loads every pas] failed: You've hit your session limit · resets 11:30pm (America/New_York)",
+    "[verify:performance:sequenceAutoFill issues 8+ serial querie] failed: You've hit your session limit · resets 11:30pm (America/New_York)",
+    "[verify:performance:Query shapes imply missing composite ind] failed: You've hit your session limit · resets 11:30pm (America/New_York)",
+    "[verify:performance:Optimizer spends its resolve budget on t] failed: You've hit your session limit · resets 11:30pm (America/New_York)",
+    "[verify:accuracy:Post-call day-off is not enforced agains] failed: You've hit your session limit · resets 11:30pm (America/New_York)",
+    "[verify:accuracy:Sequence auto-fill (D1 post-C2) ignores ] failed: You've hit your session limit · resets 11:30pm (America/New_York)",
+    "[verify:accuracy:Validation failures silently report zero] failed: You've hit your session limit · resets 11:30pm (America/New_York)",
+    "[verify:performance:Every single-cell edit refetches the ent] failed: You've hit your session limit · resets 11:30pm (America/New_York)",
+    "[verify:accuracy:D1/derived-shift skips are silently drop] failed: You've hit your session limit · resets 11:30pm (America/New_York)",
+    "[verify:accuracy:Pending PTO blocks call generation but N] failed: You've hit your session limit · resets 11:30pm (America/New_York)",
+    "[verify:accuracy:Fairness rule evaluator ignores FTE and ] failed: You've hit your session limit · resets 11:30pm (America/New_York)",
+    "[verify:accuracy:Bucket-quota vs par_level mismatch silen] failed: You've hit your session limit · resets 11:30pm (America/New_York)",
+    "[verify:accuracy:Validation counts pollute across schedul] failed: You've hit your session limit · resets 11:30pm (America/New_York)",
+    "[verify:accuracy:required_count > 1 call slots are silent] failed: You've hit your session limit · resets 11:30pm (America/New_York)",
+    "[verify:accuracy:The entire validation layer (evaluators.] failed: You've hit your session limit · resets 11:30pm (America/New_York)",
+    "[verify:accuracy:Relief pass (D4-D9) silently skips whole] failed: You've hit your session limit · resets 11:30pm (America/New_York)",
+    "[verify:performance:solve() rebuilds run-invariant structure] failed: You've hit your session limit · resets 11:30pm (America/New_York)",
+    "[verify:performance:Monolithic 2,600-line client component r] failed: You've hit your session limit · resets 11:30pm (America/New_York)",
+    "[verify:accuracy:Call semantics hard-coded to C1/C2/C3 — ] failed: You've hit your session limit · resets 11:30pm (America/New_York)",
+    "[verify:customizability:Staffing calculators are compiled per-si] failed: You've hit your session limit · resets 11:30pm (America/New_York)",
+    "[verify:performance:Generate route does everything synchrono] failed: You've hit your session limit · resets 11:30pm (America/New_York)",
+    "[verify:customizability:Eligibility gates hard-code C1 semantics] failed: You've hit your session limit · resets 11:30pm (America/New_York)",
+    "[verify:performance:optimize() performs up to 5,000 full re-] failed: You've hit your session limit · resets 11:30pm (America/New_York)",
+    "Done: 5/5 maps, 12 confirmed findings across 3 dimensions"
+  ],
+  "result": {
+    "maps": [
+      {
+        "subsystem": "Core scheduling engine (src/lib/rulesEngine) — physician call-schedule generation, optimization, validation, and day-shift generation",
+        "purpose": "Generates anesthesia call schedules for a site's schedule version: fills C1/C2/C3 call slots from an FTE-weighted call-taker pool, chains the structurally-linked D1-D9 relief shifts, then fills 'regular' day-doc shifts in a second pass. Architecture is load -> pure greedy solve -> bounded hill-climb optimize -> batched commit -> post-hoc rule validation (per autoGenerate.ts:1-2). A separate DB-driven rules engine (evaluators.ts) validates existing assignments against site-configurable rule_definitions and writes hard/soft violation flags, but does not drive generation.",
+        "keyFiles": [
+          {
+            "path": "/Users/gabrielfarkas/Desktop/FloorRunner/ALGORITHM.md",
+            "role": "Engineer-facing map of the whole call-gen algorithm: pool selection, FTE bucket quotas with deficit carryforward (section 4), eligibility pipeline (section 5), PTO bookend (section 6), pre-PTO Thursday (section 7), Paoli weekend chain (section 8), D-chain relief (section 9), scoring (section 11), known limitations (section 14)"
+          },
+          {
+            "path": "/Users/gabrielfarkas/Desktop/FloorRunner/src/lib/rulesEngine/autoGenerate.ts",
+            "role": "Orchestrator: loadGenerationContext -> solve (greedy seed) -> optimize (on by default, autoGenerate.ts:18-20,77) -> commitPlan -> commitValidation -> commitMetadata; returns GenerationResult with metrics, seedMetrics (before/after), perf counters (autoGenerate.ts:129-136)"
+          },
+          {
+            "path": "/Users/gabrielfarkas/Desktop/FloorRunner/src/lib/rulesEngine/solve.ts",
+            "role": "Pure greedy construction core. Seeds pre-existing assignments (14-21), pre-PTO Thursday pass (130-166), main call loop with ratio+recency scoring (169-235), hardcoded weekend Paoli chain maybeWeekendBlock (94-128), D-chain relief chainDFills (69-91), D4-D9 out-list relief pass (237-296), callOverrides force mechanism for the optimizer (27-37)"
+          },
+          {
+            "path": "/Users/gabrielfarkas/Desktop/FloorRunner/src/lib/rulesEngine/optimize.ts",
+            "role": "Phase 2 local search — IMPLEMENTED. Deterministic bounded hill-climb: move set 1 = 2-slot eviction to fill skipped call slots (84-106), move set 2 = fairness swap (113-129); lexicographic objective compareMetrics (skipped, fairnessStdev, burnout) (31-35); budgets MAX_ITERATIONS=200, DEFAULT_MAX_RESOLVES=5000 (8-12)"
+          },
+          {
+            "path": "/Users/gabrielfarkas/Desktop/FloorRunner/src/lib/rulesEngine/eligibility.ts",
+            "role": "Single canonical eligibility gate evaluateEligibility with two gate sets ('call' vs 'derived', 17-22): group match, same-date, cross-site, weekday availability, C1 post-call guard, bucket quota, site credentials, weekend-adjacent PTO, PTO-bookend availability — all hard, all hardcoded"
+          },
+          {
+            "path": "/Users/gabrielfarkas/Desktop/FloorRunner/src/lib/rulesEngine/genContext.ts",
+            "role": "Load phase: ~8 Supabase queries build immutable GenerationContext (slots, providers, credentials, availability, cross-site, historical call counts); computeBucketTargets = FTE-weighted quota with historical deficit carryforward (42-61); weekend-first slot sort order that the weekend chain depends on (153-181)"
+          },
+          {
+            "path": "/Users/gabrielfarkas/Desktop/FloorRunner/src/lib/rulesEngine/genTypes.ts",
+            "role": "All pipeline types: SlotToFill/CandidateProvider/GenerationContext, GateSet, RejectionReason enum (81-90), PlacementSource (98-103), AssignmentExplanation + CandidateRejection explainability payloads (109-120), SolutionMetrics objective (123-129), SolveOptions.callOverrides (177-179)"
+          },
+          {
+            "path": "/Users/gabrielfarkas/Desktop/FloorRunner/src/lib/rulesEngine/metrics.ts",
+            "role": "scoreSolution: pure objective — filled/skipped, fairnessStdev over lifetime-ratio (call load / FTE), burnout = call pairs < 2 days apart excluding intended Fri-Sun weekend blocks (9-10, 54-64)"
+          },
+          {
+            "path": "/Users/gabrielfarkas/Desktop/FloorRunner/src/lib/rulesEngine/shared.ts",
+            "role": "Pure helpers: BLOCKING_AVAIL / BOOKEND_EXTENDING_TYPES constants (14-25), UTC string date math, effectivePtoRange weekend bookend (75-87), dayTypeBucket collapsing saturday+sunday -> 'weekend' and holidays -> 'holiday' (108-114)"
+          },
+          {
+            "path": "/Users/gabrielfarkas/Desktop/FloorRunner/src/lib/rulesEngine/commit.ts",
+            "role": "Batched write phase: partitionForWrite -> 2 bulk DB calls (104-128); commitValidation runs evaluateAssignment per assignment in concurrency-10 batches and writes validation_flags (136-162); commitMetadata persists generation_metadata explanations with column-probe fallback (19-29)"
+          },
+          {
+            "path": "/Users/gabrielfarkas/Desktop/FloorRunner/src/lib/rulesEngine/evaluators.ts",
+            "role": "DB-driven validation rules engine: 11 evaluators (eligibility, timeOff, weekendAdjacentPto, sequence, rest, frequency, coverage, pairing, fairness, openSlot, crossSite; registry 774-786) reading rule_definitions rows with jsonb condition/action and hard_constraint boolean -> severity (17-19)"
+          },
+          {
+            "path": "/Users/gabrielfarkas/Desktop/FloorRunner/src/lib/rulesEngine/types.ts",
+            "role": "Validation-side types: RuleCategory (10 categories, 6-16), RuleDefinition with hard_constraint, priority_rank, applies_to_* scoping and jsonb condition/action (28-42), EvaluationContext (99-152), RuleViolation with hard/soft severity (154-164)"
+          },
+          {
+            "path": "/Users/gabrielfarkas/Desktop/FloorRunner/src/lib/rulesEngine/evaluate.ts",
+            "role": "Public validation entry point evaluateAssignment: loadContext -> run all evaluators, count hard/soft violations; evaluator exceptions swallowed (38-45)"
+          },
+          {
+            "path": "/Users/gabrielfarkas/Desktop/FloorRunner/src/lib/rulesEngine/loadContext.ts",
+            "role": "Per-(slot,provider) validation context loader (~7 queries each: slot, provider, credentials, ±31d neighbors, availability, same-day, cross-site); loadSiteValidationContext caches shift types + rules per site to fix batch N+1 (33-67)"
+          },
+          {
+            "path": "/Users/gabrielfarkas/Desktop/FloorRunner/src/lib/rulesEngine/dayShiftAutoGen.ts",
+            "role": "Second pass for category='regular' day-doc shifts (7-3, 7-5): older-style greedy that interleaves DB writes inside the loop (399-432), FTE-pro-rated block cap (226-232), explicitly skips D-code slots owned by call-gen (141-144)"
+          },
+          {
+            "path": "/Users/gabrielfarkas/Desktop/FloorRunner/src/lib/rulesEngine/sequenceAutoFill.ts",
+            "role": "Manual-edit companion: when a scheduler manually places a trigger shift, DB-driven sequence rules (trigger_shift_code -> linked_shift_code, post_call/pre_call) auto-fill the linked D-slot with the same provider (89-266) and clean up on delete (274-330); enforces D1>D3 precedence (121-174)"
+          },
+          {
+            "path": "/Users/gabrielfarkas/Desktop/FloorRunner/src/app/api/scheduling/schedules/[id]/generate/route.ts",
+            "role": "HTTP wiring: resolves latest schedule_version + included_provider_ids override pool, runs autoGenerate then autoGenerateDayShifts sequentially, merges results"
+          }
+        ],
+        "dataFlow": "POST /api/scheduling/schedules/[id]/generate (route.ts) loads the latest schedule_version and optional schedules.included_provider_ids pool override, then calls autoGenerate (autoGenerate.ts:54). Stage 1 LOAD: loadGenerationContext (genContext.ts:78) issues ~8 Supabase queries — schedule_slots+joined shift_types+assignments, sites.call_par_level, provider_employment_profiles (call_taker pool), providers (active), provider_site_credentials, provider_availability (±31d), cross-site assignments, and historical call assignments — then computes bucketTotals and FTE-weighted bucketTarget with historical deficit carryforward (genContext.ts:395-434), sorts call slots weekend-first/backup-before-primary (genContext.ts:163-181), and returns an immutable GenerationContext. Stage 2 SOLVE (pure, no I/O): solve() seeds pre-existing assignments into SolveState (solve.ts:14-21), runs the pre-PTO Thursday pass (solve.ts:130-166), then the main greedy loop over call slots: filter all providers through evaluateEligibility (eligibility.ts:23), score survivors by lifetime-ratio then days-since-last-call then id (solve.ts:212-225), record the winner, fire chainDFills (D2/D3 pre-fill, D1 post-fill, post-call-day block; solve.ts:69-91) and the Saturday weekend chain (Sat-C1 -> Sun-C2+Fri-C2, Sat-C2 -> Sun-C1+Fri-D2, C3 -> Sun-C3; solve.ts:119-127), and finally the D4-D9 relief pass ranked by distance-to-next-call (solve.ts:237-296). Stage 3 OPTIMIZE (default on): optimize() takes the greedy plan as seed and hill-climbs by re-running solve() with callOverrides for each trial move — 2-slot evictions to fill skips, then fairness swaps — accepting only lexicographic improvements in (skipped, fairnessStdev, burnout) until local optimum or budget (optimize.ts:60-133). Stage 4 COMMIT: commitPlan partitions into batched update+insert (2 bulk queries, commit.ts:104-128). Stage 5 VALIDATE (best-effort, post-commit): commitValidation loads site rules once, then per assignment runs loadContext (~7 queries) + all 11 evaluators and writes validation_flags jsonb (commit.ts:136-162); commitMetadata writes generation_metadata explanations. Stage 6: route runs autoGenerateDayShifts, a separate greedy pass over 'regular' slots that reads the now-committed call/D placements for conflict and block-cap seeding and writes assignments row-by-row (dayShiftAutoGen.ts:352-446). Separately, manual UI edits flow through applySequenceAutoFill/cleanupSequenceAutoFill (sequenceAutoFill.ts) driven by DB sequence rules.",
+        "extensionPoints": [
+          "solve() is pure and I/O-free with an immutable GenerationContext in and SolutionPlan out (solve.ts:10, genTypes.ts:53-77) — ideal to wrap as a Claude tool: load context once, let the model propose changes, re-solve in memory for instant previews without committing.",
+          "SolveOptions.callOverrides (genTypes.ts:174-179, solve.ts:27-37) already lets a caller force any provider onto any call slot with the canonical eligibility gate self-rejecting bad moves — a ready-made safe interface for AI-proposed swaps/what-ifs; optimize.ts proves the pattern works.",
+          "rule_sets/rule_definitions tables with jsonb condition/action, hard_constraint, priority_rank, applies_to_shift_types/day_types/provider_group (types.ts:28-42, loadContext.ts:51-61) — an existing declarative rule format Claude could emit from natural language; 10 rule categories already have evaluators (evaluators.ts:774-786) including sequence (trigger->linked shift), rest (day-off-after-shift with exempt codes, evaluators.ts:417-421), frequency (max per week/month), coverage, and pairing.",
+          "The DB sequence-rule mechanism (trigger_shift_code, linked_shift_code, relationship=post_call|pre_call; sequenceAutoFill.ts:12-18) is the closest existing data-driven analog to 'post-call day off after in-house nights' — extending it to drive solve()'s chainDFills instead of the hardcoded version is the natural path to customizable call structures.",
+          "shift_types is a per-site DB table (code, category, requires_credential, requires_specific_skills; types.ts:44-52) — new roles like a Neuro beeper code can be added as data; slotIndex lookups in solve are by (date, code) string so new codes flow through mechanically.",
+          "SolutionMetrics + scoreSolution + compareMetrics (genTypes.ts:123-129, metrics.ts:30, optimize.ts:31-35) — a small, isolated objective function; adding AI-configurable weights or new terms (e.g., weekend-pattern preferences) only touches these two files plus optimize's comparator.",
+          "Explainability payloads already persisted: PlacementSource, AssignmentExplanation (ratio, recency, competing candidates), CandidateRejection reasons per unfilled slot, and the generation_metadata column (genTypes.ts:98-120, solve.ts:196-209, commit.ts:34-53) — ready-made grounding material for a Claude assistant to answer 'why is X on call Saturday'.",
+          "OptimizeOptions (maxIterations/maxResolves, optimize.ts:14-17) and AutoGenerateOptions.optimize flag (autoGenerate.ts:12-15) — tunable compute budget knobs an orchestrator or AI could adjust per request size.",
+          "schedules.included_provider_ids override pool (route.ts, genContext.ts:220-234) — an existing hook for scoping generation to an AI-selected roster.",
+          "seedMetrics vs metrics before/after comparison in GenerationResult (autoGenerate.ts:37,76-77,126-127) — natural payload for the assistant to narrate what optimization changed.",
+          "Gracefully-degrading column probes (hasGenerationMetadataColumn, commit.ts:19-24; call_par_level fallback, genContext.ts:105-113) — an established pattern for shipping new AI-config columns without migration lockstep."
+        ],
+        "concerns": [
+          "The call structure the owner wants to restructure via natural language is HARDCODED, not data-driven: the Paoli weekend chain (Sat-C1 -> Sun-C2 + Fri-C2, etc.) lives in solve.ts:94-128, D-chain mappings (C1->D2/post-call-block, C2->D3+D1, Sunday variants) in solve.ts:69-91, the pre-PTO Thursday heuristic in solve.ts:130-166, and code lists like RELIEF_CODES=['D4'..'D9'] (solve.ts:23) and CALL_CODES=['C1','C2','C3'] (optimize.ts:7, metrics.ts:4). ALGORITHM.md section 13 explicitly says changing the weekend pattern means editing the main loop. A 'switch weekends to C1 in-house 24h / C2 home / Neuro beeper Fri-Sun' request cannot be expressed as data today.",
+          "Two disconnected rule systems that can drift: generation constraints are hardcoded in eligibility.ts while the DB rule_definitions are only checked AFTER assignments are committed (commit.ts:136-162, writing advisory validation_flags). A rule a user marks hard_constraint in the UI does not prevent the generator from violating it. Logic is triplicated — e.g., weekend-adjacent-PTO exists in eligibility.ts:100-119 AND evaluators.ts:278-312; blocking-availability sets exist as BLOCKING_AVAIL (shared.ts:14-17), TIME_OFF_BLOCKING (evaluators.ts:225-234), and an inline literal in sequenceAutoFill.ts:224.",
+          "No weighted soft constraints anywhere in generation: eligibility gates are all-or-nothing hard filters, tie-breaking is a fixed two-key sort (solve.ts:221-225), and the optimizer objective is a fixed lexicographic triple (optimize.ts:31-35). rule_definitions.priority_rank is loaded (loadContext.ts:58) but never used by any evaluator. 'MORE CUSTOMIZABLE' requires a preference/weight layer that does not exist.",
+          "Optimizer performance: every trial move is a FULL greedy re-solve from scratch — no incremental/delta evaluation. Move set 1 is a quadruple-nested loop (unfilled x providers x P's-movable-slots x providers, optimize.ts:84-106) whose own comment estimates ~307M worst-case resolves on a 12-week/85-provider block (optimize.ts:9-11), truncated by an arbitrary 5000-resolve budget — so on large blocks the search explores a tiny, order-biased fraction of the neighborhood and restarts the scan from the top after every accepted move (first-improvement + monotone restart, optimize.ts:101).",
+          "Optimizer blind spots: movableCallSlotIds excludes weekend, holiday, pre-PTO, and weekend-chain placements (optimize.ts:40-47) — exactly the weekend structures the owner wants to reshape are frozen at greedy construction; holiday day-types also never enter the D4-D9 relief pass (solve.ts:260) or the movable set.",
+          "Validation-pass DB cost: commitValidation runs evaluateAssignment per assignment, and each loadContext issues ~7 queries (slot, provider, credentials, neighbors, availability, same-day, cross-site; loadContext.ts:83-237) plus 1 flag write — roughly 8N round trips for N assignments at concurrency 10. For a 12-week block with several hundred assignments this dominates wall-clock and DB load.",
+          "dayShiftAutoGen.ts is a pre-refactor design: impure greedy with one DB write per assignment inside the loop (dayShiftAutoGen.ts:399-432), no plan/commit separation, no optimizer, no explanations, no shared eligibility gate, and no test file. sequenceAutoFill.ts similarly issues several queries per rule per trigger and has no tests.",
+          "Assignments are committed BEFORE validation (autoGenerate.ts:78,91-96), so hard-violating assignments land in the DB and are only flagged afterward; there is no dry-run/preview API surface even though solve() itself is pure.",
+          "Type-safety gaps: SupabaseClient is `any` in shared.ts:10, loadContext.ts:4, and sequenceAutoFill.ts:10, with pervasive Record<string,unknown> casts in genContext.ts — schema drift will fail silently at runtime.",
+          "Test coverage is strong for the new pipeline (solve.test.ts 359 lines incl. weekend-chain/H1, relief/H2, explainability, override characterization; optimize.test.ts incl. never-worse and determinism guarantees; plus eligibility/metrics/genContext/commit/shared/autoGenerate tests) but ZERO tests exist for dayShiftAutoGen.ts, sequenceAutoFill.ts, evaluators.ts (789 lines, 11 evaluators), evaluate.ts, and loadContext.ts.",
+          "Fairness evaluator uses a hardcoded 6-or-8-per-month heuristic instead of a real group average (evaluators.ts:670-674); cross-block fairness memory is site-scoped and unbounded-history (ALGORITHM.md section 14).",
+          "CRNA generation is entirely missing (ALGORITHM.md:151) despite provider_group plumbing existing in slots and eligibility (eligibility.ts:34-36)."
+        ],
+        "claudeApiRelevance": "The architecture is unusually well-positioned for a Claude assistant on the read/analyze/what-if side, and poorly positioned on the restructure side. Favorable: solve() and optimize() are pure functions over an immutable GenerationContext (genTypes.ts:53-77), so a Claude tool-use loop can load context once, then cheaply evaluate model-proposed scenarios in memory — the callOverrides mechanism (solve.ts:27-37) already provides a validated force-assignment interface where ineligible AI proposals self-reject with typed RejectionReasons, and scoreSolution gives an objective to report back. The persisted explainability trail (PlacementSource, AssignmentExplanation, per-candidate CandidateRejection, generation_metadata) is exactly the grounding a chat assistant needs to answer 'why' questions without hallucinating. The DB rule_definitions format (jsonb condition/action + hard_constraint + applies_to_* scoping, types.ts:28-42) is a natural structured-output target for Claude translating natural language or schedule-photo content into rules — the claude-api tool-use + structured-output pattern maps directly onto it. Blocking gap: the requested capability ('switch weekends to C1 in-house 24h, C2 home call, Neuro beeper spanning Fri-Sun, post-call day off after in-house nights') touches precisely the parts that are hardcoded TypeScript, not data — the weekend chain (solve.ts:94-128), D-chain relief map (solve.ts:69-91), code lists, and dayTypeBucket. Before a Claude assistant can restructure schedules, those need to be lifted into a declarative 'call structure template' (chain definitions, role definitions with span/rest semantics, bucket definitions) that solve() interprets — the existing sequence-rule schema (trigger/linked/relationship, sequenceAutoFill.ts:12-18) and the rest evaluator's after_shift_code/exempt_next_shift_codes shape (evaluators.ts:413-421) are the seeds of that format. Secondary requirement: an uncommitted preview path (solve is pure but autoGenerate always commits, autoGenerate.ts:78) so the assistant can show a proposed schedule diff and metrics before writing, which also fixes the commit-before-validate ordering concern."
+      },
+      {
+        "subsystem": "Schedule-generation API + builder UI (Next.js route handlers under src/app/api/scheduling + the 2634-line client grid page)",
+        "purpose": "This subsystem is the HTTP and UI layer around the call-schedule rules engine. REST-ish Next.js route handlers create schedules (scaffolding slots from shift_templates), run two-pass auto-generation (call slots, then day shifts), serve a full-schedule \"grid\" payload, manage versions/publishing, and handle manual assignment writes with inline rule validation. The client page (src/app/(scheduling)/schedules/[id]/page.tsx) renders a shift-type-by-date grid with virtual rows (Available/Off/PTO/Post-Call), a provider picker, a pool-override modal, and the Auto-Generate/Publish buttons. All routes use a service-role Supabase client with no auth (src/lib/supabaseScheduling.ts:3-8).",
+        "keyFiles": [
+          {
+            "path": "/Users/gabrielfarkas/Desktop/FloorRunner/src/app/api/scheduling/schedules/[id]/generate/route.ts",
+            "role": "POST generate endpoint. 81 lines, thin: resolves latest version + optional included_provider_ids override pool (lines 35-59), runs autoGenerate then autoGenerateDayShifts sequentially (lines 61-68), merges results into one GenerationResult (lines 76-78). Takes NO request body — zero parameterization of the run."
+          },
+          {
+            "path": "/Users/gabrielfarkas/Desktop/FloorRunner/src/app/api/scheduling/schedules/[id]/generate/route.helpers.ts",
+            "role": "statusForResult: ok=false -> 422, ok=true (even partial fill) -> 200 (lines 8-10). Extracted purely for testability."
+          },
+          {
+            "path": "/Users/gabrielfarkas/Desktop/FloorRunner/src/app/api/scheduling/schedules/[id]/generate/route.test.ts",
+            "role": "Only 12 lines — tests statusForResult alone. Zero integration coverage of the actual generate route (auth, version resolution, override-pool parsing, pass merging are all untested)."
+          },
+          {
+            "path": "/Users/gabrielfarkas/Desktop/FloorRunner/src/app/api/scheduling/schedules/route.ts",
+            "role": "GET list with query-param filters; POST creates schedule + version 1 + expands shift_templates into per-date schedule_slots (day_type matching w/ friday->weekday fallback, lines 108-146) + one open assignment row per slot (lines 157-164). 4-step non-transactional write chain."
+          },
+          {
+            "path": "/Users/gabrielfarkas/Desktop/FloorRunner/src/app/api/scheduling/schedules/[id]/route.ts",
+            "role": "GET/PATCH/DELETE single schedule. PATCH status='published' also flips the latest version to published (lines 40-55). DELETE hard-deletes with cascade or ?archive=true soft-deletes."
+          },
+          {
+            "path": "/Users/gabrielfarkas/Desktop/FloorRunner/src/app/api/scheduling/schedules/[id]/grid/route.ts",
+            "role": "The big read: 7 sequential queries — schedule+site, latest version, all slots with nested shift_types/assignments/providers joins (line 38), org providers, holidays, employment profiles, availability. Returns everything the builder UI needs in one JSON blob (lines 100-110)."
+          },
+          {
+            "path": "/Users/gabrielfarkas/Desktop/FloorRunner/src/app/api/scheduling/schedules/[id]/versions/route.ts",
+            "role": "GET version list; POST duplicates latest version — copies slots ONE ROW AT A TIME in a serial await loop (lines 71-79, N+1), then bulk-copies assignments via slotIdMap (lines 83-101), then bumps schedules.current_version_number."
+          },
+          {
+            "path": "/Users/gabrielfarkas/Desktop/FloorRunner/src/app/api/scheduling/schedules/[id]/versions/[versionId]/route.ts",
+            "role": "PATCH version status/notes; publishing also stamps schedules.published_version_number (lines 20-38). No restore/rollback endpoint exists."
+          },
+          {
+            "path": "/Users/gabrielfarkas/Desktop/FloorRunner/src/app/api/scheduling/master-schedule/route.ts",
+            "role": "Cross-schedule read model: finds published schedules overlapping a site+date range, loops per-schedule fetching published version + slots (lines 37-70, N+1 per schedule), unions providers. The natural read surface for a cross-site AI context."
+          },
+          {
+            "path": "/Users/gabrielfarkas/Desktop/FloorRunner/src/app/api/scheduling/schedule-assignments/route.ts",
+            "role": "Manual assignment writes. POST runs evaluateAssignment pre-persist and stores violations in validation_flags (lines 15-34), upserts on UNIQUE(schedule_slot_id), then applySequenceAutoFill (D-chain) + revalidateNeighbors ±7 days with per-neighbor evaluate+update loop (lines 133-143). DELETE recreates an open row and cleans up sequence auto-fills."
+          },
+          {
+            "path": "/Users/gabrielfarkas/Desktop/FloorRunner/src/app/api/scheduling/schedule-assignments/[id]/validate/route.ts",
+            "role": "POST re-runs the rules engine for one assignment and persists validation_flags (lines 22-31). Per-call cost is a full loadContext (~7 queries)."
+          },
+          {
+            "path": "/Users/gabrielfarkas/Desktop/FloorRunner/src/app/(scheduling)/schedules/[id]/page.tsx",
+            "role": "2634-line client component. loadGrid fetches /grid (line 230); autoGenerateSchedule POSTs /generate with confirm() dialog, no body, reads only {filled, skipped, errors} from the response, then full-grid reload (lines 736-752). Two large useMemos re-derive virtual rows + over-par math client-side (lines 280-463, 476-628). PoolSelectorModal PATCHes included_provider_ids (lines 1836-1860). CallCountsModal re-implements the FTE/par math a third time (lines 2030-2149)."
+          },
+          {
+            "path": "/Users/gabrielfarkas/Desktop/FloorRunner/src/lib/rulesEngine/autoGenerate.ts",
+            "role": "Orchestrator: loadGenerationContext -> solve (pure) -> optimize (default on) -> commitPlan (2 bulk writes) -> commitValidation -> commitMetadata. Returns filled/skipped/errors/assignments-with-explanations/unfilled/metrics/seedMetrics/perf (lines 54-138). perf block self-reports elapsed_ms and db_queries."
+          },
+          {
+            "path": "/Users/gabrielfarkas/Desktop/FloorRunner/src/lib/rulesEngine/genContext.ts",
+            "role": "Load phase: ~7 fixed queries regardless of schedule size (slots+assignments join line 88, site par level 109, profiles 224, providers 260, credentials 284, availability 312, cross-site 335, historical call counts 369). Produces immutable GenerationContext incl. FTE bucket targets with historical deficit carry-forward."
+          },
+          {
+            "path": "/Users/gabrielfarkas/Desktop/FloorRunner/src/lib/rulesEngine/commit.ts",
+            "role": "commitPlan = 2 bulk statements (upsert updates + insert, lines 114-125). commitValidation = per-assignment evaluateAssignment (~7 queries each via loadContext) + 1 update, 10-way concurrent batches (lines 148-160). commitMetadata = 1 update per assignment, 10-way batches (lines 41-51). Column-probe cache for generation_metadata (lines 18-24)."
+          },
+          {
+            "path": "/Users/gabrielfarkas/Desktop/FloorRunner/src/lib/rulesEngine/dayShiftAutoGen.ts",
+            "role": "Second pass: reloads ALL slots + pool from DB independently (~6 queries, lines 110-320), then writes each placement with an individual awaited update/insert in a serial loop (lines 401-432) — 1 round trip per filled day slot."
+          },
+          {
+            "path": "/Users/gabrielfarkas/Desktop/FloorRunner/src/lib/rulesEngine/optimize.ts",
+            "role": "CPU side of generation: deterministic hill-climb, up to 200 accepted moves / 5000 full re-solves per run (lines 8-12), each re-solve is a pure in-memory solve() + scoreSolution(). Runs synchronously inside the POST handler."
+          },
+          {
+            "path": "/Users/gabrielfarkas/Desktop/FloorRunner/src/lib/rulesEngine/loadContext.ts",
+            "role": "Per-assignment validation context loader: slot, provider, credentials, ±31d neighbors, availability, same-day, cross-site — ~7 queries per (slot,provider) even with the siteCtx N+1 fix (lines 83-237); siteCtx only removes the shift-type/rule queries (lines 33-67)."
+          }
+        ],
+        "dataFlow": "Click-to-persisted-schedule flow: (1) User clicks Auto-Generate on a draft schedule; a window.confirm() gate fires (page.tsx:738). (2) Client POSTs /api/scheduling/schedules/:id/generate with NO body (page.tsx:742). (3) Route resolves latest schedule_version by max version_number + reads schedules.included_provider_ids as an optional override pool in one parallel round trip (generate/route.ts:35-43). (4) Pass 1 — autoGenerate: loadGenerationContext issues ~7 fixed reads (slots+nested assignments, site par level, profiles, providers, credentials, availability ±31d, cross-site assignments, historical call counts; genContext.ts:88-393); solve() + optimize() run purely in memory (optimize budget: 200 iterations / 5000 re-solves, optimize.ts:8-12); commitPlan writes the whole plan in 2 bulk statements (commit.ts:114-125); commitValidation then re-evaluates EVERY placed assignment against the rules engine — ~7 reads + 1 update each, 10-way concurrency (commit.ts:148-160, loadContext.ts:83-237) — and commitMetadata writes generation_metadata per row (commit.ts:41-51). (5) Pass 2 — autoGenerateDayShifts independently reloads all slots + Day Doc pool (~6 reads) and fills 'regular' slots with ONE serial awaited DB write per placement (dayShiftAutoGen.ts:401-432). (6) Route merges pass-2 filled/errors/assignments into the pass-1 result (generate/route.ts:76-78) and returns 200 (even for partial fills) or 422 on hard failure (route.helpers.ts:8-10). Response is the full GenerationResult including per-assignment source+explanation, unfilled reasons, metrics, seedMetrics, and perf {elapsed_ms, db_queries} (autoGenerate.ts:22-42). (7) The client keeps only {filled, skipped, errors} for a toast (page.tsx:745) and re-fetches the ENTIRE grid via GET /grid (page.tsx:746 -> 226-239), which itself runs 7 sequential queries and returns schedule+version+all slots (nested shift_types/assignments/providers)+providers+holidays+profiles+availability (grid/route.ts:100-110). (8) Client-side, two big useMemos then recompute virtual rows, post-call detection, and FTE/par over-par flags from the raw payload (page.tsx:280-463, 476-628). Manual edits go through POST/DELETE /schedule-assignments (optimistic UI update, then full reload; page.tsx:644-705), each triggering evaluate + sequence auto-fill + ±7-day neighbor revalidation loops server-side (schedule-assignments/route.ts:36-37, 108-147). Publishing PATCHes schedules.status which also flips the latest version (schedules/[id]/route.ts:40-55). WALL-CLOCK BUDGET: engine solve/optimize is in-memory CPU (bounded, likely sub-second to a few seconds); the dominant costs are DB round-trip fan-out — commitValidation at ~8 round trips per placed call assignment (e.g. ~90 call fills ≈ 700+ queries in 10-way batches), dayShiftAutoGen's strictly serial 1-write-per-slot loop (100+ sequential RTTs for a busy month), commitMetadata's 1-update-per-assignment, and finally the full grid refetch + JSON serialization. PAYLOAD SIZES: generate request ≈ 0 bytes; generate response scales with placements (source+explanation+unfilled+metrics per assignment — roughly 30-150 KB for a month, mostly discarded by the UI); grid GET is the heavyweight — every slot row carries nested shift_type + assignment + provider objects, so a 1-month single-site schedule with ~10-15 rows/day is ~300-900 slot objects ≈ several hundred KB to ~1 MB, refetched after every single edit. VERSIONING MODEL: schedules 1-N schedule_versions (version_number, version_status draft/published, published_at, notes); generation and the grid always target the LATEST version (max version_number — generate/route.ts:37-42, grid/route.ts:25-32); POST /versions clones latest (slots serially, assignments bulk) and bumps current_version_number (versions/route.ts:44-110); publish stamps published_version_number on the schedule (versions/[versionId]/route.ts:29-37); master-schedule reads only published versions (master-schedule/route.ts:38-45). There is no diff, no restore, and no way to view or generate onto a non-latest version.",
+        "extensionPoints": [
+          "schedules.included_provider_ids override pool — already a per-schedule jsonb knob the generate route reads (generate/route.ts:56-59) and genContext honors by skipping home-site/call-taker gates (genContext.ts:220-234); the PoolSelectorModal PATCH pattern (page.tsx:1836-1860) is the exact template for AI-written per-schedule config",
+          "AutoGenerateOptions.optimize flag (autoGenerate.ts:12-15) — the engine already accepts an options object at the route boundary; the generate POST currently ignores its request body entirely, so adding a parsed body (structure spec, seed constraints, optimize budget) is additive and non-breaking",
+          "rule_sets / rule_definitions tables with jsonb condition/action + explanation_text, loaded per-site at validation time (loadContext.ts:51-61) and served by CRUD routes (api/scheduling/rule-definitions, rule-sets) — the natural NL-to-config target for Claude-authored rules, though today only validation (not generation) consults them",
+          "shift_templates -> slot scaffolding in POST /schedules (schedules/route.ts:82-146) with day_type matching and required_count expansion — 'restructure weekends' (C1 in-house 24h, C2 home, Fri-Sun Neuro beeper) maps to template/shift_type rows plus a slot-rebuild pass; shift-types and shift-templates already have full CRUD routes",
+          "assignments.generation_metadata column with graceful column-probe fallback (commit.ts:18-24, 34-53) — per-assignment source + explanation already persisted; ideal grounding for an assistant explaining 'why is Dr. X on call Saturday'",
+          "GenerationResult.metrics / seedMetrics / perf (autoGenerate.ts:36-41, 126-136) — before/after fairness+burnout scoring and self-reported elapsed_ms/db_queries; a Claude loop can already compare candidate schedules quantitatively, and the UI currently throws this data away (page.tsx:745)",
+          "Version cloning POST /versions (versions/route.ts:26-113) — a ready-made sandbox: clone latest, apply an AI restructure, generate, present diff, publish or discard; only a diff endpoint and 'generate onto version X' parameter are missing",
+          "evaluateAssignment + /schedule-assignments/[id]/validate + validation_flags aggregation in the UI rules-summary popover (page.tsx:781-805) — a persisted per-assignment violation channel Claude proposals can be checked against before commit",
+          "master-schedule route (master-schedule/route.ts:10-95) — cross-schedule published view keyed by site+range, the read model an assistant needs for cross-site conflict reasoning",
+          "The pure/IO split (loadGenerationContext -> pure solve/optimize -> commit; autoGenerate.ts:1-2) — GenerationContext is a serializable snapshot, so a Claude tool could load once, run many what-if solves in memory, and commit only the accepted plan"
+        ],
+        "concerns": [
+          "No authentication or authorization on ANY route — every handler uses the RLS-bypassing service-role client (supabaseScheduling.ts:3-8); known #1 roadmap blocker, but it also blocks safely exposing these endpoints as Claude tools",
+          "Generation runs synchronously inside a Next.js POST with no job queue, timeout guard, or progress channel — optimize alone budgets 5000 in-memory re-solves (optimize.ts:12) and the validation/day-shift DB fan-out can push the request past serverless limits on big blocks; the UI just shows 'Generating...' with no cancel (page.tsx:1050-1061)",
+          "commitValidation is the hidden N+1: the siteCtx fix removed only 2 of ~9 queries per assignment — loadContext still issues slot/provider/credentials/neighbors/availability/same-day/cross-site reads per placed assignment (loadContext.ts:83-237), so validating ~90 call fills costs ~700 round trips; likely the single biggest wall-clock line item",
+          "autoGenerateDayShifts writes serially, one awaited update/insert per filled slot (dayShiftAutoGen.ts:401-432) — the direct opposite of commitPlan's 2-bulk-statement pattern — and reloads all slots/pool from scratch instead of reusing pass-1's context (generate/route.ts:68)",
+          "Version copy is N+1 per slot (serial insert loop, versions/route.ts:71-80) and the whole clone (version row -> slots -> assignments -> current_version_number) is non-transactional; schedule creation is likewise a 4-step chain that can fail midway leaving orphaned rows (schedules/route.ts:53-165)",
+          "FTE/par fairness math exists in THREE places that must stay in sync by hand: the engine (genContext.ts:414-434), the grid over-par useMemo (page.tsx:467-546, comment admits it 'matches the engine' minus deficit carry-forward), and CallCountsModal (page.tsx:2126-2149) — a customization change (e.g. new call structure) must be re-implemented three times",
+          "Structural scheduling semantics are hard-coded in TypeScript, not data: post-call relief chains (sequenceAutoFill.ts), weekend chaining and slot ordering (genContext.ts:153-181), NON_POST_CALL_CODES = ['C3'] baked into the UI (page.tsx:399), day-shift codes matched by regex /^D(\\d+)$/ (page.tsx:601-607) — the exact things the owner wants natural-language restructuring of ('Neuro beeper Fri-Sun', 'post-call day off') currently require code changes",
+          "The rich generate response (per-assignment explanations, unfilled reasons, metrics, perf) is discarded by the client, which keeps 3 fields and refetches the full multi-hundred-KB grid (page.tsx:745-746); every manual edit also triggers a full-grid refetch (page.tsx:678, 700), so perceived speed is dominated by redundant payloads",
+          "toggleLock is optimistic-only with a TODO — lock state never persists (page.tsx:707-715) even though the engine honors slot.locked (genContext.ts:122); a user who 'locks' a cell and regenerates can silently have it treated as unlocked",
+          "Generation always targets the implicit latest version and partial fills return 200 with no version snapshot before mutation — no dry-run mode, no diff, no undo other than manually cloning first; route.test.ts covers only the status-code helper, leaving the whole generate pipeline without integration tests",
+          "Page interface AvailabilityEntry declares `reason` (page.tsx:50) but the grid API selects `reason_code` (grid/route.ts:93) — the field is silently always undefined; the same class of silent column-mismatch bug already bit this route once per its own comment (grid/route.ts:85-92)",
+          "Concurrent edits are only partially protected: assignments upsert on UNIQUE(schedule_slot_id) is atomic (schedule-assignments/route.ts:19-32), but generate racing a manual edit, or two generates racing, have no locking/idempotency; revalidateNeighbors is best-effort and swallows errors (schedule-assignments/route.ts:144-146)"
+        ],
+        "claudeApiRelevance": "This subsystem is where a Claude-powered schedule assistant would plug in, and its shape both helps and hinders. HELPS: the engine's strict load->pure-solve->commit split (autoGenerate.ts:1-2) means Claude can operate at the plan level — a tool could call loadGenerationContext once, let Claude propose constraint tweaks or seed assignments, re-run pure solve/optimize in memory, and score candidates with the already-built metrics/seedMetrics comparators (optimize.ts:31-35) before committing; the generate route's currently-ignored request body is a free slot for a structured 'generation spec' payload; generation_metadata explanations (commit.ts:34-53) plus validation_flags give grounded material for NL answers about why assignments exist; and the version-clone endpoint (versions/route.ts:26-113) is a natural sandbox for propose->diff->approve workflows the owner wants. HINDERS: the target of a request like 'switch weekends to C1 in-house 24h, C2 home call, Neuro beeper Fri-Sun, post-call day off' is scattered across shift_types, shift_templates (slot scaffolding only runs at schedule creation, schedules/route.ts:103-146 — there is NO endpoint to restructure slots of an existing schedule), jsonb rule_definitions (used only for validation, not generation), and hard-coded engine/UI TypeScript (sequence chains, post-call exceptions, C1/C2/C3 code assumptions at e.g. page.tsx:399 and optimize.ts:7). So an NL/image-driven restructuring assistant needs, before any Claude integration: (1) a 'call structure' data model the engine actually generates from, (2) a slot-rebuild endpoint for existing schedule versions, (3) a dry-run/diff generation mode (generate onto a cloned version, return the delta), and (4) auth, since every route is currently service-role and unauthenticated — unacceptable as a tool surface for an LLM. Speed work (batching commitValidation, bulk day-shift writes, trimming the grid payload) also directly benefits the assistant loop, because an interactive propose-evaluate-revise cycle will call generation far more often than a human clicking Auto-Generate once per month."
+      },
+      {
+        "subsystem": "Scheduling data model and rules customization surface (Supabase `scheduling` schema + Next.js API routes + rules UI)",
+        "purpose": "Defines a full multi-tenant anesthesia scheduling data model in a dedicated Postgres `scheduling` schema: organizations/sites/providers, per-site shift-type and shift-template configuration, versioned schedules with slots and assignments, availability/requests/swaps, burden tracking, and a declarative rules engine (rule_sets containing rule_definitions with JSONB condition/action). Thin CRUD API routes expose these tables to a React rules-builder UI where admins hand-assemble rules per category. The declarative rules are used for post-hoc validation of assignments; the actual schedule generation logic (weekend chaining, post-call days, D-fills) is largely hard-coded in src/lib/rulesEngine.",
+        "keyFiles": [
+          {
+            "path": "/Users/gabrielfarkas/Desktop/FloorRunner/supabase_scheduling_schema.sql",
+            "role": "Core schema: 28 tables, 21 enums, RLS policies, triggers. Key sections: shift config (lines 238-293), schedules/slots/assignments (lines 297-363), rules engine tables (lines 404-439), scheduler_runs (443-458), burden tracking (462-486), RLS (620-772), PostgREST exposure incl. GRANT ALL to anon (807-815)"
+          },
+          {
+            "path": "/Users/gabrielfarkas/Desktop/FloorRunner/supabase_scheduling_patch2.sql",
+            "role": "Adds shift_types.call_type (weekday/weekend/holiday/additional) as free text — start of call-role taxonomy"
+          },
+          {
+            "path": "/Users/gabrielfarkas/Desktop/FloorRunner/supabase_scheduling_patch3.sql",
+            "role": "Adds shift_types.call_coverage_type (partial_beeper/full_beeper) + early_out_post_call — beeper-role modeling exists at column level"
+          },
+          {
+            "path": "/Users/gabrielfarkas/Desktop/FloorRunner/supabase_scheduling_patch6.sql",
+            "role": "sites.call_par_level — per-site divisor for FTE-weighted call quota math"
+          },
+          {
+            "path": "/Users/gabrielfarkas/Desktop/FloorRunner/supabase_scheduling_patch11.sql",
+            "role": "schedules.included_provider_ids — per-schedule candidate-pool override (jsonb UUID array)"
+          },
+          {
+            "path": "/Users/gabrielfarkas/Desktop/FloorRunner/supabase_scheduling_patch13.sql",
+            "role": "assignments.pre_call_activation — per-assignment operational override showing the pattern for assignment-level flags"
+          },
+          {
+            "path": "/Users/gabrielfarkas/Desktop/FloorRunner/supabase_scheduling_patch17_grid_calculator_rls.sql",
+            "role": "Documents the RLS posture: policies exist but app bypasses them; zero-uuid org backfill hack flagged 'REMOVE IN FUTURE PATCH'"
+          },
+          {
+            "path": "/Users/gabrielfarkas/Desktop/FloorRunner/src/app/api/scheduling/rule-definitions/route.ts",
+            "role": "GET (filter by rule_set_id) + POST; inserts raw req.json() with zero validation (lines 24-36)"
+          },
+          {
+            "path": "/Users/gabrielfarkas/Desktop/FloorRunner/src/app/api/scheduling/rule-definitions/[id]/route.ts",
+            "role": "PATCH updates rule in place (lines 15-20); DELETE hard-deletes (lines 33-36) — no rule-level versioning or audit"
+          },
+          {
+            "path": "/Users/gabrielfarkas/Desktop/FloorRunner/src/app/api/scheduling/rule-sets/route.ts",
+            "role": "List/create rule sets; new sets always start status='draft' (line 38)"
+          },
+          {
+            "path": "/Users/gabrielfarkas/Desktop/FloorRunner/src/app/api/scheduling/rule-sets/[id]/route.ts",
+            "role": "GET with nested rule_definitions(*); PATCH sets approved_at when activating (lines 33-35); DELETE soft-archives (lines 55-58)"
+          },
+          {
+            "path": "/Users/gabrielfarkas/Desktop/FloorRunner/src/app/api/scheduling/rule-sets/[id]/activity/route.ts",
+            "role": "Aggregates assignments.validation_flags into per-rule fire counts — the explainability/telemetry seed (lines 50-152)"
+          },
+          {
+            "path": "/Users/gabrielfarkas/Desktop/FloorRunner/src/app/api/scheduling/shift-types/route.ts",
+            "role": "Per-site shift-type CRUD; POST passes raw body through (lines 19-31)"
+          },
+          {
+            "path": "/Users/gabrielfarkas/Desktop/FloorRunner/src/app/api/scheduling/shift-templates/route.ts",
+            "role": "Per-site coverage-pattern CRUD ordered by generation_priority (line 14)"
+          },
+          {
+            "path": "/Users/gabrielfarkas/Desktop/FloorRunner/src/app/(scheduling)/rules/page.tsx",
+            "role": "Rule-set list UI with status filter; N+1-ish load fetching ALL rule_definitions org-wide to count per set (lines 61-66)"
+          },
+          {
+            "path": "/Users/gabrielfarkas/Desktop/FloorRunner/src/app/(scheduling)/rules/[id]/page.tsx",
+            "role": "Rule builder: 10 fixed categories (lines 75-86), per-category form state → condition/action JSON via buildConditionAction switch (lines 641-676); plain-language textarea saved to original_plain_text with 'In the future, AI will parse these' tooltip (lines 427, 435-443)"
+          },
+          {
+            "path": "/Users/gabrielfarkas/Desktop/FloorRunner/src/app/api/scheduling/schedules/route.ts",
+            "role": "Schedule creation materializes slots from shift_templates by day_type with friday→weekday fallback (lines 108-146)"
+          },
+          {
+            "path": "/Users/gabrielfarkas/Desktop/FloorRunner/src/lib/rulesEngine/loadContext.ts",
+            "role": "Loads active rule sets + definitions for a site (lines 51-59); genContext par-level FTE quota math"
+          },
+          {
+            "path": "/Users/gabrielfarkas/Desktop/FloorRunner/src/lib/rulesEngine/evaluators.ts",
+            "role": "The 8 rule interpreters (eligibility, sequence, rest, frequency, coverage, pairing, fairness, open_slot, cross_site) reading condition/action JSON keys — validation only, not generation (lines 178-754)"
+          },
+          {
+            "path": "/Users/gabrielfarkas/Desktop/FloorRunner/src/lib/rulesEngine/solve.ts",
+            "role": "Generation core with HARD-CODED call structure: weekend chain Sat C1→Sun C2+Fri C2, Sat C2→Sun C1+Fri D2, C3 Sat→Sun (lines 119-127); post-call day off and D1/D2/D3 chaining keyed to literal 'C1'/'C2' codes (lines 69-91)"
+          },
+          {
+            "path": "/Users/gabrielfarkas/Desktop/FloorRunner/src/lib/supabaseScheduling.ts",
+            "role": "Single server client: service-role key bypasses RLS on every API route (lines 3, 10)"
+          },
+          {
+            "path": "/Users/gabrielfarkas/Desktop/FloorRunner/src/lib/gridCalculator/rulesNormalizer.ts",
+            "role": "Existing Claude API integration precedent: @anthropic-ai/sdk import (line 18), pinned model allowlist (lines 110-115) — pattern to reuse for the schedule assistant"
+          }
+        ],
+        "dataFlow": "Configuration flow: admin defines per-site shift_types (code like C1/C2/D1, category enum call/regular/float, times, burden-counting flags — schema lines 238-264) and shift_templates (schedule_layer × day_type × shift_type_id × required_count — lines 266-280). When a schedule is created, POST /api/scheduling/schedules walks the date range, derives day_type per date from holiday_calendars + weekday (schedules/route.ts:108-123), matches templates (with friday→weekday fallback, lines 126-129), and inserts schedule_slots + one open assignment per slot (lines 130-164) under a schedule_version (schema 314-325). Rules flow: admin creates a rule_set (org+site scoped, status draft), adds rule_definitions through the RuleBuilderModal which serializes category-specific form fields into condition/action JSONB (rules/[id]/page.tsx:641-676) and POSTs raw JSON to /api/scheduling/rule-definitions; activating a set stamps approved_at (rule-sets/[id]/route.ts:33-35). Generation flow: autoGenerate loads a GenerationContext (loadContext/genContext), computes FTE-weighted bucket targets using sites.call_par_level (genContext.ts:25, 42-61), then solve.ts fills call slots greedily with hard-coded weekend chaining and post-call logic keyed to literal shift codes (solve.ts:69-127). Validation flow: evaluateAssignment loads active rule_definitions for the site (loadContext.ts:51-59) and runs all evaluators (evaluate.ts:38-45), writing violations into assignments.validation_flags; the activity endpoint aggregates those flags into per-rule fire counts for the rules UI badges (activity/route.ts:94-151, page.tsx:115-144).",
+        "extensionPoints": [
+          "rule_sets.original_plain_text + ai_summary columns (schema lines 414-415) were explicitly designed for AI parsing — the UI tooltip says 'In the future, AI will parse these into structured rules automatically' (rules/[id]/page.tsx:427). A Claude assistant can write structured rule_definitions from this text with zero schema change.",
+          "rule_definitions.condition/action are open JSONB (schema lines 433-434) with per-category key conventions already interpreted by evaluators.ts (e.g. trigger_shift_code/linked_shift_code/relationship at lines 332-334, after_shift_code/rest_type at 413-414, max_count/min_count at 505-506) — a natural tool-use target schema for Claude; the 'weekend_continuation' relationship option (page.tsx:828) is exactly the weekend-restructure vocabulary needed, it just isn't consumed by the generator yet.",
+          "shift_types already carries call-role semantics awaiting use: call_type (patch2), call_coverage_type partial_beeper/full_beeper (patch3 — directly maps to 'Neuro beeper role'), early_out_post_call (patch3), requires_post_call_rule / counts_as_weekend_burden flags (schema 251-255), crosses_midnight + duration_hours (247-248 — supports 24h in-house vs home call). Most are stored-but-not-consumed by solve.ts, so wiring them in makes new call structures data-driven.",
+          "shift_templates (schedule_layer × day_type × weekday_number × required_count × generation_priority, schema 266-280) is the closest thing to a first-class 'call structure' — an AI assistant restructuring weekends could operate purely by rewriting a site's shift_types + shift_templates rows through the existing CRUD routes.",
+          "rule_sets lifecycle (draft → active with approved_at/approved_by, effective_start/end dates, archive-not-delete — schema 411-417, rule-sets/[id]/route.ts:33-58) gives a ready-made human-approval gate for AI-proposed rule changes.",
+          "assignments.validation_flags + the /activity aggregation endpoint (activity/route.ts) provide per-rule telemetry Claude could read to explain or evaluate a proposed restructure before/after.",
+          "schedule_versions + scheduler_runs (schema 314-325, 443-458 with parameters/warnings/validation_summary jsonb) support generate-compare-rollback loops for AI-driven what-if runs; schedules.included_provider_ids (patch11) shows the per-schedule override pattern.",
+          "Existing Claude integration precedent in the repo: src/lib/gridCalculator/rulesNormalizer.ts uses @anthropic-ai/sdk with a pinned model allowlist (lines 18, 110-115) and grid_calculator_fte_runs.rationale_source ('claude'|'template', patch16) shows the fallback-when-no-key pattern; reuse both for the scheduling assistant.",
+          "provider_employment_profiles is extremely rich for constraint grounding: per-provider eligibility booleans, post_call_relief_rules jsonb, frequency targets, blocked_dates (schema 137-188), plus patch15's leave buckets and max_consecutive_post_call_days.",
+          "audit_log table with before_json/after_json (schema 543-554) exists but appears unused by these routes — ideal landing spot for AI-change provenance."
+        ],
+        "concerns": [
+          "Call structure is NOT first-class for generation: the weekend pattern (Sat C1 → Sun C2 + Fri C2; Sat C2 → Sun C1 + Fri D2; C3 Sat→Sun) and post-call day-off/D1-D3 chaining are hard-coded against literal shift codes 'C1'/'C2'/'C3'/'D1'/'D2'/'D3' in solve.ts:69-127, optimize.ts:7, metrics.ts:4-10, and eligibility.ts:56. The user's example request ('C1 in-house 24h, C2 home call, Neuro beeper Fri-Sun') cannot be expressed by editing data today — it requires code changes. This is the single biggest gap for the Claude assistant vision.",
+          "Two disconnected rule systems: rule_definitions/evaluators only VALIDATE assignments after the fact (evaluate.ts, activity/route.ts comment lines 40-44), while generation logic ignores them — e.g. a 'sequence' rule with weekend_continuation is displayed and validated but never drives solve.ts. AI-written rules would silently not change generated schedules.",
+          "Zero input validation on every mutation route: rule-definitions, shift-types, shift-templates POST/PATCH insert raw req.json() (e.g. rule-definitions/route.ts:28-32) — no Zod/schema check, no whitelist of condition/action keys. Malformed AI output would be persisted silently and evaluators would just no-op on missing keys.",
+          "No rule versioning or audit: PATCH mutates rule_definitions in place and DELETE hard-deletes ([id]/route.ts:15-40); rule_sets archive but their contained rules have no history; audit_log is never written by these routes. An AI assistant editing rules needs diffable history.",
+          "Auth/RLS is defined but inert: RLS policies exist for all core tables keyed on scheduling.current_user_org_id() (schema 654-772), but every API route uses the service-role client that bypasses RLS (supabaseScheduling.ts:3,10), there is no middleware.ts or login flow, and schema lines 811-812 GRANT ALL ON ALL TABLES to anon — so with the anon key the schema is fully writable. Patch17's zero-uuid organization_id default is a known temporary hack. Matches the roadmap note that auth is the #1 blocker.",
+          "Enum rigidity vs free-text drift: rule_category, day_type, shift_category are Postgres enums (schema 16-30) requiring migrations to extend, while call_type/call_coverage_type/burden category are unchecked free text (patch2/3, schema 469) — inconsistent contract for an AI writing config; free-text codes ('C1', burden 'weekend_call') are stringly-typed across condition JSON, burden tables, and code.",
+          "Slot generation has quiet fallbacks that could surprise a restructure: friday falls back to weekday templates only for friday (schedules/route.ts:127-129), saturday/sunday with no templates silently produce no slots; weekday_number and applies_on_holiday columns on shift_templates (schema 271-272) are never consulted by the generator.",
+          "Performance smells relevant to the 'faster' goal: rules list page fetches ALL rule_definitions org-wide client-side to count per set (rules/page.tsx:61-66); activity endpoint walks every assignment at a site in 1000-row chunks per request (activity/route.ts:103-139); schedule creation inserts slots then assignments in two unbatched round trips per schedule.",
+          "rule-definitions GET without rule_set_id returns every rule across all orgs (route.ts:11-17 has no org scoping) — a tenant-isolation bug once multi-org."
+        ],
+        "claudeApiRelevance": "This subsystem is the primary read/write surface a Claude-powered schedule assistant would target, and about 70% of the needed scaffolding already exists: rule_sets.original_plain_text was explicitly reserved for NL rule input (schema line 414, UI tooltip rules/[id]/page.tsx:427), rule_definitions' JSONB condition/action vocabulary (evaluators.ts:178-754) is a ready-made tool-use output schema, shift_types/shift_templates CRUD routes can express new roles like a Fri-Sun beeper (call_coverage_type='partial_beeper' from patch3, day_type templates), and the draft→active approval lifecycle plus schedule_versions give a safe propose-review-apply loop. The repo already ships an @anthropic-ai/sdk integration pattern (gridCalculator/rulesNormalizer.ts:18,110-115 with model allowlist and template fallback recorded in grid_calculator_fte_runs.rationale_source). The critical blocker: an assistant that writes rules/templates today would change validation badges but NOT generated schedules, because the weekend/post-call call structure is hard-coded to literal C1/C2/C3/D-codes in solve.ts:69-127 — the restructure use case ('switch weekends to C1 in-house 24h, C2 home call, Neuro beeper Fri-Sun, post-call off') requires first promoting the call-structure pattern (chaining relationships, post-call effects, block spans) into data (extending shift_templates/rule_definitions or a new call_structures table) and making solve.ts consume it. Secondary requirements before letting Claude write to these tables: server-side validation of condition/action payloads (currently raw-JSON inserts), rule versioning/audit for diffable AI edits, and closing the service-role/anon-grant auth gap so an AI endpoint isn't an unauthenticated write path."
+      },
+      {
+        "subsystem": "Existing LLM integration (Anthropic SDK): gridCalculator Rules Normalizer (A4) + FTE rationale generator (A7)",
+        "purpose": "FloorRunner has two server-side Claude call sites, both in the grid-calculator engine. The primary one is the \"Rules Normalizer\": it converts free-text department staffing guidelines into a strict JSON CoverageRuleSet that a deterministic solver consumes, surfacing any un-mappable sentences back to the UI as an `unmapped[]` array for human clarification. The secondary one generates a 2-3 sentence plain-English rationale for FTE recommendations, with a deterministic templated fallback when the API key is missing or the call fails. Both use the official @anthropic-ai/sdk (^0.104.2, package.json:14) via non-streaming `messages.create()` with prompt caching on the system block.",
+        "keyFiles": [
+          {
+            "path": "/Users/gabrielfarkas/Desktop/FloorRunner/src/lib/gridCalculator/rulesNormalizer.ts",
+            "role": "Core LLM wrapper. Exact call pattern: official SDK (`import Anthropic from '@anthropic-ai/sdk'`, line 18; `new Anthropic({apiKey})`, line 311) cast to a narrow structural interface `AnthropicLike` (lines 202-231) that serves as a test seam. Non-streaming `client.messages.create()` (lines 267-287) with model default `claude-opus-4-7` (line 110), allowlist KNOWN_MODELS = {claude-opus-4-7, claude-sonnet-4-6} (lines 113-116), max_tokens: 4096 (line 269), system as a block array with `cache_control: {type:'ephemeral'}` (lines 270-279), one user message. NO JSON mode / structured outputs, NO tool use, NO streaming, NO thinking config, NO temperature. JSON is prompt-instructed then scraped: extractJsonObject tries direct JSON.parse -> ```json fence strip -> first-{/last-} span (lines 370-402); validateAndCoerce hand-validates shape (lines 408-464); coerceSiteRule/coerceGlobalRule do per-rule best-effort coercion against enum whitelists VALID_STAFFING/VALID_RATIOS/VALID_AUX_ROLES (lines 466-554), silently dropping invalid rules. Typed errors: MissingApiKeyError (72-80), NormalizerResponseError with raw text (86-91), NormalizerConfigError for prompt-path traversal (98-145). Cache-hit detection via `usage.cache_read_input_tokens > 0` (line 290). Empty-input short-circuit avoids a Claude call entirely (lines 251-258). Deterministic user message: sorted site names + raw text (lines 321-333)."
+          },
+          {
+            "path": "/Users/gabrielfarkas/Desktop/FloorRunner/src/lib/gridCalculator/prompts/normalizer.md",
+            "role": "System prompt (~7.5KB markdown), loaded from disk once and module-cached (rulesNormalizer.ts:171-191), overridable via GRID_CALCULATOR_NORMALIZER_PROMPT_PATH env var with path-traversal hardening. Contains: output contract as embedded TypeScript interfaces (SiteRule lines 32-53, GlobalRule lines 60-65), 9 hard rules including exact-site-name matching (line 79-83), conflict handling with 'last wins, both noted' semantics (lines 88-92), the `unmapped` escape-hatch contract (lines 111-114), 'JSON only, no prose' (lines 17, 120, 234), and 4 few-shot worked examples (lines 124-230). This is the load-bearing schema definition — duplicated between prompt, code validators, and types.ts."
+          },
+          {
+            "path": "/Users/gabrielfarkas/Desktop/FloorRunner/src/app/api/grid-calculator/normalize-rules/route.ts",
+            "role": "HTTP boundary. POST accepts {rawText, sites, model?}; returns 200 {rules, unmapped, promptCacheHit, modelId}, 400 validation (with a `span` field pointing at the bad path, lines 88-131), 500 for MissingApiKeyError/unknown, 502 for NormalizerResponseError including the model's raw text (lines 57-70). `export const dynamic = 'force-dynamic'` (line 26) prevents static prerendering. Model param validated against KNOWN_MODELS (line 120). No auth, no rate limiting, no SDK typed-exception handling — 429/529/network errors fall into the generic Error->500 branch (lines 67-69)."
+          },
+          {
+            "path": "/Users/gabrielfarkas/Desktop/FloorRunner/src/lib/gridCalculator/__tests__/rulesNormalizer.test.ts",
+            "role": "14 unit tests via `npx tsx` + node:assert mini-harness (no vitest despite package.json scripts using vitest). Stubs the SDK through the AnthropicLike seam with canned fixtures (makeClient, lines 45-59). Coverage: happy paths, unmapped bubbling, conflict ordering+notes (169-186), empty-input no-call assertion (192-205), cache-hit flag (212-219), code-fence parsing (225-234), garbage->NormalizerResponseError (240-250), missing-key error (256-271), cache_control presence on every request (277-290), byte-identical deterministic user messages (298-320), global-rule round-trip, and path-traversal rejection (344-381)."
+          },
+          {
+            "path": "/Users/gabrielfarkas/Desktop/FloorRunner/src/lib/gridCalculator/__tests__/fixtures/normalizer-responses.json",
+            "role": "8 canned Anthropic responses keyed by scenario (endoSolo, multipleSites, crossSiteSupervision, unparseableSentence, conflictingRules, withCodeFence, garbage, globalRule). Each mimics the SDK wire shape: content[].{type,text}, model: 'claude-opus-4-7', usage with cache_creation/cache_read_input_tokens — cache_read is what drives the promptCacheHit tests. 'garbage' is a refusal-like prose reply used to exercise the 502 path."
+          },
+          {
+            "path": "/Users/gabrielfarkas/Desktop/FloorRunner/src/lib/gridCalculator/fteSimulator.ts",
+            "role": "Second LLM call site (rationale generator, lines 1180-1345). DEFAULT_RATIONALE_MODEL = 'claude-sonnet-4-6' (line 1185), max_tokens: 512 (1277), same system-block cache_control pattern (1278-1284). Key differences: SDK is dynamically imported inside try/catch (tryBuildAnthropicClient, lines 1302-1326) so a missing key or SDK failure soft-fails; ALL call errors are swallowed and replaced by buildTemplatedRationale, a deterministic string (lines 1205-1230, catch at 1295-1299). Mirrors the injectable-client seam as RationaleClient (lines 230-253)."
+          },
+          {
+            "path": "/Users/gabrielfarkas/Desktop/FloorRunner/src/app/(scheduling)/grid-calculator/onboarding/StepGuidelines.tsx",
+            "role": "UI caller: 'Parse with Claude' button POSTs {rawText, sites} to the route (line 62), blocks on a `parsing` boolean (no streaming/progress), dispatches rules/cacheHit/modelId/unmapped into wizard state, and renders route error envelopes."
+          },
+          {
+            "path": "/Users/gabrielfarkas/Desktop/FloorRunner/docs/agent-notes/A4-rules-normalizer.md",
+            "role": "Design doc for the integration: model pinning rationale (opus-4-7 default, sonnet-4-6 downshift, line 15), >=80% cache-hit target (line 21), persistence boundary (route does NOT write to DB — lines 34-39), and a list of normalizer-emitted fields the solver does not yet honor (maxSupervisionRatio per site, auxiliaryRole, globalRules, notes — lines 66-97)."
+          },
+          {
+            "path": "/Users/gabrielfarkas/Desktop/FloorRunner/package.json",
+            "role": "Deps: @anthropic-ai/sdk ^0.104.2 (line 14) — the only LLM dependency; no OpenAI/langchain/etc. anywhere in the repo. Test script is vitest, but the normalizer tests actually run via npx tsx (mismatch)."
+          }
+        ],
+        "dataFlow": "UI (StepGuidelines.tsx:62) POSTs {rawText, sites} -> POST /api/grid-calculator/normalize-rules (route.ts:34) -> manual body validation with span-pointed 400s (route.ts:88-131) -> normalizeRules() (rulesNormalizer.ts:242): trims input and short-circuits empty text with an empty rule set (251-258); builds/uses injected client (buildDefaultClient reads process.env.ANTHROPIC_API_KEY, 304-312); loads and module-caches the markdown system prompt from disk (172-191); builds a deterministic user message = sorted canonical site names + verbatim guideline text (321-333); calls client.messages.create with the system prompt in a cache_control:ephemeral block and max_tokens 4096 (267-287) -> parseResponse finds the first text block (340-363) -> extractJsonObject three-tier scrape (370-402) -> validateAndCoerce enforces {rules:{siteRules[],globalRules[]},unmapped[]} with enum whitelists, dropping malformed rules (408-554) -> result {rules, unmapped, promptCacheHit (from usage.cache_read_input_tokens), modelId (from response.model)} -> route returns 200 JSON -> UI stores in wizard state; unmapped sentences are shown to the human for clarification; the deterministic solver later consumes rules. Persistence is explicitly out of scope for the route (route.ts:12-13). The parallel fteSimulator flow embeds a Claude call inside recommendFTE: recommendation stats -> buildRationaleUserMessage JSON payload (1328+) -> sonnet-4-6 create() -> first text block or templated fallback, with rationaleFallback flag surfaced in FTERunResult (fteSimulator.ts:218).",
+        "extensionPoints": [
+          "Injectable-client test seam: AnthropicLike (rulesNormalizer.ts:202-231) and RationaleClient (fteSimulator.ts:230-253) let any new Claude module (e.g. a schedule assistant in src/lib/rulesEngine) be fixture-tested without network calls — the pattern is proven and documented in A4's notes.",
+          "Prompt-file convention: prompts/*.md loaded from disk with candidate-path resolution, module-level cache, and an env-var override with traversal hardening (rulesNormalizer.ts:131-191). A schedule-assistant prompt (call-structure DSL + worked examples) can drop into the same convention.",
+          "`unmapped[]` human-in-the-loop escape hatch (rulesNormalizer.ts:51-55, normalizer.md:111-114): the exact mechanism a NL schedule-restructuring assistant needs — directives the model cannot map to the call-structure schema go back to the user verbatim instead of being guessed at.",
+          "GlobalRule {kind: string, payload: Record<string, unknown>} is intentionally loose (normalizer.md:60-73) — new rule kinds (e.g. 'call_policy', weekend structures, post-call rules) can be emitted without schema migration; A4's notes flag that the solver ignores them until wired (A4-rules-normalizer.md:86-90), so the consumption side is the open slot.",
+          "Per-request model override plumbed end-to-end: input.model -> KNOWN_MODELS validation in the route (route.ts:118-129) -> modelId in the response. Adding claude-opus-4-8 (or claude-fable-5) is a two-line allowlist change plus DEFAULT_MODEL swap.",
+          "Observability surface already returned to the UI: promptCacheHit + modelId (rulesNormalizer.ts:48-60) and rationaleFallback (fteSimulator.ts:218) — a convention a new assistant can extend with token usage/cost.",
+          "Route error-envelope convention (400 {error, span} / 500 / 502 {error, raw}, route.ts:4-11) reusable for new assistant endpoints.",
+          "Deterministic user-message builder (sorted canonical entity names + raw text, rulesNormalizer.ts:321-333) generalizes to physician rosters/assignment codes for the schedule assistant, preserving prompt-cache prefix stability.",
+          "Graceful-degradation pattern in fteSimulator (dynamic SDK import + templated fallback, fteSimulator.ts:1245-1326) is the right shape for non-critical LLM features; the normalizer's hard-fail 502 is the right shape for critical ones — both templates exist."
+        ],
+        "concerns": [
+          "No structured outputs / JSON mode: the integration predates or ignores output_config.format. JSON is prompt-instructed ('JSON only', normalizer.md:17,234) then scraped with a three-tier parser (rulesNormalizer.ts:370-402). The schema lives in THREE places that can drift: the prompt markdown, the code validators (466-482), and types.ts. Migrating to output_config.format json_schema (or client.messages.parse() + zodOutputFormat) would delete the scraper and guarantee shape.",
+          "Silent rule-dropping contradicts the prompt contract: coerceSiteRule returns null for any rule with an unknown enum value (rulesNormalizer.ts:489-541) and the rule vanishes without an unmapped entry — while the prompt promises 'never silently drop a sentence' (normalizer.md:10-11). A model emitting a near-miss enum loses data invisibly.",
+          "No SDK typed-exception handling, retries, or timeouts beyond SDK defaults: route.ts:57-70 catches only the two custom errors; Anthropic.RateLimitError (429), overloaded (529), and APIConnectionError all become a generic 500. No retry-after handling, no request-id logging for support, no stop_reason check — a max_tokens-truncated JSON surfaces as an opaque 502.",
+          "max_tokens: 4096 (rulesNormalizer.ts:269) may truncate output for a real 7-site/85-physician guideline document; there is no stop_reason === 'max_tokens' guard.",
+          "Model pinned to claude-opus-4-7 (line 110) — previous-generation; claude-opus-4-8 is the current Opus and is a drop-in swap (no new breaking changes per the migration guide). KNOWN_MODELS is hardcoded and fixtures also hardcode 'claude-opus-4-7', so a model bump touches prompt-cache economics and fixtures.",
+          "No cost controls or auth: the route is unauthenticated (consistent with the repo-wide deferred-auth decision), so anyone reaching the server can burn Opus tokens; no per-user rate limit, no usage/token logging, no budget alarms. usage tokens are read only for the cache-hit boolean (line 290) and then discarded.",
+          "502 responses echo the model's raw text to the browser (route.ts:62-65) — useful for debugging, but leaks prompt-adjacent content and should be gated in production.",
+          "No streaming anywhere: fine at 4096 tokens, but a schedule-restructuring assistant generating full call schedules will exceed comfortable non-streaming latency; the narrow AnthropicLike seam (lines 208-220) would need widening (it currently cannot even express image blocks, tool definitions, or stream handles).",
+          "No image input support: content is typed as string or text-blocks only (rulesNormalizer.ts:216-219) — the owner's goal of parsing schedule screenshots requires adding {type:'image', source:{type:'base64'|'url'}} blocks, which the current interface structurally forbids.",
+          "Test strategy has no live-model evals: fixtures assert the wrapper's plumbing, not that the prompt still elicits schema-conformant output from the real model; a prompt or model change has zero regression coverage. Also the test runner (npx tsx + hand-rolled harness) diverges from the package.json vitest scripts, so `npm test` does not run these tests.",
+          "Two divergent near-duplicate client seams (AnthropicLike vs RationaleClient) and two divergent client-construction strategies (static import + throw vs dynamic import + silent null) — a third LLM feature should consolidate into one shared wrapper module before the pattern forks again."
+        ],
+        "claudeApiRelevance": "This subsystem is the direct template for the Claude schedule assistant — it already proves the core loop the owner wants: natural language -> strict JSON consumed by a deterministic solver, with an unmapped[] human-clarification channel, prompt caching for cost, an injectable client for fixture tests, and a typed error envelope through a Next.js route. A schedule assistant for the rulesEngine ('switch weekends to C1 in-house 24h, C2 home call, Neuro beeper Fri-Sun, post-call day off') should copy the architecture (prompt file + canonical-entity user message + route + seam + fixtures) but upgrade the call pattern: (1) swap to claude-opus-4-8 (current Opus; the pinned opus-4-7 is previous-gen and the swap is model-ID-only) and consider adaptive thinking for restructuring reasoning; (2) replace prompt-and-scrape with structured outputs — output_config.format with a json_schema, or client.messages.parse() + zodOutputFormat, making a Zod schema the single source of truth for prompt docs, API constraint, and validation, and eliminating the drift among prompt/validators/types; (3) add image content blocks ({type:'image', source:{type:'base64', media_type, data}}) so users can paste schedule screenshots — requires widening the AnthropicLike seam; (4) use client.messages.stream() + finalMessage() for long outputs (full-schedule JSON will exceed the 4096-token comfort zone); (5) add a typed error chain (RateLimitError -> APIStatusError -> APIConnectionError) with retry-after handling, stop_reason checks (max_tokens, refusal), request-id logging, and usage-token cost accounting; (6) consider tool use for multi-step edits (e.g. a propose_call_structure tool with strict: true) so the model's edits are schema-guaranteed and previewable before the rules engine re-solves. The existing cache-prefix discipline (frozen system prompt, deterministic sorted entity list first, volatile text last) is exactly right and should carry over unchanged."
+      },
+      {
+        "subsystem": "Sibling engines (gridCalculator, staffingCalculator) + design-doc/plan trajectory, evaluated against rulesEngine/optimize.ts and the faster/accurate/customizable/Claude-assistant goals",
+        "purpose": "FloorRunner has three staffing engines that model the same hospital world three different ways. rulesEngine generates multi-week call schedules over real DB providers/slots (C1/C2/C3 call codes, D-shift chains). gridCalculator is a \"universal\" hospital-agnostic room-coverage solver + Monte Carlo FTE simulator, built by a documented agent fleet (A1-A14), with a Claude-powered free-text-rules normalizer. staffingCalculator is a pair of hand-ported, per-facility single-day headcount algorithms (Paoli, Lankenau) with a shared scaffolding module. The design docs show a two-phase optimization program for rulesEngine (both phases now implemented, contrary to the stale roadmap memory) and a DRY-ing plan for staffingCalculator (implemented and extended).",
+        "keyFiles": [
+          {
+            "path": "/Users/gabrielfarkas/Desktop/FloorRunner/src/lib/rulesEngine/optimize.ts",
+            "role": "Phase 2b local search — IMPLEMENTED. Bounded deterministic hill-climb: lexicographic objective (skipped, fairnessStdev, burnout) at compareMetrics (lines 31-35); 2-slot eviction move (lines 73-106) and fairness swap (lines 109-129); budget DEFAULT_MAX_RESOLVES=5000 vs a documented ~307M worst-case scan (lines 8-12); only weekday/Friday main-loop call slots are movable (lines 40-47); CALL_CODES ['C1','C2','C3'] hard-coded (line 7)"
+          },
+          {
+            "path": "/Users/gabrielfarkas/Desktop/FloorRunner/src/lib/rulesEngine/autoGenerate.ts",
+            "role": "Orchestrator proving Phase 2a+2b are wired: optimize() runs behind a default-on flag (lines 14, 17-20, 77), seed-vs-final metrics reported (lines 37, 76, 126-127), explanation metadata persisted best-effort (lines 104-119)"
+          },
+          {
+            "path": "/Users/gabrielfarkas/Desktop/FloorRunner/src/lib/rulesEngine/solve.ts",
+            "role": "Pure construction engine; weekend-chain structure hard-coded (C1→Sun-C2+Fri-C2, C2→Sun-C1, C3→Sun-C3 at lines 119-125; D-chain rules lines 71-91); SolveOptions.callOverrides re-solve mechanism (lines 10, 27) is the forcing seam the optimizer — and any future AI assistant — perturbs"
+          },
+          {
+            "path": "/Users/gabrielfarkas/Desktop/FloorRunner/src/lib/gridCalculator/solver.ts",
+            "role": "Deterministic single-day room-staffing solver: coverage-style/ratio toggles, cross-site supervision via DistanceMatrixLike (lines 41-43), pickSupervisor with per-site ratio caps (lines 472-555); FTE-unaware allocation acknowledged as v1 gap OQ-7 (lines 138-144); HONORED_GLOBAL_RULE_KINDS intentionally EMPTY — all globalRules round-trip unhonored, surfaced as violations (lines 176-185)"
+          },
+          {
+            "path": "/Users/gabrielfarkas/Desktop/FloorRunner/src/lib/gridCalculator/types.ts",
+            "role": "Universal GridSite/GridRoom model (GridSite.id 'matches scheduling.sites.id when imported from FloorRunner', line 44) and CoverageRuleSet/SiteRule/GlobalRule — the normalized-rules vocabulary a Claude assistant would emit (lines 135-153)"
+          },
+          {
+            "path": "/Users/gabrielfarkas/Desktop/FloorRunner/src/lib/gridCalculator/rulesNormalizer.ts",
+            "role": "Existing Claude-API integration: free-text guidelines → CoverageRuleSet via Anthropic SDK with ephemeral prompt caching (header lines 1-13), DEFAULT_MODEL 'claude-opus-4-7' (line 110), injected-client test pattern (lines 44-46), typed error taxonomy MissingApiKeyError/NormalizerResponseError (lines 72-91), unmapped-sentences escape hatch (lines 52-56)"
+          },
+          {
+            "path": "/Users/gabrielfarkas/Desktop/FloorRunner/src/lib/gridCalculator/fteSimulator.ts",
+            "role": "Worst-case + Monte Carlo FTE recommender (PRD §10 knobs lines 74-79); float-health auto-bump loop (lines 82-84); second Claude touchpoint: injected RationaleClient with claude-sonnet-4-6 rationale default (lines 160-172, 225-253); persistFTERun → scheduling.grid_calculator_fte_runs (lines 33-38)"
+          },
+          {
+            "path": "/Users/gabrielfarkas/Desktop/FloorRunner/src/lib/gridCalculator/callBurden.ts",
+            "role": "Explicit duplication-by-design of rulesEngine fairness: 'same algorithmic family as FloorRunner's autoGenerate.ts lifetime-ratio greedy... We do NOT import from autoGenerate.ts' (lines 10-15, 38-46); CallRosterEntry mirrors provider_employment_profiles naming (lines 97-119)"
+          },
+          {
+            "path": "/Users/gabrielfarkas/Desktop/FloorRunner/src/lib/gridCalculator/floatStrategy.ts",
+            "role": "Float allocation + Float Health badge; duplicates staffingCalculator concepts by declared 'studied, not copied' policy: ok/tight/warning/critical bands mirror paoli.ts ~358 (lines 38-48, 129-131) and BREAKS_PER_FLOAT=5 re-declared (line 127)"
+          },
+          {
+            "path": "/Users/gabrielfarkas/Desktop/FloorRunner/src/lib/staffingCalculator/paoli.ts",
+            "role": "Hard-coded Paoli algorithm: FR_MAX=3 Floor Runner cap (line 29), bracketed OR-supervisor math 4@≥10/3@≥8/ceil(N/3) (lines 99-105), 1:4-vs-1:3 caps inline in tryAssignCRNA (lines 160-173), MD-float heuristic (lines 189-199); header warns 'Don't generalize the room/ratio math without verifying against the original' (lines 10-12)"
+          },
+          {
+            "path": "/Users/gabrielfarkas/Desktop/FloorRunner/src/lib/staffingCalculator/lankenau.ts",
+            "role": "Hard-coded Lankenau algorithm (557 lines): 8101 schedule-runner (lines 91-96), MD-budget conservation heuristic (lines 81-89); 'Ported verbatim... Don't generalize without verifying each branch' (lines 2-6)"
+          },
+          {
+            "path": "/Users/gabrielfarkas/Desktop/FloorRunner/src/lib/staffingCalculator/shared.ts",
+            "role": "Shared-engine plan outcome, implemented + extended beyond plan: clampConfig/severityFor/buildBreakAnalysis/breakCoverageNotes/feasibilityNotes as planned, plus post-plan additions staffingWeight 3-way lever (lines 12-42) and resolveCrossCover flex-absorption (lines 112-162)"
+          },
+          {
+            "path": "/Users/gabrielfarkas/Desktop/FloorRunner/src/lib/staffingCalculator/index.ts",
+            "role": "Drop-in facility registry; 'bryn mawr, riddle — future' placeholder (line 12) — 2 of 7 group sites covered"
+          },
+          {
+            "path": "/Users/gabrielfarkas/Desktop/FloorRunner/docs/superpowers/specs/2026-06-11-scheduling-engine-optimization-design.md",
+            "role": "Approved 2-phase design; §14 as-built notes confirm Phase 1 complete and record deliberate deferrals: D1 skip-count tracking not implemented (§14 bullet 2), golden-master deferred to Phase 2 (§14 bullet 5)"
+          },
+          {
+            "path": "/Users/gabrielfarkas/Desktop/FloorRunner/docs/superpowers/plans/2026-06-12-scheduling-engine-phase2b.md",
+            "role": "Phase 2b plan — checkboxes all unchecked (22 '- [ ]', 0 '- [x]') yet fully implemented per git (e86e858, 7f80137, f1eb413, d38b787); plan-file checkbox state is not a reliable status signal in this repo"
+          },
+          {
+            "path": "/Users/gabrielfarkas/Desktop/FloorRunner/docs/paoli-validation.md",
+            "role": "Grid-calculator reality check vs real Paoli roster photos: sim 14 MD / 30 CRNA vs 14/30 rostered (exact headcount match); +3 effective-FTE CRNA gap at PRD ±3 ceiling; three unresolved 'GABRIEL ATTENTION' items (§6): per-diem FTE assumption, charter's ≥18-MD band vs actual 14, SRNAs counted as 1.0 FTE"
+          },
+          {
+            "path": "/Users/gabrielfarkas/Desktop/FloorRunner/src/lib/gridCalculator/seeds/paoli.ts",
+            "role": "Third copy of Paoli domain knowledge: sites/rooms/distance bands, 44-provider named roster from photos, per-diem 0.5-FTE default, plus paoli.guidelines.md free text kept 'in lockstep' with a pre-normalized CoverageRuleSet"
+          },
+          {
+            "path": "/Users/gabrielfarkas/Desktop/FloorRunner/src/app/api/scheduling/schedules/[id]/generate/route.ts",
+            "role": "Generate route calls autoGenerate with only overrideProviderIds (line 61) — the optimize on/off flag and seedMetrics are never exposed to the API/UI layer"
+          }
+        ],
+        "dataFlow": "Three parallel flows that never share code, only concepts. (1) rulesEngine: generate route → loadGenerationContext (all DB reads) → solve(ctx) greedy seed → optimize(ctx) hill-climb re-solving via callOverrides → commitPlan batched writes → commitValidation → commitMetadata (generation_metadata jsonb) → GenerationResult with metrics/seedMetrics/explanations. (2) gridCalculator: free-text guidelines → rulesNormalizer (Claude, cached prompt) → CoverageRuleSet → solve(config, sites, rules, roster) single-day grid → applyFloatStrategy surplus allocation → fteSimulator loops the solver over 365 days (worst-case deterministic + Monte Carlo trials) → callBurden distribution → FTERecommendation (+ optional Claude rationale) → persistFTERun to scheduling.grid_calculator_fte_runs → grid-calculator UI. (3) staffingCalculator: UI config panel (schema-driven ConfigField widgets) → clampConfig → facility calculate() pure function → CalculatorOutput (assignments/contingencies/breakAnalysis/notes) → staffing-calculator page render. Cross-links are read-only: GridSite.id can match scheduling.sites.id; gridCalculator seeded from real Paoli sites (commit db4f33a); floatStrategy/callBurden explicitly re-derive staffingCalculator/rulesEngine math rather than importing it.",
+        "extensionPoints": [
+          "SolveOptions.callOverrides (genTypes.ts:174-179, solve.ts:27) — a forcing map that makes solve() re-derive an entire schedule from a perturbed call assignment with infeasible moves self-rejecting; this is exactly the mechanism a Claude assistant could use to propose and safely evaluate schedule edits without new structural code",
+          "scoreSolution + compareMetrics (metrics.ts, optimize.ts:31-35) — a pure objective function the assistant can score candidate restructurings against; seedMetrics/metrics already flow to the API result (autoGenerate.ts:37, 126-127)",
+          "rulesNormalizer.ts — a proven natural-language→structured-config Claude pipeline (prompt caching, injected-client testing, unmapped-sentence escape hatch, model allowlist); the template to clone for a 'restructure my call schedule' normalizer",
+          "CoverageRuleSet SiteRule/GlobalRule (gridCalculator/types.ts:135-153) — GlobalRule.kind + free payload is an intentionally open vocabulary; solver.ts:176-185 already audits unhonored kinds, so new AI-emitted rule kinds fail visibly rather than silently",
+          "FacilityCalculator registry (staffingCalculator/index.ts, types.ts:109-122) — schema-driven config fields + pure calculate() means a new site (or an AI-generated config) is a drop-in module; ConfigField schema is already a machine-readable UI description",
+          "generation_metadata jsonb column (migration 20260612000000, commit.ts:7-52) — per-assignment explainability persistence with graceful column-absence fallback; the substrate for assistant answers to 'why is X on call Saturday'",
+          "GenerationContext as a pure immutable input (genContext.ts) — the whole solve/optimize pipeline is DB-free, so an assistant can run what-if generations in memory before committing",
+          "DistanceMatrixLike / DistanceMatrixWithBands structural interfaces (solver.ts:41-43, floatStrategy.ts:90-93) — pluggable spatial models",
+          "GridCalculatorConfig toggles (coverageStyle, supervisionRatio, floatStrategy, backupCallPosture — types.ts:27-35) — enum knobs an NL layer can set directly",
+          "UnfilledSlot.candidates per-provider rejection reasons (genTypes.ts:149) — ready-made grounding data for assistant explanations of gaps",
+          "scheduling.grid_calculator_fte_runs table + persistFTERun (fteSimulator.ts:33-38) — precedent for persisting AI/simulator run artifacts",
+          "GridRoom.acuityHint free-form field (gridCalculator/types.ts:78-83) — explicitly designed for the normalizer to map arbitrary NL descriptors"
+        ],
+        "concerns": [
+          "Call-structure semantics are hard-coded, blocking the customizability goal: C1/C2/C3 codes and the weekend chain (C1→Sun-C2+Fri-C2, C2→Sun-C1, C3→Sun-C3) live as literals in solve.ts:71-125, optimize.ts:7, metrics.ts, and sequenceAutoFill.ts. The target request — 'C1 in-house 24h, C2 home call, Neuro beeper Fri-Sun, post-call day off' — cannot be expressed as data today; a Claude assistant would have nothing to write to. A declarative call-architecture schema (roles, chain rules, post-call effects) is the missing prerequisite.",
+          "Paoli domain knowledge exists in three unreconciled copies: staffingCalculator/paoli.ts (imperative, FR_MAX=3, bracketed supervisor math), gridCalculator/seeds/paoli.ts + paoli.guidelines.md (data + free text kept 'in lockstep' by hand), and rulesEngine's load-bearing Paoli weekend chain (design spec §5.2: 'NOT changed'). Rule changes must be made 3x and will drift.",
+          "Deliberate duplication-by-policy ('studied, not copied' universality contract): severity bands ok/tight/warning/critical at 100/75/50 in staffingCalculator/shared.ts:47-52 AND floatStrategy.ts:38-48; BREAKS_PER_FLOAT=5 in shared.ts:10 AND floatStrategy.ts:127; lifetime-ratio fairness greedy in rulesEngine AND callBurden.ts:38-46; cross-cover flex absorption in shared.ts:112-162 vs floatStrategy. Reasonable for v1 isolation, but constants will silently diverge.",
+          "Optimizer budget vs speed goal: optimize.ts:8-12 documents ~307M worst-case re-solves on a real 12-week/85-provider block, capped at 5,000 — meaning on production-scale inputs the hill-climb likely exhausts its budget in the first scan and each re-solve is a full solve(). 'Faster' and 'more accurate' are in direct tension here; incremental evaluation or smarter move ordering is unaddressed future work.",
+          "Solver's promise 'rules added in plain English; no code change' is not yet honest: solver.ts HONORED_GLOBAL_RULE_KINDS is empty (lines 176-178), so every normalizer-emitted global rule is unhonored (audited, but still ignored). The Claude normalizer can emit rules the solver cannot execute.",
+          "Plan/status hygiene: phase2b plan has 22 unchecked boxes despite being fully shipped; the memory roadmap says Phase 2 is 'planned' when it is merged; paoli-validation.md's repro path points at ~/Documents/Code/FloorRunner (repo is at ~/Desktop/FloorRunner). Anyone (human or agent) trusting docs over code will mis-plan.",
+          "Validation is one-site and has three unresolved data assumptions: paoli-validation.md §6 items (per-diem CRNA FTE 0.5 vs 0.2 vs 1.0 changes the verdict from 'match' to 'outside tolerance'; charter's ≥18-MD sanity band vs measured 14; SRNAs counted as 1.0 FTE) all await a decision. Lankenau has characterization tests but no reality-check doc. rulesEngine has no golden comparison against a real published call schedule.",
+          "staffingCalculator generalization is explicitly warned against in-code (paoli.ts:10-12, lankenau.ts:5-6) and only 2 of 7 group sites exist (index.ts:12). Generalizing means growing SiteRule/GlobalRule + solver until the universal gridCalculator reproduces each facility's characterization-test outputs — roughly: encode Floor-Runner/8101 caps, always-on OB/Endo roles, MD-budget conservation, and float heuristics as rule kinds, then diff against paoli.test.ts/lankenau.test.ts fixtures. Non-trivial but the target architecture (registry + normalizer + rules) already exists.",
+          "API/UI gaps: the generate route never exposes the optimize flag or seedMetrics (route line 61); explanations/metrics are unsurfaced in the UI (explicitly out of scope in the 2a plan and still not done); D1 skip-count tracking remains deferred (spec §14). The 'contractual hours grid view' was landed then reverted (5feb5f7 → 59c8ed2) — an abandoned thread.",
+          "The 2,626-line schedules page.tsx monolith was deliberately restyled in place (redesign spec §2 'no component extraction'), leaving a fragile surface for any assistant-driven UI work.",
+          "Default anesthesiologist assumptions baked into gridCalculator (7am starts, US federal holidays, 365 primary-call slots, 15%/8% call-out rates as exported constants in fteSimulator.ts:74-100) are tunable-in-one-place but not user-configurable through any UI or rule."
+        ],
+        "claudeApiRelevance": "The repo already contains two working Claude integrations that are the direct template for the schedule assistant: rulesNormalizer.ts (free-text staffing guidelines → strict CoverageRuleSet, claude-opus-4-7, ephemeral prompt caching from prompts/normalizer.md, injected-client testing, typed 500/502 error taxonomy, and an 'unmapped sentences' escape hatch that routes un-parseable NL back to the human) and fteSimulator's RationaleClient (claude-sonnet-4-6 templated-fallback rationale). The proven pattern is: Claude emits structured config, deterministic solvers execute it, and unsupported constructs surface as audited violations rather than silent behavior. For the target feature ('restructure weekends from natural language/images'), the assistant needs the same pattern applied to rulesEngine — but the critical blocker is that call-structure semantics (weekend chains, post-call D1 effects, call tiers) are hard-coded in solve.ts rather than data-driven, so there is currently no schema for Claude to write to. The best-leverage seams are: (1) define a declarative call-architecture schema (analogous to CoverageRuleSet) covering roles, chain/derivation rules, and post-call effects, and have Claude normalize NL/images into it; (2) reuse SolveOptions.callOverrides + the pure ctx→solve→scoreSolution pipeline as a sandbox where Claude-proposed restructurings are evaluated in memory (infeasible moves self-reject, compareMetrics quantifies improvement) before commit; (3) reuse generation_metadata + UnfilledSlot.candidates as grounding for assistant explanations. Multimodal input (schedule photos → roster/structure) has precedent: the Paoli seed roster was manually extracted from photos (seeds/paoli.ts header), a step Claude vision could automate."
+      }
+    ],
+    "dimensions": [
+      {
+        "dimension": "performance",
+        "summary": "The schedule-generation path has one dominant CPU problem and one dominant I/O problem, both inside a single synchronous POST route. CPU: optimize.ts re-runs the full greedy solve() up to 5,000 times per generation (its own comment concedes a ~307M-resolve worst case), and each solve pays a large avoidable constant factor because evaluateEligibility re-parses dates and re-derives PTO ranges per (slot, provider) pair and solve() rebuilds run-invariant maps every call — together this is realistically 5-25+ seconds of event-loop-blocking work for a 1-month, 85-provider schedule. I/O: the post-commit validation pass is an N+1 that issues ~7 reads plus 1 write per assignment (~1,600-2,400 round trips for ~200-300 assignments), the metadata pass adds another update per row, and dayShiftAutoGen writes placements one serial await at a time — all sequential in a route with no maxDuration, making serverless timeouts a real risk. On the interactive side, every manual cell edit costs 8-20 serial queries in sequenceAutoFill followed by a full re-download of the month grid (select('*') with nested joins and verbose validation_flags jsonb), and the 2,600-line monolithic client component re-renders ~2,000 cells on every picker keystroke. Fixing the top four findings (incremental move evaluation, in-memory batch validation with bulk writes, background/phased generation, batched day-shift commits) would take generation from tens of seconds to low single digits, which is also a prerequisite for the planned Claude-assistant workflow that will need multiple generate/evaluate cycles per natural-language request.",
+        "findings": [
+          {
+            "title": "optimize() performs up to 5,000 full re-solves of the entire schedule per generate request",
+            "file": "src/lib/rulesEngine/optimize.ts:12,70-131",
+            "detail": "The hill-climb wraps a quadruply-nested loop — `for (const uId of unfilledCallIds) { for (const pid of providerIds) { for (const sId of pSlots) { for (const qid of providerIds) {` — and every trial move calls `evaluate(ctx, trial)` which runs a FULL `solve(ctx, { callOverrides })` plus `scoreSolution` from scratch (optimize.ts:50-54). The file's own comment admits the worst case is ~307M resolves, 'capped' at `DEFAULT_MAX_RESOLVES = 5000`. For a 1-month/85-provider schedule, move set 2 alone is ~44 movable slots × 84 providers ≈ 3,700 resolves per scan, so nearly every run burns the full 5,000 budget. Each solve is O(callSlots × providers) eligibility checks (~70 × 85 ≈ 6,000) plus the D4-D9 relief pass (~22 dates × 85), each check allocating multiple Date objects (see eligibility finding) — roughly 1-5 ms per solve, i.e. 5-25 s of synchronous CPU inside the API route, blocking the Node event loop. There is also no wall-clock budget, only a resolve count.",
+            "severity": "high",
+            "suggestedFix": "Replace full re-solve per trial with incremental delta evaluation: a swap of one slot's provider only changes that provider pair's bucket counts, call-date lists, and any chained D-fills — recompute metrics for the two affected providers instead of re-running solve(). Pre-filter (P,Q) pairs with evaluateEligibility before spending a resolve (most pairs are trivially ineligible). Add a time-based budget (e.g. 2 s) alongside maxResolves, and consider moving optimize off the request thread (see route finding).",
+            "verdict": null
+          },
+          {
+            "title": "commitValidation is a ~8-queries-per-assignment N+1 — ~1,600 Supabase round trips for a month schedule",
+            "file": "src/lib/rulesEngine/commit.ts:136-162; src/lib/rulesEngine/loadContext.ts:83-237",
+            "detail": "After the plan is committed, `commitValidation` calls `evaluateAssignment(sb, a.slot_id, a.provider_id, siteCtx)` per assignment, then a separate `.update({ validation_flags })` per row (commit.ts:151-158). Even with the preloaded siteCtx, each `loadContext` still issues ~7 queries: slot (loadContext.ts:83-88), provider (107-111), credentials (118-125), ±31-day neighbor assignments (148-156), availability (179-184), same-day slots (192-196), and cross-site assignments (217-222). A month schedule produces ~200-300 planned assignments (calls + D-chain + D4-D9 relief), so this pass is ~1,600-2,400 round trips at CONCURRENCY=10 — easily 5-15 s of the route's wall time. Worse, the same-day-slots query is re-fetched identically for every one of the ~6-10 assignments sharing a date, and the neighbor/availability queries re-fetch data `loadGenerationContext` already holds in memory. `commitMetadata` (commit.ts:34-53) then adds ONE MORE update per assignment keyed by (schedule_slot_id, provider_id) instead of a bulk upsert.",
+            "severity": "high",
+            "suggestedFix": "Validate in memory from the already-loaded GenerationContext (it has credentials, availability, cross-site, and the full plan), or batch-load: one query for all slots, one for all neighbor assignments of pool providers in range, one for all availability — then evaluate purely. Write validation_flags and generation_metadata with a single bulk upsert each (arrays of {id, validation_flags}) or a Postgres RPC, cutting ~1,800 round trips to ~5.",
+            "verdict": {
+              "explanation": "Verified by reading commit.ts, evaluate.ts, loadContext.ts, genContext.ts, autoGenerate.ts, and the generate route: commitValidation issues 7 loadContext queries + 1 update per assignment (the siteCtx \"M3 fix\" only removes shift-type/rule queries), and commitMetadata adds one more per-row update, all sequentially awaited inside a synchronous user-facing POST route with a plain supabase-js client (one HTTP round trip per query, 7 of them serial per assignment). The same-day-slots query is identically re-fetched per assignment on the same date, and credentials/availability/cross-site data is already in the GenerationContext, so the N+1 and the ~5-15s wall-time estimate for a 150-300-assignment month are credible and unmitigated. Only minor overstatement: neighbor-assignment detail rows are not fully in memory (GenerationContext holds only in-version seeds and historical counts), so the fix needs the batch-load variant, which the finding also proposes.",
+              "isReal": true
+            }
+          },
+          {
+            "title": "Generate route does everything synchronously in one POST with no maxDuration and no incremental progress",
+            "file": "src/app/api/scheduling/schedules/[id]/generate/route.ts:25-81",
+            "detail": "The POST handler runs, in sequence: context load (~8 queries), greedy solve, the 5,000-resolve optimize, batched commit, the N+1 validation pass, the per-row metadata pass, and then `autoGenerateDayShifts` with its own serial writes — all before returning a single JSON response. Combined with findings 1, 2 and 4 this is realistically 20-60 s per month-schedule generation. The route exports `dynamic = 'force-dynamic'` but no `maxDuration`, so on Vercel's default (10-15 s on hobby/pro) the function can be killed mid-run — after commitPlan but before validation, leaving assignments without validation_flags. The response payload also embeds every assignment with explanation objects plus, for each unfilled slot, an 85-entry `candidates` rejection array (solve.ts:197-208), inflating the JSON the UI must parse.",
+            "severity": "high",
+            "suggestedFix": "Split into phases: return 202 after commitPlan with a job id, run optimize/validation/metadata in a background job (Supabase Edge Function, queue, or at minimum `after()`/waitUntil), and let the UI poll or stream progress. Export `maxDuration`. Trim the response: send unfilled counts + top-3 rejection reasons, not 85 rejections per slot. This is also the natural seam for the planned Claude-assistant loop, which will need multiple generate/evaluate cycles per conversation.",
+            "verdict": null
+          },
+          {
+            "title": "dayShiftAutoGen writes one assignment at a time with a serial await inside the greedy loop",
+            "file": "src/lib/rulesEngine/dayShiftAutoGen.ts:357-446",
+            "detail": "Inside `for (const slot of slotsToFill) { while (remaining > 0) { ... }}` each placement immediately does `await sb.from('assignments').update(...)` (line 405-413) or `.insert(...)` (line 419-427) — one round trip per placement, fully serial. A month of day shifts (multiple 7-3/7-5 rows × 22 weekdays) is 50-150 sequential round trips ≈ 3-10 s, in contrast to the call engine's commitPlan which already batches into two bulk calls (commit.ts:104-128). Additionally, the eligibility filter re-scans ALL candidates for every `remaining` decrement of every slot (lines 362-376), re-running `isBlocked` (a linear scan of PTO ranges, line 310-314) and credential lookups each pass — O(slots × required × providers × availEntries) recomputation where only `sameDateAssigned` and `totalCount` change between iterations.",
+            "severity": "high",
+            "suggestedFix": "Accumulate planned day-shift placements in memory and reuse partitionForWrite/commitPlan-style bulk update+insert at the end (the in-memory sameDateAssigned/bumpCount state already makes this safe). Precompute per-provider blocked-date sets once instead of re-scanning ranges per slot.",
+            "verdict": {
+              "isReal": true,
+              "explanation": "Verified in dayShiftAutoGen.ts:357-446 that each placement issues a serial `await sb.from('assignments').update(...)` (405-413) or `.insert(...)` (419-427) — one round trip per placement inside the greedy loop — while commit.ts:104-128 (commitPlan) already batches the identical write shape into two bulk calls, confirming both the claim and the readily available fix pattern. The caller is a synchronous user-facing POST route (generate/route.ts:68), and the loop's decisions depend only on in-memory state (sameDateAssigned, totalCountByPid, openRowsBySlot), so end-of-run bulk commit is safe and the 50-150 sequential round trips per block generation are a real, material latency cost. The secondary claim about O(slots × required × providers) eligibility re-scanning is textually accurate but immaterial (small site-scoped pool, CPU-only); the dominant serial-write claim stands regardless."
+            }
+          },
+          {
+            "title": "Every single-cell edit refetches the entire month grid; grid route ships select('*') with nested joins and full validation_flags",
+            "file": "src/app/(scheduling)/schedules/[id]/page.tsx:678,700,746; src/app/api/scheduling/schedules/[id]/grid/route.ts:35-43",
+            "detail": "`assignProvider` does an optimistic update then `await loadGrid()` (page.tsx:678) — a full refetch of `/grid` — and `removeAssignment` (page.tsx:700) does the same. The grid route selects `'*, shift_types(...), assignments(id, ..., validation_flags, providers(...))'` for every slot in the version (route.ts:35-43): a month × ~12 shift-type rows is 350-400 slots, each carrying a jsonb `validation_flags` array of verbose message strings (the always-on 'Open slot' soft flag from evaluators.ts:696-732 means even empty cells carry flags after validation). That payload is easily hundreds of KB to low MB, re-downloaded and re-parsed after every click, and it triggers the full derived-data useMemo cascade (page.tsx:280-628) plus a whole-grid re-render. This is the latency users feel most on the interactive path.",
+            "severity": "high",
+            "suggestedFix": "Return the created/updated assignment row from the POST and patch it into local state instead of refetching (the optimistic-update scaffolding is already there — it just needs the real id back). On the grid route, replace select('*') with the explicit column list the UI uses, and consider summarizing validation_flags to {hard, soft, count} in the list payload with a per-cell detail fetch on click.",
+            "verdict": null
+          },
+          {
+            "title": "Monolithic 2,600-line client component re-renders ~2,000 grid cells on every keystroke and click",
+            "file": "src/app/(scheduling)/schedules/[id]/page.tsx:206-1410,1632-1707",
+            "detail": "The entire grid — header rows, ~370 slot cells (`shiftTypes.map` × `visibleDates.map`, page.tsx:1214-1356), and the virtual rows (`renderVirtualRows` builds `rowCount × visibleDates` cells, page.tsx:1652-1705; with 85 providers the Off/Available rows can be 40-60 rows deep × 31 dates ≈ 1,200-1,800 extra cells) — lives inline in one component with zero `React.memo` boundaries. `pickerSearch` (page.tsx:219) and `activeCell` (217) are state on this same component, so every keystroke in the provider-picker search box and every cell click re-executes the full JSX tree, re-allocating thousands of inline style objects and re-running `getDayOfWeek`/`cellBackground` per cell. Hover is wisely done via direct DOM style writes (1293-1299), but typing in the picker still re-renders the whole month grid per character.",
+            "severity": "medium",
+            "suggestedFix": "Extract the picker popover into its own component holding pickerSearch locally; extract a memoized <ShiftRow>/<GridCell> keyed on slot data so unrelated state changes skip reconciliation; hoist static style objects out of render. For larger blocks (12-week), add row/column virtualization (e.g. react-window).",
+            "verdict": null
+          },
+          {
+            "title": "evaluateEligibility re-parses dates and re-derives PTO ranges in the innermost (slot × provider) loop",
+            "file": "src/lib/rulesEngine/eligibility.ts:49,100-130; src/lib/rulesEngine/shared.ts:29-33,75-87",
+            "detail": "Every eligibility check calls `dayOfWeekUTC(slot.slot_date)` (eligibility.ts:49) and, for weekend slots, computes `addDays(satDate, -5/-1/+2/+6)` (104-107) — each `addDays` allocates a Date and calls toISOString (shared.ts:29-33). The availability loop then calls `effectivePtoRange(a)` per entry (eligibility.ts:127), which itself does 2 `dayOfWeekUTC` + possible `addDays` — even though the effective range of an availability entry is invariant for the whole run. These values depend only on the slot and the availability entry, yet they are recomputed for every (slot, provider) pair: ~6,000 pairs per solve × 5,000 optimize resolves ≈ 30M eligibility calls, each doing 3-10 Date allocations. This is the constant factor that makes finding #1 seconds instead of milliseconds.",
+            "severity": "medium",
+            "suggestedFix": "Precompute in loadGenerationContext: per-slot { dow, dayAfter, satDate, weekBefore/AfterStart/End } fields on SlotToFill, and per-availability-entry the effectivePtoRange result (store {start,end,blocking,bookend} on AvailabilityEntry). evaluateEligibility then becomes pure string comparisons with zero allocation.",
+            "verdict": null
+          },
+          {
+            "title": "solve() rebuilds run-invariant structures on every invocation — multiplied 5,000× by optimize",
+            "file": "src/lib/rulesEngine/solve.ts:25,132-143,193-203,253,310-315",
+            "detail": "Per solve() call: `providerById` map rebuilt (line 25); the `prePtoByThursday` map rebuilt by scanning providers × availability entries (132-143) — pure function of ctx, identical across all 5,000 optimize resolves; `scheduleDates` re-materialized and sorted from slotIndex (253). When a slot has zero candidates, eligibility is evaluated TWICE for all 85 providers — once in the filter (193-195) and again to build `candidateReasons` (197-203) — and unfilled slots recur in nearly every optimize trial, so this doubling repeats thousands of times. `addCallDate` does `list.includes(date)` then a full `list.sort()` on every insertion (310-315), O(k² log k) per provider per solve.",
+            "severity": "medium",
+            "suggestedFix": "Compute providerById, prePtoByThursday, and sorted scheduleDates once in GenerationContext. Capture rejection reasons during the initial filter pass instead of a second sweep (or only materialize reasons in the final plan, not during optimize trials). Use binary-insert or push-then-single-sort for call dates.",
+            "verdict": null
+          },
+          {
+            "title": "Historical fairness data loads every past call-assignment row ever, unbounded, and aggregates in JS",
+            "file": "src/lib/rulesEngine/genContext.ts:365-393",
+            "detail": "The cross-block memory query — `sb.from('assignments').select('provider_id, schedule_slots!inner(slot_date, site_id, derived_day_type, shift_types!inner(code, category))')...lt('schedule_slots.slot_date', minDate)` — has no lower date bound and no aggregation, so it fetches one row per historical call assignment (with a nested join payload per row) and counts them client-side into `historicalAssignedByPid`. At ~90 call slots/month/site this grows ~1,100 rows/year per site forever; after 3 years each generate request drags 3,000+ joined rows across the wire just to produce a Map of counts. It also risks hitting Supabase's default 1,000-row response limit silently, which would corrupt fairness math (a correctness-and-speed issue).",
+            "severity": "medium",
+            "suggestedFix": "Replace with a Postgres aggregate: an RPC or view doing `SELECT provider_id, day_bucket, code, count(*) GROUP BY 1,2,3` filtered by site and date, returning ≤ 85 × ~12 rows. Alternatively maintain a materialized per-provider counters table updated on commit.",
+            "verdict": null
+          },
+          {
+            "title": "sequenceAutoFill issues 8+ serial queries per manual assignment on the interactive path",
+            "file": "src/lib/rulesEngine/sequenceAutoFill.ts:89-266",
+            "detail": "Each manual cell assignment triggers `applySequenceAutoFill`, which serially awaits: trigger slot (97-101), rule_sets (30-35), rule_definitions (37-42), provider home site (61-68), then PER matching rule: prior-call check (130-136) or conflicting-D scan with per-row updates (149-173), candidate slots (177-181), PTO check (214-219), same-day check (231-237), and the upsert (244-261). With 2-3 sequence rules that's 12-20 sequential round trips (~50 ms each ≈ 0.6-1 s) added to every cell edit — after which the UI does a full grid refetch (finding #5). The rules themselves are site-static but reloaded from the DB on every single assignment.",
+            "severity": "medium",
+            "suggestedFix": "Cache active sequence rules per site (in-process TTL cache or pass them from the calling route). Batch the per-rule checks: one query for the provider's assignments on triggerDate±1 in this version, one for availability, evaluated in memory. Parallelize independent awaits with Promise.all.",
+            "verdict": null
+          },
+          {
+            "title": "Query shapes imply missing composite indexes on assignments and schedule_slots",
+            "file": "src/lib/rulesEngine/genContext.ts:335-342,369-376; src/lib/rulesEngine/loadContext.ts:148-156,217-222; supabase/migrations/20260524000000_add_assignment_unique_constraints.sql:12-13",
+            "detail": "Hot queries repeatedly filter `assignments` by `provider_id` + `assignment_status` with joined `schedule_slots` filters on `slot_date`/`site_id`/`schedule_version_id` (genContext.ts:335-342 cross-site, 369-376 historical; loadContext.ts:148-156 neighbors, 217-222 cross-site; dayShiftAutoGen.ts:317-323), and `schedule_slots` by `schedule_version_id` + order by `slot_date, slot_index` (genContext.ts:88-93, grid route:35-42). The only local migration index-like object is the UNIQUE on `assignments(schedule_slot_id)`. Nothing in the repo declares indexes on `assignments(provider_id, assignment_status)`, `schedule_slots(schedule_version_id, slot_date)`, `schedule_slots(slot_date, site_id)`, or `provider_availability(provider_id, start_date, end_date)`. Without them, the historical query and every commitValidation neighbor lookup are sequential scans that get slower every month — and commitValidation runs the neighbor query 200+ times per generation.",
+            "severity": "medium",
+            "suggestedFix": "Verify against the live schema (supabase get_advisors / pg_indexes) and add: CREATE INDEX ON scheduling.assignments (provider_id, assignment_status); CREATE INDEX ON scheduling.schedule_slots (schedule_version_id, slot_date, slot_index); CREATE INDEX ON scheduling.schedule_slots (slot_date, site_id); CREATE INDEX ON scheduling.provider_availability (provider_id, start_date, end_date).",
+            "verdict": null
+          },
+          {
+            "title": "Optimizer spends its resolve budget on trivially ineligible moves — hurting both speed and result quality",
+            "file": "src/lib/rulesEngine/optimize.ts:84-106,113-129",
+            "detail": "Move set 1 iterates `for (const qid of providerIds)` (line 90) and move set 2 `for (const pid of providerIds)` (115) over ALL 85 providers with no cheap pre-check, paying a full re-solve (finding #1) even when the target provider is on PTO, lacks weekend-call credentials, or is already assigned that date — cases `evaluateEligibility` would reject in microseconds. Because `maxResolves=5000` is a hard budget and a single fruitless scan of move set 2 consumes ~3,700 of it (44 movable × 84 providers), most of the budget is burned proving no-ops, and genuinely improving moves late in the deterministic sorted order may never be evaluated. Also `movable.filter(sId => bestAssign.get(sId) === pid)` (line 88) rescans the movable list for each of 85 providers per unfilled slot — build a pid→slots map once per scan instead.",
+            "severity": "medium",
+            "suggestedFix": "Before spending a resolve, gate candidates with the in-memory evaluateEligibility against the current best state (rebuild SolveState once per scan); skip Q candidates ineligible for slot S and P candidates ineligible for slot U. Group movable slots by provider once per scan. This typically cuts resolves by 5-20× and lets the same budget explore far more genuinely promising moves — directly serving both the 'faster' and 'more accurate' goals.",
+            "verdict": null
+          }
+        ]
+      },
+      {
+        "dimension": "accuracy",
+        "summary": "The solver core (solve.ts/eligibility.ts/optimize.ts) is well-structured, deterministic, and decently tested, with consistent UTC date math throughout — no timezone or off-by-one bugs were found in the shared helpers. However, empirical probes confirmed four serious correctness holes: the post-call day-off rule is not enforced against pre-existing/manual (seed) C1 assignments, so any regeneration on a partially-filled schedule can put a physician on call the day after a 24h in-house call; sequence auto-fill can double-book a provider across sites because its conflict check is scoped to one schedule version; the mandated D1-skip tracking is entirely unimplemented (skipped D1s vanish from all output); and validation failures silently persist empty violation lists, erasing stored hard flags. Fairness is enforced per-FTE only inside the solver's quota math — the validation-layer fairness evaluator ignores FTE and leave, quota targets below 1.0 can strand slots or exclude part-timers from whole buckets, and hard-coded C1/C2/C3 lists mean any custom call role (exactly what the planned NL assistant will create) gets no fairness, burnout, or optimizer coverage. Test coverage is inverted relative to risk: the pure solver is tested while the DB-writing paths (evaluators.ts, sequenceAutoFill.ts, dayShiftAutoGen.ts, loadContext.ts) have zero tests.",
+        "findings": [
+          {
+            "title": "Post-call day-off is not enforced against pre-existing (seed) C1 assignments — solver assigns call the day after a manual 24h in-house call",
+            "file": "src/lib/rulesEngine/solve.ts:15-21, src/lib/rulesEngine/eligibility.ts:54-62",
+            "detail": "The seed loop only calls markAssigned(seed.slot_date) for the seed's own date; nothing blocks the day AFTER a seed C1. The post-call guard in evaluateEligibility only fires when the slot BEING ASSIGNED is C1 and only checks the NEXT day ('state.assignedOnDate.get(dayAfter)'); there is no reverse check for 'provider had C1 yesterday'. The forward protection (chainDFills' markAssigned of slot_date+1, solve.ts:86) only exists for C1s the solver itself places. Empirically verified: with a seed {2026-01-05, C1, p1} and an open C2 on 2026-01-06, solve() assigns p1 to the Tuesday C2 — a physician coming off a 24h in-house call gets another call shift the next day. This hits every regeneration on a partially-filled schedule (manual placements and prior runs are loaded as seeds via genContext.ts:442-458), which is the normal workflow. Direct patient-safety violation of the 'post-call day off after 24h in-house call' rule.",
+            "severity": "high",
+            "suggestedFix": "In the seed loop in solve(), when seed.shift_type_code === 'C1' (and derived_day_type !== 'saturday'), also markAssigned(state, addDays(seed.slot_date, 1), seed.provider_id). Better: add a symmetric 'had C1 the prior day' check inside evaluateEligibility so both gates ('call' and 'derived') reject any placement on a post-C1 day, and add a regression test seeding a manual C1.",
+            "verdict": null
+          },
+          {
+            "title": "Sequence auto-fill (D1 post-C2) ignores cross-site assignments — can double-book a provider at two sites",
+            "file": "src/lib/rulesEngine/sequenceAutoFill.ts:231-238, src/lib/rulesEngine/genContext.ts:305-342",
+            "detail": "The D1 domain rule requires: if the D1 conflicts with PTO or a CROSS-SITE assignment, leave it unassigned. applySequenceAutoFill checks PTO (lines 214-228) and same-day assignments, but the same-day query is scoped with '.eq(\"schedule_slots.schedule_version_id\", versionId)' — an assignment at another site (necessarily a different schedule version) on the linked date is invisible, so the auto-fill writes a D1 while the provider is already committed elsewhere. Cross-site double-booking is supposed to be forbidden. A related window bug exists in the generator: genContext preloads crossSiteByDate only for [minDate, maxDate] derived from OPEN CALL slots (line 305-307, 340-342), so a D1 chained onto the Monday after the block's final Sunday C2 (solve.ts:76) checks crossSiteByDate for a date that was never loaded — eligibility.ts:44 silently passes and the D-chain can double-book that day too.",
+            "severity": "high",
+            "suggestedFix": "In applySequenceAutoFill, replace the version-scoped same-day check with (or add) a provider-wide query: any assignment_status='assigned' row for this provider on linkedDate at ANY site blocks the fill. In genContext, derive the cross-site date range from all slotIndex dates ±1 day, not just open call-slot dates.",
+            "verdict": null
+          },
+          {
+            "title": "D1/derived-shift skips are silently dropped — the mandated skip count is tracked nowhere",
+            "file": "src/lib/rulesEngine/solve.ts:61-67, src/lib/rulesEngine/sequenceAutoFill.ts:220-238",
+            "detail": "The domain rule says a D1 post-C2 that conflicts with PTO/cross-site must be left unassigned AND the skip tracked. Neither pipeline tracks it: (1) tryFillDerived in solve.ts returns silently when the D-slot is missing, already handled, or the provider is ineligible — nothing is pushed to plan.unfilled, whose entries come only from call slots (solve.ts:178-209), and autoGenerate's result.skipped = plan.unfilled.length (autoGenerate.ts:124) therefore counts zero D-skips. Empirically verified: C2 on Mon + D1 on Tue blocked by the provider's PTO yields UNFILLED: []. (2) applySequenceAutoFill just 'continue's on a PTO/occupied conflict and only returns filledSlotIds. A repo-wide grep for skip_count/skipCount/skipped_count returns nothing. Skips are invisible to schedulers and to any fairness accounting that was supposed to compensate providers whose post-call D1 was repeatedly skipped.",
+            "severity": "high",
+            "suggestedFix": "Record every suppressed derived placement (slot info + provider + reason: pto / cross-site / occupied / no-slot) in the SolutionPlan (e.g. plan.skippedDerived[]) and in applySequenceAutoFill's result; persist a per-provider skip counter (or generation_metadata entry) so it can be surfaced and used in future prioritization.",
+            "verdict": null
+          },
+          {
+            "title": "Validation failures silently report zero violations and can erase previously stored hard flags",
+            "file": "src/lib/rulesEngine/evaluate.ts:32-45, src/app/api/scheduling/schedule-assignments/[id]/validate/route.ts:28-31",
+            "detail": "evaluateAssignment returns { violations: [], hardCount: 0 } when loadContext returns null (any transient DB error, missing shift type, or query failure), and each evaluator that throws is swallowed with only a console.error. Callers cannot distinguish 'clean' from 'could not evaluate': the validate route immediately persists validation_flags = result.violations (route.ts:28-31), commitValidation does the same for every generated assignment (commit.ts:151-159), and revalidateNeighbors does it for ±7-day neighbors (schedule-assignments/route.ts:138-142). A transient failure therefore OVERWRITES a stored hard violation (e.g. 'Conflicts with PTO') with an empty array, turning a red cell green with no trace. For a system whose flags are the scheduler's safety net over auto-generated output, silent-green is the worst failure mode.",
+            "severity": "high",
+            "suggestedFix": "Add an 'evaluated: boolean' (or error field) to EvaluateResult; when loadContext fails or any evaluator throws, set it false and have all three call sites skip the validation_flags write (and surface the error) instead of persisting an empty list.",
+            "verdict": null
+          },
+          {
+            "title": "Bucket-quota vs par_level mismatch silently strands call slots; fractional targets exclude part-timers from whole buckets",
+            "file": "src/lib/rulesEngine/eligibility.ts:65-72, src/lib/rulesEngine/genContext.ts:25,42-61",
+            "detail": "The call gate rejects when assigned+1 > target, where target = (blockTotal/parLevel)*fte + deficit and parLevel defaults to 12. Two failure modes: (1) if the pool's ΣFTE < par_level, aggregate quota < slot count, guaranteeing 'No eligible providers' (all bucket-quota) for the excess slots — and the optimizer cannot repair it because overrideFor also routes through the same call gate (solve.ts:32-37) so a forced provider self-rejects; (2) any target < 1 means that provider can NEVER take that bucket|code (0+1 > 0.83), so in small buckets (holiday, weekend at low-volume sites) part-timers are wholly excluded and the burden concentrates on full-timers, or the slot is stranded entirely. Empirically verified: two 1.0-FTE providers with target 0.5 each → slot unfilled, candidates all 'bucket-quota'. No load-time warning compares par_level against pool ΣFTE, so a misconfigured site produces systematically unfilled call coverage that looks like a provider shortage.",
+            "severity": "medium",
+            "suggestedFix": "At load time, warn (in GenerationResult.errors or a new warnings field) when Σ bucketTarget for a bucket < bucketTotal. Consider a final relaxation pass: when every candidate for a slot fails only on bucket-quota, pick the provider with the lowest lifetime ratio anyway and flag the assignment, rather than leaving coverage empty.",
+            "verdict": null
+          },
+          {
+            "title": "Pending PTO blocks call generation but NOT day-shift generation or pre-PTO placement — engines disagree on approval semantics",
+            "file": "src/lib/rulesEngine/dayShiftAutoGen.ts:298, src/lib/rulesEngine/eligibility.ts:110,124, src/lib/rulesEngine/solve.ts:136",
+            "detail": "eligibility.ts and the timeOff/weekendAdjacentPto evaluators (evaluators.ts:242,292) treat anything not denied/canceled as blocking — pending PTO blocks call assignment. But dayShiftAutoGen.ts:298 requires approval_status === 'approved' before an availability entry blocks, so a Day Doc with PENDING PTO is scheduled right over the request; when the PTO is approved later nothing re-checks, leaving a silent conflict on the grid. The pre-PTO Thursday pass (solve.ts:136) also only recognizes approved PTO, so a provider whose PTO is approved after generation misses their pre-PTO placement while still being hard-blocked from PTO-week slots. Inconsistent approval semantics between the three engines makes 'PTO must always be respected' hold in one path and fail in another.",
+            "severity": "medium",
+            "suggestedFix": "Define one shared predicate (e.g. isBlockingAvailability(entry) in shared.ts) encoding the chosen policy (recommend: pending blocks everywhere, matching the call engine) and use it in dayShiftAutoGen, solve's pre-PTO pass, eligibility.ts, and evaluators.ts.",
+            "verdict": null
+          },
+          {
+            "title": "Fairness rule evaluator ignores FTE and leave entirely — hard-coded 6/8-per-month threshold",
+            "file": "src/lib/rulesEngine/evaluators.ts:668-684",
+            "detail": "The fairness evaluator compares a provider's monthly count against a constant ('const maxReasonable = method === \"equal\" ? 6 : 8') with a comment admitting the group average can't be computed per-cell. FTE is never read: a 0.5-FTE provider is held to the same 6-call threshold as a 1.0 FTE, so a part-timer carrying double their fair share is never flagged, while a full-timer at normal load can be. Leave is also ignored — a provider back from 3 weeks of FMLA gets the same threshold. This means the ONLY per-FTE fairness enforcement lives in the solver's bucketTarget math; the validation layer that schedulers actually see (validation_flags on cells) reports fairness that does not implement the 'call burden distributes fairly per FTE' rule. It will both miss real inequity and cry wolf, training users to ignore fairness flags.",
+            "severity": "medium",
+            "suggestedFix": "Load per-provider FTE into EvaluationContext (one extra column on the credentials/profile query) and scale the threshold by it; longer term, compute the site-month group mean once in loadSiteValidationContext and flag providers whose count/FTE exceeds mean by a configurable ratio.",
+            "verdict": null
+          },
+          {
+            "title": "Validation counts pollute across schedule versions and sites — false frequency/sequence/rest violations",
+            "file": "src/lib/rulesEngine/loadContext.ts:148-156, src/lib/rulesEngine/evaluators.ts:494-503",
+            "detail": "The neighborAssignments query filters only provider_id + assignment_status + a ±31-day date window — no site_id filter and no schedule_version filter. Consequences: (1) if a superseded draft version and the live version both contain 'assigned' rows for the same period (versions are never shown being invalidated in this code), every assignment is double-counted, so a frequency rule 'max 4 weekday calls/month' fires falsely at 2-3 real calls — and if that rule is hard_constraint, the cell shows a hard violation; (2) sequence (evaluators.ts:342-383) and rest (425-454) checks see phantom trigger shifts from abandoned drafts and flag conflicts that don't exist; (3) cross-site day shifts inflate frequency counts for site-scoped rules. The frequency counter also can't distinguish 'this month at this site' from 'everywhere', so multi-site providers are systematically over-flagged.",
+            "severity": "medium",
+            "suggestedFix": "Join schedule_versions and filter neighbors to the slot's schedule_version_id (or to versions with status 'active'/'published'), and add .eq('schedule_slots.site_id', slotRow.site_id) for site-scoped rule categories; keep a separate unfiltered query only for the cross-site evaluator, which already has one.",
+            "verdict": null
+          },
+          {
+            "title": "required_count > 1 call slots are silently under-filled, and the UNIQUE(schedule_slot_id) constraint contradicts the multi-provider model",
+            "file": "src/lib/rulesEngine/solve.ts:50, src/lib/rulesEngine/genContext.ts:126-141, supabase/migrations/20260524000000_add_assignment_unique_constraints.sql",
+            "detail": "genContext builds ONE SlotToFill per slot (keeping required_count and one open assignment row), and record() marks the slot handled after a single placement — empirically verified: a required_count=2 C1 slot with two eligible providers yields exactly 1 assignment and 0 unfilled records, so the missing second provider is invisible (the coverage evaluator would flag it only softly, evaluators.ts:576-589). Meanwhile migration 20260524000000 added UNIQUE(schedule_slot_id) on scheduling.assignments — so a second assignment row per slot cannot exist at all, yet dayShiftAutoGen's while(remaining > 0) loop (dayShiftAutoGen.ts:361-432) will attempt a second INSERT for the same slot and fail with a constraint error mid-generation, and commit.ts inserts would do the same. The data model (required_count, arrays of assignments per slot throughout loadContext/genContext) and the DB constraint disagree; whichever is right, today the code silently under-covers or errors.",
+            "severity": "medium",
+            "suggestedFix": "Decide the model: if one provider per slot, make required_count>1 impossible at slot creation and generate N sibling slots instead; if multi-provider, drop/scope the unique constraint and make solve() loop until required_count is met, recording an unfilled entry per missing provider.",
+            "verdict": null
+          },
+          {
+            "title": "Relief pass (D4-D9) silently skips whole days and permanently passes over providers — no unfilled record for any D slot",
+            "file": "src/lib/rulesEngine/solve.ts:255-296",
+            "detail": "Three holes: (1) 'sampleD = codeMap.get(\"D4\") || codeMap.get(\"D5\")' — a date whose open relief slots are only D6-D9 (D4/D5 already assigned or not created) is skipped entirely with no record; (2) the candidate pool is pre-filtered by eligibility for sampleD (line 262-264), so a provider whose credentials exclude D4 but allow D6-D9 is dropped from 'scored' and can never take any relief that day; (3) the cursor 'idx' only moves forward across codes — a provider skipped because they were ineligible for D5 is never reconsidered for D6+, starving them of relief slots they were eligible for. Because D-slots never enter plan.unfilled (only call slots do, solve.ts:174), all of these produce silently empty relief coverage with zero telemetry, and the relief-distribution intent (soonest-next-call first) quietly degrades.",
+            "severity": "medium",
+            "suggestedFix": "Iterate relief codes per date using each code's own slot for eligibility (drop the sampleD proxy), re-scan the scored list from 0 for each code (skipping providers already placed that day via state), and append un-placeable relief slots to plan.unfilled with a reason.",
+            "verdict": null
+          },
+          {
+            "title": "Call semantics hard-coded to C1/C2/C3 — custom call roles (e.g. a Fri-Sun Neuro beeper) get no fairness accounting, no recency, no optimization",
+            "file": "src/lib/rulesEngine/solve.ts:23,47,246-249, src/lib/rulesEngine/metrics.ts:4, src/lib/rulesEngine/optimize.ts:7",
+            "detail": "Any shift with category='call' enters the main loop and consumes bucket quota, but three hard-coded CALL_CODES=['C1','C2','C3'] lists gate everything downstream: addCallDate (solve.ts:47) — so a custom call code never updates callDatesByProvider, making the recency tiebreak and the relief pass's 'soonest next call' ranking (solve.ts:245-249) blind to it; metrics.ts:4 — fairnessStdev and burnout ignore it, so the optimizer's objective literally does not see the burden; optimize.ts:7 — extractCallAssignment/movableCallSlotIds exclude it, so it is never rebalanced. The owner's stated direction (NL-restructured weekend rules like a 'Neuro beeper spanning Fri-Sun', new in-house/home-call splits) means new call codes are imminent; today each one would be distributed by quota alone with zero fairness feedback, no burnout guard, and no post-call chaining (chainDFills handles only C1/C2, solve.ts:84-90). That is a fairness bug waiting to be created by the very customization feature being planned.",
+            "severity": "medium",
+            "suggestedFix": "Replace the code lists with category- or attribute-driven behavior: treat every shift_type_category==='call' as a call for callDates/metrics/optimizer, and move per-code structure (post-call day off, D1 chain, weekend block shape) into data (shift_type flags or sequence/rest rules) instead of hard-coded branches.",
+            "verdict": null
+          },
+          {
+            "title": "The entire validation layer (evaluators.ts), sequence auto-fill, and day-shift generator have zero tests; autoGenerate tests cover only two trivial helpers",
+            "file": "src/lib/rulesEngine/evaluators.ts:1-789, src/lib/rulesEngine/sequenceAutoFill.ts:1-330, src/lib/rulesEngine/dayShiftAutoGen.ts:1-449",
+            "detail": "There is no evaluators.test.ts: the 789-line module implementing timeOff, weekendAdjacentPto, sequence, rest, frequency, coverage, pairing, fairness, openSlot, and crossSite — the layer that turns rule definitions into the hard/soft flags schedulers rely on — is completely untested (its exported __test date helpers are never imported by any test). sequenceAutoFill.ts (which WRITES assignments, including the D1 post-C2 path with its cross-site hole) and dayShiftAutoGen.ts (449 lines of DB-coupled greedy assignment) are also untested, as are loadContext.ts and loadGenerationContext. autoGenerate.test.ts (33 lines) tests only resolveOptimizeEnabled and toResultAssignment — none of the commit-failure / best-effort-validation orchestration. Critically, none of the well-tested files (solve/eligibility/metrics/optimize) asserts the two domain rules this review found broken: post-call-off after seed C1s and D1 skip tracking — both probes passed silently. The solver tests are good, but the safety net around what actually reaches the database is untested.",
+            "severity": "medium",
+            "suggestedFix": "Add evaluators.test.ts exercising each evaluator with hand-built EvaluationContext fixtures (especially timeOff pending/denied statuses, rest exemptions, frequency period edges, crossSite allow_multi_site); add sequenceAutoFill tests with a mocked supabase client covering the PTO-skip, cross-site, and D1-beats-D3 paths; add regression tests for seed-C1 post-call and derived-skip tracking once fixed.",
+            "verdict": null
+          }
+        ]
+      },
+      {
+        "dimension": "customizability",
+        "summary": "FloorRunner's data model was clearly designed for runtime customizability — shift_types with behavior flags (call_type, call_coverage_type 'full_beeper', requires_post_call_rule), shift_templates per day_type, and a jsonb-driven rule_definitions table — but the generation engine bypasses almost all of it. loadGenerationContext selects only shift_types(code, category) and never loads rule_definitions, so every structural behavior the owner wants to change is compiled TypeScript: the weekend chain (solve.ts maybeWeekendBlock), post/pre-call D-chains (chainDFills), the pre-PTO Thursday pass, C1's post-call guard with its Saturday exception, the D4-D9 relief order, and CALL_CODES=['C1','C2','C3'] literals repeated across solve/optimize/metrics and the schedule UI. The concrete test case fails on at least three independent walls: the Fri-Mon four-doc rotation is a different chain graph than the hard-coded Sat-anchored one; a continuous Fri-Sun Neuro beeper has no multi-day/same-provider/overlay representation (one assignment per provider per date is enforced); and 'post-call off after in-house weekend nights' is the exact inverse of the compiled Saturday-C1 exemption. The API routes an AI would use exist but are unvalidated raw inserts whose payloads the generator ignores. The highest-leverage fixes are: make solve() consume rule_definitions and the existing shift_types flags, introduce a first-class call-pattern/rotation-block entity with same-provider slot groups, and replace code-string literals with shift-type-level attributes — after which the staffing calculators (also compiled per site) should follow the same declarative pattern.",
+        "findings": [
+          {
+            "title": "Generation solver never reads rule_definitions — the runtime rules DB is validation-only, so an AI writing rules via API cannot change generated schedules",
+            "file": "src/lib/rulesEngine/genContext.ts:86-480, src/lib/rulesEngine/solve.ts:10-299, src/app/api/scheduling/rule-definitions/route.ts:24-36",
+            "detail": "loadGenerationContext queries schedule_slots, sites, provider profiles, credentials, availability, and historical assignments — but never rule_sets/rule_definitions. solve() and eligibility.ts contain zero references to rules. rule_definitions are consumed only by the post-hoc validators (loadContext.ts:54-60 → evaluators.ts) and by sequenceAutoFill for MANUAL assignments. So the advertised runtime-customization path (POST /api/scheduling/rule-definitions, a raw unvalidated insert) affects only violation flags, never what autoGenerate produces. An AI assistant that inserts 'weekend C1 is in-house 24h with post-call off' rules would see the generator ignore them completely. Compounding this, the POST routes are schema-less passthroughs (rule-definitions/route.ts:28-32 inserts req.json() directly), so there is no machine-readable contract of what condition/action vocabularies even exist — unknown requirement_type values are silently skipped in evaluators.ts:190-205.",
+            "severity": "high",
+            "suggestedFix": "Make the generation pipeline rule-driven: load active rule_definitions into GenerationContext and have solve()/eligibility.ts interpret sequence, rest, pairing, and coverage rules instead of compiled logic. Publish a validated (zod) JSON schema for condition/action per rule_category on the API so an AI can target it reliably, and reject unknown vocabulary instead of silently ignoring it.",
+            "verdict": {
+              "explanation": "Confirmed by direct reading: loadGenerationContext (genContext.ts) never queries rule_sets/rule_definitions, and solve.ts/eligibility.ts/optimize.ts/metrics.ts contain zero rule references — sequence/rest/pairing/weekend logic is hard-coded, and autoGenerate only runs rule evaluation post-commit to write best-effort validation_flags. The POST/PATCH rule-definitions routes insert req.json() with no schema validation, and evaluators.ts:204-205 silently continues past unknown requirement_type values. Since the rules UI and API advertise per-site scheduling constraints across 10 categories that the generator wholly ignores, the customizability gap is real and material, not mitigated elsewhere.",
+              "isReal": true
+            }
+          },
+          {
+            "title": "Weekend call structure is compiled into maybeWeekendBlock — the owner's target Fri-Mon rotation cannot be expressed as data",
+            "file": "src/lib/rulesEngine/solve.ts:94-128",
+            "detail": "The entire weekend structure is literal code: Sat-C3 chains to Sun-C3 (line 119-120); Sat-C1 chains to Sun-C2 and Fri-C2 (121-123); Sat-C2 chains to Sun-C1 and Fri-D2 (124-127). The trigger is hard-coded to derived_day_type === 'saturday' (line 95) and the chain only spans Fri-Sun. The requested new structure — four docs rotating C1 (in-house 24h), C2 (home call), a Neuro beeper spanning Fri+Sat+Sun, D1/D2 working days, and Off days across Fri-Mon — is a different graph of (day-offset, code, same-provider) edges that no runtime data can produce. metrics.ts:9-10 likewise hard-codes the Fri-Sun weekend block as the burnout exemption, so even scoring assumes the current chain.",
+            "severity": "high",
+            "suggestedFix": "Introduce a first-class 'call pattern' / 'rotation block' entity (per site, per day-class): a list of roles, each with day offsets relative to an anchor day, shift codes, and same-provider/different-provider constraints (e.g. {anchor:'friday', span:4, roles:[{code:'C1', days:[0..3]}, {code:'NB', days:[0,1,2], same_provider:true}, ...]}). solve() walks the pattern generically instead of the C1/C2/C3 switch.",
+            "verdict": {
+              "isReal": true,
+              "explanation": "Verified in src/lib/rulesEngine/solve.ts:94-128 that the weekend structure is literal code exactly as cited: the trigger is hard-coded to Saturday (line 95) and the C3→Sun-C3, C1→Sun-C2+Fri-C2, C2→Sun-C1+Fri-D2 chains are an if/else on shift codes spanning only Fri-Sun; metrics.ts:9-10 likewise hard-codes the Fri-Sun block as the burnout exemption. The only data-driven mechanism (sequence rule_definitions via sequenceAutoFill.ts) expresses just ±1-day trigger→linked pairs on manual saves and cannot represent a multi-day same-provider span or a Fri-Mon block, and ALGORITHM.md itself lists \"change weekend chain pattern\" as requiring a code edit inside the main loop — confirming no runtime configuration exists. Given the multi-site platform goal (7 sites with different call-code schemes per project memory), this is a real, material customizability limitation; the only unverifiable detail is the exact \"four docs + Neuro beeper Fri-Mon\" target spec, which isn't written in the repo but doesn't change the structural claim."
+            }
+          },
+          {
+            "title": "Post-call / pre-call day chains (D1/D2/D3, post-call day off) are hard-coded per shift code in chainDFills",
+            "file": "src/lib/rulesEngine/solve.ts:69-91",
+            "detail": "chainDFills encodes: C1 → block the next day (post-call off, line 86) and fill D2 the day before (85); C2 → fill D1 the next day (89) and D3 the day before (88); Sunday-C1 blocks Monday (74); the 'had call two days before' suppression (80-82). The DB already has a sequence rule_category with trigger/linked codes, but generation never reads it — only manual-assignment auto-fill does. The owner's requested change 'post-call day off after in-house nights' (i.e. conditional on the new C1 semantics, applying on weekends too) requires editing this function. Note the current code even hard-codes the OPPOSITE of the request: Saturday C1 is exempted from the post-call guard (eligibility.ts:55-57) and weekend C1 gets no next-day block (chainDFills returns early for saturday at line 71).",
+            "severity": "high",
+            "suggestedFix": "Replace chainDFills with data-driven sequence rules loaded into GenerationContext: {trigger_code, offset_days (±N), effect: fill_code|block_day, day_type_scope, suppression conditions}. The existing rule_definitions.condition/action jsonb can carry this; solve() interprets it for both generation and the weekend chain.",
+            "verdict": {
+              "explanation": "I read solve.ts:69-91 and confirmed every line citation: chainDFills hard-codes C1→next-day block (86) + D2 day-before fill (85), C2→D1 next day (89) + D3 day-before (88), Sunday-C1→block-Monday (74), the had-call-two-days-before suppression (80-82), and the saturday early return (71); eligibility.ts:55-57 does exempt Saturday C1 from the post-call guard. Meanwhile a data-driven sequence mechanism already exists (rule_definitions with rule_category='sequence', trigger/linked codes in condition/action jsonb) but is consumed only by the manual-assignment API route (src/app/api/scheduling/schedule-assignments/route.ts:36,72 via sequenceAutoFill.ts) and the validation evaluator (evaluators.ts:324+) — GenerationContext (genTypes.ts:54-77) has no sequence-rules field, so an admin editing sequence rules in the UI changes manual auto-fill and validation but not generated schedules. This divergence between two rule sources is a real, material customizability problem; changing the post-call chain behavior (e.g. applying the post-call day off to weekend/in-house-night C1) requires editing chainDFills and eligibility.ts rather than data.",
+              "isReal": true
+            }
+          },
+          {
+            "title": "Hidden site-specific convention: pre-PTO Thursday C1/C2 placement is baked into the generic solver",
+            "file": "src/lib/rulesEngine/solve.ts:130-166, src/lib/rulesEngine/shared.ts:49-51",
+            "detail": "Before the main loop, solve() places providers with upcoming PTO onto the Thursday of the prior week, specifically onto C1 then C2 (lines 156-165), capped at two providers. thursdayBeforeWeekOf is a dedicated helper. This is one group's local custom compiled into the engine with no on/off switch, no per-site parameterization, and no representation in rule_definitions. Any runtime-defined structure that renames C1/C2 or changes Thursday's role silently interacts with this pass (it consumes call slots before the main loop and before overrides).",
+            "severity": "medium",
+            "suggestedFix": "Promote to a configurable 'placement' rule (rule_definitions row: condition {relative_day:'thursday_prior_week', trigger:'upcoming_pto'}, action {codes:['C1','C2'], max_providers:2}) that sites can disable or retarget; skip the pass when no such rule is active.",
+            "verdict": {
+              "explanation": "Confirmed by reading solve.ts:130-166 and shared.ts:49-51: the pass hardcodes literal 'C1'/'C2' lookups on the Thursday before a PTO week, caps at two providers, and runs unconditionally for every site with no flag (SolveOptions has only callOverrides, GenerationContext carries no rules) while the generation path never reads rule_definitions — that table only feeds the validation path, so the site-scoped rules UI cannot disable or retarget this behavior even though shift_type codes are per-site DB data. Two nits: the pass actually defers per-slot to overrides (solve.ts:146), and the rule is documented in ALGORITHM.md §7, whose change-table confirms the only customization path is editing engine source. The core customizability claim is accurate and material for a multi-site product with an existing per-site rules system.",
+              "isReal": true
+            }
+          },
+          {
+            "title": "Literal CALL_CODES ['C1','C2','C3'] scattered across solve, optimize, and metrics — runtime-created call shift types are second-class",
+            "file": "src/lib/rulesEngine/solve.ts:47,246-250; src/lib/rulesEngine/optimize.ts:7; src/lib/rulesEngine/metrics.ts:4",
+            "detail": "A shift type created at runtime via POST /api/scheduling/shift-types with category='call' (e.g. code 'NB' for the Neuro beeper) enters the main loop and bucket quotas (those key off category/code generically), but: it never accrues callDatesByProvider (solve.ts:47 gates on ['C1','C2','C3']), so recency scoring and the post-call spacing logic ignore it; the relief pass won't see it as a call (246-250); the optimizer won't move it (optimize.ts:7,20-26,40-47 — and movableCallSlotIds further restricts to weekday/friday main-loop placements, making all weekend calls permanently unoptimizable); and metrics exclude it from fairness/burnout (metrics.ts:4,38). The UI repeats the pattern: schedules/[id]/page.tsx:2037 (CODES=['C1','C2','C3']), :399 (NON_POST_CALL_CODES=['C3']), :574 (weekday-C1 exclusion), :602-604 (sort rank).",
+            "severity": "high",
+            "suggestedFix": "Everywhere, derive 'is a call' from shift_type_category === 'call' (already on SlotToFill/PlannedAssignment) or from the counts_toward_call_burden flag, and derive tier/priority from a shift_types column (e.g. call_rank integer) instead of literal code lists.",
+            "verdict": {
+              "isReal": true,
+              "explanation": "Verified every cited line: solve.ts:47 and 246-250, optimize.ts:7/23/42/79-81, metrics.ts:4/38, and all four UI citations contain the literal ['C1','C2','C3'] lists exactly as claimed. The premise is real — the admin UI (sites/[id]/page.tsx ShiftTypesTab) and the unvalidated POST /api/scheduling/shift-types create call-category shift types with arbitrary codes, and genContext.ts:150 admits all category='call' slots into slotsToFill generically, so a runtime call type enters quotas and the main loop but is silently excluded from recency scoring, post-call spacing, the relief pass, the optimizer, and fairness/burnout metrics. The suggested counts_toward_call_burden flag already exists in the schema and is used by the burden API route, confirming the engine's hardcoded lists diverge from the codebase's own generic mechanism. Only minor overreach: the 'weekend calls unoptimizable' sub-point is a documented design decision, but the core high-severity customizability defect stands."
+            }
+          },
+          {
+            "title": "shift_types already has the behavior flags the new structure needs (call_coverage_type 'full_beeper', requires_post_call_rule, crosses_midnight, call_type) — but the engine never reads them",
+            "file": "supabase_scheduling_schema.sql:238-263; supabase_scheduling_patch2.sql:4-5; supabase_scheduling_patch3.sql:4-6; src/lib/rulesEngine/genContext.ts:90",
+            "detail": "The schema was designed for customizability: shift_types carries requires_post_call_rule, requires_backup_pairing, counts_as_weekend_burden, crosses_midnight, duration_hours, and patch2/patch3 added call_type ('weekday/weekend/holiday/additional') and call_coverage_type ('partial_beeper','full_beeper') — literally the vocabulary for 'C1 in-house 24h' vs 'C2 home call' vs 'Neuro beeper'. But loadGenerationContext selects only shift_types(code, category) (genContext.ts:90), and no rulesEngine file references any of these columns (they surface only as UI badges in sites/[id]/page.tsx:383-416 and burden reporting). So flipping requires_post_call_rule on a new shift type via the API changes nothing about generation; post-call behavior remains keyed to the literal string 'C1' (solve.ts:84-86, eligibility.ts:56).",
+            "severity": "high",
+            "suggestedFix": "Load the full shift_types row into GenerationContext and key engine behavior off the flags: post-call chain from requires_post_call_rule + early_out_post_call, in-house vs beeper semantics from call_coverage_type, pairing from requires_backup_pairing, next-day conflict handling from crosses_midnight/duration_hours. This makes a big slice of the requested customization pure data.",
+            "verdict": {
+              "isReal": true,
+              "explanation": "Verified every cited location: genContext.ts:90 selects only shift_types(code, category), and a repo-wide grep shows none of the schema's behavior flags (requires_post_call_rule, requires_backup_pairing, crosses_midnight, duration_hours, call_type, call_coverage_type, early_out_post_call) are referenced anywhere in src/lib/rulesEngine — they appear only in UI badges/forms (sites/[id]/page.tsx), the grid route select, and burden reporting. Even the validation-side loadContext.ts selects only code/name/category/requires_credential/requires_specific_skills, so no engine path is mitigated elsewhere. Generation behavior is hardcoded to literal codes: eligibility.ts:56 gates the post-call rule on shift_type_code === 'C1', and solve.ts/metrics.ts/optimize.ts hardcode C1/C2/C3/D1–D3 chains, so flipping requires_post_call_rule on a new shift type genuinely changes nothing about generation — a real, material customizability gap for a multi-site platform."
+            }
+          },
+          {
+            "title": "No multi-day span or slot-group concept — a continuous Fri+Sat+Sun Neuro beeper obligation cannot be modeled",
+            "file": "supabase_scheduling_schema.sql:266-346 (shift_templates + schedule_slots); src/lib/rulesEngine/sequenceAutoFill.ts:16-18,117-119",
+            "detail": "schedule_slots are strictly one slot_date each, and shift_templates bind one shift_type to one day_type — there is no entity expressing 'this obligation spans 3 consecutive days and must be the SAME provider'. Sequence rules support only a single ±1-day offset (relationship 'post_call'|'pre_call' → offset = ±1, sequenceAutoFill.ts:118; same in evaluators.ts:337). The only same-provider-across-days mechanism in the system is the hard-coded weekend chain (solve.ts:94-128), which maxes out at Fri-Sun and only for C1/C2/C3. The Neuro beeper spanning Fri+Sat+Sun continuously would have to be three independent daily slots with nothing keeping them on one provider — the solver could legally give each day to a different doc, and same-date conflict checks (eligibility.ts:39-41) would actually FORBID the beeper provider from also holding a D1/D2 working slot that day, since one provider gets max one assignment per date (state.assignedOnDate is a flat per-date set).",
+            "severity": "high",
+            "suggestedFix": "Add a slot_group (or rotation_instance) table: group_id on schedule_slots plus a constraint kind (same_provider | distinct_providers), generated from the call-pattern entity. Also allow shift types to be flagged 'overlay/beeper' so they don't consume the one-assignment-per-day budget (a concurrency dimension on the same-date check).",
+            "verdict": {
+              "explanation": "Verified every code claim: schedule_slots are single-date with no group entity (supabase_scheduling_schema.sql:327-346), sequence rules only support a fixed ±1-day offset (sequenceAutoFill.ts:16-18,118; evaluators.ts:337) and don't cascade (route.ts calls auto-fill once, solver ignores them), the only same-provider multi-day mechanism is the hard-coded C1/C2/C3 Fri-Sun weekend chain (solve.ts:94-128), and eligibility.ts:39-41 hard-blocks a second same-date assignment via a flat per-date set with no overlay/concurrency dimension. Grep across the schema, all patches, and src/ found no slot_group/rotation/overlay mitigation, and a single slot with multi-day start/end datetimes is not a workaround since all conflict/PTO checks key off slot_date. The gap is material for customizability: the codebase's own hard-coded weekend chain shows multi-day same-provider blocks are a core domain need, yet any pattern beyond C1/C2/C3 (e.g., a 3-day beeper obligation, which matches the project's documented cross-covered coverage obligations) cannot be modeled configurably and would conflict with the one-assignment-per-day invariant. The only soft spot is that the specific 'Neuro beeper Fri-Sun' example is illustrative rather than literally in the spec, but the structural limitation it describes is real.",
+              "isReal": true
+            }
+          },
+          {
+            "title": "day_type is a closed 6-value enum with hard-coded fill order and bucket collapse — no way to define custom day classes or a Fri-Mon block",
+            "file": "supabase_scheduling_schema.sql:19; src/lib/rulesEngine/genContext.ts:163-181; src/lib/rulesEngine/shared.ts:108-114",
+            "detail": "scheduling.day_type is ENUM('weekday','friday','saturday','sunday','federal_holiday','major_holiday'). The solver's structural ordering is compiled on top of it: dayOrder {saturday:0, sunday:1, friday:2, weekday:3, holiday:4} and codeOrder {C2:0, C3:1, C1:2} (genContext.ts:163-172) — the comment at 153-162 admits the whole weekend-chain correctness depends on this exact order. dayTypeBucket (shared.ts:108-114) collapses Sat+Sun into one fairness bucket, holidays into another, with no per-site configuration. A structure where Monday belongs to the weekend rotation (post-call Monday off after Sunday in-house) or where Friday is fairness-bucketed with the weekend can't be represented; adding a new day class requires an enum migration plus edits to three code sites.",
+            "severity": "medium",
+            "suggestedFix": "Replace the enum with a per-site day_classes table (name, matching dow/holiday predicate, fairness_bucket, fill_priority) and derive codeOrder from the call-pattern entity (backup-before-primary as a declared dependency, not a literal map).",
+            "verdict": {
+              "explanation": "Verified every cited line: the day_type enum is closed at 6 values (supabase_scheduling_schema.sql:19), genContext.ts:163-181 hard-codes dayOrder/codeOrder with a comment admitting solver correctness depends on that exact order, and shared.ts:108-114 hard-codes the Sat+Sun and holiday bucket collapse with no per-site config. The coupling is actually wider than claimed — solve.ts hard-codes C1/C2/C3 chain semantics and schedules/route.ts:112-123 hard-codes the dow-to-day_type derivation — and no patch or rules-table mechanism (applies_to_day_types is only a filter over the fixed enum) provides any mitigation, so custom day classes like a Fri-Mon weekend block genuinely require an enum migration plus multi-file code edits. Given the project's stated goal of a marketable multi-org platform, this is a real, material customizability constraint at medium severity.",
+              "isReal": true
+            }
+          },
+          {
+            "title": "Eligibility gates hard-code C1 semantics and Sat/Sun day types; bucket quotas are keyed to raw codes",
+            "file": "src/lib/rulesEngine/eligibility.ts:54-72,86-95",
+            "detail": "The post-call day-off guard fires only for slot.shift_type_code === 'C1' and is excepted for Saturdays (54-62) — under the new structure where weekend C1 is in-house 24h WITH a post-call day, this exception is exactly wrong and not editable at runtime. can_take_weekend_call applies only when derived_day_type is 'saturday'|'sunday' (89), so a Friday-anchored 24h in-house shift or a Fri-Sun beeper is not guarded by the weekend-call credential. Bucket quota keys are `${pid}|${bucket}|${code}` (66-68), so renaming a code or splitting one role into two resets/fragments FTE fairness targets and all historical deficit carry-forward (genContext.ts:387).",
+            "severity": "medium",
+            "suggestedFix": "Drive the post-call guard from shift_types.requires_post_call_rule with day-class scoping from rules; define 'weekend' for credentialing via day-class membership; key fairness buckets on a stable shift_type_id or an explicit burden_category column rather than the mutable code string.",
+            "verdict": null
+          },
+          {
+            "title": "Sequence-rule vocabulary is too narrow and the loader silently drops the scoping columns that would make rules conditional",
+            "file": "src/lib/rulesEngine/sequenceAutoFill.ts:12-18,37-58,161",
+            "detail": "SequenceRule supports exactly {trigger_shift_code, linked_shift_code, relationship post_call|pre_call} — one code, one linked code, one implicit ±1-day offset. 'Post-call day off after in-house nights' (an off-day effect, conditional on day type) and 'beeper spans Fri-Sun' (multi-day, same-provider) are inexpressible. Worse, loadActiveSequenceRulesForSite selects rule columns but neither fetches nor applies applies_to_day_types / applies_to_shift_types (37-58), so even the scoping the schema already offers (rule_definitions.applies_to_day_types, schema:431-432) is ignored on the auto-fill path. And the D1-beats-D3 precedence is hard-coded against the literal code 'D3' (line 161), so a renamed pre-call code breaks precedence silently.",
+            "severity": "medium",
+            "suggestedFix": "Extend the condition/action schema: offset_days (signed int), effect ('assign_code'|'block_day'), chain arrays for multi-day spans, and honor applies_to_day_types/applies_to_shift_types in the loader. Express D-code precedence as a priority_rank comparison between rules instead of a string literal.",
+            "verdict": {
+              "explanation": "Every citation checks out: SequenceRule is limited to one trigger/one linked code with an implicit ±1-day offset (sequenceAutoFill.ts:12-18,118); the loader's select at line 39 omits applies_to_day_types/applies_to_shift_types even though the schema defines them (supabase_scheduling_schema.sql:431-432), the rules UI collects and saves them for sequence rules, and the validation path (loadContext.ts:58, evaluators.ts ruleApplies) honors them for other categories; and line 161 hard-codes the literal 'D3' for precedence cleanup while shift codes are site-configurable DB rows. The issue is actually worse than stated: the rules editor offers 'same_day_pair' and 'weekend_continuation' relationships that the auto-fill engine silently executes as post_call (+1 day) via the unsafe cast at line 54, so user-visible configuration is both inexpressible and mis-executed. The only mitigation found is that 'post-call day off' can be flagged via a separate rest-category validation rule, which does not refute the auto-fill vocabulary or scoping claims.",
+              "isReal": true
+            }
+          },
+          {
+            "title": "Shift-code NAMESPACE is load-bearing: D4-D9 relief list and the /^D\\d+$/ regex partition the two generation engines by naming convention",
+            "file": "src/lib/rulesEngine/solve.ts:23,253-296; src/lib/rulesEngine/dayShiftAutoGen.ts:141-144",
+            "detail": "solve.ts:23 hard-codes RELIEF_CODES=['D4'..'D9'], samples codeMap.get('D4')||get('D5') to detect a relief day (257), and runs relief only for weekday/friday (260) — a weekend relief role in the new structure is unreachable. Meanwhile dayShiftAutoGen.ts:144 excludes ANY code matching /^D\\d+$/i from the Day-Doc engine, meaning the split of responsibility between the call engine and the day-shift engine is determined purely by whether a runtime-created code happens to look like 'D<number>'. An AI creating a shift type named 'R1' or 'Neuro-D' via the API would land in the wrong engine (or both/neither) with no error. callTierPriority (solve.ts:238) similarly hard-codes C1<C2<other.",
+            "severity": "medium",
+            "suggestedFix": "Add explicit columns to shift_types: owning_engine (call_derived | day_pool), relief_order (int, replaces RELIEF_CODES + tier priority), and applicable day classes. Both engines filter on these columns instead of regexes and literal arrays.",
+            "verdict": {
+              "isReal": true,
+              "explanation": "Verified every citation: solve.ts hardcodes RELIEF_CODES=['D4'..'D9'] (line 23), detects relief days via codeMap.get('D4')||get('D5') (line 257), skips non-weekday/friday dates (line 260), and hardcodes C1<C2<other tier priority (line 238); dayShiftAutoGen.ts:144 excludes any /^D\\d+$/i code from the Day Doc engine regardless of category. The partition within category='regular' between the two engines is purely the code regex — the category enum has no relief/day-pool value — while shift types are genuinely runtime-creatable with free-text codes via both the unvalidated POST /api/scheduling/shift-types (raw body insert) and the site admin UI, so a code like 'R1' lands in the wrong engine and 'D10' lands in neither, silently. No mitigation exists (no DB constraint, no code validation, regex duplicated in a third place in providers UI), making this a real medium-severity customizability issue."
+            }
+          },
+          {
+            "title": "Staffing calculators are compiled per-site TypeScript modules — new sites or role restructures are code changes by design",
+            "file": "src/lib/staffingCalculator/index.ts:9-13; src/lib/staffingCalculator/paoli.ts:1-12,29; src/lib/staffingCalculator/lankenau.ts:1-6",
+            "detail": "The registry is a static array (index.ts:9-13, comment: 'To add a new facility: create a module... then register it here', with 'bryn mawr, riddle — future' as a TODO). paoli.ts hard-codes FR_MAX=3 (Floor Runner cap), always-on OB/Endo MD roles, EP/Neuro room handling; both file headers explicitly warn 'Don't generalize... without verifying against the original.' Nothing here is reachable via API or DB — an AI assistant asked to 'add a Neuro beeper role to the weekend staffing model' or onboard site #3 has no write path. Since these calculators encode role structures (in-house roles, cross-cover, supervision caps) that overlap conceptually with the call-pattern problem, they will drift from any runtime-defined call structure the scheduler adopts.",
+            "severity": "medium",
+            "suggestedFix": "Extract a declarative facility config (roles, always-on sites, supervision ratios/caps, cross-cover sources, contingency rules) into DB rows interpreted by one generic calculator engine; keep paoli/lankenau as seed fixtures that validate the generic engine against the ported prototypes' test suites.",
+            "verdict": null
+          }
+        ]
+      }
+    ],
+    "confirmedCount": 12
+  }
+}
