@@ -93,20 +93,40 @@ export function dayChainsFor(doc: CallPatternDoc, code: string, dayType: string)
   return doc.dayChains.filter(c => c.trigger === code && (c.dayTypes as string[]).includes(dayType));
 }
 
+// Memoization for the two hot pattern accessors. CallPatternDoc objects are
+// treated as immutable, so a doc-keyed cache is invisible to callers (pure
+// semantics preserved). Callers must not mutate the returned arrays/maps.
+const postCallCache = new WeakMap<CallPatternDoc, Map<string, number[]>>();
+const blockChainCache = new WeakMap<CallPatternDoc, Map<string, Map<string, PatternBlockLink[]>>>();
+
 // Offsets (relative days) this code blocks for the same provider — the
 // post-call-day-off vocabulary. Empty array = no block on that day type.
 export function postCallBlockOffsets(doc: CallPatternDoc, code: string, dayType: string): number[] {
-  return dayChainsFor(doc, code, dayType).flatMap(c => (c.blocks ?? []).map(b => b.offset));
+  let byKey = postCallCache.get(doc);
+  if (!byKey) { byKey = new Map(); postCallCache.set(doc, byKey); }
+  const key = `${code}|${dayType}`;
+  let cached = byKey.get(key);
+  if (!cached) {
+    cached = dayChainsFor(doc, code, dayType).flatMap(c => (c.blocks ?? []).map(b => b.offset));
+    byKey.set(key, cached);
+  }
+  return cached;
 }
 
 // trigger code -> same-provider links for blocks anchored on `dayType`.
 export function blockChainsFor(doc: CallPatternDoc, dayType: string): Map<string, PatternBlockLink[]> {
-  const out = new Map<string, PatternBlockLink[]>();
-  for (const block of doc.blocks) {
-    if (block.anchorDayType !== dayType) continue;
-    for (const chain of block.chains) out.set(chain.trigger, chain.links);
+  let byDayType = blockChainCache.get(doc);
+  if (!byDayType) { byDayType = new Map(); blockChainCache.set(doc, byDayType); }
+  let cached = byDayType.get(dayType);
+  if (!cached) {
+    cached = new Map<string, PatternBlockLink[]>();
+    for (const block of doc.blocks) {
+      if (block.anchorDayType !== dayType) continue;
+      for (const chain of block.chains) cached.set(chain.trigger, chain.links);
+    }
+    byDayType.set(dayType, cached);
   }
-  return out;
+  return cached;
 }
 
 export function referencedCodes(doc: CallPatternDoc): string[] {

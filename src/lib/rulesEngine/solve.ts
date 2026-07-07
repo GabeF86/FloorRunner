@@ -5,8 +5,24 @@ import { CLASSIC_PATTERN, dayChainsFor, postCallBlockOffsets, blockChainsFor } f
 import type {
   GenerationContext, SlotToFill, CandidateProvider, SolveState,
   SolutionPlan, PlacementSource, AssignmentExplanation, CandidateRejection,
-  SolveOptions, SkippedDerived,
+  SolveOptions, SkippedDerived, ShiftTypeInfo,
 } from './genTypes';
+
+// Relief codes are derived from ctx.shiftTypes (relief_rank ordering). That map
+// is stable across the optimizer's re-solves, so memoize on its identity; the
+// no-shiftTypes fixtures use a constant fallback (nothing to cache).
+const LEGACY_RELIEF_CODES = ['D4', 'D5', 'D6', 'D7', 'D8', 'D9'];
+const reliefCodesCache = new WeakMap<Map<string, ShiftTypeInfo>, string[]>();
+function reliefCodesFor(shiftTypes: Map<string, ShiftTypeInfo> | undefined): string[] {
+  if (!shiftTypes) return LEGACY_RELIEF_CODES; // legacy fallback (no shiftTypes in ctx)
+  let cached = reliefCodesCache.get(shiftTypes);
+  if (!cached) {
+    cached = [...shiftTypes.values()].filter(s => s.relief_rank != null)
+      .sort((a, b) => a.relief_rank! - b.relief_rank!).map(s => s.code);
+    reliefCodesCache.set(shiftTypes, cached);
+  }
+  return cached;
+}
 
 // solve() interprets the site's CallPatternDoc (ctx.callPattern ?? CLASSIC_PATTERN):
 // blocks, dayChains, spans, placement passes and relief config are all data —
@@ -26,14 +42,13 @@ export function solve(ctx: GenerationContext, opts: SolveOptions = {}): Solution
   const isOverlay = (code: string) => shiftInfo(code)?.is_overlay ?? false;
   const callRank = (code: string) =>
     shiftInfo(code)?.call_rank ?? (code === 'C1' ? 0 : code === 'C2' ? 1 : 2); // legacy fallback (no shiftTypes in ctx)
-  const reliefCodes = ctx.shiftTypes
-    ? [...ctx.shiftTypes.values()].filter(s => s.relief_rank != null)
-        .sort((a, b) => a.relief_rank! - b.relief_rank!).map(s => s.code)
-    : ['D4', 'D5', 'D6', 'D7', 'D8', 'D9'];    // legacy fallback (no shiftTypes in ctx)
+  const reliefCodes = reliefCodesFor(ctx.shiftTypes);
 
   // ── seed pre-existing assignments into state ──
   for (const seed of ctx.seedAssignments) {
-    markAssigned(state, seed.slot_date, seed.provider_id);
+    // Overlay seeds do NOT consume the one-assignment-per-day budget (mirrors
+    // record()); the post-call block offsets below STILL apply unconditionally.
+    if (!isOverlay(seed.shift_type_code)) markAssigned(state, seed.slot_date, seed.provider_id);
     if (seed.shift_type_category === 'call') {
       incBucket(state, seed.provider_id, seed.derived_day_type, seed.shift_type_code);
       addCallDate(state, seed.provider_id, seed.slot_date);
@@ -63,6 +78,8 @@ export function solve(ctx: GenerationContext, opts: SolveOptions = {}): Solution
   ) => {
     // Overlay placements do NOT consume the one-assignment-per-day budget.
     if (!isOverlay(slot.shift_type_code)) markAssigned(state, slot.slot_date, p.id);
+    // Overlay call slots still count toward buckets and call recency — only the
+    // one-assignment-per-day budget is exempt.
     if (slot.shift_type_category === 'call') {
       incBucket(state, p.id, slot.derived_day_type, slot.shift_type_code);
       addCallDate(state, p.id, slot.slot_date);
@@ -135,7 +152,18 @@ export function solve(ctx: GenerationContext, opts: SolveOptions = {}): Solution
     for (const link of links) {
       const target = ctx.slotIndex.get(addDays(slot.slot_date, link.offset))?.get(link.code);
       if (!target) continue;
-      if (state.handledSlotIds.has(target.slot_id)) continue;
+      // IF-4: a suppressed NON-call chain fill must be recorded (invariant #4).
+      // Call targets stay unrecorded — they fall through to the main loop and are
+      // not dropped.
+      if (state.handledSlotIds.has(target.slot_id)) {
+        if (target.shift_type_category !== 'call') {
+          skippedDerived.push({
+            date: target.slot_date, code: target.shift_type_code,
+            provider_id: chosen.id, reason: 'already-handled',
+          });
+        }
+        continue;
+      }
       if (overrides?.has(target.slot_id)) {
         const f = overrideFor(target);
         if (f) { record(target, f, 'weekend-chain'); applyDayChains(target, f); }
@@ -144,7 +172,16 @@ export function solve(ctx: GenerationContext, opts: SolveOptions = {}): Solution
       // Call targets use the 'call' gate (quota + weekend-call cred + adjacent
       // PTO); non-call chain fills use 'derived'.
       const gate = target.shift_type_category === 'call' ? 'call' : 'derived';
-      if (!evaluateEligibility(target, chosen, state, ctx, gate).eligible) continue;
+      const elig = evaluateEligibility(target, chosen, state, ctx, gate);
+      if (!elig.eligible) {
+        if (target.shift_type_category !== 'call') {
+          skippedDerived.push({
+            date: target.slot_date, code: target.shift_type_code,
+            provider_id: chosen.id, reason: skipReasonFrom(elig.reason),
+          });
+        }
+        continue;
+      }
       record(target, chosen, 'weekend-chain');
       applyDayChains(target, chosen);
     }
@@ -388,6 +425,9 @@ function daysSinceLastCall(s: SolveState, pid: string, date: string): number {
 }
 // Did the provider have a call within `n` days BEFORE `date`? Generalizes the
 // legacy "had a call exactly two days before" suppression check.
+// NOTE: wider than legacy's exact-gap check (gap ∈ 1..n, not gap === n). Parity
+// holds because classic uses this only on offset:-1 links where gap===1 is masked
+// by the same-date guard — keep in mind for positive-offset links.
 function hadCallWithin(s: SolveState, pid: string, date: string, n: number): boolean {
   for (const d of s.callDatesByProvider.get(pid) || []) {
     const gap = daysBetween(d, date);

@@ -226,3 +226,46 @@ describe('patternEngine — unknown-code warnings', () => {
     expect(warnings.some(w => w.includes('ZZ'))).toBe(true);
   });
 });
+
+// ── 9. IF-4: a suppressed NON-call block-chain fill is recorded, not dropped ──
+describe('patternEngine — IF-4 block-chain skip recording', () => {
+  it('records a classic Saturday-C2 → Friday-D2 fill suppressed by cross-site', () => {
+    // Classic Saturday block chain: C2 → {+1 C1, -1 D2}. p1 wins Saturday C2, but
+    // is cross-site on the Friday, so the -1 D2 fill must be recorded + skipped.
+    const satC2 = callSlot('satC2', '2026-01-03', 'C2', 'saturday'); // Sat
+    const friD2 = dSlot('friD2', '2026-01-02', 'D2', 'friday');      // Fri (offset -1)
+    const ctx = buildCtx([satC2, friD2], [prov('p1'), prov('p2')], {
+      // p2 cannot take weekend call → p1 is the deterministic Saturday-C2 winner.
+      credByPid: new Map([['p2', cred({ can_take_weekend_call: false })]]),
+      // p1 is cross-site on the Friday → the -1 D2 chain fill is suppressed.
+      crossSiteByDate: new Map([['p1', new Set(['2026-01-02'])]]),
+    });
+    const plan = solve(ctx);
+    expect(plan.assignments.find(a => a.slot_id === 'satC2')?.provider_id).toBe('p1');
+    expect(plan.skippedDerived).toContainEqual({
+      date: '2026-01-02', code: 'D2', provider_id: 'p1', reason: 'cross-site',
+    });
+    // The Friday D2 must NOT be assigned to p1 (it stays unfilled).
+    expect(plan.assignments.some(a => a.slot_id === 'friD2')).toBe(false);
+  });
+});
+
+// ── 10. IF-2 seed budget: an overlay seed does not block the same-day call ────
+describe('patternEngine — overlay seed budget', () => {
+  it('lets a provider with a seeded overlay assignment win an open call slot that day', () => {
+    // Overlay seeds must NOT consume the one-per-day budget (mirrors record()).
+    const seed: SeedAssignment = {
+      slot_date: '2026-01-05', provider_id: 'p1', shift_type_code: 'NB',
+      shift_type_category: 'call', derived_day_type: 'weekday',
+    };
+    const monC1 = callSlot('monC1', '2026-01-05', 'C1', 'weekday');
+    const shiftTypes = new Map<string, ShiftTypeInfo>([
+      ['NB', shiftInfo('NB', { category: 'call', call_rank: 0, is_overlay: true })],
+      ['C1', shiftInfo('C1', { category: 'call', call_rank: 0 })],
+    ]);
+    const plan = solve(buildCtx([monC1], [prov('p1')], { shiftTypes, seedAssignments: [seed] }));
+    // Without the fix the overlay seed marks p1 busy on 01-05 → C1 goes unfilled.
+    expect(plan.assignments.find(a => a.slot_id === 'monC1')?.provider_id).toBe('p1');
+    expect(plan.unfilled.some(u => u.slot_id === 'monC1')).toBe(false);
+  });
+});
