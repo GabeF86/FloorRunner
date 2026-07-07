@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { solve } from './solve';
 import { solveLegacy } from './solveLegacy';
-import { buildFixtureContext } from './__fixtures__/buildContext';
+import { buildFixtureContext, buildCtx, prov, callSlot, dSlot } from './__fixtures__/buildContext';
 import type { SolutionPlan } from './genTypes';
 
 // The deterministic 4-week fixture builder lives in __fixtures__/buildContext.ts
@@ -50,5 +50,43 @@ describe('golden parity fixture — sanity (not a no-op)', () => {
     const weekendChain = plan.assignments.filter(a => a.source === 'weekend-chain');
     expect(plan.assignments.length).toBeGreaterThan(0);
     expect(weekendChain.length).toBeGreaterThan(0);
+  });
+});
+
+// Legacy chainDFills treated holidays like weekdays (D-fills + next-day
+// post-call block); CLASSIC_PATTERN must preserve that or holiday calls lose
+// their post-call day off (clinical invariant #1). Regression for the
+// Task 5 review finding.
+describe('golden parity — holiday call slots', () => {
+  const holidayCtx = () => {
+    // Mon 2026-01-19 typed as federal_holiday, flanked by Sun 01-18 and a
+    // normal Tue 01-20. Generous quotas (buildCtx default 99).
+    const slots = [
+      callSlot('h-c1', '2026-01-19', 'C1', 'federal_holiday'),
+      callSlot('h-c2', '2026-01-19', 'C2', 'federal_holiday'),
+      callSlot('t-c1', '2026-01-20', 'C1', 'weekday'),
+      dSlot('s-d2', '2026-01-18', 'D2', 'sunday'),
+      dSlot('s-d3', '2026-01-18', 'D3', 'sunday'),
+      dSlot('t-d1', '2026-01-20', 'D1', 'weekday'),
+    ];
+    return buildCtx(slots, [prov('pa'), prov('pb'), prov('pc')]);
+  };
+
+  it('v2 matches legacy exactly on a holiday block', () => {
+    expect(stripAdditive(solve(holidayCtx()))).toEqual(stripAdditive(solveLegacy(holidayCtx())));
+  });
+
+  it('holiday C1 gets day-before D2 fill and next-day post-call block (both engines)', () => {
+    for (const engine of [solve, solveLegacy]) {
+      const plan = engine(holidayCtx());
+      const holidayC1 = plan.assignments.find(a => a.slot_id === 'h-c1')!;
+      expect(holidayC1).toBeDefined();
+      // D-fill the day before (legacy chainDFills holiday branch)
+      const d2 = plan.assignments.find(a => a.slot_id === 's-d2');
+      expect(d2?.provider_id).toBe(holidayC1.provider_id);
+      // post-call block: the holiday C1 provider must NOT hold the Tuesday C1
+      const tueC1 = plan.assignments.find(a => a.slot_id === 't-c1');
+      expect(tueC1?.provider_id).not.toBe(holidayC1.provider_id);
+    }
   });
 });

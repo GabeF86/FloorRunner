@@ -92,10 +92,10 @@ SELECT s.id, 'Classic (ported from engine)', 'active', 'seed', '{
     { "trigger": "C1", "links": [{ "offset": 1, "code": "C2" }, { "offset": -1, "code": "C2" }] },
     { "trigger": "C2", "links": [{ "offset": 1, "code": "C1" }, { "offset": -1, "code": "D2" }] } ] }],
   "dayChains": [
-    { "trigger": "C1", "dayTypes": ["weekday","friday"],
+    { "trigger": "C1", "dayTypes": ["weekday","friday","federal_holiday","major_holiday"],
       "links": [{ "offset": -1, "code": "D2", "unlessCallWithinDays": 2 }], "blocks": [{ "offset": 1 }] },
     { "trigger": "C1", "dayTypes": ["sunday"], "blocks": [{ "offset": 1 }] },
-    { "trigger": "C2", "dayTypes": ["weekday","friday"],
+    { "trigger": "C2", "dayTypes": ["weekday","friday","federal_holiday","major_holiday"],
       "links": [{ "offset": -1, "code": "D3", "unlessCallWithinDays": 2 }, { "offset": 1, "code": "D1" }] },
     { "trigger": "C2", "dayTypes": ["sunday"], "links": [{ "offset": 1, "code": "D1" }] } ],
   "spans": [],
