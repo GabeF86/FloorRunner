@@ -159,6 +159,10 @@ interface CallPatternDoc {
   }>;
   // Relief pass config (replaces RELIEF_CODES + weekday/friday literals).
   reliefPass: { enabled: boolean; dayTypes: DayType[] } | null;  // codes come from shift_types.relief_rank
+  // Which day types the local-search optimizer may move main-loop call
+  // assignments on (chain/block placements are never movable). Explicit data
+  // instead of deriving from block shape — classic: ['weekday','friday'].
+  optimizerMovableDayTypes: DayType[];
 }
 ```
 
@@ -262,7 +266,7 @@ Reading: Fri-C1 doc also takes Sun C2 (image: Doc A); Fri-C2 doc keeps C2 on Sat
 ## 7. Claude Schedule Assistant
 
 ### 7.1 Backend — `src/lib/scheduleAssistant/`
-- **`client.ts`** — one shared Anthropic wrapper consolidating the two existing seams (`AnthropicLike` / `RationaleClient`): injectable for tests, supports streaming, image blocks, and tool use. Default model `claude-fable-5`; allowlist includes `claude-opus-4-8` (per-request override, same convention as the normalizer). *Implementation must consult the `claude-api` skill for exact request shapes rather than memory.*
+- **`client.ts`** — one shared Anthropic wrapper consolidating the two existing seams (`AnthropicLike` / `RationaleClient`): injectable for tests, supports streaming, image blocks, and tool use. Default model `claude-opus-4-8` with adaptive thinking (`thinking: {type: 'adaptive'}`); allowlist includes `claude-fable-5` as an opt-in override (per-request override, same convention as the normalizer). *Implementation follows the claude-api skill reference (manual streaming tool-use loop via `client.messages.stream()` + `finalMessage()`, strict tools, typed error chain).*
 - **`tools.ts`** — tool definitions (JSON Schema from the zod sources — single source of truth):
   | Tool | Kind | Notes |
   |---|---|---|
