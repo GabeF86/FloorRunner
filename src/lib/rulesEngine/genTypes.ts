@@ -1,5 +1,6 @@
 // Shared types for the call-schedule generation pipeline.
 // Lifted from the interfaces formerly inline in autoGenerate.ts.
+import type { CallPatternDoc } from './callPattern';
 
 export interface SlotToFill {
   slot_id: string;
@@ -50,6 +51,21 @@ export interface SeedAssignment {
   derived_day_type: string;
 }
 
+// Per-code shift-type metadata that drives generation behavior. Loaded from
+// scheduling.shift_types (call_rank/relief_rank/is_overlay/generation_engine +
+// the post-call flag). Optional on GenerationContext: when absent, solve()
+// falls back to code-derived defaults so pure fixtures stay small.
+export interface ShiftTypeInfo {
+  code: string;
+  category: string;
+  call_rank: number | null;
+  relief_rank: number | null;
+  is_overlay: boolean;
+  generation_engine: 'call' | 'day_pool' | 'none';
+  requires_post_call_rule: boolean;
+  call_coverage_type: string | null;
+}
+
 // Immutable input to solve(). All reads have already happened.
 export interface GenerationContext {
   scheduleVersionId: string;
@@ -74,6 +90,11 @@ export interface GenerationContext {
   bucketTarget: Map<string, number>;
   // Assignments already present before generation (manual/prior runs).
   seedAssignments: SeedAssignment[];
+  // ── v2 pattern-interpreter inputs (all optional; solve falls back to
+  //    CLASSIC_PATTERN + code-derived shift info when absent) ──
+  callPattern?: CallPatternDoc;
+  shiftTypes?: Map<string, ShiftTypeInfo>;   // by code
+  warnings?: string[];                        // load-time warnings (pattern codes, quota math)
 }
 
 export type GateSet = 'call' | 'derived';
@@ -100,7 +121,9 @@ export type PlacementSource =
   | 'pre-pto-thursday'
   | 'd-chain'
   | 'weekend-chain'
-  | 'relief-order';
+  | 'relief-order'
+  | 'quota-relaxed'   // v2: filled despite bucket quota (all candidates quota-blocked)
+  | 'span';           // v2: multi-day same-provider obligation (CallPatternDoc spans)
 
 // Richer "why this assignment" detail, captured at decision time. The
 // PlacementSource (main-loop / d-chain / weekend-chain / …) stays on
@@ -149,9 +172,21 @@ export interface UnfilledSlot {
   candidates?: CandidateRejection[];      // per-provider "why not"
 }
 
+// A derived (D-chain / span) placement that was suppressed, recorded so the
+// mandated D1-skip tracking is never silently dropped (clinical invariant 4).
+export interface SkippedDerived {
+  date: string;
+  code: string;
+  provider_id: string;
+  reason: 'pto' | 'cross-site' | 'occupied' | 'no-slot' | 'ineligible' | 'already-handled';
+}
+
 export interface SolutionPlan {
   assignments: PlannedAssignment[];
   unfilled: UnfilledSlot[];
+  // OPTIONAL so the FROZEN solveLegacy.ts (and bare test-plan literals) keep
+  // compiling; the v2 solve() always populates it.
+  skippedDerived?: SkippedDerived[];
 }
 
 // Mutable in-memory bookkeeping during solve. Never touches I/O.

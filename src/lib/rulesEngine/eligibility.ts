@@ -7,6 +7,7 @@ import {
   effectivePtoRange,
   dayTypeBucket,
 } from './shared';
+import { CLASSIC_PATTERN, postCallBlockOffsets } from './callPattern';
 import type {
   GenerationContext, SlotToFill, CandidateProvider, SolveState,
   GateSet, EligibilityResult,
@@ -35,8 +36,10 @@ export function evaluateEligibility(
     return { eligible: false, reason: 'group-mismatch' };
   }
 
-  // Same-date conflict (this schedule)
-  if (state.assignedOnDate.get(slot.slot_date)?.has(p.id)) {
+  // Same-date conflict (this schedule). Overlay slots (is_overlay shift types)
+  // neither consume nor collide with the one-assignment-per-day budget.
+  const slotOverlay = ctx.shiftTypes?.get(slot.shift_type_code)?.is_overlay ?? false;
+  if (!slotOverlay && state.assignedOnDate.get(slot.slot_date)?.has(p.id)) {
     return { eligible: false, reason: 'same-date' };
   }
 
@@ -51,10 +54,13 @@ export function evaluateEligibility(
     return { eligible: false, reason: 'weekday-unavailable' };
   }
 
-  // C1 post-call day-off guard (call gate only). Saturday C1 is excepted.
+  // Post-call day-off guard (call gate only), pattern-driven: a code whose
+  // day-chain blocks the NEXT day must not be placed when the provider is
+  // already busy that next day. Day-type scoping (e.g. the classic Saturday C1
+  // exemption) falls out of the pattern doc's dayChain blocks.
+  const doc = ctx.callPattern ?? CLASSIC_PATTERN;
   if (gate === 'call'
-    && slot.shift_type_code === 'C1'
-    && slot.derived_day_type !== 'saturday') {
+    && postCallBlockOffsets(doc, slot.shift_type_code, slot.derived_day_type).includes(1)) {
     const dayAfter = addDays(slot.slot_date, 1);
     if (state.assignedOnDate.get(dayAfter)?.has(p.id)) {
       return { eligible: false, reason: 'post-call-guard' };

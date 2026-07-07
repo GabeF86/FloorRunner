@@ -1,15 +1,35 @@
 import { addDays, daysBetween, dayTypeBucket, thursdayBeforeWeekOf, BLOCKING_AVAIL } from './shared';
 import { evaluateEligibility } from './eligibility';
 import { emptySolveState } from './genTypes';
+import { CLASSIC_PATTERN, dayChainsFor, postCallBlockOffsets, blockChainsFor } from './callPattern';
 import type {
   GenerationContext, SlotToFill, CandidateProvider, SolveState,
   SolutionPlan, PlacementSource, AssignmentExplanation, CandidateRejection,
-  SolveOptions,
+  SolveOptions, SkippedDerived,
 } from './genTypes';
 
+// solve() interprets the site's CallPatternDoc (ctx.callPattern ?? CLASSIC_PATTERN):
+// blocks, dayChains, spans, placement passes and relief config are all data —
+// there are NO structural shift-code literals here. The two remaining code
+// literals are marked legacy fallbacks used only when ctx.shiftTypes is absent
+// (pure fixtures). Behavior with the classic pattern is byte-identical to
+// solveLegacy (golden-parity net) except four intentional fixes:
+//   IF-1 seeded call blocks its post-call day  IF-2 relief D6+ reachability/rescan
+//   IF-3 quota relaxation                       IF-4 skippedDerived reporting
 export function solve(ctx: GenerationContext, opts: SolveOptions = {}): SolutionPlan {
-  const plan: SolutionPlan = { assignments: [], unfilled: [] };
+  const plan: SolutionPlan = { assignments: [], unfilled: [], skippedDerived: [] };
+  const skippedDerived = plan.skippedDerived!;
   const state = emptySolveState();
+
+  const doc = ctx.callPattern ?? CLASSIC_PATTERN;
+  const shiftInfo = (code: string) => ctx.shiftTypes?.get(code);
+  const isOverlay = (code: string) => shiftInfo(code)?.is_overlay ?? false;
+  const callRank = (code: string) =>
+    shiftInfo(code)?.call_rank ?? (code === 'C1' ? 0 : code === 'C2' ? 1 : 2); // legacy fallback (no shiftTypes in ctx)
+  const reliefCodes = ctx.shiftTypes
+    ? [...ctx.shiftTypes.values()].filter(s => s.relief_rank != null)
+        .sort((a, b) => a.relief_rank! - b.relief_rank!).map(s => s.code)
+    : ['D4', 'D5', 'D6', 'D7', 'D8', 'D9'];    // legacy fallback (no shiftTypes in ctx)
 
   // ── seed pre-existing assignments into state ──
   for (const seed of ctx.seedAssignments) {
@@ -18,19 +38,20 @@ export function solve(ctx: GenerationContext, opts: SolveOptions = {}): Solution
       incBucket(state, seed.provider_id, seed.derived_day_type, seed.shift_type_code);
       addCallDate(state, seed.provider_id, seed.slot_date);
     }
+    // IF-1: a seeded call blocks its pattern post-call day(s) before solve runs,
+    // so the same provider can't be scored onto the blocked next day.
+    for (const off of postCallBlockOffsets(doc, seed.shift_type_code, seed.derived_day_type)) {
+      markAssigned(state, addDays(seed.slot_date, off), seed.provider_id);
+    }
   }
-
-  const RELIEF_CODES = ['D4', 'D5', 'D6', 'D7', 'D8', 'D9'];
 
   const providerById = new Map(ctx.providers.map(p => [p.id, p]));
 
   const overrides = opts.callOverrides;
-  // Resolve a call slot's override, distinguishing three caller actions:
-  //   undefined → slot is NOT overridden → fall through to normal scoring
-  //   null      → overridden but the forced provider is ineligible → leave unfilled
-  //   provider  → overridden and eligible → force this provider
+  // Resolve a call slot's override: undefined → not overridden; null → forced
+  // provider ineligible (leave unfilled); provider → forced and eligible.
   const overrideFor = (slot: SlotToFill): CandidateProvider | null | undefined => {
-    if (!overrides || !overrides.has(slot.slot_id)) return undefined; // not overridden
+    if (!overrides || !overrides.has(slot.slot_id)) return undefined;
     const p = providerById.get(overrides.get(slot.slot_id)!);
     if (!p) return null;
     return evaluateEligibility(slot, p, state, ctx, 'call').eligible ? p : null;
@@ -40,11 +61,10 @@ export function solve(ctx: GenerationContext, opts: SolveOptions = {}): Solution
     slot: SlotToFill, p: CandidateProvider, source: PlacementSource,
     explanation?: AssignmentExplanation,
   ) => {
-    markAssigned(state, slot.slot_date, p.id);
+    // Overlay placements do NOT consume the one-assignment-per-day budget.
+    if (!isOverlay(slot.shift_type_code)) markAssigned(state, slot.slot_date, p.id);
     if (slot.shift_type_category === 'call') {
       incBucket(state, p.id, slot.derived_day_type, slot.shift_type_code);
-    }
-    if (['C1', 'C2', 'C3'].includes(slot.shift_type_code)) {
       addCallDate(state, p.id, slot.slot_date);
     }
     state.handledSlotIds.add(slot.slot_id);
@@ -58,77 +78,81 @@ export function solve(ctx: GenerationContext, opts: SolveOptions = {}): Solution
     });
   };
 
+  // Main-loop scoring tuple: lowest lifetime bucket-ratio, then least-recently
+  // called, then id. Shared by the main loop, spans, and quota relaxation.
+  const scoreCall = (cands: CandidateProvider[], slot: SlotToFill) => {
+    const k = `${dayTypeBucket(slot.derived_day_type)}|${slot.shift_type_code}`;
+    return cands.map(p => {
+      const lifetime = (ctx.historicalAssignedByPid.get(p.id)?.get(k) || 0)
+        + (state.bucketAssigned.get(`${p.id}|${k}`) || 0);
+      return {
+        p,
+        ratio: lifetime / Math.max(p.fte_value, 0.01),
+        recency: daysSinceLastCall(state, p.id, slot.slot_date),
+      };
+    }).sort((a, b) =>
+      a.ratio - b.ratio ||
+      b.recency - a.recency ||
+      a.p.id.localeCompare(b.p.id),
+    );
+  };
+
+  // ── derived (D-chain / span) fills — record every suppression (IF-4) ──
   const tryFillDerived = (date: string, code: string, p: CandidateProvider) => {
     const target = ctx.slotIndex.get(date)?.get(code);
-    if (!target) return;
-    if (state.handledSlotIds.has(target.slot_id)) return;
-    if (!evaluateEligibility(target, p, state, ctx, 'derived').eligible) return;
+    if (!target) { skippedDerived.push({ date, code, provider_id: p.id, reason: 'no-slot' }); return; }
+    if (state.handledSlotIds.has(target.slot_id)) {
+      skippedDerived.push({ date, code, provider_id: p.id, reason: 'already-handled' }); return;
+    }
+    const elig = evaluateEligibility(target, p, state, ctx, 'derived');
+    if (!elig.eligible) {
+      skippedDerived.push({ date, code, provider_id: p.id, reason: skipReasonFrom(elig.reason) });
+      return;
+    }
     record(target, p, 'd-chain');
   };
 
-  const chainDFills = (slot: SlotToFill, p: CandidateProvider) => {
-    const dt = slot.derived_day_type;
-    if (dt === 'saturday') return;                       // weekend block handles it
-    if (dt === 'sunday') {
-      if (slot.shift_type_code === 'C1') {
-        markAssigned(state, addDays(slot.slot_date, 1), p.id); // block Monday
-      } else if (slot.shift_type_code === 'C2') {
-        tryFillDerived(addDays(slot.slot_date, 1), 'D1', p);
+  // dayChains: per-code pre/post fills (links) and post-call blocks for the
+  // provider who was just placed on `slot`.
+  const applyDayChains = (slot: SlotToFill, p: CandidateProvider) => {
+    for (const chain of dayChainsFor(doc, slot.shift_type_code, slot.derived_day_type)) {
+      for (const link of chain.links ?? []) {
+        if (link.unlessCallWithinDays != null
+          && hadCallWithin(state, p.id, slot.slot_date, link.unlessCallWithinDays)) continue;
+        tryFillDerived(addDays(slot.slot_date, link.offset), link.code, p);
       }
-      return;
-    }
-    const twoDaysBefore = addDays(slot.slot_date, -2);
-    const hadCallTwoDaysBefore =
-      (state.callDatesByProvider.get(p.id) || []).includes(twoDaysBefore);
-    const dayBefore = addDays(slot.slot_date, -1);
-    if (slot.shift_type_code === 'C1') {
-      if (!hadCallTwoDaysBefore) tryFillDerived(dayBefore, 'D2', p);
-      markAssigned(state, addDays(slot.slot_date, 1), p.id); // post-call day off
-    } else if (slot.shift_type_code === 'C2') {
-      if (!hadCallTwoDaysBefore) tryFillDerived(dayBefore, 'D3', p);
-      tryFillDerived(addDays(slot.slot_date, 1), 'D1', p);
+      for (const block of chain.blocks ?? []) {
+        markAssigned(state, addDays(slot.slot_date, block.offset), p.id);
+      }
     }
   };
 
-  // ── weekend block chain (H1 fix) — extracted so both forced and scored paths share one copy ──
-  const maybeWeekendBlock = (slot: SlotToFill, chosen: CandidateProvider) => {
-    if (slot.derived_day_type !== 'saturday') return;
-    const sundayMap = ctx.slotIndex.get(addDays(slot.slot_date, 1));
-    const fridayMap = ctx.slotIndex.get(addDays(slot.slot_date, -1));
-
-    const chainAssign = (
-      slotMap: Map<string, SlotToFill> | undefined, code: string,
-    ) => {
-      const target = slotMap?.get(code);
-      if (!target) return;
-      if (state.handledSlotIds.has(target.slot_id)) return;
+  // blocks: same-provider multi-day chains anchored on the placed slot's day
+  // type (classic Saturday weekend chain; proposed friday chain).
+  const applyBlockChains = (slot: SlotToFill, chosen: CandidateProvider) => {
+    const links = blockChainsFor(doc, slot.derived_day_type).get(slot.shift_type_code);
+    if (!links) return;
+    for (const link of links) {
+      const target = ctx.slotIndex.get(addDays(slot.slot_date, link.offset))?.get(link.code);
+      if (!target) continue;
+      if (state.handledSlotIds.has(target.slot_id)) continue;
       if (overrides?.has(target.slot_id)) {
         const f = overrideFor(target);
-        if (f) { record(target, f, 'weekend-chain'); chainDFills(target, f); }
-        return; // overridden slot handled (placed if eligible, else left for main loop/unfilled)
+        if (f) { record(target, f, 'weekend-chain'); applyDayChains(target, f); }
+        continue; // overridden slot handled (placed if eligible, else left for main loop/unfilled)
       }
-      // H1 FIX: route through the canonical predicate. Call slots use the
-      // 'call' gate (quota + weekend-call credential + adjacent PTO); the
-      // Fri-D2 non-call fill uses 'derived'.
+      // Call targets use the 'call' gate (quota + weekend-call cred + adjacent
+      // PTO); non-call chain fills use 'derived'.
       const gate = target.shift_type_category === 'call' ? 'call' : 'derived';
-      if (!evaluateEligibility(target, chosen, state, ctx, gate).eligible) return;
+      if (!evaluateEligibility(target, chosen, state, ctx, gate).eligible) continue;
       record(target, chosen, 'weekend-chain');
-      chainDFills(target, chosen);
-    };
-
-    if (slot.shift_type_code === 'C3') {
-      chainAssign(sundayMap, 'C3');
-    } else if (slot.shift_type_code === 'C1') {
-      chainAssign(sundayMap, 'C2');
-      chainAssign(fridayMap, 'C2');
-    } else if (slot.shift_type_code === 'C2') {
-      chainAssign(sundayMap, 'C1');
-      chainAssign(fridayMap, 'D2');
+      applyDayChains(target, chosen);
     }
   };
 
-  // ── pre-PTO Thursday pass (before main loop) ──
-  // Build Thursday -> providers-with-PTO-that-week map.
+  // ── configurable placement passes (pre-PTO Thursday, etc.) ──
+  // Thursday -> providers with (approved) PTO that week. Only approved PTO drives
+  // placement here (Task 9 revisits with the shared predicate).
   const prePtoByThursday = new Map<string, Set<string>>();
   for (const p of ctx.providers) {
     for (const a of ctx.availByPid.get(p.id) || []) {
@@ -143,39 +167,71 @@ export function solve(ctx: GenerationContext, opts: SolveOptions = {}): Solution
   }
   const tryPlacePrePto = (slot: SlotToFill | undefined, p: CandidateProvider): boolean => {
     if (!slot) return false;
-    if (overrides?.has(slot.slot_id)) return false; // override is authoritative; main loop handles it
+    if (overrides?.has(slot.slot_id)) return false; // override authoritative; main loop handles it
     if (state.handledSlotIds.has(slot.slot_id)) return false;
     if (!evaluateEligibility(slot, p, state, ctx, 'call').eligible) return false;
     record(slot, p, 'pre-pto-thursday');
-    chainDFills(slot, p);
+    applyDayChains(slot, p);
     return true;
   };
-  for (const [thuDate, pidSet] of prePtoByThursday) {
-    const codeMap = ctx.slotIndex.get(thuDate);
-    if (!codeMap) continue;
-    const c1 = codeMap.get('C1');
-    const c2 = codeMap.get('C2');
-    const ranked = Array.from(pidSet).sort()
-      .map(pid => providerById.get(pid))
-      .filter((p): p is CandidateProvider => !!p);
-    // A Thursday offers only C1 + C2, so at most two PTO-bound providers get a
-    // pre-PTO placement here (first → C1, second → C2). A 3rd+ provider with PTO
-    // the same week falls through to the main loop. See ALGORITHM.md §7.
-    if (ranked[0]) { tryPlacePrePto(c1, ranked[0]) || tryPlacePrePto(c2, ranked[0]); }
-    if (ranked[1]) { tryPlacePrePto(c1, ranked[1]) || tryPlacePrePto(c2, ranked[1]); }
+  for (const pass of doc.placementPasses) {
+    if (pass.kind !== 'pre_pto' || !pass.enabled) continue;
+    for (const [thuDate, pidSet] of prePtoByThursday) {
+      const codeMap = ctx.slotIndex.get(thuDate);
+      if (!codeMap) continue;
+      const ranked = Array.from(pidSet).sort()
+        .map(pid => providerById.get(pid))
+        .filter((p): p is CandidateProvider => !!p);
+      // Each PTO-bound provider (up to maxProviders) takes the first available
+      // pass code (classic: C1 preferred, else C2). See ALGORITHM.md §7.
+      for (const p of ranked.slice(0, pass.maxProviders)) {
+        for (const code of pass.codes) {
+          if (tryPlacePrePto(codeMap.get(code), p)) break;
+        }
+      }
+    }
   }
 
-  // ── main construction loop ──
+  const scheduleDates = Array.from(ctx.slotIndex.keys()).sort();
+  const dayTypeOfDate = (date: string): string | undefined => {
+    for (const s of ctx.slotIndex.get(date)?.values() ?? []) return s.derived_day_type;
+    return undefined;
+  };
+
+  // ── spans: multi-day same-provider obligations (e.g. Neuro beeper) ──
+  for (const span of doc.spans) {
+    for (const date of scheduleDates) {
+      if (dayTypeOfDate(date) !== span.anchorDayType) continue;
+      const spanSlots: SlotToFill[] = [];
+      for (const off of span.offsets) {
+        const s = ctx.slotIndex.get(addDays(date, off))?.get(span.code);
+        if (s && !state.handledSlotIds.has(s.slot_id)) spanSlots.push(s);
+      }
+      if (spanSlots.length === 0) continue;
+      const candidates = ctx.providers.filter(p => spanSlots.every(
+        s => evaluateEligibility(s, p, state, ctx,
+          s.shift_type_category === 'call' ? 'call' : 'derived').eligible));
+      if (candidates.length === 0) {
+        for (const s of spanSlots) {
+          plan.unfilled.push({
+            slot_id: s.slot_id, slot_date: s.slot_date,
+            shift_type_code: s.shift_type_code, reason: 'No provider can cover full span',
+          });
+        }
+        continue;
+      }
+      const winner = scoreCall(candidates, spanSlots[0])[0].p;
+      for (const s of spanSlots) { record(s, winner, 'span'); applyDayChains(s, winner); }
+    }
+  }
+
+  // ── main construction loop (CALL slots only) ──
   for (const slot of ctx.slotsToFill) {
     if (state.handledSlotIds.has(slot.slot_id)) continue;
-    // The main loop assigns CALL shifts only. In production loadGenerationContext
-    // puts only call-category slots in slotsToFill; this guard makes that invariant
-    // explicit and keeps derived (D-shift) slots out of the call-scoring path.
     if (slot.shift_type_category !== 'call') continue;
 
     const forced = overrideFor(slot);
     if (forced === null) {
-      // Overridden to an ineligible provider -> leave unfilled (self-rejecting move).
       plan.unfilled.push({
         slot_id: slot.slot_id, slot_date: slot.slot_date,
         shift_type_code: slot.shift_type_code, reason: 'Forced provider ineligible',
@@ -184,23 +240,36 @@ export function solve(ctx: GenerationContext, opts: SolveOptions = {}): Solution
     }
     if (forced) {
       record(slot, forced, 'main-loop');
-      chainDFills(slot, forced);
-      // weekend block off a forced Saturday pick (same logic as the scored path)
-      maybeWeekendBlock(slot, forced);
+      applyDayChains(slot, forced);
+      applyBlockChains(slot, forced);
       continue;
     }
 
-    const candidates = ctx.providers.filter(
-      p => evaluateEligibility(slot, p, state, ctx, 'call').eligible,
-    );
+    // Single eligibility sweep: capture each provider's result once, reuse it
+    // for both candidate selection and (if none) rejection reporting.
+    const sweep = ctx.providers.map(p => ({ p, r: evaluateEligibility(slot, p, state, ctx, 'call') }));
+    const candidates = sweep.filter(x => x.r.eligible).map(x => x.p);
+
     if (candidates.length === 0) {
-      const candidateReasons: CandidateRejection[] = ctx.providers.map(p => {
-        const r = evaluateEligibility(slot, p, state, ctx, 'call');
-        return {
-          provider_id: p.id, provider_name: p.short_display_name,
-          reason: r.reason ?? 'group-mismatch',
-        };
-      });
+      const rejections = sweep.map(x => x.r.reason ?? 'group-mismatch');
+      // IF-3 quota relaxation: when the ONLY thing stopping every provider is the
+      // bucket quota, place the lowest-lifetime-ratio provider anyway.
+      if (rejections.length > 0 && rejections.every(r => r === 'bucket-quota')) {
+        const scored = scoreCall(ctx.providers, slot);
+        const winner = scored[0];
+        record(slot, winner.p, 'quota-relaxed', {
+          ratioAtAssignment: winner.ratio,
+          daysSinceLastCall: Number.isFinite(winner.recency) ? winner.recency : null,
+          competingCandidates: ctx.providers.length,
+        });
+        applyDayChains(slot, winner.p);
+        applyBlockChains(slot, winner.p);
+        continue;
+      }
+      const candidateReasons: CandidateRejection[] = sweep.map(x => ({
+        provider_id: x.p.id, provider_name: x.p.short_display_name,
+        reason: x.r.reason ?? 'group-mismatch',
+      }));
       plan.unfilled.push({
         slot_id: slot.slot_id, slot_date: slot.slot_date,
         shift_type_code: slot.shift_type_code,
@@ -209,96 +278,90 @@ export function solve(ctx: GenerationContext, opts: SolveOptions = {}): Solution
       continue;
     }
 
-    const scored = candidates.map(p => {
-      const k = `${dayTypeBucket(slot.derived_day_type)}|${slot.shift_type_code}`;
-      const lifetime = (ctx.historicalAssignedByPid.get(p.id)?.get(k) || 0)
-        + (state.bucketAssigned.get(`${p.id}|${k}`) || 0);
-      return {
-        p,
-        ratio: lifetime / Math.max(p.fte_value, 0.01),
-        recency: daysSinceLastCall(state, p.id, slot.slot_date),
-      };
-    }).sort((a, b) =>
-      a.ratio - b.ratio ||
-      b.recency - a.recency ||
-      a.p.id.localeCompare(b.p.id),   // M5: stable final tiebreak
-    );
-
+    const scored = scoreCall(candidates, slot);
     const winner = scored[0];
     record(slot, winner.p, 'main-loop', {
       ratioAtAssignment: winner.ratio,
       daysSinceLastCall: Number.isFinite(winner.recency) ? winner.recency : null,
       competingCandidates: candidates.length,
     });
-    chainDFills(slot, winner.p);
-    maybeWeekendBlock(slot, winner.p);
+    applyDayChains(slot, winner.p);
+    applyBlockChains(slot, winner.p);
   }
 
-  // ── D4–D9 relief pass (H2 fix) ──
-  const callTierPriority = (code: string) => code === 'C1' ? 0 : code === 'C2' ? 1 : 2;
+  // ── relief pass (codes + day types from the pattern; IF-2 fixes) ──
+  if (doc.reliefPass?.enabled) {
+    const reliefDayTypes = doc.reliefPass.dayTypes as string[];
+    // "Next call" per provider, from this block's assignments + seeds (any call
+    // category, not a code literal).
+    const providerCalls = new Map<string, Array<{ date: string; code: string }>>();
+    const pushCall = (pid: string, date: string, code: string) => {
+      if (!providerCalls.has(pid)) providerCalls.set(pid, []);
+      providerCalls.get(pid)!.push({ date, code });
+    };
+    for (const a of plan.assignments) if (a.shift_type_category === 'call') pushCall(a.provider_id, a.slot_date, a.shift_type_code);
+    for (const seed of ctx.seedAssignments) if (seed.shift_type_category === 'call') pushCall(seed.provider_id, seed.slot_date, seed.shift_type_code);
+    for (const arr of providerCalls.values()) arr.sort((a, b) => a.date.localeCompare(b.date));
 
-  const providerCalls = new Map<string, Array<{ date: string; code: string }>>();
-  const pushCall = (pid: string, date: string, code: string) => {
-    if (!providerCalls.has(pid)) providerCalls.set(pid, []);
-    providerCalls.get(pid)!.push({ date, code });
-  };
-  for (const a of plan.assignments) {
-    if (['C1', 'C2', 'C3'].includes(a.shift_type_code)) pushCall(a.provider_id, a.slot_date, a.shift_type_code);
-  }
-  for (const seed of ctx.seedAssignments) {
-    if (['C1', 'C2', 'C3'].includes(seed.shift_type_code)) pushCall(seed.provider_id, seed.slot_date, seed.shift_type_code);
-  }
-  for (const arr of providerCalls.values()) arr.sort((a, b) => a.date.localeCompare(b.date));
+    for (const date of scheduleDates) {
+      const codeMap = ctx.slotIndex.get(date);
+      if (!codeMap) continue;
+      // IF-2: sample from ANY open relief slot (not just D4/D5) so dates whose
+      // only relief slots are D6-D9 are no longer skipped.
+      const sampleD = reliefCodes.map(c => codeMap.get(c)).find((s): s is SlotToFill => !!s);
+      if (!sampleD) continue;
+      if (!reliefDayTypes.includes(sampleD.derived_day_type)) continue;
 
-  const scheduleDates = Array.from(ctx.slotIndex.keys()).sort();
-  for (const date of scheduleDates) {
-    const codeMap = ctx.slotIndex.get(date);
-    if (!codeMap) continue;
-    const sampleD = codeMap.get('D4') || codeMap.get('D5');
-    if (!sampleD) continue;
-    const dt = sampleD.derived_day_type;
-    if (dt !== 'weekday' && dt !== 'friday') continue;
+      const available = ctx.providers.filter(
+        p => evaluateEligibility(sampleD, p, state, ctx, 'derived').eligible);
+      const scored = available.map(p => {
+        const nextCall = (providerCalls.get(p.id) || []).find(c => c.date > date);
+        return {
+          p,
+          distance: nextCall ? daysBetween(date, nextCall.date) : Infinity,
+          tier: nextCall ? callRank(nextCall.code) : 99,
+          recency: daysSinceLastCall(state, p.id, date),
+        };
+      }).sort((a, b) =>
+        a.distance - b.distance || a.tier - b.tier ||
+        a.recency - b.recency || a.p.id.localeCompare(b.p.id),
+      );
+      // Rank: soonest next call (most needs relief), then call tier, then
+      // most-recently-called, then id.
 
-    const available = ctx.providers.filter(
-      p => evaluateEligibility(sampleD, p, state, ctx, 'derived').eligible,
-    );
-    const scored = available.map(p => {
-      const nextCall = (providerCalls.get(p.id) || []).find(c => c.date > date);
-      return {
-        p,
-        distance: nextCall ? daysBetween(date, nextCall.date) : Infinity,
-        tier: nextCall ? callTierPriority(nextCall.code) : 99,
-        recency: daysSinceLastCall(state, p.id, date),
-      };
-    }).sort((a, b) =>
-      a.distance - b.distance || a.tier - b.tier ||
-      a.recency - b.recency || a.p.id.localeCompare(b.p.id),
-    );
-    // Rank: soonest next call first (most needs relief), then call tier,
-    // then most-recently-called (smallest recency) as a tiebreak, then id.
-
-    let idx = 0;
-    for (const code of RELIEF_CODES) {
-      const slot = codeMap.get(code);
-      if (!slot) continue;
-      if (state.handledSlotIds.has(slot.slot_id)) continue;
-      // Re-check the SPECIFIC slot: D4–D9 share date-level gates (already in
-      // `scored`), but per-code credential allow/exclude lists differ. Advance
-      // past any provider not eligible for this exact code.
-      while (idx < scored.length
-        && !evaluateEligibility(slot, scored[idx].p, state, ctx, 'derived').eligible) {
-        idx++;
+      for (const code of reliefCodes) {
+        const slot = codeMap.get(code);
+        if (!slot) continue;
+        if (state.handledSlotIds.has(slot.slot_id)) continue;
+        // IF-2: rescan from rank 0 per code — skip anyone already placed this
+        // date or ineligible for THIS specific slot (per-code credential lists
+        // differ). A provider skipped for one code is reconsidered for later ones.
+        const pick = scored.find(s => !state.assignedOnDate.get(date)?.has(s.p.id)
+          && evaluateEligibility(slot, s.p, state, ctx, 'derived').eligible);
+        if (!pick) {
+          plan.unfilled.push({
+            slot_id: slot.slot_id, slot_date: slot.slot_date,
+            shift_type_code: slot.shift_type_code, reason: 'No eligible relief provider',
+          });
+          continue;
+        }
+        record(slot, pick.p, 'relief-order');
       }
-      if (idx >= scored.length) break;
-      record(slot, scored[idx].p, 'relief-order');
-      idx++;
     }
   }
 
   return plan;
 }
 
-// ── pure state helpers (lifted from autoGenerate.ts:453-506) ──
+// Map an eligibility rejection reason to a skippedDerived reason.
+function skipReasonFrom(reason: string | undefined): SkippedDerived['reason'] {
+  if (reason === 'availability-blocked' || reason === 'weekend-adjacent-pto') return 'pto';
+  if (reason === 'cross-site') return 'cross-site';
+  if (reason === 'same-date') return 'occupied';
+  return 'ineligible';
+}
+
+// ── pure state helpers ──
 function markAssigned(s: SolveState, date: string, pid: string) {
   if (!s.assignedOnDate.has(date)) s.assignedOnDate.set(date, new Set());
   s.assignedOnDate.get(date)!.add(pid);
@@ -322,4 +385,13 @@ function daysSinceLastCall(s: SolveState, pid: string, date: string): number {
     if (gap < best) best = gap;
   }
   return best;
+}
+// Did the provider have a call within `n` days BEFORE `date`? Generalizes the
+// legacy "had a call exactly two days before" suppression check.
+function hadCallWithin(s: SolveState, pid: string, date: string, n: number): boolean {
+  for (const d of s.callDatesByProvider.get(pid) || []) {
+    const gap = daysBetween(d, date);
+    if (gap > 0 && gap <= n) return true;
+  }
+  return false;
 }
