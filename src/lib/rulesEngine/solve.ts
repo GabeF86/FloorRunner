@@ -1,4 +1,4 @@
-import { addDays, daysBetween, dayTypeBucket, thursdayBeforeWeekOf, BLOCKING_AVAIL } from './shared';
+import { addDays, daysBetween, dayTypeBucket, buildPrePtoByThursday } from './shared';
 import { evaluateEligibility } from './eligibility';
 import { emptySolveState } from './genTypes';
 import { CLASSIC_PATTERN, dayChainsFor, postCallBlockOffsets, blockChainsFor } from './callPattern';
@@ -60,7 +60,7 @@ export function solve(ctx: GenerationContext, opts: SolveOptions = {}): Solution
     }
   }
 
-  const providerById = new Map(ctx.providers.map(p => [p.id, p]));
+  const providerById = ctx.providerById ?? new Map(ctx.providers.map(p => [p.id, p]));
 
   const overrides = opts.callOverrides;
   // Resolve a call slot's override: undefined → not overridden; null → forced
@@ -188,20 +188,11 @@ export function solve(ctx: GenerationContext, opts: SolveOptions = {}): Solution
   };
 
   // ── configurable placement passes (pre-PTO Thursday, etc.) ──
-  // Thursday -> providers with (approved) PTO that week. Only approved PTO drives
-  // placement here (Task 9 revisits with the shared predicate).
-  const prePtoByThursday = new Map<string, Set<string>>();
-  for (const p of ctx.providers) {
-    for (const a of ctx.availByPid.get(p.id) || []) {
-      if (a.approval_status !== 'approved') continue;
-      if (!BLOCKING_AVAIL.has(a.availability_type)) continue;
-      const thu = thursdayBeforeWeekOf(a.start_date);
-      if (!ctx.slotIndex.has(thu)) continue;
-      const set = prePtoByThursday.get(thu) || new Set<string>();
-      set.add(p.id);
-      prePtoByThursday.set(thu, set);
-    }
-  }
+  // Thursday -> providers with (approved) PTO that week. genContext precomputes
+  // this; bare fixtures don't, so fall back to the shared builder (same approved
+  // semantics; Task 9 revisits the predicate).
+  const prePtoByThursday = ctx.prePtoByThursday
+    ?? buildPrePtoByThursday(ctx.providers, ctx.availByPid, ctx.slotIndex);
   const tryPlacePrePto = (slot: SlotToFill | undefined, p: CandidateProvider): boolean => {
     if (!slot) return false;
     if (overrides?.has(slot.slot_id)) return false; // override authoritative; main loop handles it
@@ -229,7 +220,7 @@ export function solve(ctx: GenerationContext, opts: SolveOptions = {}): Solution
     }
   }
 
-  const scheduleDates = Array.from(ctx.slotIndex.keys()).sort();
+  const scheduleDates = ctx.scheduleDates ?? Array.from(ctx.slotIndex.keys()).sort();
   const dayTypeOfDate = (date: string): string | undefined => {
     for (const s of ctx.slotIndex.get(date)?.values() ?? []) return s.derived_day_type;
     return undefined;

@@ -6,6 +6,8 @@
 // (no I/O, no mutable state) — the two schedulers own their own query
 // boilerplate and call into this module for the fiddly math.
 
+import type { CandidateProvider, AvailabilityEntry, SlotToFill } from './genTypes';
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export type SupabaseClient = any;
 
@@ -111,4 +113,34 @@ export function dayTypeBucket(dt: string): string {
   if (dt === 'saturday' || dt === 'sunday') return 'weekend';
   if (dt === 'federal_holiday' || dt === 'major_holiday') return 'holiday';
   return dt;
+}
+
+// ── Pre-PTO Thursday placement index ────────────────────────────────────────
+
+// Thursday-of-prior-week -> providers who have APPROVED blocking leave that
+// week. Drives the pre_pto placement pass (give PTO-bound providers their call
+// before they leave). Pure: precomputed once in genContext, but solve keeps it
+// as a fallback so bare fixtures (no precomputed field) still work.
+//
+// NOTE: uses `approval_status === 'approved'` — the SAME semantics solve has
+// always used. Task 9 revisits this with a shared approval predicate; do NOT
+// change it here.
+export function buildPrePtoByThursday(
+  providers: CandidateProvider[],
+  availByPid: Map<string, AvailabilityEntry[]>,
+  slotIndex: Map<string, Map<string, SlotToFill>>,
+): Map<string, Set<string>> {
+  const out = new Map<string, Set<string>>();
+  for (const p of providers) {
+    for (const a of availByPid.get(p.id) || []) {
+      if (a.approval_status !== 'approved') continue;
+      if (!BLOCKING_AVAIL.has(a.availability_type)) continue;
+      const thu = thursdayBeforeWeekOf(a.start_date);
+      if (!slotIndex.has(thu)) continue;
+      const set = out.get(thu) || new Set<string>();
+      set.add(p.id);
+      out.set(thu, set);
+    }
+  }
+  return out;
 }

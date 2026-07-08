@@ -10,6 +10,7 @@ import {
   addDays,
   dayTypeBucket,
   normalizeWeekdays,
+  buildPrePtoByThursday,
   type SupabaseClient,
 } from './shared';
 
@@ -20,10 +21,24 @@ import type {
   SiteCredentials,
   AvailabilityEntry,
   SeedAssignment,
+  ShiftTypeInfo,
 } from './genTypes';
+
+import { CallPatternDocSchema, patternWarnings, type CallPatternDoc } from './callPattern';
 
 const DEFAULT_PAR_LEVEL = 12; // fallback when site.call_par_level isn't set
 const NEIGHBOR_WINDOW_DAYS = 31;
+
+// A Supabase/PostgREST error indicating the queried relation doesn't exist yet
+// (pre-patch18 live DB). Distinct from a plain "no row" result (data:null,
+// error:null). Missing-COLUMN errors (patch18 partly applied) are handled
+// separately at the shift_types load.
+function isMissingRelationError(error: unknown): boolean {
+  const e = error as { message?: string; code?: string } | null;
+  if (!e) return false;
+  if (e.code === '42P01') return true; // undefined_table
+  return /does not exist|could not find the table|schema cache/i.test(e.message || '');
+}
 
 // ── Pure helpers ──────────────────────────────────────────────────────────────
 
@@ -82,6 +97,9 @@ export async function loadGenerationContext(
 ): Promise<LoadResult> {
   let dbQueries = 0;
   const countQ = () => { dbQueries++; };
+  // Load-time warnings (missing patch18 objects, unknown pattern codes, quota
+  // shortfalls, unsupported multi-fill slots). Always surfaced on ctx.warnings.
+  const warnings: string[] = [];
 
   // ── 1. Preload schedule + site + slots ────────────────────────────────────
   countQ();
@@ -112,6 +130,92 @@ export async function loadGenerationContext(
     }
   } catch { /* column may not exist yet — use default */ }
 
+  // ── 1b. Load full shift-type metadata for the site ────────────────────────
+  // Drives generation behavior (call/relief rank, overlay, engine, post-call
+  // flag, coverage type). Guard: a pre-patch18 live DB lacks the engine columns
+  // — retry with code+category and default the rest so the pipeline still runs.
+  const shiftTypes = new Map<string, ShiftTypeInfo>();
+  {
+    countQ();
+    const wide = await sb
+      .from('shift_types')
+      .select('code, category, call_rank, relief_rank, is_overlay, generation_engine, requires_post_call_rule, call_coverage_type')
+      .eq('site_id', siteId)
+      .eq('is_active', true);
+
+    let rows = (wide.data as Array<Record<string, unknown>> | null) || null;
+    let columnsMissing = false;
+    const wideErrMsg = (wide.error as { message?: string } | null)?.message || '';
+    if (wide.error && /column/i.test(wideErrMsg)) {
+      columnsMissing = true;
+      warnings.push('shift_types engine columns missing — apply patch18');
+      countQ();
+      const narrow = await sb
+        .from('shift_types')
+        .select('code, category')
+        .eq('site_id', siteId)
+        .eq('is_active', true);
+      rows = (narrow.data as Array<Record<string, unknown>> | null) || null;
+    }
+
+    for (const r of rows || []) {
+      const code = r.code as string;
+      const category = r.category as string;
+      if (!code) continue;
+      const engineDefault: ShiftTypeInfo['generation_engine'] = category === 'call' ? 'call' : 'day_pool';
+      shiftTypes.set(code, {
+        code,
+        category,
+        call_rank: columnsMissing ? null : ((r.call_rank as number | null) ?? null),
+        relief_rank: columnsMissing ? null : ((r.relief_rank as number | null) ?? null),
+        is_overlay: columnsMissing ? false : !!r.is_overlay,
+        generation_engine: columnsMissing
+          ? engineDefault
+          : ((r.generation_engine as ShiftTypeInfo['generation_engine']) || engineDefault),
+        requires_post_call_rule: columnsMissing ? false : !!r.requires_post_call_rule,
+        call_coverage_type: columnsMissing ? null : ((r.call_coverage_type as string | null) ?? null),
+      });
+    }
+  }
+
+  // ── 1c. Load the site's active call pattern ───────────────────────────────
+  // Success → ctx.callPattern (zod-parsed). Validation failure → undefined +
+  // warning. Missing table → undefined + warning. No row → undefined, silent
+  // (normal pre-seed state; solve falls back to CLASSIC_PATTERN).
+  let callPattern: CallPatternDoc | undefined;
+  {
+    countQ();
+    const { data: patRow, error: patErr } = await sb
+      .from('call_patterns')
+      .select('definition')
+      .eq('site_id', siteId)
+      .eq('status', 'active')
+      .maybeSingle();
+
+    if (patErr) {
+      if (isMissingRelationError(patErr)) {
+        warnings.push('call_patterns table missing — apply patch18');
+      }
+      // Other errors: leave undefined; engine falls back to CLASSIC silently.
+    } else {
+      const definition = (patRow as { definition?: unknown } | null)?.definition;
+      if (definition != null) {
+        const parsed = CallPatternDocSchema.safeParse(definition);
+        if (parsed.success) {
+          callPattern = parsed.data;
+        } else {
+          warnings.push(`Active call pattern failed validation: ${parsed.error.issues[0]?.message ?? 'unknown error'}`);
+        }
+      }
+      // No row → definition undefined → callPattern stays undefined, no warning.
+    }
+  }
+
+  // Cross-check: every code the pattern references should exist as a shift type.
+  if (callPattern && shiftTypes.size > 0) {
+    warnings.push(...patternWarnings(callPattern, new Set(shiftTypes.keys())));
+  }
+
   // ── 2. Build slot index ───────────────────────────────────────────────────
   // slotsToFill = call-category slots that need assignment (main loop)
   // slotIndex   = ALL open slots by date+code (used for weekend chaining and D-fill)
@@ -125,6 +229,11 @@ export async function loadGenerationContext(
 
     const assignments = (raw.assignments as Array<{ id: string; provider_id: string | null }>) || [];
     const required = (raw.required_count as number) || 1;
+    // Task 11 territory: the engine fills exactly one provider per slot today.
+    // Flag any legacy multi-count slot so nobody assumes >1 got filled.
+    if (required > 1) {
+      warnings.push(`Slot ${raw.slot_date as string} ${st.code}: required_count ${required} > 1 — multi-fill not yet supported (Task 11)`);
+    }
     const assignedCount = assignments.filter(a => a.provider_id).length;
     if (assignedCount >= required) continue;
 
@@ -199,6 +308,12 @@ export async function loadGenerationContext(
         bucketTotals: new Map(),
         bucketTarget: new Map(),
         seedAssignments: [],
+        callPattern,
+        shiftTypes,
+        warnings,
+        providerById: new Map(),
+        prePtoByThursday: new Map(),
+        scheduleDates: Array.from(slotIndex.keys()).sort(),
       },
       dbQueries,
       totalSlots: rawSlots.length,
@@ -331,14 +446,23 @@ export async function loadGenerationContext(
   // ── 6. Preload existing cross-site assignments for these providers ────────
   // Anything assigned to these providers on dates in the schedule range, at
   // OTHER sites — used for same-day cross-site conflict checks.
+  //
+  // Window = the FULL slotIndex date range (call AND derived slots — derived
+  // fills like D1/D2 can land a provider on a day with no open call slot),
+  // widened ±1 day so post-call/adjacency guards see a neighbor booked at the
+  // other site. Deriving this from slotsToFill (call slots only) left a hole
+  // on derived-only edge dates.
+  const allSlotDates = Array.from(slotIndex.keys()).sort();
+  const crossWindowStart = addDays(allSlotDates[0], -1);
+  const crossWindowEnd = addDays(allSlotDates[allSlotDates.length - 1], 1);
   countQ();
   const { data: crossSite } = await sb
     .from('assignments')
     .select('provider_id, schedule_slots!inner(slot_date, site_id)')
     .in('provider_id', providerIds)
     .eq('assignment_status', 'assigned')
-    .gte('schedule_slots.slot_date', minDate)
-    .lte('schedule_slots.slot_date', maxDate)
+    .gte('schedule_slots.slot_date', crossWindowStart)
+    .lte('schedule_slots.slot_date', crossWindowEnd)
     .neq('schedule_slots.site_id', siteId);
 
   // crossSiteByDate: pid -> Set<date> — provider is assigned at a different site on these dates
@@ -362,10 +486,24 @@ export async function loadGenerationContext(
   // So schedules that were cancelled / replaced mid-way won't get counted
   // twice, and we automatically ignore the schedule we're generating right
   // now.
-  countQ();
+  //
+  // Primary path: the `historical_call_counts` RPC returns pre-aggregated
+  // (provider, bucket, code, n) rows — no unbounded assignment scan into the
+  // app. If the function isn't present yet (pre-patch18 live DB), fall back to
+  // the legacy row scan so dev environments keep working, and warn.
   const historicalAssignedByPid = new Map<string, Map<string, number>>();
   const historicalTotalByBucket = new Map<string, number>();
-  {
+  const addHistorical = (pid: string, key: string, n: number) => {
+    const byProv = historicalAssignedByPid.get(pid) || new Map<string, number>();
+    byProv.set(key, (byProv.get(key) || 0) + n);
+    historicalAssignedByPid.set(pid, byProv);
+    historicalTotalByBucket.set(key, (historicalTotalByBucket.get(key) || 0) + n);
+  };
+  countQ();
+  const rpcRes = await sb.rpc('historical_call_counts', { p_site_id: siteId, p_before: minDate });
+  if (rpcRes.error) {
+    warnings.push('historical_call_counts RPC unavailable — using legacy scan (apply patch18)');
+    countQ();
     const { data: hist } = await sb
       .from('assignments')
       .select('provider_id, schedule_slots!inner(slot_date, site_id, derived_day_type, shift_types!inner(code, category))')
@@ -384,11 +522,15 @@ export async function loadGenerationContext(
       if (!pid || !ss) continue;
       const code = ss.shift_types?.code;
       if (!code) continue;
-      const key = `${dayTypeBucket(ss.derived_day_type || 'weekday')}|${code}`;
-      const byProv = historicalAssignedByPid.get(pid) || new Map<string, number>();
-      byProv.set(key, (byProv.get(key) || 0) + 1);
-      historicalAssignedByPid.set(pid, byProv);
-      historicalTotalByBucket.set(key, (historicalTotalByBucket.get(key) || 0) + 1);
+      addHistorical(pid, `${dayTypeBucket(ss.derived_day_type || 'weekday')}|${code}`, 1);
+    }
+  } else {
+    for (const row of (rpcRes.data || []) as Array<Record<string, unknown>>) {
+      const pid = row.provider_id as string | null;
+      const bucket = row.bucket as string | null;
+      const code = row.code as string | null;
+      if (!pid || !bucket || !code) continue;
+      addHistorical(pid, `${bucket}|${code}`, Number(row.n) || 0);
     }
   }
 
@@ -433,6 +575,18 @@ export async function loadGenerationContext(
     parLevel,
   );
 
+  // Quota sanity: if the FTE-weighted targets across the whole pool can't sum
+  // to the bucket's slot count, the block is structurally under-staffed for
+  // that bucket (par_level too high, or pool FTE too low). Warn so the human
+  // knows some slots will go unfilled for capacity — not eligibility — reasons.
+  for (const [key, total] of bucketTotals) {
+    let sum = 0;
+    for (const p of providers) sum += bucketTarget.get(`${p.id}|${key}`) || 0;
+    if (sum < total) {
+      warnings.push(`Bucket ${key}: FTE-weighted quota (${sum.toFixed(2)}) cannot cover ${total} slots — check call_par_level vs pool FTE`);
+    }
+  }
+
   // ── 8. Collect seed assignments (pre-existing assignments on these slots) ──
   //
   // Walk rawSlots: for each slot that already has a provider_id on one of its
@@ -473,6 +627,13 @@ export async function loadGenerationContext(
       bucketTotals,
       bucketTarget,
       seedAssignments,
+      // ── v2 pattern-interpreter inputs + precomputed invariants ──
+      callPattern,
+      shiftTypes,
+      warnings,
+      providerById: new Map(providers.map(p => [p.id, p])),
+      prePtoByThursday: buildPrePtoByThursday(providers, availByPid, slotIndex),
+      scheduleDates: Array.from(slotIndex.keys()).sort(),
     },
     dbQueries,
     totalSlots: rawSlots.length,

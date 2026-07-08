@@ -30,6 +30,9 @@ export interface GenerationResult {
     explanation?: AssignmentExplanation;
   }>;
   unfilled: UnfilledSlot[];
+  // Load-time advisories (missing patch18 objects, unknown pattern codes, quota
+  // shortfalls, unsupported multi-fill slots). Non-fatal; surfaced to the UI.
+  warnings: string[];
   // Distinguishes a hard failure (no slots / empty pool / DB error) from a
   // legitimate partial fill. The route maps this to an HTTP status.
   ok: boolean;
@@ -58,7 +61,7 @@ export async function autoGenerate(
 ): Promise<GenerationResult> {
   const t0 = Date.now();
   const result: GenerationResult = {
-    filled: 0, skipped: 0, errors: [], assignments: [], unfilled: [], ok: false,
+    filled: 0, skipped: 0, errors: [], assignments: [], unfilled: [], warnings: [], ok: false,
   };
 
   const load = await loadGenerationContext(sb, scheduleVersionId, options);
@@ -67,6 +70,7 @@ export async function autoGenerate(
     return result; // ok stays false -> route returns 4xx/5xx
   }
   const ctx = load.ctx;
+  result.warnings = ctx.warnings ?? [];
 
   let plan;
   let commit;
