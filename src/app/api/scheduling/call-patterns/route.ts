@@ -4,7 +4,9 @@
 // PUT  { site_id, definition, name?, source? }
 //                            → replaces the site's active pattern: archives the
 //                              current active row, inserts the new one as active,
-//                              returns the inserted row (see route.helpers.ts).
+//                              returns the inserted row (replaceActivePattern in
+//                              src/lib/scheduleAssistant/mutations.ts — shared
+//                              with the assistant's update_call_pattern tool).
 //   400 { error, issues }    — invalid body / definition fails CallPatternDocSchema
 //   500 { error }            — Supabase failure
 import { NextRequest, NextResponse } from 'next/server';
@@ -12,7 +14,7 @@ import { z } from 'zod';
 import { sbSchedulingServer } from '@/lib/supabaseScheduling';
 import { CallPatternDocSchema } from '@/lib/rulesEngine/callPattern';
 import { formatZodIssues } from '@/lib/validation/scheduling';
-import { replaceActivePattern } from './route.helpers';
+import { replaceActivePattern } from '@/lib/scheduleAssistant/mutations';
 
 // Never prerender — this route hits Supabase per request.
 export const dynamic = 'force-dynamic';
@@ -21,7 +23,8 @@ const PutBodySchema = z.object({
   site_id: z.string().min(1),
   definition: CallPatternDocSchema,
   name: z.string().min(1).optional(),
-  source: z.enum(['manual', 'assistant', 'seed']).optional(), // table CHECK (patch18)
+  // 'seed' is migration-only provenance — runtime writers are manual|assistant.
+  source: z.enum(['manual', 'assistant']).optional(),
 }).strict();
 
 export async function GET(req: NextRequest) {
