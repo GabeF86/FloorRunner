@@ -1,7 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { sbSchedulingServer } from '@/lib/supabaseScheduling';
 import { evaluateAssignment, validationFlagsFor } from '@/lib/rulesEngine/evaluate';
-import { applySequenceAutoFill, cleanupSequenceAutoFill } from '@/lib/rulesEngine/sequenceAutoFill';
+import {
+  applySequenceAutoFill,
+  cleanupSequenceAutoFill,
+  loadActiveCallPattern,
+} from '@/lib/rulesEngine/sequenceAutoFill';
 
 // Never prerender — this route hits Supabase per request.
 export const dynamic = 'force-dynamic';
@@ -43,9 +47,27 @@ export async function POST(req: NextRequest) {
     .select()
     .single();
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-  await applySequenceAutoFill(sb, body.schedule_slot_id, body.provider_id);
+
+  // Sequence auto-fill reads the site's ACTIVE CALL PATTERN (loaded once per
+  // request here and passed in — rule_definitions are validation-only). The
+  // auto-filled rows are left with validation_flags null; revalidateNeighbors
+  // below evaluates them (same provider, within ±7 days) and stores real flags.
+  const { data: slotRow } = await sb
+    .from('schedule_slots')
+    .select('site_id')
+    .eq('id', body.schedule_slot_id)
+    .maybeSingle();
+  const pattern = await loadActiveCallPattern(sb, (slotRow as { site_id?: string } | null)?.site_id);
+  const fill = await applySequenceAutoFill(sb, body.schedule_slot_id, body.provider_id, pattern);
   await revalidateNeighbors(sb, body.schedule_slot_id, body.provider_id);
-  return NextResponse.json({ ...data, validation: evalResult });
+  // Backward-compatible response: existing fields plus the auto-fill outcome
+  // (skips use the SkippedDerived vocabulary — clinical invariant 4).
+  return NextResponse.json({
+    ...data,
+    validation: evalResult,
+    filledSlotIds: fill.filledSlotIds,
+    skips: fill.skips,
+  });
 }
 
 export async function PATCH(req: NextRequest) {
@@ -68,18 +90,25 @@ export async function DELETE(req: NextRequest) {
   const id = new URL(req.url).searchParams.get('id');
   if (!id) return NextResponse.json({ error: 'id is required' }, { status: 400 });
 
-  // Get the slot ID + provider before deleting so we can recreate an open
-  // assignment AND revalidate that provider's neighbors.
+  // Get the slot ID + provider (+ site for the call-pattern load) before
+  // deleting so we can recreate an open assignment AND revalidate that
+  // provider's neighbors.
   const { data: existing } = await sb
     .from('assignments')
-    .select('schedule_slot_id, provider_id')
+    .select('schedule_slot_id, provider_id, schedule_slots(site_id)')
     .eq('id', id)
     .single();
 
   // Clean up any sequence auto-fills BEFORE deleting the trigger row,
   // since cleanup needs to know which provider triggered the auto-fill.
+  // Cleanup derives the linked slots from the same active call pattern the
+  // fill path uses (loaded once per request, passed in).
+  let clearedSlotIds: string[] = [];
   if (existing?.provider_id) {
-    await cleanupSequenceAutoFill(sb, existing.schedule_slot_id, existing.provider_id);
+    const siteId = (existing as { schedule_slots?: { site_id?: string } | null }).schedule_slots?.site_id;
+    const pattern = await loadActiveCallPattern(sb, siteId);
+    ({ clearedSlotIds } = await cleanupSequenceAutoFill(
+      sb, existing.schedule_slot_id, existing.provider_id, pattern));
   }
 
   // Delete the assignment
@@ -101,10 +130,12 @@ export async function DELETE(req: NextRequest) {
     if (existing.provider_id) {
       await revalidateNeighbors(sb, existing.schedule_slot_id, existing.provider_id);
     }
-    return NextResponse.json(newOpen);
+    // Backward-compatible: the recreated open row plus which linked auto-fills
+    // were cleared alongside the delete.
+    return NextResponse.json({ ...newOpen, clearedSlotIds });
   }
 
-  return NextResponse.json({ ok: true });
+  return NextResponse.json({ ok: true, clearedSlotIds });
 }
 
 // ── Neighbor revalidation ──────────────────────────────────────────────────
