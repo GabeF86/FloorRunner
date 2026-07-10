@@ -276,8 +276,11 @@ export const assistantTools: AssistantToolDef[] = [
         },
         applies_to_shift_types: { anyOf: [{ type: 'array', items: { type: 'string' } }, { type: 'null' }] },
         applies_to_day_types: { anyOf: [{ type: 'array', items: { type: 'string' } }, { type: 'null' }] },
-        condition: { type: 'object', additionalProperties: true, required: [] },
-        action: { type: 'object', additionalProperties: true, required: [] },
+        // Free-form objects aren't expressible in strict tool schemas
+        // (additionalProperties must be false), so these ride as JSON-encoded
+        // strings; the executor decodes + zod-validates them.
+        condition: { type: 'string', description: 'JSON object encoded as a string, e.g. "{\\"max_consecutive\\":2}".' },
+        action: { type: 'string', description: 'JSON object encoded as a string.' },
         explanation_text: { anyOf: [{ type: 'string' }, { type: 'null' }] },
         is_active: { type: 'boolean' },
       },
@@ -347,6 +350,29 @@ function parseWith<T>(schema: z.ZodType<T>, input: unknown): T {
   const parsed = schema.safeParse(input);
   if (!parsed.success) throw new ToolInputError(`Invalid tool input — ${zodIssueText(parsed.error)}`);
   return parsed.data;
+}
+
+// Strict tool schemas can't express free-form objects (additionalProperties
+// must be false), so object-valued fields ride as JSON strings. Decode them;
+// a malformed string or non-object value becomes a ToolInputError the model
+// can self-correct from. Already-object values (belt-and-braces) pass through.
+function decodeJsonStringFields(input: unknown, fields: string[]): unknown {
+  if (typeof input !== 'object' || input === null) return input;
+  const out: Record<string, unknown> = { ...(input as Record<string, unknown>) };
+  for (const f of fields) {
+    const v = out[f];
+    if (typeof v !== 'string') continue;
+    try {
+      const parsed = JSON.parse(v);
+      if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+        throw new Error('not a JSON object');
+      }
+      out[f] = parsed;
+    } catch {
+      throw new ToolInputError(`${f} must be a JSON object encoded as a string`);
+    }
+  }
+  return out;
 }
 
 export interface ToolOutcome {
@@ -535,7 +561,10 @@ export function createToolExecutors(deps?: Partial<ToolEngineDeps>): Record<stri
     },
 
     async upsert_rule_definition(sb, ctx, input) {
-      const parsed = parseWith(AssistantRuleInput, input);
+      // condition/action arrive as JSON strings (strict-schema constraint) —
+      // decode before zod validation.
+      const normalized = decodeJsonStringFields(input, ['condition', 'action']);
+      const parsed = parseWith(AssistantRuleInput, normalized);
       const { data: ruleSets, error: rsErr } = await sb
         .from('rule_sets').select('id').eq('site_id', ctx.siteId).eq('status', 'active');
       if (rsErr) throw new Error(`rule_sets load failed: ${rsErr.message}`);

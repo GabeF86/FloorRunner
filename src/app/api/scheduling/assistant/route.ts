@@ -55,7 +55,13 @@ export async function POST(req: NextRequest) {
   const stream = new ReadableStream({
     async start(controller) {
       const send = (event: unknown) => {
-        controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
+        // A disconnected client makes enqueue throw — swallow it so the run
+        // finishes (mutations + snapshot already happened server-side).
+        try {
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
+        } catch {
+          /* client gone */
+        }
       };
       try {
         const sb = sbSchedulingServer();
@@ -74,7 +80,7 @@ export async function POST(req: NextRequest) {
         console.error(`[scheduleAssistant] run failed (${status}): ${message}`);
         send({ type: 'error', status, message });
       } finally {
-        controller.close();
+        try { controller.close(); } catch { /* already closed */ }
       }
     },
   });
