@@ -444,6 +444,11 @@ describe('loadGenerationContext — load-time warnings (requirement 6-9)', () =>
     expect(warnings[0]).toContain('C2');
     expect(warnings[0]).toContain('2 open slots');
     expect(warnings[0]).not.toContain('C1');
+    // Task 11: sibling slots ARE the multi-coverage mechanism now — the
+    // warning must point the operator at splitting, not at a future task.
+    expect(warnings[0]).toContain('legacy');
+    expect(warnings[0]).toContain('split into sibling slots');
+    expect(warnings[0]).not.toContain('not yet supported');
   });
 
   it('precomputes providerById, sorted scheduleDates, prePtoByThursday; always sets warnings', async () => {

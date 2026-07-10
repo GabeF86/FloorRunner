@@ -232,10 +232,12 @@ export async function loadGenerationContext(
   // slotIndex   = ALL open slots by date+code (used for weekend chaining and D-fill)
   const slotsToFill: SlotToFill[] = [];
   const slotIndex = new Map<string, Map<string, SlotToFill>>();
-  // Task 11 territory: the engine fills exactly one provider per slot today.
-  // Count OPEN multi-count slots (fully-satisfied ones don't affect generation)
-  // and aggregate to one warning per shift code so legacy schedules don't
-  // flood the warning list.
+  // Sibling slots (Task 11) are the multi-coverage mechanism: schedule
+  // creation materializes required_count as N slot rows of required_count 1.
+  // A slot row with required_count > 1 is a LEGACY shape the engine fills at
+  // most once. Count OPEN multi-count slots (fully-satisfied ones don't
+  // affect generation) and aggregate to one warning per shift code so legacy
+  // schedules don't flood the warning list.
   const multiFillOpenByCode = new Map<string, number>();
 
   for (const raw of rawSlots as Array<Record<string, unknown>>) {
@@ -274,7 +276,7 @@ export async function loadGenerationContext(
   }
 
   for (const [code, n] of multiFillOpenByCode) {
-    warnings.push(`${n} open slot${n === 1 ? '' : 's'} with required_count > 1 for ${code} — multi-fill not yet supported (Task 11); at most one provider will be placed per slot`);
+    warnings.push(`${n} open slot${n === 1 ? '' : 's'} with required_count > 1 for ${code} (legacy) — generation covers only one provider per slot; split into sibling slots (one row per required provider, required_count 1 each)`);
   }
 
   // Sorted date keys of ALL open slots (call + derived) — reused for the
