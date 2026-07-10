@@ -79,8 +79,18 @@ interface ValidationFlag {
   rule_id: string | null;
   rule_name: string;
   category: string;
-  severity: 'hard' | 'soft';
+  // 'warning' = sentinel flags (e.g. 'validation unavailable — needs
+  // re-validation') — counted separately, never as soft violations.
+  severity: 'hard' | 'soft' | 'warning';
   message: string;
+}
+
+// Server-computed severity counts per assignment (grid route). null = the
+// assignment was never validated (flags column null), distinct from all-zero.
+interface ValidationSummary {
+  hard: number;
+  soft: number;
+  warning: number;
 }
 
 interface AssignmentInfo {
@@ -90,7 +100,15 @@ interface AssignmentInfo {
   is_open_call: boolean;
   manually_overridden: boolean;
   validation_flags?: ValidationFlag[] | null;
+  validation_summary?: ValidationSummary | null;
   providers: ProviderInfo | null;
+}
+
+// An assignment row as returned by the schedule-assignments API: the grid
+// cell shape plus the slot it belongs to, so edits can be patched into grid
+// state in place without a full refetch.
+interface AssignmentRow extends AssignmentInfo {
+  schedule_slot_id: string;
 }
 
 interface Slot {
@@ -199,6 +217,18 @@ function colorWithAlpha(hex: string | null, alpha: number): string {
   const g = parseInt(h.substring(2, 4), 16);
   const b = parseInt(h.substring(4, 6), 16);
   return `rgba(${r},${g},${b},${alpha})`;
+}
+
+// Client-side fallback when a row lacks the server-computed validation_summary.
+// Warnings (sentinel flags / unknown severities) never inflate the soft count.
+function summarizeFlags(flags: ValidationFlag[]): ValidationSummary {
+  const s: ValidationSummary = { hard: 0, soft: 0, warning: 0 };
+  for (const f of flags) {
+    if (f.severity === 'hard') s.hard++;
+    else if (f.severity === 'soft') s.soft++;
+    else s.warning++;
+  }
+  return s;
 }
 
 /* ── Main Page ───────────────────────────────────────────────────────────── */
@@ -641,6 +671,25 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
 
   /* ── Assignment Actions ─────────────────────────────────────────────────── */
 
+  // Patch API-returned assignment rows into grid state by slot id. The
+  // schedule-assignments routes return every affected row (the edited cell +
+  // auto-filled/evicted/cleared siblings) in the grid column shape, so cell
+  // edits don't need a full loadGrid() refetch. One assignment row per slot
+  // (UNIQUE schedule_slot_id), so each matched slot's array is replaced.
+  const applyAssignmentRows = useCallback((rows: AssignmentRow[]) => {
+    setGrid(g => {
+      if (!g) return g;
+      const bySlot = new Map(rows.map(r => [r.schedule_slot_id, r]));
+      return {
+        ...g,
+        slots: g.slots.map(s => {
+          const row = bySlot.get(s.id);
+          return row ? { ...s, assignments: [row] } : s;
+        }),
+      };
+    });
+  }, []);
+
   const assignProvider = async (slotId: string, providerId: string) => {
     if (!grid) return;
     // Optimistic update
@@ -670,12 +719,22 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ schedule_slot_id: slotId, provider_id: providerId }),
       });
+      const data = await res.json().catch(() => null);
       if (!res.ok) {
-        const errData = await res.json().catch(() => ({}));
-        throw new Error(errData.error || 'Failed to assign');
+        setGrid({ ...grid, slots: prevSlots });
+        setActionError(data?.error || 'Failed to assign');
+        // The write may have partially landed (sequence auto-fill runs after
+        // the upsert) — resync from the server rather than trusting local state.
+        await loadGrid();
+        return;
       }
-      // Reload to get real IDs
-      await loadGrid();
+      // Patch the returned rows (real ids + validation flags + auto-filled
+      // siblings) over the optimistic paint; no full refetch needed.
+      if (data?.assignment) {
+        applyAssignmentRows([data.assignment as AssignmentRow, ...((data.siblings ?? []) as AssignmentRow[])]);
+      } else {
+        await loadGrid();
+      }
     } catch (e) {
       setGrid({ ...grid, slots: prevSlots });
       setActionError(e instanceof Error ? e.message : 'Failed to assign provider');
@@ -696,8 +755,20 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
 
     try {
       const res = await fetch(`/api/scheduling/schedule-assignments?id=${assignmentId}`, { method: 'DELETE' });
-      if (!res.ok) throw new Error('Failed to remove');
-      await loadGrid();
+      const data = await res.json().catch(() => null);
+      if (!res.ok) {
+        setGrid({ ...grid, slots: prevSlots });
+        setActionError('Failed to remove assignment');
+        // Linked auto-fills may have been cleared before the failure — resync.
+        await loadGrid();
+        return;
+      }
+      // Patch the recreated open row + any cleared auto-fill siblings in place.
+      if (data?.assignment) {
+        applyAssignmentRows([data.assignment as AssignmentRow, ...((data.siblings ?? []) as AssignmentRow[])]);
+      } else {
+        await loadGrid();
+      }
     } catch {
       setGrid({ ...grid, slots: prevSlots });
       setActionError('Failed to remove assignment');
@@ -779,11 +850,12 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
   // currently violated. Each violation is one rule firing on one assignment;
   // the same rule can violate many times across the schedule.
   const rulesSummary = useMemo(() => {
-    if (!grid) return { assignmentsChecked: 0, totalViolations: 0, hardCount: 0, softCount: 0, byRule: [] as { rule_id: string | null; rule_name: string; severity: 'hard' | 'soft'; count: number }[] };
+    if (!grid) return { assignmentsChecked: 0, totalViolations: 0, hardCount: 0, softCount: 0, warningCount: 0, byRule: [] as { rule_id: string | null; rule_name: string; severity: ValidationFlag['severity']; count: number }[] };
     let assignmentsChecked = 0;
     let hardCount = 0;
     let softCount = 0;
-    const ruleAgg = new Map<string, { rule_id: string | null; rule_name: string; severity: 'hard' | 'soft'; count: number }>();
+    let warningCount = 0;
+    const ruleAgg = new Map<string, { rule_id: string | null; rule_name: string; severity: ValidationFlag['severity']; count: number }>();
     for (const slot of grid.slots) {
       for (const a of slot.assignments) {
         if (!a.provider_id) continue;
@@ -791,8 +863,13 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
         // (even an empty array means it was checked and passed).
         if (a.validation_flags === null || a.validation_flags === undefined) continue;
         assignmentsChecked++;
+        // Prefer the server-computed summary; fall back to counting flags.
+        // Either way, warnings (sentinel flags) never inflate the soft count.
+        const s = a.validation_summary ?? summarizeFlags(a.validation_flags);
+        hardCount += s.hard;
+        softCount += s.soft;
+        warningCount += s.warning;
         for (const f of a.validation_flags) {
-          if (f.severity === 'hard') hardCount++; else softCount++;
           const key = (f.rule_id ?? f.rule_name) + '|' + f.severity;
           const ex = ruleAgg.get(key);
           if (ex) ex.count++;
@@ -801,7 +878,7 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
       }
     }
     const byRule = [...ruleAgg.values()].sort((a, b) => (b.severity === 'hard' ? 1 : 0) - (a.severity === 'hard' ? 1 : 0) || b.count - a.count);
-    return { assignmentsChecked, totalViolations: hardCount + softCount, hardCount, softCount, byRule };
+    return { assignmentsChecked, totalViolations: hardCount + softCount, hardCount, softCount, warningCount, byRule };
   }, [grid]);
 
   const [showRulesSummary, setShowRulesSummary] = useState(false);
@@ -871,18 +948,18 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
               fontSize: 11.5, fontFamily: 'var(--font-mono), ui-monospace, monospace',
               background: rulesSummary.hardCount > 0
                 ? 'rgba(239,68,68,0.10)'
-                : rulesSummary.softCount > 0
+                : rulesSummary.softCount + rulesSummary.warningCount > 0
                 ? 'rgba(245,158,11,0.10)'
                 : 'rgba(16,185,129,0.10)',
               color: rulesSummary.hardCount > 0
                 ? '#dc2626'
-                : rulesSummary.softCount > 0
+                : rulesSummary.softCount + rulesSummary.warningCount > 0
                 ? '#b45309'
                 : '#0e7c52',
               border: '0.5px solid ' + (
                 rulesSummary.hardCount > 0
                   ? 'rgba(239,68,68,0.35)'
-                  : rulesSummary.softCount > 0
+                  : rulesSummary.softCount + rulesSummary.warningCount > 0
                   ? 'rgba(245,158,11,0.35)'
                   : 'rgba(16,185,129,0.35)'
               ),
@@ -892,14 +969,14 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
               width: 6, height: 6, borderRadius: '50%',
               background: rulesSummary.hardCount > 0
                 ? '#dc2626'
-                : rulesSummary.softCount > 0
+                : rulesSummary.softCount + rulesSummary.warningCount > 0
                 ? '#b45309'
                 : '#16a34a',
             }} />
             checked {rulesSummary.assignmentsChecked} ·{' '}
-            {rulesSummary.hardCount + rulesSummary.softCount === 0
+            {rulesSummary.hardCount + rulesSummary.softCount + rulesSummary.warningCount === 0
               ? 'all clean'
-              : `${rulesSummary.hardCount}H · ${rulesSummary.softCount}S`}
+              : `${rulesSummary.hardCount}H · ${rulesSummary.softCount}S${rulesSummary.warningCount > 0 ? ` · ${rulesSummary.warningCount}W` : ''}`}
           </button>
           {showRulesSummary && (
             <div
@@ -925,6 +1002,10 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
               <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: 'var(--text-muted)', marginBottom: 8 }}>
                 <span>Soft violations</span>
                 <span style={{ fontFamily: 'var(--font-mono), ui-monospace, monospace', color: rulesSummary.softCount > 0 ? '#b45309' : 'var(--text-dim)' }}>{rulesSummary.softCount}</span>
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: 'var(--text-muted)', marginBottom: 8 }}>
+                <span>Warnings (needs re-validation)</span>
+                <span style={{ fontFamily: 'var(--font-mono), ui-monospace, monospace', color: rulesSummary.warningCount > 0 ? '#b45309' : 'var(--text-dim)' }}>{rulesSummary.warningCount}</span>
               </div>
               {rulesSummary.byRule.length > 0 ? (
                 <>

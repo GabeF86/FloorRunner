@@ -1,5 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { sbSchedulingServer } from '@/lib/supabaseScheduling';
+import {
+  GRID_SCHEDULE_COLUMNS,
+  GRID_SLOT_COLUMNS,
+  withValidationSummary,
+} from './route.helpers';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
@@ -13,10 +18,10 @@ export async function GET(
 
   // 1. Fetch schedule with site join. call_par_level powers per-site over-par
   // math; if it's missing for any reason the page falls back to 12 (matches
-  // the engine's default).
+  // the engine's default). Explicit columns — see route.helpers.ts.
   const { data: schedule, error: schedErr } = await sb
     .from('schedules')
-    .select('*, sites(name, short_name, timezone, call_par_level)')
+    .select(GRID_SCHEDULE_COLUMNS)
     .eq('id', id)
     .single();
   if (schedErr) return NextResponse.json({ error: schedErr.message }, { status: 500 });
@@ -31,16 +36,23 @@ export async function GET(
     .single();
   if (verErr) return NextResponse.json({ error: verErr.message }, { status: 500 });
 
-  // 3. Fetch slots with shift_types and assignments->providers
-  const { data: slots, error: slotErr } = await sb
+  // 3. Fetch slots with shift_types and assignments->providers (explicit
+  // columns — the old '*' select also dragged source_type/notes/etc. the page
+  // never reads). Each assignment gets a server-computed validation_summary
+  // ({hard, soft, warning}) alongside its full validation_flags (the page
+  // still renders per-flag messages in tooltips and the cell detail panel).
+  const { data: rawSlots, error: slotErr } = await sb
     .from('schedule_slots')
-    .select(
-      '*, shift_types(id, code, name, color_hex, category, call_type, display_order, provider_group), assignments(id, provider_id, assignment_status, is_open_call, manually_overridden, source_type, notes, validation_flags, providers(id, last_name, short_display_name, initials, provider_type))'
-    )
+    .select(GRID_SLOT_COLUMNS)
     .eq('schedule_version_id', version.id)
     .order('slot_date')
     .order('slot_index');
   if (slotErr) return NextResponse.json({ error: slotErr.message }, { status: 500 });
+
+  const slots = ((rawSlots ?? []) as Array<{ assignments?: Array<{ validation_flags?: unknown }> }>).map(s => ({
+    ...s,
+    assignments: (s.assignments ?? []).map(withValidationSummary),
+  }));
 
   // 4. Fetch providers for org filtered by provider_group
   let providerQuery = sb

@@ -8,7 +8,7 @@ import { commitPlan, commitValidation, commitMetadata, hasGenerationMetadataColu
 import { scoreSolution } from './metrics';
 import type { OptimizeStats } from './optimize';
 import type { SupabaseClient } from './shared';
-import type { UnfilledSlot, PlannedAssignment, AssignmentExplanation, SolutionMetrics, PlacementSource } from './genTypes';
+import type { UnfilledSlot, PlannedAssignment, AssignmentExplanation, SolutionMetrics, PlacementSource, SkippedDerived } from './genTypes';
 
 export interface AutoGenerateOptions {
   overrideProviderIds?: string[];
@@ -47,6 +47,10 @@ export interface GenerationResult {
     explanation?: AssignmentExplanation;
   }>;
   unfilled: UnfilledSlot[];
+  // Derived placements the solver suppressed (PTO/cross-site/occupied…) —
+  // clinical invariant 4 says these are recorded, never silently dropped, so
+  // the API surfaces them alongside unfilled.
+  skippedDerived?: SkippedDerived[];
   // Load-time advisories (missing patch18 objects, unknown pattern codes, quota
   // shortfalls, unsupported multi-fill slots). Non-fatal; surfaced to the UI.
   warnings: string[];
@@ -155,6 +159,7 @@ export async function autoGenerate(
   result.skipped = plan.unfilled.length;
   result.assignments = plan.assignments.map(toResultAssignment);
   result.unfilled = plan.unfilled;
+  result.skippedDerived = plan.skippedDerived ?? [];
   result.metrics = scoreSolution(plan, ctx);
   result.seedMetrics = seedMetrics;
   result.ok = true;

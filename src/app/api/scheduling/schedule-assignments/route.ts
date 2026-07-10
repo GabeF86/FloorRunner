@@ -2,9 +2,51 @@ import { NextRequest, NextResponse } from 'next/server';
 import { sbSchedulingServer } from '@/lib/supabaseScheduling';
 import { evaluateAssignment, validationFlagsFor } from '@/lib/rulesEngine/evaluate';
 import { applySequenceAutoFill, cleanupSequenceAutoFill } from '@/lib/rulesEngine/sequenceAutoFill';
+import {
+  GRID_ASSIGNMENT_COLUMNS,
+  withValidationSummary,
+  type ValidationSummary,
+} from '../schedules/[id]/grid/route.helpers';
 
 // Never prerender — this route hits Supabase per request.
 export const dynamic = 'force-dynamic';
+
+// A re-selected assignment row in the same column shape the grid route
+// returns, so the client can patch the affected cells in place instead of
+// refetching the whole grid.
+type JoinedAssignmentRow = {
+  schedule_slot_id: string;
+  validation_flags?: unknown;
+  validation_summary: ValidationSummary | null;
+  [key: string]: unknown;
+};
+
+// Re-select every affected assignment row (the edited slot + auto-filled /
+// evicted / cleared siblings) in the grid column shape. Best-effort: on a
+// query error it returns { assignment: null, siblings: [] } and the client
+// falls back to a full grid reload.
+async function selectAffectedRows(
+  sb: ReturnType<typeof sbSchedulingServer>,
+  triggerSlotId: string,
+  siblingSlotIds: string[],
+): Promise<{ assignment: JoinedAssignmentRow | null; siblings: JoinedAssignmentRow[] }> {
+  const slotIds = [...new Set([triggerSlotId, ...siblingSlotIds])];
+  const { data, error } = await sb
+    .from('assignments')
+    .select(GRID_ASSIGNMENT_COLUMNS)
+    .in('schedule_slot_id', slotIds);
+  if (error) {
+    console.error('[schedule-assignments] affected-row re-select failed:', error.message);
+    return { assignment: null, siblings: [] };
+  }
+  const rows: JoinedAssignmentRow[] = ((data ?? []) as unknown as Array<{
+    schedule_slot_id: string; validation_flags?: unknown; [key: string]: unknown;
+  }>).map(withValidationSummary);
+  return {
+    assignment: rows.find(r => r.schedule_slot_id === triggerSlotId) ?? null,
+    siblings: rows.filter(r => r.schedule_slot_id !== triggerSlotId),
+  };
+}
 
 export async function POST(req: NextRequest) {
   const sb = sbSchedulingServer();
@@ -51,10 +93,15 @@ export async function POST(req: NextRequest) {
   // ±7 days) and stores real flags.
   const fill = await applySequenceAutoFill(sb, body.schedule_slot_id, body.provider_id);
   await revalidateNeighbors(sb, body.schedule_slot_id, body.provider_id);
+  // Re-select AFTER revalidateNeighbors so the returned rows carry fresh
+  // validation_flags for the auto-filled siblings too.
+  const { assignment, siblings } = await selectAffectedRows(
+    sb, body.schedule_slot_id, [...fill.filledSlotIds, ...fill.evictedSlotIds]);
   // Backward-compatible response: existing fields plus the auto-fill outcome
   // (skips use the SkippedDerived vocabulary — clinical invariant 4;
   // evictedSlotIds reports pre-fills reverted by a higher-precedence fill;
-  // patternWarnings surfaces call-pattern load problems, genContext-style).
+  // patternWarnings surfaces call-pattern load problems, genContext-style)
+  // plus the re-selected joined rows so the client can patch cells in place.
   return NextResponse.json({
     ...data,
     validation: evalResult,
@@ -62,6 +109,8 @@ export async function POST(req: NextRequest) {
     evictedSlotIds: fill.evictedSlotIds,
     skips: fill.skips,
     patternWarnings: fill.patternWarnings,
+    assignment,
+    siblings,
   });
 }
 
@@ -77,7 +126,24 @@ export async function PATCH(req: NextRequest) {
     .select()
     .single();
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-  return NextResponse.json(data);
+
+  // Re-select the row in the grid column shape (providers join +
+  // validation_summary) so the client can patch the cell without a refetch.
+  // Best-effort: on failure `assignment` is null and the client falls back.
+  const { data: joinedRow, error: joinErr } = await sb
+    .from('assignments')
+    .select(GRID_ASSIGNMENT_COLUMNS)
+    .eq('id', id)
+    .single();
+  if (joinErr) {
+    console.error('[schedule-assignments] PATCH re-select failed:', joinErr.message);
+  }
+  return NextResponse.json({
+    ...data,
+    assignment: joinedRow
+      ? withValidationSummary(joinedRow as Record<string, unknown> & { validation_flags?: unknown })
+      : null,
+  });
 }
 
 export async function DELETE(req: NextRequest) {
@@ -123,9 +189,13 @@ export async function DELETE(req: NextRequest) {
     if (existing.provider_id) {
       await revalidateNeighbors(sb, existing.schedule_slot_id, existing.provider_id);
     }
+    // Re-select the recreated open row + the cleared auto-fill rows in the
+    // grid column shape so the client can patch every affected cell.
+    const { assignment, siblings } = await selectAffectedRows(
+      sb, existing.schedule_slot_id, clearedSlotIds);
     // Backward-compatible: the recreated open row plus which linked auto-fills
     // were cleared alongside the delete (and any call-pattern load warnings).
-    return NextResponse.json({ ...newOpen, clearedSlotIds, patternWarnings });
+    return NextResponse.json({ ...newOpen, clearedSlotIds, patternWarnings, assignment, siblings });
   }
 
   return NextResponse.json({ ok: true, clearedSlotIds, patternWarnings });
