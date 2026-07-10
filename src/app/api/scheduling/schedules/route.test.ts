@@ -121,6 +121,19 @@ describe('POST /api/scheduling/schedules — required_count → sibling slots', 
     expect(slots.map(s => s.shift_type_id).sort()).toEqual(['st-C1', 'st-D1']);
   });
 
+  it('required_count 0 template is skipped, not coerced to 1 slot', async () => {
+    const { calls } = setup([
+      template({ id: 'tmpl-1', shift_type_id: 'st-C1', required_count: 0 }),
+      template({ id: 'tmpl-2', shift_type_id: 'st-D1', required_count: 1 }),
+    ]);
+    const res = await POST(fakeReq());
+    expect(res.status).toBe(200);
+
+    const slots = insertedRows(calls, 'schedule_slots');
+    expect(slots).toHaveLength(1);
+    expect(slots[0].shift_type_id).toBe('st-D1');
+  });
+
   it('response shape stays backward compatible ({...schedule, version_id})', async () => {
     setup([template({ required_count: 2 })]);
     const res = await POST(fakeReq());

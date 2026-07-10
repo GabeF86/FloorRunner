@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { sbSchedulingServer } from '@/lib/supabaseScheduling';
+import { ShiftTypePatchSchema, formatZodIssues } from '@/lib/validation/scheduling';
 
 // Never prerender — this route hits Supabase per request.
 export const dynamic = 'force-dynamic';
@@ -9,12 +10,21 @@ export async function PATCH(
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
-  const sb = sbSchedulingServer();
-  const body = await req.json();
+  let body: unknown;
+  try {
+    body = await req.json();
+  } catch {
+    return NextResponse.json({ error: 'Request body must be valid JSON.' }, { status: 400 });
+  }
+  const parsed = ShiftTypePatchSchema.safeParse(body);
+  if (!parsed.success) {
+    return NextResponse.json(formatZodIssues(parsed.error), { status: 400 });
+  }
 
+  const sb = sbSchedulingServer();
   const { data, error } = await sb
     .from('shift_types')
-    .update(body)
+    .update(parsed.data)
     .eq('id', id)
     .select()
     .single();

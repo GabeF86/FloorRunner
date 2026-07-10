@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { sbSchedulingServer } from '@/lib/supabaseScheduling';
+import { RuleDefinitionPatchSchema, formatZodIssues } from '@/lib/validation/scheduling';
 
 // Never prerender — this route hits Supabase per request.
 export const dynamic = 'force-dynamic';
@@ -8,13 +9,22 @@ export async function PATCH(
   req: NextRequest,
   { params }: { params: { id: string } }
 ) {
-  const sb = sbSchedulingServer();
   const { id } = params;
-  const body = await req.json();
+  let body: unknown;
+  try {
+    body = await req.json();
+  } catch {
+    return NextResponse.json({ error: 'Request body must be valid JSON.' }, { status: 400 });
+  }
+  const parsed = RuleDefinitionPatchSchema.safeParse(body);
+  if (!parsed.success) {
+    return NextResponse.json(formatZodIssues(parsed.error), { status: 400 });
+  }
 
+  const sb = sbSchedulingServer();
   const { data, error } = await sb
     .from('rule_definitions')
-    .update(body)
+    .update(parsed.data)
     .eq('id', id)
     .select()
     .single();

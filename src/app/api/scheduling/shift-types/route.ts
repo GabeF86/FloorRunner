@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { sbSchedulingServer } from '@/lib/supabaseScheduling';
+import { ShiftTypeUpsertSchema, formatZodIssues } from '@/lib/validation/scheduling';
 
 // Never prerender — this route hits Supabase per request.
 export const dynamic = 'force-dynamic';
@@ -17,12 +18,21 @@ export async function GET(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
-  const sb = sbSchedulingServer();
-  const body = await req.json();
+  let body: unknown;
+  try {
+    body = await req.json();
+  } catch {
+    return NextResponse.json({ error: 'Request body must be valid JSON.' }, { status: 400 });
+  }
+  const parsed = ShiftTypeUpsertSchema.safeParse(body);
+  if (!parsed.success) {
+    return NextResponse.json(formatZodIssues(parsed.error), { status: 400 });
+  }
 
+  const sb = sbSchedulingServer();
   const { data, error } = await sb
     .from('shift_types')
-    .insert(body)
+    .insert(parsed.data)
     .select()
     .single();
 

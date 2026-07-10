@@ -132,7 +132,10 @@ export async function POST(req: NextRequest) {
     // scheduling.assignments has UNIQUE(schedule_slot_id), so one assignment
     // per slot is the data model and siblings are how multi-coverage works.
     for (const tmpl of matching) {
-      const count = (tmpl.required_count as number) || 1;
+      // required_count <= 0 means "no slots for this template" — never coerce
+      // 0 to 1 (Task 11 review finding). null/undefined keep the default of 1.
+      const count = (tmpl.required_count as number | null | undefined) ?? 1;
+      if (count <= 0) continue;
       for (let i = 0; i < count; i++) {
         slotRows.push({
           schedule_version_id: version.id,
