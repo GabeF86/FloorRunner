@@ -289,6 +289,34 @@ describe('solve — D4-D9 relief (H2)', () => {
   });
 });
 
+describe('solve — degraded mode: ctx.shiftTypes undefined (pre-patch18 DB)', () => {
+  // Regression guard: with ctx.shiftTypes absent, the relief pass must run via
+  // LEGACY_RELIEF_CODES. Every relief slot must be either filled or reported
+  // unfilled — never silently skipped (which is what a present-but-rank-less
+  // shiftTypes map would cause).
+  it('processes relief slots via LEGACY_RELIEF_CODES — fills D4 and D6', () => {
+    const d4 = dSlot('d4', '2026-01-07', 'D4'); // Wednesday weekday
+    const d6 = dSlot('d6', '2026-01-07', 'D6');
+    const plan = solve(buildCtx([d4, d6], [prov('p1'), prov('p2')], { shiftTypes: undefined }));
+    const handled = new Set([
+      ...plan.assignments.map(a => a.slot_id),
+      ...plan.unfilled.map(u => u.slot_id),
+    ]);
+    expect(handled.has('d4')).toBe(true);
+    expect(handled.has('d6')).toBe(true);
+    expect(plan.assignments.find(a => a.slot_id === 'd4')?.source).toBe('relief-order');
+  });
+
+  it('reports a relief slot unfilled (never silent) when no provider is eligible', () => {
+    const d4 = dSlot('d4', '2026-01-07', 'D4');
+    // crna can't take a physician-group slot → nobody eligible.
+    const plan = solve(buildCtx([d4], [{ ...prov('p1'), provider_type: 'crna' }], { shiftTypes: undefined }));
+    expect(plan.assignments).toHaveLength(0);
+    expect(plan.unfilled.map(u => u.slot_id)).toContain('d4');
+    expect(plan.unfilled[0].reason).toBe('No eligible relief provider');
+  });
+});
+
 describe('solve — explainability (Phase 2a)', () => {
   it('records an explanation with competing-candidate count on a main-loop pick', () => {
     const slots = [callSlot('s1', '2026-01-07', 'C1')];

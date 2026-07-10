@@ -235,7 +235,10 @@ describe('loadGenerationContext — shift types (requirement 1)', () => {
     expect(st.get('D4')!.relief_rank).toBe(1);
   });
 
-  it('falls back to code+category with defaults when engine columns are missing', async () => {
+  it('leaves ctx.shiftTypes undefined when engine columns are missing (pre-patch18)', async () => {
+    // A present-but-rank-less map would make solve's reliefCodesFor() return []
+    // and silently kill the relief pass. Undefined engages the documented
+    // legacy fallbacks (LEGACY_RELIEF_CODES, call-rank literals) uniformly.
     const { res } = await run({
       shift_types: (filters) => {
         const sel = (filters.find(f => f.method === 'select')?.args[0] as string) ?? '';
@@ -246,13 +249,38 @@ describe('loadGenerationContext — shift types (requirement 1)', () => {
       },
     });
     expect(res.ctx!.warnings).toContain('shift_types engine columns missing — apply patch18');
-    expect(res.ctx!.shiftTypes!.get('C1')).toEqual({
-      code: 'C1', category: 'call', call_rank: null, relief_rank: null,
-      is_overlay: false, generation_engine: 'call',
-      requires_post_call_rule: false, call_coverage_type: null,
+    expect(res.ctx!.shiftTypes).toBeUndefined();
+  });
+
+  it('degraded (columns-missing) mode still cross-checks the pattern against narrow-select codes', async () => {
+    const pattern = {
+      version: 1, blocks: [], spans: [], placementPasses: [], reliefPass: null,
+      optimizerMovableDayTypes: [],
+      dayChains: [{ trigger: 'ZZ', dayTypes: ['weekday'] }],
+    };
+    const { res } = await run({
+      call_patterns: { data: { definition: pattern }, error: null },
+      shift_types: (filters) => {
+        const sel = (filters.find(f => f.method === 'select')?.args[0] as string) ?? '';
+        if (sel.includes('call_rank')) {
+          return { data: null, error: { message: 'column shift_types.call_rank does not exist', code: '42703' } };
+        }
+        return { data: [{ code: 'C1', category: 'call' }], error: null };
+      },
     });
-    // category-derived generation_engine default
-    expect(res.ctx!.shiftTypes!.get('D4')!.generation_engine).toBe('day_pool');
+    expect(res.ctx!.shiftTypes).toBeUndefined();
+    expect((res.ctx!.warnings ?? []).some(w => w.includes("'ZZ'") && w.includes('not defined'))).toBe(true);
+  });
+
+  it('non-column shift_types failure → undefined shiftTypes + warning with the error, no narrow retry', async () => {
+    const { res, calls } = await run({
+      shift_types: { data: null, error: { message: 'canceling statement due to statement timeout', code: '57014' } },
+    });
+    expect(res.ctx!.shiftTypes).toBeUndefined();
+    expect((res.ctx!.warnings ?? []).some(w =>
+      w.includes('shift_types') && w.includes('statement timeout'))).toBe(true);
+    // Only the wide select was issued — no pointless narrow retry on transient errors.
+    expect(calls.filter(c => c.table === 'shift_types' && c.method === 'select')).toHaveLength(1);
   });
 });
 
@@ -332,6 +360,19 @@ describe('loadGenerationContext — historical fairness RPC (requirement 4)', ()
     expect(legacyRes.ctx!.historicalAssignedByPid).toEqual(rpcRes.ctx!.historicalAssignedByPid);
     expect(legacyRes.ctx!.historicalTotalByBucket).toEqual(rpcRes.ctx!.historicalTotalByBucket);
   });
+
+  it('non-missing-function RPC error → warning carries the actual error, not the patch18 hint', async () => {
+    const { res } = await run(twoCallSlots, {
+      historical_call_counts: { data: null, error: { message: 'canceling statement due to statement timeout', code: '57014' } },
+    });
+    const warnings = res.ctx!.warnings ?? [];
+    const rpcWarnings = warnings.filter(w => w.includes('historical_call_counts'));
+    expect(rpcWarnings).toHaveLength(1);
+    expect(rpcWarnings[0]).toContain('statement timeout');
+    expect(rpcWarnings[0]).not.toContain('patch18');
+    // Legacy-scan data path still engaged (empty canned assignments → empty maps).
+    expect(res.ctx!.historicalAssignedByPid.size).toBe(0);
+  });
 });
 
 describe('loadGenerationContext — cross-site window (requirement 5)', () => {
@@ -373,7 +414,25 @@ describe('loadGenerationContext — load-time warnings (requirement 6-9)', () =>
     const warnings = res.ctx!.warnings ?? [];
     expect(warnings.some(w => w.includes("'ZZ'") && w.includes('not defined'))).toBe(true);
     expect(warnings.some(w => /Bucket .* FTE-weighted quota .* cannot cover .* slots/.test(w))).toBe(true);
-    expect(warnings.some(w => w.includes('2026-01-07') && w.includes('C1') && w.includes('required_count'))).toBe(true);
+    expect(warnings.some(w => w.includes('C1') && w.includes('required_count'))).toBe(true);
+  });
+
+  it('required_count>1 warning: one aggregate per shift code, open slots only', async () => {
+    const { res } = await run({
+      schedule_slots: { data: [
+        // Fully-satisfied multi-count slot → generation unaffected → no warning.
+        rawSlot({ id: 's1', date: '2026-01-06', code: 'C1', category: 'call', required: 2,
+          assignments: [{ id: 'a1', provider_id: 'p1' }, { id: 'a2', provider_id: 'p2' }] }),
+        // Two open multi-count C2 slots → ONE aggregated warning for C2.
+        rawSlot({ id: 's2', date: '2026-01-07', code: 'C2', category: 'call', required: 2 }),
+        rawSlot({ id: 's3', date: '2026-01-08', code: 'C2', category: 'call', required: 3 }),
+      ], error: null },
+    });
+    const warnings = (res.ctx!.warnings ?? []).filter(w => w.includes('required_count'));
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain('C2');
+    expect(warnings[0]).toContain('2 open slots');
+    expect(warnings[0]).not.toContain('C1');
   });
 
   it('precomputes providerById, sorted scheduleDates, prePtoByThursday; always sets warnings', async () => {
