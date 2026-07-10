@@ -85,16 +85,65 @@ describe('commitMetadata (bulk)', () => {
     expect(fromCount(calls)).toBe(0);
   });
 
-  it('surfaces write errors', async () => {
+  it('chunks the id fetch at 100 slot ids per .in() query', async () => {
+    const many = Array.from({ length: 101 }, (_, i) => ({
+      id: `row-${i}`, schedule_slot_id: `slot-${i}`, provider_id: 'p1',
+    }));
+    const { sb, calls } = makeFakeSupabase({
+      tables: {
+        assignments: (filters) => {
+          const inF = filters.find(f => f.method === 'in');
+          if (inF) {
+            const ids = inF.args[1] as string[];
+            expect(ids.length).toBeLessThanOrEqual(100);
+            return { data: many.filter(r => ids.includes(r.schedule_slot_id)), error: null };
+          }
+          return { data: null, error: null };
+        },
+      },
+    });
+    const plan = many.map(r => pa({ slot_id: r.schedule_slot_id, provider_id: 'p1' }));
+    const res = await commitMetadata(sb, plan);
+    expect(res.errors).toEqual([]);
+    // 2 chunked fetches (100 + 1) + 1 bulk upsert (101 < 500)
+    expect(callsFor(calls, 'assignments', 'in')).toHaveLength(2);
+    expect(callsFor(calls, 'assignments', 'upsert')).toHaveLength(1);
+    const payload = callsFor(calls, 'assignments', 'upsert')[0].args[0] as unknown[];
+    expect(payload).toHaveLength(101);
+  });
+
+  it('falls back to per-row updates when the bulk upsert fails', async () => {
+    const { sb, calls } = makeFakeSupabase({
+      tables: {
+        assignments: (filters) => {
+          if (filters.some(f => f.method === 'upsert')) return { data: null, error: { message: 'conflict' } };
+          if (filters.some(f => f.method === 'update')) return { data: null, error: null };
+          return { data: ROWS.slice(0, 2), error: null };
+        },
+      },
+    });
+    const res = await commitMetadata(sb, [
+      pa({ slot_id: 'slotA', provider_id: 'p1' }),
+      pa({ slot_id: 'slotB', provider_id: 'p2' }),
+    ]);
+    expect(res.errors).toEqual([]); // fallback succeeded — data IS written
+    const updates = callsFor(calls, 'assignments', 'update');
+    expect(updates).toHaveLength(2);
+    expect(updates[0].args[0]).toHaveProperty('generation_metadata');
+  });
+
+  it('surfaces rows whose fallback update also fails, by row id', async () => {
     const { sb } = makeFakeSupabase({
       tables: {
-        assignments: (filters) =>
-          filters.some(f => f.method === 'upsert')
-            ? { data: null, error: { message: 'boom' } }
-            : { data: ROWS.slice(0, 1), error: null },
+        assignments: (filters) => {
+          if (filters.some(f => f.method === 'upsert')) return { data: null, error: { message: 'conflict' } };
+          if (filters.some(f => f.method === 'update')) return { data: null, error: { message: 'row gone' } };
+          return { data: ROWS.slice(0, 1), error: null };
+        },
       },
     });
     const res = await commitMetadata(sb, [pa({ slot_id: 'slotA', provider_id: 'p1' })]);
-    expect(res.errors.join(' ')).toContain('boom');
+    expect(res.errors.join(' ')).toContain('row gone');
+    expect(res.errors.join(' ')).toContain('row-a');
   });
 });

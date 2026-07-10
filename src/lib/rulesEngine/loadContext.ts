@@ -2,6 +2,7 @@
 // ("scheduling") so we accept any schema parameterization.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type SupabaseClient = any;
+import { addDays, NEIGHBOR_WINDOW_DAYS, AVAIL_WINDOW_DAYS } from './shared';
 import type {
   EvaluationContext,
   RuleDefinition,
@@ -12,16 +13,11 @@ import type {
   DayType,
 } from './types';
 
-const NEIGHBOR_WINDOW_DAYS = 14;
-
-function addDays(iso: string, delta: number): string {
-  const d = new Date(iso + 'T00:00:00Z');
-  d.setUTCDate(d.getUTCDate() + delta);
-  return d.toISOString().slice(0, 10);
-}
+// ── Shared row → context mappers ─────────────────────────────────────────────
+// Used by BOTH the serial path (below) and batchValidate so the two cannot
+// drift — batch/serial parity depends on identical mapping semantics.
 
 // providers.provider_type → the coarse provider_group used by rule scoping.
-// Shared with batchValidate so the batch path maps identically.
 export function providerGroupFromType(t: string): 'physician' | 'crna' | 'both' {
   return t === 'physician' ? 'physician' : t === 'crna' || t === 'aa' ? 'crna' : 'both';
 }
@@ -37,24 +33,99 @@ export function parseEmbeddedFte(rel: unknown): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
+export function mapCredentialsRow(row: Record<string, unknown>): ProviderSiteCredentials {
+  return {
+    provider_id: row.provider_id as string,
+    site_id: row.site_id as string,
+    is_active: !!row.is_active,
+    credentialed: !!row.credentialed,
+    can_take_call: !!row.can_take_call,
+    can_take_weekend_call: !!row.can_take_weekend_call,
+    can_take_holiday_call: !!row.can_take_holiday_call,
+    can_take_backup_call: !!row.can_take_backup_call,
+    allowed_shift_types: Array.isArray(row.allowed_shift_types) ? (row.allowed_shift_types as string[]) : [],
+    excluded_shift_types: Array.isArray(row.excluded_shift_types) ? (row.excluded_shift_types as string[]) : [],
+    skill_tags: Array.isArray(row.skill_tags) ? (row.skill_tags as string[]) : [],
+  };
+}
+
+// An assignments row with its joined schedule_slots record.
+export interface JoinedAssignmentRow {
+  id: string;
+  schedule_slots: Record<string, unknown> | null;
+}
+
+// Map a joined assignment row to a neighbor entry. Returns null for rows
+// with no joined slot, an unknown shift type, or the slot under evaluation
+// itself (a slot is not its own neighbor).
+export function mapNeighborRow(
+  row: JoinedAssignmentRow,
+  shiftTypesById: Map<string, ShiftTypeRow>,
+  excludeSlotId: string,
+): EvaluationContext['neighborAssignments'][number] | null {
+  const slot = row.schedule_slots;
+  if (!slot) return null;
+  const st = shiftTypesById.get(slot.shift_type_id as string);
+  if (!st) return null;
+  if ((slot.id as string) === excludeSlotId) return null;
+  return {
+    assignment_id: row.id,
+    slot_date: slot.slot_date as string,
+    shift_type_code: st.code,
+    shift_type_category: st.category,
+    day_type: (slot.derived_day_type as DayType | null) ?? null,
+  };
+}
+
+// Map a joined assignment row to a cross-site entry. Unknown shift types are
+// KEPT (code 'unknown') — a double-booking must not hide behind a missing
+// shift-type row. Only rows with no joined slot are dropped.
+export function mapCrossSiteRow(
+  row: JoinedAssignmentRow,
+  shiftTypesById: Map<string, ShiftTypeRow>,
+): EvaluationContext['crossSiteAssignments'][number] | null {
+  const s = row.schedule_slots;
+  if (!s) return null;
+  const st = shiftTypesById.get(s.shift_type_id as string);
+  return {
+    assignment_id: row.id,
+    site_id: s.site_id as string,
+    slot_date: s.slot_date as string,
+    shift_type_code: st?.code || 'unknown',
+  };
+}
+
 // Pre-loaded per-site validation context. When provided to loadContext, the
 // shift-type and rule-definition queries are skipped (N+1 fix for batch validation).
 export interface SiteValidationContext {
   shiftTypesById: Map<string, ShiftTypeRow>;
   shiftTypesByCode: Map<string, ShiftTypeRow>;
   rules: RuleDefinition[];
+  // Set when any of the site-context queries failed. Consumers must treat the
+  // context as unusable (evaluated:false / no writes) — empty maps or rules:[]
+  // from a failed query must NEVER read as "no rules configured" (invariant 6).
+  loadError?: string;
 }
 
 // Load the per-site shift-types + active rules ONCE, for reuse across a batch
-// of evaluateAssignment calls on the same site.
+// of evaluateAssignment calls on the same site. A query failure returns a
+// context with `loadError` set — never silently-empty maps/rules.
 export async function loadSiteValidationContext(
   sb: SupabaseClient,
   siteId: string,
 ): Promise<SiteValidationContext> {
-  const { data: shiftTypes } = await sb
+  const fail = (msg: string): SiteValidationContext => ({
+    shiftTypesById: new Map(),
+    shiftTypesByCode: new Map(),
+    rules: [],
+    loadError: msg,
+  });
+
+  const { data: shiftTypes, error: stErr } = await sb
     .from('shift_types')
     .select('id, site_id, code, name, category, requires_credential, requires_specific_skills')
     .eq('site_id', siteId);
+  if (stErr) return fail(`shift_types load failed: ${stErr.message}`);
   const shiftTypeRows: ShiftTypeRow[] = (shiftTypes || []).map((s: Record<string, unknown>) => ({
     id: s.id as string,
     site_id: s.site_id as string,
@@ -65,15 +136,17 @@ export async function loadSiteValidationContext(
     requires_specific_skills: Array.isArray(s.requires_specific_skills)
       ? (s.requires_specific_skills as string[]) : [],
   }));
-  const { data: ruleSets } = await sb
+  const { data: ruleSets, error: rsErr } = await sb
     .from('rule_sets').select('id').eq('site_id', siteId).eq('status', 'active');
+  if (rsErr) return fail(`rule_sets load failed: ${rsErr.message}`);
   const ruleSetIds = (ruleSets || []).map((r: { id: string }) => r.id);
   let rules: RuleDefinition[] = [];
   if (ruleSetIds.length > 0) {
-    const { data: ruleRows } = await sb
+    const { data: ruleRows, error: rdErr } = await sb
       .from('rule_definitions')
       .select('id, rule_set_id, rule_name, rule_category, hard_constraint, priority_rank, applies_to_provider_group, applies_to_shift_types, applies_to_day_types, condition, action, explanation_text, is_active')
       .in('rule_set_id', ruleSetIds).eq('is_active', true);
+    if (rdErr) return fail(`rule_definitions load failed: ${rdErr.message}`);
     rules = (ruleRows || []) as RuleDefinition[];
   }
   return {
@@ -108,8 +181,11 @@ export async function loadContext(
 
   // Site-level validation context: reuse the caller's preloaded copy when
   // present (the N+1 fast path), otherwise load it for this slot's site.
-  const { shiftTypesById, shiftTypesByCode, rules } =
-    siteCtx ?? await loadSiteValidationContext(sb, slotRow.site_id);
+  // A context that failed to load is unusable — returning null makes the
+  // evaluation come back evaluated:false so no caller persists fake-clean flags.
+  const siteVal = siteCtx ?? await loadSiteValidationContext(sb, slotRow.site_id);
+  if (siteVal.loadError) return null;
+  const { shiftTypesById, shiftTypesByCode, rules } = siteVal;
   const shiftType = shiftTypesById.get(slotRow.shift_type_id);
   if (!shiftType) return null;
 
@@ -142,31 +218,16 @@ export async function loadContext(
       .eq('provider_id', providerId)
       .eq('site_id', slotRow.site_id)
       .maybeSingle();
-    if (cred) {
-      const c = cred as Record<string, unknown>;
-      credentials = {
-        provider_id: c.provider_id as string,
-        site_id: c.site_id as string,
-        is_active: !!c.is_active,
-        credentialed: !!c.credentialed,
-        can_take_call: !!c.can_take_call,
-        can_take_weekend_call: !!c.can_take_weekend_call,
-        can_take_holiday_call: !!c.can_take_holiday_call,
-        can_take_backup_call: !!c.can_take_backup_call,
-        allowed_shift_types: Array.isArray(c.allowed_shift_types) ? (c.allowed_shift_types as string[]) : [],
-        excluded_shift_types: Array.isArray(c.excluded_shift_types) ? (c.excluded_shift_types as string[]) : [],
-        skill_tags: Array.isArray(c.skill_tags) ? (c.skill_tags as string[]) : [],
-      };
-    }
+    if (cred) credentials = mapCredentialsRow(cred as Record<string, unknown>);
 
-    // Neighbor assignments — look at a wider window (±31 days) so frequency
-    // checks have a full month on each side. Scoped to THIS slot's schedule
-    // version + site: sequence/rest/frequency checks must not see other
-    // versions' drafts or other sites' schedules as "neighbors". (Cross-site
-    // double-booking is detected separately by the deliberately-unscoped
-    // cross-site query below.)
-    const winStart = addDays(slotRow.slot_date, -31);
-    const winEnd = addDays(slotRow.slot_date, 31);
+    // Neighbor assignments — look at a wider window (±NEIGHBOR_WINDOW_DAYS)
+    // so frequency checks have a full month on each side. Scoped to THIS
+    // slot's schedule version + site: sequence/rest/frequency checks must not
+    // see other versions' drafts or other sites' schedules as "neighbors".
+    // (Cross-site double-booking is detected separately by the
+    // deliberately-unscoped cross-site query below.)
+    const winStart = addDays(slotRow.slot_date, -NEIGHBOR_WINDOW_DAYS);
+    const winEnd = addDays(slotRow.slot_date, NEIGHBOR_WINDOW_DAYS);
 
     const { data: neighbors } = await sb
       .from('assignments')
@@ -180,27 +241,13 @@ export async function loadContext(
       .gte('schedule_slots.slot_date', winStart)
       .lte('schedule_slots.slot_date', winEnd);
 
-    neighborAssignments = ((neighbors || []) as Record<string, unknown>[])
-      .map(row => {
-        const slot = row.schedule_slots as Record<string, unknown> | null;
-        if (!slot) return null;
-        const st = shiftTypesById.get(slot.shift_type_id as string);
-        if (!st) return null;
-        // Skip the slot under evaluation — it's not a "neighbor" of itself
-        if ((slot.id as string) === slotId) return null;
-        return {
-          assignment_id: row.id as string,
-          slot_date: slot.slot_date as string,
-          shift_type_code: st.code,
-          shift_type_category: st.category,
-          day_type: (slot.derived_day_type as DayType | null) ?? null,
-        };
-      })
+    neighborAssignments = ((neighbors || []) as JoinedAssignmentRow[])
+      .map(row => mapNeighborRow(row, shiftTypesById, slotId))
       .filter((x): x is NonNullable<typeof x> => x !== null);
 
-    // Availability overlapping the immediate ±NEIGHBOR_WINDOW_DAYS window
-    const availStart = addDays(slotRow.slot_date, -NEIGHBOR_WINDOW_DAYS);
-    const availEnd = addDays(slotRow.slot_date, NEIGHBOR_WINDOW_DAYS);
+    // Availability overlapping the immediate ±AVAIL_WINDOW_DAYS window
+    const availStart = addDays(slotRow.slot_date, -AVAIL_WINDOW_DAYS);
+    const availEnd = addDays(slotRow.slot_date, AVAIL_WINDOW_DAYS);
     const { data: avail } = await sb
       .from('provider_availability')
       .select('id, provider_id, availability_type, start_date, end_date, approval_status')
@@ -246,18 +293,8 @@ export async function loadContext(
       .eq('assignment_status', 'assigned')
       .eq('schedule_slots.slot_date', slotRow.slot_date);
 
-    crossSiteAssignments = ((crossSite || []) as Array<Record<string, unknown>>)
-      .map(row => {
-        const s = row.schedule_slots as Record<string, unknown> | null;
-        if (!s) return null;
-        const st = shiftTypesById.get(s.shift_type_id as string);
-        return {
-          assignment_id: row.id as string,
-          site_id: s.site_id as string,
-          slot_date: s.slot_date as string,
-          shift_type_code: st?.code || 'unknown',
-        };
-      })
+    crossSiteAssignments = ((crossSite || []) as JoinedAssignmentRow[])
+      .map(row => mapCrossSiteRow(row, shiftTypesById))
       .filter((x): x is NonNullable<typeof x> => x !== null);
   }
 

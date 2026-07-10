@@ -25,9 +25,14 @@ export interface EvaluateResult {
  * the serial path (evaluateAssignment) and the batch path (batchValidateVersion).
  * An evaluator throw is caught so one broken rule can't kill the whole pass,
  * but it flips `evaluated` to false so the result is visibly incomplete.
+ *
+ * `loggedEvaluatorErrors` (optional): batch callers pass one Set per run so a
+ * broken evaluator logs ONCE per run instead of once per assignment. Serial
+ * callers omit it — a single evaluation logs normally.
  */
 export function evaluateContext(
   ctx: EvaluationContext,
+  loggedEvaluatorErrors?: Set<string>,
 ): { violations: RuleViolation[]; evaluated: boolean } {
   const violations: RuleViolation[] = [];
   let evaluated = true;
@@ -36,10 +41,33 @@ export function evaluateContext(
       violations.push(...evaluator(ctx));
     } catch (err) {
       evaluated = false;
-      console.error('[rulesEngine] evaluator threw:', err);
+      const name = evaluator.name || 'unknown';
+      if (!loggedEvaluatorErrors?.has(name)) {
+        loggedEvaluatorErrors?.add(name);
+        console.error(`[rulesEngine] evaluator '${name}' threw:`, err);
+      }
     }
   }
   return { violations, evaluated };
+}
+
+// The stored validation_flags for a write that must not silently look clean:
+// the real violations when evaluation completed, otherwise a single sentinel
+// warning flag. Used by write-sites that MUST write something (e.g. the POST
+// upsert, where omitting the column on a reassignment would leave the previous
+// provider's stale violations on the new provider's row).
+export const VALIDATION_UNAVAILABLE_FLAG: RuleViolation = {
+  rule_id: null,
+  rule_name: 'Validation unavailable',
+  category: 'system',
+  severity: 'warning',
+  message: 'validation unavailable — needs re-validation',
+};
+
+export function validationFlagsFor(
+  result: Pick<EvaluateResult, 'evaluated' | 'violations'>,
+): RuleViolation[] {
+  return result.evaluated ? result.violations : [VALIDATION_UNAVAILABLE_FLAG];
 }
 
 /**

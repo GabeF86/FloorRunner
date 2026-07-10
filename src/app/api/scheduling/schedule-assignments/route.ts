@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { sbSchedulingServer } from '@/lib/supabaseScheduling';
-import { evaluateAssignment } from '@/lib/rulesEngine/evaluate';
+import { evaluateAssignment, validationFlagsFor } from '@/lib/rulesEngine/evaluate';
 import { applySequenceAutoFill, cleanupSequenceAutoFill } from '@/lib/rulesEngine/sequenceAutoFill';
 
 // Never prerender — this route hits Supabase per request.
@@ -13,16 +13,20 @@ export async function POST(req: NextRequest) {
   // Run rules engine BEFORE persisting so we can store violations alongside
   // the assignment in a single round-trip. If the evaluation was incomplete
   // (context unavailable / evaluator threw), the assignment still saves but
-  // validation_flags are NOT written — never persist a fake-clean [] (the
-  // response's `validation.evaluated:false` tells the client why).
+  // its flags become a SENTINEL warning ('validation unavailable — needs
+  // re-validation') — never a fake-clean [], and never the previous
+  // provider's stale violations on a reassignment (the conflict-update flips
+  // provider_id, so omitting the column would leave provider A's flags on
+  // provider B's row).
   const evalResult = await evaluateAssignment(sb, body.schedule_slot_id, body.provider_id);
   if (!evalResult.evaluated) {
-    console.error(`[rulesEngine] validation unavailable for slot ${body.schedule_slot_id} — validation_flags not written`);
+    console.error(`[rulesEngine] validation unavailable for slot ${body.schedule_slot_id} — writing needs-re-validation sentinel`);
   }
 
   // One assignment row per slot, enforced by the UNIQUE (schedule_slot_id)
-  // constraint. Upsert is atomic, so two concurrent edits can't both insert a
-  // duplicate row for the same slot (the previous update-else-insert raced).
+  // constraint (patch18: assignments_slot_unique). Upsert is atomic, so two
+  // concurrent edits can't both insert a duplicate row for the same slot
+  // (the previous update-else-insert raced).
   const { data, error } = await sb
     .from('assignments')
     .upsert(
@@ -32,7 +36,7 @@ export async function POST(req: NextRequest) {
         assignment_status: 'assigned',
         source_type: 'manual',
         assigned_at: new Date().toISOString(),
-        ...(evalResult.evaluated ? { validation_flags: evalResult.violations } : {}),
+        validation_flags: validationFlagsFor(evalResult),
       },
       { onConflict: 'schedule_slot_id' },
     )

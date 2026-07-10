@@ -1,9 +1,10 @@
 // The `evaluated` flag (clinical invariant 6): validation must never silently
 // report clean on failure. An unloadable context or a throwing evaluator must
 // yield evaluated:false, and write-sites must NOT persist validation_flags.
-import { describe, it, expect } from 'vitest';
-import { evaluateAssignment, evaluateContext } from './evaluate';
+import { describe, it, expect, vi } from 'vitest';
+import { evaluateAssignment, evaluateContext, validationFlagsFor } from './evaluate';
 import { commitValidation } from './commit';
+import { loadSiteValidationContext } from './loadContext';
 import type { SiteValidationContext } from './loadContext';
 import { makeFakeSupabase, callsFor } from './__fixtures__/fakeSupabase';
 import type { Filter, TableCfg } from './__fixtures__/fakeSupabase';
@@ -67,6 +68,27 @@ describe('evaluated flag', () => {
   it('clean run → evaluated:true', () => {
     const { evaluated } = evaluateContext(baseCtx());
     expect(evaluated).toBe(true);
+  });
+
+  it('dedupes repeated evaluator-throw logging by evaluator name (shared set)', () => {
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const poisoned = () => baseCtx({
+        availability: null as unknown as EvaluationContext['availability'],
+      });
+      const seen = new Set<string>();
+      evaluateContext(poisoned(), seen);
+      const afterFirst = spy.mock.calls.length;
+      expect(afterFirst).toBeGreaterThan(0); // the throwing evaluators logged once
+      evaluateContext(poisoned(), seen);
+      evaluateContext(poisoned(), seen);
+      expect(spy.mock.calls.length).toBe(afterFirst); // no repeat spam
+      // Without a shared set, each call logs again (serial path unchanged).
+      evaluateContext(poisoned());
+      expect(spy.mock.calls.length).toBe(afterFirst * 2);
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it('evaluateAssignment surfaces evaluated:true on a loadable context', async () => {
@@ -181,5 +203,100 @@ describe('commitValidation (write-site guard)', () => {
     expect(payload).toHaveLength(1);
     expect(payload[0].id).toBe('a1');
     expect(payload[0]).toHaveProperty('validation_flags');
+  });
+
+  it('declines to write when the site context itself failed to load (rule query error)', async () => {
+    const { sb, calls } = makeFakeSupabase({
+      tables: {
+        shift_types: SITE_TABLES.shift_types,
+        rule_sets: { data: null, error: { message: 'rule_sets down' } },
+        schedule_slots: {
+          data: [{
+            ...SLOT,
+            assignments: [{ id: 'a1', provider_id: 'p1', assignment_status: 'assigned' }],
+          }],
+          error: null,
+        },
+        providers: { data: [], error: null },
+        provider_availability: { data: [], error: null },
+        provider_site_credentials: { data: [], error: null },
+        assignments: { data: [], error: null },
+      },
+    });
+    const res = await commitValidation(sb, 's1', 'v1');
+    expect(callsFor(calls, 'assignments', 'upsert')).toHaveLength(0);
+    expect(callsFor(calls, 'assignments', 'update')).toHaveLength(0);
+    expect(res.errors.join(' ')).toContain('validation-unavailable');
+    expect(res.errors.join(' ')).toContain('rule_sets down');
+  });
+});
+
+describe('loadSiteValidationContext failure sentinel', () => {
+  const OK_SHIFT_TYPES: TableCfg = {
+    data: [{ id: 'st-C1', site_id: 's1', code: 'C1', name: 'C1', category: 'call', requires_credential: null, requires_specific_skills: [] }],
+    error: null,
+  };
+
+  it('sets loadError when rule_definitions fails (rules:[] must not read as "no rules")', async () => {
+    const { sb } = makeFakeSupabase({
+      tables: {
+        shift_types: OK_SHIFT_TYPES,
+        rule_sets: { data: [{ id: 'rs1' }], error: null },
+        rule_definitions: { data: null, error: { message: 'rule_definitions down' } },
+      },
+    });
+    const ctx = await loadSiteValidationContext(sb, 's1');
+    expect(ctx.loadError).toContain('rule_definitions down');
+  });
+
+  it('sets loadError when shift_types fails', async () => {
+    const { sb } = makeFakeSupabase({
+      tables: {
+        shift_types: { data: null, error: { message: 'shift_types down' } },
+        rule_sets: { data: [], error: null },
+      },
+    });
+    const ctx = await loadSiteValidationContext(sb, 's1');
+    expect(ctx.loadError).toContain('shift_types down');
+  });
+
+  it('clean load has no loadError', async () => {
+    const { sb } = makeFakeSupabase({
+      tables: { shift_types: OK_SHIFT_TYPES, rule_sets: { data: [], error: null } },
+    });
+    const ctx = await loadSiteValidationContext(sb, 's1');
+    expect(ctx.loadError).toBeUndefined();
+  });
+
+  it('serial evaluateAssignment (no siteCtx) → evaluated:false when the rule query fails', async () => {
+    const { sb, calls } = makeFakeSupabase({
+      tables: {
+        shift_types: OK_SHIFT_TYPES,
+        rule_sets: { data: null, error: { message: 'rule_sets down' } },
+        schedule_slots: { data: SLOT, error: null },
+        providers: { data: null, error: null },
+        provider_site_credentials: { data: null, error: null },
+        provider_availability: { data: [], error: null },
+        assignments: { data: [], error: null },
+      },
+    });
+    const res = await evaluateAssignment(sb, 'sA', 'p1'); // no preloaded siteCtx
+    expect(res.evaluated).toBe(false);
+    expect(res.violations).toEqual([]);
+    expect(callsFor(calls, 'assignments', 'update')).toHaveLength(0);
+  });
+});
+
+describe('validationFlagsFor (POST write payload)', () => {
+  it('returns the violations when evaluated', () => {
+    const flags = [{ rule_id: null, rule_name: 'x', category: 'time_off' as const, severity: 'hard' as const, message: 'm' }];
+    expect(validationFlagsFor({ evaluated: true, violations: flags })).toBe(flags);
+  });
+
+  it('returns a sentinel warning flag when not evaluated (never a fake-clean [])', () => {
+    const flags = validationFlagsFor({ evaluated: false, violations: [] });
+    expect(flags).toHaveLength(1);
+    expect(flags[0].severity).toBe('warning');
+    expect(flags[0].message).toBe('validation unavailable — needs re-validation');
   });
 });

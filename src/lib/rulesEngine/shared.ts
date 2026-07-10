@@ -26,6 +26,17 @@ export const BOOKEND_EXTENDING_TYPES: ReadonlySet<string> = new Set([
   'pto', 'fmla', 'parental_leave', 'military_leave',
 ]);
 
+// ── Validation lookback/lookahead windows (days) ────────────────────────────
+// Shared by the serial (loadContext) and batch (batchValidate) validation
+// paths so their windows cannot drift — batch/serial parity depends on it.
+//
+// NEIGHBOR_WINDOW_DAYS: a provider's other assignments around the slot; ±31
+// so frequency/fairness checks see a full month on each side.
+// AVAIL_WINDOW_DAYS: PTO/unavailability rows around the slot; ±14 covers the
+// weekend-adjacent-PTO check's widest reach.
+export const NEIGHBOR_WINDOW_DAYS = 31;
+export const AVAIL_WINDOW_DAYS = 14;
+
 // ── Date math (YYYY-MM-DD strings, no Date objects leaking) ─────────────────
 
 export function addDays(iso: string, n: number): string {

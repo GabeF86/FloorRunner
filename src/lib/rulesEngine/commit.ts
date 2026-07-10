@@ -28,6 +28,10 @@ export function __resetMetadataColumnCache(): void {
   metadataColumnConfirmed = false;
 }
 
+// .in() read chunks stay well under URL-length limits (500 UUIDs ≈ 19KB of
+// query string); writes go in the request body so WRITE_CHUNK can be larger.
+const READ_CHUNK = 100;
+
 // Best-effort: write generation_metadata per assignment. Caller should only
 // invoke this when hasGenerationMetadataColumn() is true. One preload of the
 // existing assignment ids (matched by slot+provider), then one bulk upsert
@@ -46,7 +50,7 @@ export async function commitMetadata(
 
   // Preload the existing row ids for the plan's slots.
   const payload: Array<{ id: string; schedule_slot_id: string; generation_metadata: Record<string, unknown> }> = [];
-  for (const ids of chunk(slotIds, WRITE_CHUNK)) {
+  for (const ids of chunk(slotIds, READ_CHUNK)) {
     dbQueries++;
     const { data, error } = await sb
       .from('assignments')
@@ -71,7 +75,20 @@ export async function commitMetadata(
   for (const rows of chunk(payload, WRITE_CHUNK)) {
     dbQueries++;
     const { error } = await sb.from('assignments').upsert(rows, { onConflict: 'id' });
-    if (error) errors.push(`metadata write failed: ${error.message}`);
+    if (!error) continue;
+    // Bulk upsert failed (e.g. a row was concurrently deleted — the insert
+    // arm would resurrect a ghost row or trip UNIQUE(schedule_slot_id) and
+    // fail the whole chunk). Fall back to per-row updates: an update on a
+    // deleted id is a harmless no-op; surviving rows still get metadata.
+    console.error(`[rulesEngine] metadata bulk write failed (${error.message}) — falling back to per-row updates`);
+    for (const row of rows) {
+      dbQueries++;
+      const { error: rowErr } = await sb
+        .from('assignments')
+        .update({ generation_metadata: row.generation_metadata })
+        .eq('id', row.id);
+      if (rowErr) errors.push(`metadata write failed for assignment ${row.id}: ${rowErr.message}`);
+    }
   }
   return { dbQueries, errors };
 }
