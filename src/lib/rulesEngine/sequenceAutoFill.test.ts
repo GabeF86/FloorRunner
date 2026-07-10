@@ -31,12 +31,18 @@ const SKIP_REASONS = ['pto', 'cross-site', 'occupied', 'no-slot', 'ineligible', 
 
 // ── production-shaped row builders ──────────────────────────────────────────
 
-interface StOpts { category?: string; call_rank?: number | null; relief_rank?: number | null }
+interface StOpts {
+  category?: string;
+  call_rank?: number | null;
+  relief_rank?: number | null;
+  requires_post_call_rule?: boolean;
+}
 const st = (code: string, o: StOpts = {}) => ({
   code,
   category: o.category ?? 'derived',
   call_rank: o.call_rank ?? null,
   relief_rank: o.relief_rank ?? null,
+  requires_post_call_rule: o.requires_post_call_rule ?? false,
 });
 
 // Trigger slot as returned by the eq-id schedule_slots fetch.
@@ -174,7 +180,151 @@ describe('applySequenceAutoFill — pattern-driven fill', () => {
     });
     const result = await applySequenceAutoFill(sb, 'trig', 'p1');
     expect(result.filledSlotIds).toEqual(['slot-d1-tue']);
+    expect(result.patternWarnings).toEqual([]); // no-row fallback is silent (matches genContext)
     expect(fromCount(calls, 'call_patterns')).toBe(1);
+  });
+
+  it('invalid active pattern → warning surfaced in the result, fills still computed from CLASSIC', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { sb } = makeFakeSupabase({
+      tables: tables({
+        trigger: triggerSlot({ date: MON }),
+        slots: [slot({ id: 'slot-d1-tue', date: TUE, code: 'D1', assignments: [openRow('open-1')] })],
+        callPatternRow: { definition: { nope: true } },
+      }),
+    });
+    const result = await applySequenceAutoFill(sb, 'trig', 'p1');
+    expect(result.filledSlotIds).toEqual(['slot-d1-tue']); // classic C2→D1 still applied
+    expect(result.patternWarnings).toHaveLength(1);
+    expect(result.patternWarnings[0]).toMatch(/failed validation/);
+  });
+
+  it('prefers the trigger site when several sites have a matching slot on the linked day', async () => {
+    const { sb } = makeFakeSupabase({
+      tables: tables({
+        trigger: triggerSlot({ date: MON }),
+        slots: [
+          slot({ id: 'slot-d1-tue-b', date: TUE, code: 'D1', site: 'siteB', assignments: [openRow('open-b')] }),
+          slot({ id: 'slot-d1-tue-a', date: TUE, code: 'D1', site: 'siteA', assignments: [openRow('open-a')] }),
+        ],
+      }),
+    });
+    const result = await applySequenceAutoFill(sb, 'trig', 'p1', CLASSIC_PATTERN);
+    expect(result.filledSlotIds).toEqual(['slot-d1-tue-a']);
+  });
+
+  it('ambiguous multi-site candidates (none at the trigger site) skip as ineligible', async () => {
+    const { sb, calls } = makeFakeSupabase({
+      tables: tables({
+        trigger: triggerSlot({ date: MON }),
+        slots: [
+          slot({ id: 'slot-d1-tue-b', date: TUE, code: 'D1', site: 'siteB', assignments: [openRow('open-b')] }),
+          slot({ id: 'slot-d1-tue-c', date: TUE, code: 'D1', site: 'siteC', assignments: [openRow('open-c')] }),
+        ],
+      }),
+    });
+    const result = await applySequenceAutoFill(sb, 'trig', 'p1', CLASSIC_PATTERN);
+    expect(result.filledSlotIds).toEqual([]);
+    expect(result.skips).toContainEqual({ date: TUE, code: 'D1', provider_id: 'p1', reason: 'ineligible' });
+    expect(updates(calls)).toHaveLength(0);
+  });
+
+  it('a locked linked slot skips as ineligible', async () => {
+    const { sb, calls } = makeFakeSupabase({
+      tables: tables({
+        trigger: triggerSlot({ date: MON }),
+        slots: [slot({ id: 'slot-d1-tue', date: TUE, code: 'D1', locked: true, assignments: [openRow('open-1')] })],
+      }),
+    });
+    const result = await applySequenceAutoFill(sb, 'trig', 'p1', CLASSIC_PATTERN);
+    expect(result.filledSlotIds).toEqual([]);
+    expect(result.skips).toContainEqual({ date: TUE, code: 'D1', provider_id: 'p1', reason: 'ineligible' });
+    expect(updates(calls)).toHaveLength(0);
+  });
+
+  it('unlessCallWithinDays suppresses the pre-fill silently (link condition, not a skip — mirrors solve)', async () => {
+    // Trigger C2 on Wed; classic D3 link has unlessCallWithinDays: 2 and the
+    // provider took call on Mon (gap 2) → the D3 fill is suppressed with NO
+    // skip record, exactly like solve(). The D1 link (Thu) still fills.
+    const { sb } = makeFakeSupabase({
+      tables: tables({
+        trigger: triggerSlot({ date: WED }),
+        slots: [
+          slot({ id: 'slot-d3-tue', date: TUE, code: 'D3', assignments: [openRow('open-3')] }),
+          slot({ id: 'slot-d1-thu', date: THU, code: 'D1', assignments: [openRow('open-1')] }),
+        ],
+        assignments: [winAssign({
+          id: 'a-call-mon', date: MON, code: 'C2',
+          stOpts: { category: 'call', call_rank: 1, requires_post_call_rule: true },
+        })],
+      }),
+    });
+    const result = await applySequenceAutoFill(sb, 'trig', 'p1', CLASSIC_PATTERN);
+    expect(result.filledSlotIds).toEqual(['slot-d1-thu']);
+    expect(result.skips.every(s => s.code !== 'D3')).toBe(true);
+  });
+
+  it('a failed fill write logs loudly and lands in neither filledSlotIds nor skips (documented contract)', async () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { sb } = makeFakeSupabase({
+      tables: {
+        ...tables({
+          trigger: triggerSlot({ date: MON }),
+          slots: [slot({ id: 'slot-d1-tue', date: TUE, code: 'D1', assignments: [openRow('open-1')] })],
+        }),
+        assignments: (filters) =>
+          filters.some(f => ['update', 'insert', 'upsert'].includes(f.method))
+            ? { data: null, error: { message: 'boom' } }
+            : { data: [], error: null },
+      },
+    });
+    const result = await applySequenceAutoFill(sb, 'trig', 'p1', CLASSIC_PATTERN);
+    expect(result.filledSlotIds).toEqual([]);
+    expect(result.skips.every(s => s.code !== 'D1')).toBe(true);
+    expect(err).toHaveBeenCalled();
+  });
+});
+
+// ── post-call rest guard (clinical invariant 1) ──────────────────────────────
+
+describe('applySequenceAutoFill — post-call rest guard', () => {
+  it('declines a fill on the rest day of ANOTHER rest-requiring call (any site/version)', async () => {
+    // The provider holds a rest-requiring 24h call on Mon at site B (different
+    // version). Tue is their post-call day off — the D1 fill must decline.
+    const { sb, calls } = makeFakeSupabase({
+      tables: tables({
+        trigger: triggerSlot({ date: MON }),
+        slots: [slot({ id: 'slot-d1-tue', date: TUE, code: 'D1', assignments: [openRow('open-1')] })],
+        assignments: [winAssign({
+          id: 'a-callB', date: MON, code: 'CX', site: 'siteB', version: 'v2', slotId: 'slot-callB',
+          stOpts: { category: 'call', call_rank: 0, requires_post_call_rule: true },
+        })],
+      }),
+    });
+    const result = await applySequenceAutoFill(sb, 'trig', 'p1', CLASSIC_PATTERN);
+    expect(result.filledSlotIds).toEqual([]);
+    // 'ineligible' — matches solve's skipReasonFrom mapping for the post-call
+    // guard; 'already-handled' would mislabel this as slot consumption.
+    expect(result.skips).toContainEqual({ date: TUE, code: 'D1', provider_id: 'p1', reason: 'ineligible' });
+    expect(updates(calls)).toHaveLength(0);
+  });
+
+  it("the trigger's own rest-requiring call does NOT self-block its +1 link (D1 still fills)", async () => {
+    // Production reality: the POST route upserts the manual C2 BEFORE the
+    // auto-fill runs, so the trigger's own assignment IS in the window. Its
+    // +1 link (D1) is the sanctioned post-call assignment.
+    const { sb } = makeFakeSupabase({
+      tables: tables({
+        trigger: triggerSlot({ date: MON }),
+        slots: [slot({ id: 'slot-d1-tue', date: TUE, code: 'D1', assignments: [openRow('open-1')] })],
+        assignments: [winAssign({
+          id: 'a-trig', date: MON, code: 'C2', slotId: 'trig',
+          stOpts: { category: 'call', call_rank: 1, requires_post_call_rule: true },
+        })],
+      }),
+    });
+    const result = await applySequenceAutoFill(sb, 'trig', 'p1', CLASSIC_PATTERN);
+    expect(result.filledSlotIds).toEqual(['slot-d1-tue']);
   });
 });
 
@@ -215,6 +365,24 @@ describe('applySequenceAutoFill — cross-site conflict (clinical invariant 3)',
     expect(result.filledSlotIds).toEqual([]);
     expect(result.skips).toContainEqual({ date: TUE, code: 'D1', provider_id: 'p1', reason: 'occupied' });
   });
+
+  it('labels relative to the CHOSEN slot site: conflict at siteB with the only candidate at siteB → occupied', async () => {
+    // The fill would land at siteB (sole candidate); the provider's conflicting
+    // assignment is also at siteB — same-site relative to where the fill goes,
+    // even though it differs from the trigger site.
+    const { sb } = makeFakeSupabase({
+      tables: tables({
+        trigger: triggerSlot({ date: MON }),
+        slots: [slot({ id: 'slot-d1-tue-b', date: TUE, code: 'D1', site: 'siteB', assignments: [openRow('open-b')] })],
+        assignments: [winAssign({
+          id: 'x1', date: TUE, code: 'OR1', site: 'siteB', version: 'v2',
+          stOpts: { category: 'regular' },
+        })],
+      }),
+    });
+    const result = await applySequenceAutoFill(sb, 'trig', 'p1', CLASSIC_PATTERN);
+    expect(result.skips).toContainEqual({ date: TUE, code: 'D1', provider_id: 'p1', reason: 'occupied' });
+  });
 });
 
 // ── 3. PTO (pending blocks — canonical isBlockingAvailability predicate) ────
@@ -251,7 +419,7 @@ describe('applySequenceAutoFill — PTO (clinical invariant 2)', () => {
 // ── 4. result shape / vocabulary ─────────────────────────────────────────────
 
 describe('applySequenceAutoFill — result shape', () => {
-  it('returns { filledSlotIds, skips } with SkippedDerived-vocabulary reasons', async () => {
+  it('returns { filledSlotIds, evictedSlotIds, skips, patternWarnings } with SkippedDerived-vocabulary reasons', async () => {
     const { sb } = makeFakeSupabase({
       tables: tables({
         trigger: triggerSlot({ date: MON }),
@@ -261,6 +429,8 @@ describe('applySequenceAutoFill — result shape', () => {
     const result = await applySequenceAutoFill(sb, 'trig', 'p1', CLASSIC_PATTERN);
     expect(result).toHaveProperty('filledSlotIds');
     expect(result).toHaveProperty('skips');
+    expect(result.evictedSlotIds).toEqual([]);
+    expect(result.patternWarnings).toEqual([]); // doc passed in — nothing to warn about
     expect(Array.isArray(result.filledSlotIds)).toBe(true);
     for (const s of result.skips) {
       expect(s.provider_id).toBe('p1');
@@ -307,6 +477,7 @@ describe('applySequenceAutoFill — rank precedence (renamed D3→PRE)', () => {
     const result = await applySequenceAutoFill(sb, 'trig', 'p1', RENAMED);
 
     expect(result.filledSlotIds).toEqual(['slot-d1-tue']);
+    expect(result.evictedSlotIds).toEqual(['slot-pre-tue']); // eviction is reported, never silent
     const up = updates(calls);
     expect(up).toHaveLength(2);
     // Eviction first: PRE row reverted to open, flags null (never fake-clean []).
@@ -316,6 +487,70 @@ describe('applySequenceAutoFill — rank precedence (renamed D3→PRE)', () => {
     // Then the D1 fill.
     expect(up[1].provider_id).toBe('p1');
     expect(up[1].source_type).toBe('auto_generated');
+  });
+
+  it('evicts the stale PRE even when the D1 then declines on PTO (decline recorded, eviction reported)', async () => {
+    // Deliberate ordering: provider-level declines (PTO/conflict/rest) run
+    // AFTER eviction — the auto-generated PRE was sitting on the provider's
+    // post-call day (and here on a PTO day), so removing it is self-justifying
+    // even though the incoming fill does not land.
+    const preAssignment: AssignmentRow =
+      { id: 'a-pre', provider_id: 'p1', assignment_status: 'assigned', source_type: 'auto_generated' };
+    const { sb, calls } = makeFakeSupabase({
+      tables: tables({
+        trigger: triggerSlot({ date: MON }),
+        slots: [
+          slot({ id: 'slot-pre-tue', date: TUE, code: 'PRE', assignments: [preAssignment] }),
+          slot({ id: 'slot-d1-tue', date: TUE, code: 'D1', assignments: [openRow('open-1')] }),
+        ],
+        assignments: [winAssign({ id: 'a-pre', date: TUE, code: 'PRE', slotId: 'slot-pre-tue', source: 'auto_generated' })],
+        availability: [{ availability_type: 'pto', approval_status: 'pending', start_date: TUE, end_date: TUE }],
+      }),
+    });
+    const result = await applySequenceAutoFill(sb, 'trig', 'p1', RENAMED);
+
+    expect(result.filledSlotIds).toEqual([]);
+    expect(result.evictedSlotIds).toEqual(['slot-pre-tue']);
+    expect(result.skips).toContainEqual({ date: TUE, code: 'D1', provider_id: 'p1', reason: 'pto' });
+    expect(updates(calls)).toHaveLength(1); // the eviction only
+    expect(updates(calls)[0].provider_id).toBeNull();
+  });
+
+  it('does NOT evict when the fill declines structurally (no D1 slot to land on)', async () => {
+    const preAssignment: AssignmentRow =
+      { id: 'a-pre', provider_id: 'p1', assignment_status: 'assigned', source_type: 'auto_generated' };
+    const { sb, calls } = makeFakeSupabase({
+      tables: tables({
+        trigger: triggerSlot({ date: MON }),
+        slots: [slot({ id: 'slot-pre-tue', date: TUE, code: 'PRE', assignments: [preAssignment] })],
+        assignments: [winAssign({ id: 'a-pre', date: TUE, code: 'PRE', slotId: 'slot-pre-tue', source: 'auto_generated' })],
+      }),
+    });
+    const result = await applySequenceAutoFill(sb, 'trig', 'p1', RENAMED);
+
+    expect(result.evictedSlotIds).toEqual([]);
+    expect(result.skips).toContainEqual({ date: TUE, code: 'D1', provider_id: 'p1', reason: 'no-slot' });
+    expect(updates(calls)).toHaveLength(0); // PRE untouched
+  });
+
+  it('duplicate links to the same date+code fill once and skip the duplicate as already-handled', async () => {
+    const DUP: CallPatternDoc = {
+      ...RENAMED,
+      dayChains: [{
+        trigger: 'C2', dayTypes: ['weekday', 'friday'],
+        links: [{ offset: 1, code: 'D1' }, { offset: 1, code: 'D1' }],
+      }],
+    };
+    const { sb, calls } = makeFakeSupabase({
+      tables: tables({
+        trigger: triggerSlot({ date: MON }),
+        slots: [slot({ id: 'slot-d1-tue', date: TUE, code: 'D1', assignments: [openRow('open-1')] })],
+      }),
+    });
+    const result = await applySequenceAutoFill(sb, 'trig', 'p1', DUP);
+    expect(result.filledSlotIds).toEqual(['slot-d1-tue']);
+    expect(updates(calls)).toHaveLength(1);
+    expect(result.skips).toContainEqual({ date: TUE, code: 'D1', provider_id: 'p1', reason: 'already-handled' });
   });
 
   it('a MANUAL PRE on the linked day is never evicted — D1 declines as occupied', async () => {
@@ -449,42 +684,80 @@ describe('cleanupSequenceAutoFill', () => {
     });
     const result = await cleanupSequenceAutoFill(sb, 'trig', 'p1', CLASSIC_PATTERN);
     expect(result.clearedSlotIds).toEqual([]);
+    expect(result.patternWarnings).toEqual([]);
     expect(updates(calls)).toHaveLength(0);
+  });
+
+  it('duplicate links to the same date+code clear each assignment once (deduped by assignment id)', async () => {
+    const DUP: CallPatternDoc = {
+      version: 1,
+      blocks: [],
+      dayChains: [{
+        trigger: 'C2', dayTypes: ['weekday', 'friday'],
+        links: [{ offset: 1, code: 'D1' }, { offset: 1, code: 'D1' }],
+      }],
+      spans: [],
+      placementPasses: [],
+      reliefPass: null,
+      optimizerMovableDayTypes: [],
+    };
+    const { sb, calls } = makeFakeSupabase({
+      tables: tables({
+        trigger: triggerSlot({ date: MON }),
+        slots: [slot({
+          id: 'slot-d1-tue', date: TUE, code: 'D1',
+          assignments: [{ id: 'a-d1', provider_id: 'p1', assignment_status: 'assigned', source_type: 'auto_generated' }],
+        })],
+      }),
+    });
+    const result = await cleanupSequenceAutoFill(sb, 'trig', 'p1', DUP);
+    expect(result.clearedSlotIds).toEqual(['slot-d1-tue']);
+    expect(updates(calls)).toHaveLength(1);
   });
 });
 
 // ── loadActiveCallPattern (route-side per-request loader) ────────────────────
 
 describe('loadActiveCallPattern', () => {
-  it('returns the parsed doc for a valid active row', async () => {
+  it('returns { doc, warnings: [] } for a valid active row', async () => {
     const { sb } = makeFakeSupabase({ tables: { call_patterns: { data: { definition: RENAMED } } } });
-    expect(await loadActiveCallPattern(sb, 'siteA')).toEqual(RENAMED);
+    const loaded = await loadActiveCallPattern(sb, 'siteA');
+    expect(loaded.doc).toEqual(RENAMED);
+    expect(loaded.warnings).toEqual([]);
   });
 
-  it('falls back to CLASSIC_PATTERN when no active row exists (silent)', async () => {
+  it('falls back to CLASSIC_PATTERN silently when no active row exists (matches genContext)', async () => {
     const { sb } = makeFakeSupabase({ tables: { call_patterns: { data: null } } });
-    expect(await loadActiveCallPattern(sb, 'siteA')).toBe(CLASSIC_PATTERN);
+    const loaded = await loadActiveCallPattern(sb, 'siteA');
+    expect(loaded.doc).toBe(CLASSIC_PATTERN);
+    expect(loaded.warnings).toEqual([]);
   });
 
-  it('falls back to CLASSIC_PATTERN with a warning on an invalid definition', async () => {
+  it('falls back to CLASSIC_PATTERN with a returned warning on an invalid definition', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const { sb } = makeFakeSupabase({ tables: { call_patterns: { data: { definition: { nope: true } } } } });
-    expect(await loadActiveCallPattern(sb, 'siteA')).toBe(CLASSIC_PATTERN);
+    const loaded = await loadActiveCallPattern(sb, 'siteA');
+    expect(loaded.doc).toBe(CLASSIC_PATTERN);
+    expect(loaded.warnings).toHaveLength(1);
+    expect(loaded.warnings[0]).toMatch(/failed validation/);
     expect(warn).toHaveBeenCalled();
   });
 
-  it('falls back to CLASSIC_PATTERN with a warning on a query error (missing table)', async () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  it('falls back to CLASSIC_PATTERN with a returned warning on a query error (missing table)', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
     const { sb } = makeFakeSupabase({
       tables: { call_patterns: { data: null, error: { message: 'relation "scheduling.call_patterns" does not exist' } } },
     });
-    expect(await loadActiveCallPattern(sb, 'siteA')).toBe(CLASSIC_PATTERN);
-    expect(warn).toHaveBeenCalled();
+    const loaded = await loadActiveCallPattern(sb, 'siteA');
+    expect(loaded.doc).toBe(CLASSIC_PATTERN);
+    expect(loaded.warnings).toHaveLength(1);
   });
 
   it('returns CLASSIC_PATTERN without querying when siteId is missing', async () => {
     const { sb, calls } = makeFakeSupabase({});
-    expect(await loadActiveCallPattern(sb, undefined)).toBe(CLASSIC_PATTERN);
+    const loaded = await loadActiveCallPattern(sb, undefined);
+    expect(loaded.doc).toBe(CLASSIC_PATTERN);
+    expect(loaded.warnings).toEqual([]);
     expect(fromCount(calls)).toBe(0);
   });
 });

@@ -10,9 +10,11 @@
 //
 // Sanctioned I/O module (like genContext/commit). Query budget per invocation:
 // one trigger-slot fetch + one provider-wide assignments-window read + one
-// availability read + one candidate-slots read, then in-memory evaluation
-// (+ the writes). Call sites load the pattern doc once per request and pass it
-// in so no call_patterns read happens here.
+// availability read + one candidate-slots read (fired in parallel), then
+// in-memory evaluation (+ the writes). Callers holding a cached CallPatternDoc
+// pass it via `doc`; otherwise the module loads the site's active pattern once
+// (using the trigger slot's site) and surfaces load problems in
+// `patternWarnings`.
 //
 // Suppressed fills are returned as `skips` using the SkippedDerived vocabulary
 // (clinical invariant 4: left unassigned AND recorded, never silently dropped).
@@ -31,25 +33,40 @@ type SupabaseClient = any;
 
 export interface SequenceAutoFillResult {
   filledSlotIds: string[];
+  // Slot ids whose stale auto-generated pre-fills were reverted to open by a
+  // higher-precedence incoming fill — reported so an evict-then-decline
+  // sequence is never silent.
+  evictedSlotIds: string[];
   skips: SkippedDerived[];
+  // Call-pattern load problems (invalid doc / read error → classic fallback),
+  // same convention as genContext warnings. Empty when the caller passed the
+  // doc in.
+  patternWarnings: string[];
 }
 
 export interface SequenceCleanupResult {
   clearedSlotIds: string[];
+  patternWarnings: string[];
 }
 
-// ── active call pattern (per-request; call sites pass the doc in) ───────────
+// ── active call pattern (per-request; call sites may pass the doc in) ───────
+
+export interface LoadedCallPattern {
+  doc: CallPatternDoc;
+  warnings: string[];
+}
 
 /**
- * Load the site's active CallPatternDoc. Mirrors genContext: no active row →
- * CLASSIC_PATTERN silently (normal pre-seed state); invalid definition or
- * query error → CLASSIC_PATTERN with a console warning.
+ * Load the site's active CallPatternDoc. Mirrors the genContext warnings
+ * convention: no active row → CLASSIC_PATTERN silently (normal pre-seed
+ * state); invalid definition or query error → CLASSIC_PATTERN with a returned
+ * warning (also console.warn'd for server logs).
  */
 export async function loadActiveCallPattern(
   sb: SupabaseClient,
   siteId: string | null | undefined,
-): Promise<CallPatternDoc> {
-  if (!siteId) return CLASSIC_PATTERN;
+): Promise<LoadedCallPattern> {
+  if (!siteId) return { doc: CLASSIC_PATTERN, warnings: [] };
   const { data, error } = await sb
     .from('call_patterns')
     .select('definition')
@@ -57,17 +74,19 @@ export async function loadActiveCallPattern(
     .eq('status', 'active')
     .maybeSingle();
   if (error) {
-    console.warn(`[sequenceAutoFill] call_patterns read failed (${error.message}) — using classic pattern`);
-    return CLASSIC_PATTERN;
+    const warning = `call_patterns read failed (${error.message}) — using classic pattern`;
+    console.warn(`[sequenceAutoFill] ${warning}`);
+    return { doc: CLASSIC_PATTERN, warnings: [warning] };
   }
   const definition = (data as { definition?: unknown } | null)?.definition;
-  if (definition == null) return CLASSIC_PATTERN;
+  if (definition == null) return { doc: CLASSIC_PATTERN, warnings: [] };
   const parsed = CallPatternDocSchema.safeParse(definition);
   if (!parsed.success) {
-    console.warn(`[sequenceAutoFill] active call pattern for site ${siteId} failed validation — using classic pattern`);
-    return CLASSIC_PATTERN;
+    const warning = `Active call pattern failed validation: ${parsed.error.issues[0]?.message ?? 'unknown error'} — using classic pattern`;
+    console.warn(`[sequenceAutoFill] ${warning}`);
+    return { doc: CLASSIC_PATTERN, warnings: [warning] };
   }
-  return parsed.data;
+  return { doc: parsed.data, warnings: [] };
 }
 
 // ── internal row shapes ──────────────────────────────────────────────────────
@@ -77,6 +96,7 @@ interface StRow {
   category?: string;
   call_rank?: number | null;
   relief_rank?: number | null;
+  requires_post_call_rule?: boolean;
 }
 
 interface TriggerSlot {
@@ -169,7 +189,7 @@ async function loadAssignmentsWindow(
 ): Promise<WindowAssignment[]> {
   const { data } = await sb
     .from('assignments')
-    .select('id, source_type, schedule_slots!inner(id, slot_date, site_id, schedule_version_id, shift_types(code, category, call_rank, relief_rank))')
+    .select('id, source_type, schedule_slots!inner(id, slot_date, site_id, schedule_version_id, shift_types(code, category, call_rank, relief_rank, requires_post_call_rule))')
     .eq('provider_id', providerId)
     .eq('assignment_status', 'assigned')
     .gte('schedule_slots.slot_date', start)
@@ -263,10 +283,14 @@ async function revertToOpen(sb: SupabaseClient, assignmentId: string): Promise<b
  *   - Pre-call links (negative offset) decline when a prior-day call of
  *     equal-or-lower call_rank owns the linked day (post-call beats pre-call).
  *   - Post-call links (positive offset) evict an OUTRANKED auto-generated
- *     pre-fill occupying the day (same version only; never manual rows).
- *   - PTO/unavailability (pending included) and provider-wide same-day
- *     conflicts (any site, any version) block the fill.
- *   - Every suppressed fill is recorded in `skips` (SkippedDerived vocabulary).
+ *     pre-fill occupying the day (same version only; never manual rows) —
+ *     after the structural checks, before the provider-level declines.
+ *   - PTO/unavailability (pending included), provider-wide same-day conflicts
+ *     (any site, any version), and the post-call rest day of another
+ *     rest-requiring call all block the fill.
+ *   - Every suppressed fill is recorded in `skips` (SkippedDerived
+ *     vocabulary); a failed DB write is console.error'd and appears in
+ *     neither filledSlotIds nor skips.
  *
  * `doc`: the site's active call pattern, loaded once per request by the route
  * (loadActiveCallPattern). When omitted, it is loaded here as a fallback.
@@ -277,29 +301,38 @@ export async function applySequenceAutoFill(
   providerId: string,
   doc?: CallPatternDoc,
 ): Promise<SequenceAutoFillResult> {
-  const result: SequenceAutoFillResult = { filledSlotIds: [], skips: [] };
+  const result: SequenceAutoFillResult = {
+    filledSlotIds: [], evictedSlotIds: [], skips: [], patternWarnings: [],
+  };
   const skip = (date: string, code: string, reason: SkippedDerived['reason']) =>
     result.skips.push({ date, code, provider_id: providerId, reason });
 
   const trigger = await loadTriggerSlot(sb, triggerSlotId);
   if (!trigger) return result;
 
-  const pattern = doc ?? await loadActiveCallPattern(sb, trigger.site_id);
+  let pattern = doc;
+  if (!pattern) {
+    const loaded = await loadActiveCallPattern(sb, trigger.site_id);
+    pattern = loaded.doc;
+    result.patternWarnings.push(...loaded.warnings);
+  }
   const links = dayChainsFor(pattern, trigger.st.code!, trigger.derived_day_type)
     .flatMap(c => c.links ?? []);
   if (links.length === 0) return result;
 
   // Window bounds: link offsets, the unlessCallWithinDays lookback, and the
-  // prior-day post-call-ownership check must all land inside the window.
+  // prior-day post-call-ownership/rest checks must all land inside the window.
   const maxAbs = Math.max(...links.map(l => Math.abs(l.offset)));
   const maxUnless = Math.max(0, ...links.map(l => l.unlessCallWithinDays ?? 0));
   const windowStart = addDays(trigger.slot_date, -Math.max(maxAbs + 1, maxUnless));
   const windowEnd = addDays(trigger.slot_date, maxAbs);
 
-  const windowAssignments = await loadAssignmentsWindow(sb, providerId, windowStart, windowEnd);
-  const availability = await loadAvailabilityWindow(sb, providerId, windowStart, windowEnd);
-  const candidateSlots = await loadCandidateSlots(
-    sb, trigger.schedule_version_id, addDays(trigger.slot_date, -maxAbs), windowEnd);
+  // The three reads are independent — one round-trip of latency, not three.
+  const [windowAssignments, availability, candidateSlots] = await Promise.all([
+    loadAssignmentsWindow(sb, providerId, windowStart, windowEnd),
+    loadAvailabilityWindow(sb, providerId, windowStart, windowEnd),
+    loadCandidateSlots(sb, trigger.schedule_version_id, addDays(trigger.slot_date, -maxAbs), windowEnd),
+  ]);
 
   const triggerRank = shiftRank(trigger.st);
   const evictableCodes = preFillCodes(pattern);
@@ -334,22 +367,10 @@ export async function applySequenceAutoFill(
       if (owned) { skip(linkedDate, code, 'already-handled'); continue; }
     }
 
-    // Post-call fill evicts an OUTRANKED auto-generated pre-fill occupying the
-    // linked day. Same schedule version only (never touch other drafts), never
-    // manual rows, never calls, and only codes the pattern marks as pre-fills.
-    if (link.offset > 0) {
-      for (const a of windowAssignments) {
-        if (a.slot_date !== linkedDate || evictedIds.has(a.id)) continue;
-        if (a.schedule_version_id !== trigger.schedule_version_id) continue;
-        if (a.source_type !== 'auto_generated') continue;
-        if (a.st?.category === 'call') continue;
-        if (!a.st?.code || !evictableCodes.has(a.st.code)) continue;
-        if (triggerRank > shiftRank(a.st)) continue; // occupant outranks the incoming fill
-        if (await revertToOpen(sb, a.id)) evictedIds.add(a.id);
-      }
-    }
-
     // Candidate slot on the linked date, same version, matching code.
+    // STRUCTURAL checks (no slot / ambiguous / locked) run BEFORE eviction: a
+    // fill that has nowhere to land must not strand the provider without
+    // their pre-fill.
     const candidates = candidateSlots.filter(s => s.slot_date === linkedDate && s.st?.code === code);
     if (candidates.length === 0) { skip(linkedDate, code, 'no-slot'); continue; }
     let chosen = candidates.find(s => s.site_id === trigger.site_id);
@@ -358,6 +379,35 @@ export async function applySequenceAutoFill(
       else { skip(linkedDate, code, 'ineligible'); continue; } // ambiguous across sites — don't guess
     }
     if (chosen.locked) { skip(linkedDate, code, 'ineligible'); continue; }
+    if (result.filledSlotIds.includes(chosen.id)) {
+      skip(linkedDate, code, 'already-handled'); // duplicate link to the same slot
+      continue;
+    }
+
+    // Post-call fill evicts an OUTRANKED auto-generated pre-fill occupying the
+    // linked day. Same schedule version only (never touch other drafts), never
+    // manual rows, never calls, and only codes the pattern marks as pre-fills.
+    // This deliberately PRECEDES the provider-level declines below
+    // (occupied/PTO/conflict/rest): in each of those cases the evicted
+    // pre-fill was itself sitting on the provider's post-call day — and in the
+    // PTO/cross-site cases on a day it independently must not occupy — so
+    // removing it is self-justifying even when the incoming fill then
+    // declines. Evictions are reported via evictedSlotIds, declines via
+    // skips: nothing is silent.
+    if (link.offset > 0) {
+      for (const a of windowAssignments) {
+        if (a.slot_date !== linkedDate || evictedIds.has(a.id)) continue;
+        if (a.schedule_version_id !== trigger.schedule_version_id) continue;
+        if (a.source_type !== 'auto_generated') continue;
+        if (a.st?.category === 'call') continue;
+        if (!a.st?.code || !evictableCodes.has(a.st.code)) continue;
+        if (triggerRank > shiftRank(a.st)) continue; // occupant outranks the incoming fill
+        if (await revertToOpen(sb, a.id)) {
+          evictedIds.add(a.id);
+          result.evictedSlotIds.push(a.slot_id);
+        }
+      }
+    }
 
     // Slot already held by someone (evicted rows no longer count).
     const occupant = chosen.assignments.find(a => a.provider_id && !evictedIds.has(a.id));
@@ -370,17 +420,33 @@ export async function applySequenceAutoFill(
     if (blocked) { skip(linkedDate, code, 'pto'); continue; }
 
     // Provider-wide same-day conflict — ANY site, ANY schedule version
-    // (clinical invariant 3).
+    // (clinical invariant 3). Labeled relative to the CHOSEN slot's site
+    // (where the fill would land), not the trigger's.
     const conflicts = windowAssignments.filter(a =>
       a.slot_date === linkedDate
       && !evictedIds.has(a.id)
       && a.slot_id !== chosen!.id
       && a.slot_id !== trigger.id);
     if (conflicts.length > 0) {
-      const crossSite = conflicts.some(c => c.site_id !== trigger.site_id);
+      const crossSite = conflicts.some(c => c.site_id !== chosen!.site_id);
       skip(linkedDate, code, crossSite ? 'cross-site' : 'occupied');
       continue;
     }
+
+    // Post-call rest guard (clinical invariant 1): a rest-requiring 24h call
+    // on the day BEFORE the linked date — at ANY site, in ANY version — makes
+    // the linked day the provider's day off; no fill may land there. The
+    // trigger slot itself is exempt: its own +1 link IS the sanctioned
+    // post-call assignment (classic C2→D1) and must not self-block.
+    // Reason 'ineligible' matches solve's skipReasonFrom mapping for the
+    // post-call guard ('already-handled' would mislabel this as slot
+    // consumption by another placement).
+    const restBlocked = windowAssignments.some(a =>
+      a.slot_date === addDays(linkedDate, -1)
+      && a.slot_id !== trigger.id
+      && !evictedIds.has(a.id)
+      && a.st?.requires_post_call_rule === true);
+    if (restBlocked) { skip(linkedDate, code, 'ineligible'); continue; }
 
     // Write the fill. One assignment row per slot (UNIQUE on schedule_slot_id):
     // update the existing open row when present, insert otherwise.
@@ -428,31 +494,40 @@ export async function cleanupSequenceAutoFill(
   providerId: string,
   doc?: CallPatternDoc,
 ): Promise<SequenceCleanupResult> {
-  const cleared: string[] = [];
+  const result: SequenceCleanupResult = { clearedSlotIds: [], patternWarnings: [] };
 
   const trigger = await loadTriggerSlot(sb, triggerSlotId);
-  if (!trigger) return { clearedSlotIds: cleared };
+  if (!trigger) return result;
 
-  const pattern = doc ?? await loadActiveCallPattern(sb, trigger.site_id);
+  let pattern = doc;
+  if (!pattern) {
+    const loaded = await loadActiveCallPattern(sb, trigger.site_id);
+    pattern = loaded.doc;
+    result.patternWarnings.push(...loaded.warnings);
+  }
   const links = dayChainsFor(pattern, trigger.st.code!, trigger.derived_day_type)
     .flatMap(c => c.links ?? []);
-  if (links.length === 0) return { clearedSlotIds: cleared };
+  if (links.length === 0) return result;
 
   const maxAbs = Math.max(...links.map(l => Math.abs(l.offset)));
   const slots = await loadCandidateSlots(
     sb, trigger.schedule_version_id,
     addDays(trigger.slot_date, -maxAbs), addDays(trigger.slot_date, maxAbs));
 
+  // Dedupe by assignment id: two links sharing date+code must not double-write.
+  const processed = new Set<string>();
   for (const link of links) {
     const linkedDate = addDays(trigger.slot_date, link.offset);
     for (const s of slots) {
       if (s.slot_date !== linkedDate || s.st?.code !== link.code) continue;
       for (const a of s.assignments) {
         if (a.provider_id !== providerId || a.source_type !== 'auto_generated') continue;
-        if (await revertToOpen(sb, a.id)) cleared.push(s.id);
+        if (processed.has(a.id)) continue;
+        processed.add(a.id);
+        if (await revertToOpen(sb, a.id)) result.clearedSlotIds.push(s.id);
       }
     }
   }
 
-  return { clearedSlotIds: cleared };
+  return result;
 }

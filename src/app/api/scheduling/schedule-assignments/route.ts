@@ -1,11 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { sbSchedulingServer } from '@/lib/supabaseScheduling';
 import { evaluateAssignment, validationFlagsFor } from '@/lib/rulesEngine/evaluate';
-import {
-  applySequenceAutoFill,
-  cleanupSequenceAutoFill,
-  loadActiveCallPattern,
-} from '@/lib/rulesEngine/sequenceAutoFill';
+import { applySequenceAutoFill, cleanupSequenceAutoFill } from '@/lib/rulesEngine/sequenceAutoFill';
 
 // Never prerender — this route hits Supabase per request.
 export const dynamic = 'force-dynamic';
@@ -48,25 +44,24 @@ export async function POST(req: NextRequest) {
     .single();
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
 
-  // Sequence auto-fill reads the site's ACTIVE CALL PATTERN (loaded once per
-  // request here and passed in — rule_definitions are validation-only). The
-  // auto-filled rows are left with validation_flags null; revalidateNeighbors
-  // below evaluates them (same provider, within ±7 days) and stores real flags.
-  const { data: slotRow } = await sb
-    .from('schedule_slots')
-    .select('site_id')
-    .eq('id', body.schedule_slot_id)
-    .maybeSingle();
-  const pattern = await loadActiveCallPattern(sb, (slotRow as { site_id?: string } | null)?.site_id);
-  const fill = await applySequenceAutoFill(sb, body.schedule_slot_id, body.provider_id, pattern);
+  // Sequence auto-fill reads the site's ACTIVE CALL PATTERN (loaded once
+  // inside the module off the trigger slot's site — rule_definitions are
+  // validation-only). The auto-filled rows are left with validation_flags
+  // null; revalidateNeighbors below evaluates them (same provider, within
+  // ±7 days) and stores real flags.
+  const fill = await applySequenceAutoFill(sb, body.schedule_slot_id, body.provider_id);
   await revalidateNeighbors(sb, body.schedule_slot_id, body.provider_id);
   // Backward-compatible response: existing fields plus the auto-fill outcome
-  // (skips use the SkippedDerived vocabulary — clinical invariant 4).
+  // (skips use the SkippedDerived vocabulary — clinical invariant 4;
+  // evictedSlotIds reports pre-fills reverted by a higher-precedence fill;
+  // patternWarnings surfaces call-pattern load problems, genContext-style).
   return NextResponse.json({
     ...data,
     validation: evalResult,
     filledSlotIds: fill.filledSlotIds,
+    evictedSlotIds: fill.evictedSlotIds,
     skips: fill.skips,
+    patternWarnings: fill.patternWarnings,
   });
 }
 
@@ -90,25 +85,23 @@ export async function DELETE(req: NextRequest) {
   const id = new URL(req.url).searchParams.get('id');
   if (!id) return NextResponse.json({ error: 'id is required' }, { status: 400 });
 
-  // Get the slot ID + provider (+ site for the call-pattern load) before
-  // deleting so we can recreate an open assignment AND revalidate that
-  // provider's neighbors.
+  // Get the slot ID + provider before deleting so we can recreate an open
+  // assignment AND revalidate that provider's neighbors.
   const { data: existing } = await sb
     .from('assignments')
-    .select('schedule_slot_id, provider_id, schedule_slots(site_id)')
+    .select('schedule_slot_id, provider_id')
     .eq('id', id)
     .single();
 
   // Clean up any sequence auto-fills BEFORE deleting the trigger row,
   // since cleanup needs to know which provider triggered the auto-fill.
   // Cleanup derives the linked slots from the same active call pattern the
-  // fill path uses (loaded once per request, passed in).
+  // fill path uses (loaded inside the module off the trigger slot's site).
   let clearedSlotIds: string[] = [];
+  let patternWarnings: string[] = [];
   if (existing?.provider_id) {
-    const siteId = (existing as { schedule_slots?: { site_id?: string } | null }).schedule_slots?.site_id;
-    const pattern = await loadActiveCallPattern(sb, siteId);
-    ({ clearedSlotIds } = await cleanupSequenceAutoFill(
-      sb, existing.schedule_slot_id, existing.provider_id, pattern));
+    ({ clearedSlotIds, patternWarnings } = await cleanupSequenceAutoFill(
+      sb, existing.schedule_slot_id, existing.provider_id));
   }
 
   // Delete the assignment
@@ -131,11 +124,11 @@ export async function DELETE(req: NextRequest) {
       await revalidateNeighbors(sb, existing.schedule_slot_id, existing.provider_id);
     }
     // Backward-compatible: the recreated open row plus which linked auto-fills
-    // were cleared alongside the delete.
-    return NextResponse.json({ ...newOpen, clearedSlotIds });
+    // were cleared alongside the delete (and any call-pattern load warnings).
+    return NextResponse.json({ ...newOpen, clearedSlotIds, patternWarnings });
   }
 
-  return NextResponse.json({ ok: true, clearedSlotIds });
+  return NextResponse.json({ ok: true, clearedSlotIds, patternWarnings });
 }
 
 // ── Neighbor revalidation ──────────────────────────────────────────────────
