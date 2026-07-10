@@ -1,6 +1,6 @@
-// Neighbor revalidation, extracted from route.ts so the schedule assistant's
-// assignment tools (src/lib/scheduleAssistant/mutations.ts) run the exact same
-// post-write path as manual UI edits (route files may only export HTTP verbs).
+// Neighbor revalidation — shared by the manual schedule-assignments route and
+// the schedule assistant's assignment tools (lives in lib so lib code never
+// imports from app/ route helpers).
 //
 // When an assignment changes, the same provider's nearby assignments may gain
 // or lose violations (e.g. a new C2 on Monday creates a sequence expectation
@@ -12,11 +12,13 @@
 // can include them in the affected-row re-select — otherwise a neighbor cell
 // whose violations just changed would keep stale flags client-side until the
 // next full grid load.
-import { sbSchedulingServer } from '@/lib/supabaseScheduling';
-import { evaluateAssignment } from '@/lib/rulesEngine/evaluate';
+import { evaluateAssignment } from './evaluate';
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type SupabaseClient = any;
 
 export async function revalidateNeighbors(
-  sb: ReturnType<typeof sbSchedulingServer>,
+  sb: SupabaseClient,
   changedSlotId: string,
   providerId: string | null,
 ): Promise<string[]> {

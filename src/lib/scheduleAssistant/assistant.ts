@@ -204,10 +204,11 @@ export async function runAssistant(opts: RunAssistantOptions): Promise<RunAssist
 
     if (msg.stop_reason === 'max_tokens') {
       // Explicit truncation notice — never silently present a cut-off answer.
-      messages.push({
-        role: 'assistant',
-        content: '[Response truncated: the model hit its output token limit. Ask it to continue for the rest.]',
-      });
+      // Also emitted through onEvent: the SSE consumer renders events only,
+      // so a notice living solely in the returned messages array is unseen.
+      const notice = '[Response truncated: the model hit its output token limit. Ask it to continue for the rest.]';
+      messages.push({ role: 'assistant', content: notice });
+      onEvent({ type: 'text-delta', text: `\n\n${notice}` });
       break;
     }
 
@@ -265,10 +266,9 @@ export async function runAssistant(opts: RunAssistantOptions): Promise<RunAssist
     messages.push({ role: 'user', content: results });
 
     if (iteration === maxIterations - 1) {
-      messages.push({
-        role: 'assistant',
-        content: `[Stopped: reached the ${maxIterations}-iteration tool limit for one request. Changes so far are listed below; send a follow-up to continue.]`,
-      });
+      const notice = `[Stopped: reached the ${maxIterations}-iteration tool limit for one request. Changes so far are listed above; send a follow-up to continue.]`;
+      messages.push({ role: 'assistant', content: notice });
+      onEvent({ type: 'text-delta', text: `\n\n${notice}` });
     }
   }
 

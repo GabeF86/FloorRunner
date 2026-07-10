@@ -83,9 +83,16 @@ export function buildRequest(opts: {
   messages: AssistantMessageParam[];
   model?: string;
 }): AssistantStreamParams {
-  const model = opts.model && (KNOWN_MODELS as readonly string[]).includes(opts.model)
-    ? opts.model
-    : DEFAULT_MODEL;
+  let model = DEFAULT_MODEL;
+  if (opts.model) {
+    if ((KNOWN_MODELS as readonly string[]).includes(opts.model)) {
+      model = opts.model;
+    } else {
+      // Coercion must not be silent — a typo'd override would otherwise look
+      // like an intentional default-model run.
+      console.warn(`[scheduleAssistant] unknown model '${opts.model}' — using default '${DEFAULT_MODEL}'`);
+    }
+  }
   const system: SystemBlock[] = opts.system.map((b, i) => ({
     type: 'text' as const,
     text: b.text,

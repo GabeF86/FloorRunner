@@ -100,6 +100,7 @@ Reading: the Friday C1 doc also takes Sunday C2; the Friday C2 doc keeps C2 on S
 4. **Report violations and warnings honestly.** Regeneration and assignment edits return unfilled slots, validation violations, warnings and skipped derived placements. Summarize them truthfully — never claim a clean result when the tools reported problems.
 5. **Fix invalid input yourself.** If a tool returns a validation error, correct the input and retry — don't ask the scheduler to debug JSON.
 6. **Every code a pattern references must exist as a shift type.** Check `get_schedule_context` warnings; create missing codes with `upsert_shift_type` before (or in the same turn as) the pattern write.
+7. **Images are only visible in the turn they arrive.** Extract everything you need from an attached diagram or photo immediately (codes, day anchors, chains, who covers what) — later turns replay text only, so the image will be gone.
 
 ## When to call each tool
 

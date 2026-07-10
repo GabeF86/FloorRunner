@@ -50,7 +50,10 @@ const toolTurn = (blocks: ContentBlock[]): AssistantFinalMessage =>
 type Row = Record<string, unknown>;
 interface Op { kind: 'insert' | 'upsert' | 'update' | 'delete'; table: string; payload: unknown }
 
-function makeFakeSb(seed: Record<string, Row[]>) {
+function makeFakeSb(
+  seed: Record<string, Row[]>,
+  opts?: { errorOn?: (op: { kind: Op['kind'] | 'select'; table: string }) => string | null },
+) {
   const tables: Record<string, Row[]> = {};
   for (const [k, v] of Object.entries(seed)) tables[k] = v.map(r => ({ ...r }));
   const ops: Op[] = [];
@@ -66,6 +69,8 @@ function makeFakeSb(seed: Record<string, Row[]>) {
     const matching = () => rowsOf().filter(r => filters.every(f => f(r)));
 
     const exec = async (): Promise<{ data: Row[]; error: null | { message: string } }> => {
+      const forced = opts?.errorOn?.({ kind: action.kind, table });
+      if (forced) return { data: [], error: { message: forced } };
       if (action.kind === 'select') {
         let rs = matching().map(r => ({ ...r }));
         if (orderBy) {
@@ -294,6 +299,112 @@ describe('runAssistant — tool-use loop', () => {
     expect(out.changes).toHaveLength(0);
   });
 
+  it('refuses assign_provider on a slot from another schedule version (is_error, no write)', async () => {
+    const tables = baseTables();
+    tables.schedule_slots = [
+      { id: 'slot-other', schedule_version_id: 'ver2', site_id: 'site1', slot_date: '2026-08-01' },
+    ];
+    const sb = makeFakeSb(tables);
+    const { client, calls } = makeFakeClient([
+      toolTurn([toolUse('tu1', 'assign_provider', { slot_id: 'slot-other', provider_id: 'p1' })]),
+      endTurn([text('That slot is not in this schedule.')]),
+    ]);
+
+    const out = await runAssistant({
+      sb, client, scheduleId: 'sched1',
+      messages: [{ role: 'user', content: 'assign smith to slot-other' }],
+    });
+
+    const lastMsg = calls[1].messages[calls[1].messages.length - 1];
+    const toolResult = (lastMsg.content as ContentBlock[])
+      .find(b => b.type === 'tool_result') as Extract<ContentBlock, { type: 'tool_result' }>;
+    expect(toolResult.is_error).toBe(true);
+    expect(String(toolResult.content)).toMatch(/version/i);
+    // Nothing was written to assignments; no change chip recorded.
+    expect(sb.__ops.filter(o => o.table === 'assignments')).toHaveLength(0);
+    expect(out.changes).toHaveLength(0);
+  });
+
+  it('refuses clear_assignment on a slot from another schedule version (is_error, no write)', async () => {
+    const tables = baseTables();
+    tables.schedule_slots = [
+      { id: 'slot-other', schedule_version_id: 'ver2', site_id: 'site1', slot_date: '2026-08-01' },
+    ];
+    tables.assignments = [
+      { id: 'ax', schedule_slot_id: 'slot-other', provider_id: 'p1',
+        assignment_status: 'assigned', source_type: 'manual' },
+    ];
+    const sb = makeFakeSb(tables);
+    const { client, calls } = makeFakeClient([
+      toolTurn([toolUse('tu1', 'clear_assignment', { slot_id: 'slot-other' })]),
+      endTurn([text('That slot is not in this schedule.')]),
+    ]);
+
+    await runAssistant({
+      sb, client, scheduleId: 'sched1',
+      messages: [{ role: 'user', content: 'clear slot-other' }],
+    });
+
+    const lastMsg = calls[1].messages[calls[1].messages.length - 1];
+    const toolResult = (lastMsg.content as ContentBlock[])
+      .find(b => b.type === 'tool_result') as Extract<ContentBlock, { type: 'tool_result' }>;
+    expect(toolResult.is_error).toBe(true);
+    expect(String(toolResult.content)).toMatch(/version/i);
+    // The other-version assignment row is untouched.
+    expect(sb.__tables.assignments.find(a => a.id === 'ax')!.assignment_status).toBe('assigned');
+    expect(sb.__ops.filter(o => o.table === 'assignments')).toHaveLength(0);
+  });
+
+  it('emits the truncation notice through onEvent when stop_reason is max_tokens', async () => {
+    const sb = makeFakeSb(baseTables());
+    const { client } = makeFakeClient([
+      { content: [text('Here is the start of a long answ')], stop_reason: 'max_tokens',
+        usage: { input_tokens: 10, output_tokens: 16000 } },
+    ]);
+    const events: Array<{ type: string; text?: string }> = [];
+
+    const out = await runAssistant({
+      sb, client, scheduleId: 'sched1',
+      messages: [{ role: 'user', content: 'explain everything' }],
+      onEvent: e => events.push(e as { type: string; text?: string }),
+    });
+
+    // The SSE consumer only renders events — the notice must reach it, not
+    // just the returned messages array.
+    const noticeEvent = events.find(e => e.type === 'text-delta' && /truncated/i.test(e.text ?? ''));
+    expect(noticeEvent).toBeTruthy();
+    const lastMsg = out.messages[out.messages.length - 1];
+    expect(String(lastMsg.content)).toMatch(/truncated/i);
+  });
+
+  it('refuses mutations and never runs the executor when the snapshot insert fails', async () => {
+    const sb = makeFakeSb(baseTables(), {
+      errorOn: op => (op.kind === 'insert' && op.table === 'assistant_actions')
+        ? 'forced snapshot failure' : null,
+    });
+    const spy = vi.fn(async () => ({ summary: 'should never run', result: { ok: true } }));
+    const { client, calls } = makeFakeClient([
+      toolTurn([toolUse('tu1', 'update_call_pattern', { definition: PROPOSED, name: 'Blocked' })]),
+      endTurn([text('Could not change anything — snapshot failed.')]),
+    ]);
+
+    const out = await runAssistant({
+      sb, client, scheduleId: 'sched1',
+      messages: [{ role: 'user', content: 'replace the pattern' }],
+      executorOverrides: { update_call_pattern: spy },
+    });
+
+    // Spec §7.3: no snapshot → no mutation. The executor never ran.
+    expect(spy).not.toHaveBeenCalled();
+    const lastMsg = calls[1].messages[calls[1].messages.length - 1];
+    const toolResult = (lastMsg.content as ContentBlock[])
+      .find(b => b.type === 'tool_result') as Extract<ContentBlock, { type: 'tool_result' }>;
+    expect(toolResult.is_error).toBe(true);
+    expect(String(toolResult.content)).toMatch(/snapshot/i);
+    expect(out.actionId).toBeNull();
+    expect(out.changes).toHaveLength(0);
+  });
+
   it('passes the image block through to the request payload verbatim, before the text', async () => {
     const sb = makeFakeSb(baseTables());
     const { client, calls } = makeFakeClient([
@@ -364,5 +475,53 @@ describe('snapshot round-trip', () => {
     // Original action stamped reverted.
     const original = sb.__tables.assistant_actions.find(r => r.id === actionId)!;
     expect(original.reverted_at).toBeTruthy();
+  });
+
+  it('restores mutated rule_definitions on revert', async () => {
+    const tables = baseTables();
+    tables.rule_sets = [{ id: 'rs1', site_id: 'site1', status: 'active' }];
+    tables.rule_definitions = [{
+      id: 'rd1', rule_set_id: 'rs1', rule_name: 'Rest after call',
+      rule_category: 'rest', hard_constraint: true, is_active: true,
+    }];
+    const sb = makeFakeSb(tables);
+
+    const actionId = await takeSnapshot(sb, 'sched1', 'ver1', 'rule snapshot', null);
+    await sb.from('rule_definitions').update({ hard_constraint: false, is_active: false }).eq('id', 'rd1');
+
+    const res = await revertAction(sb, actionId);
+    expect(res.ok).toBe(true);
+    const rd = sb.__tables.rule_definitions.find(r => r.id === 'rd1')!;
+    expect(rd.hard_constraint).toBe(true);
+    expect(rd.is_active).toBe(true);
+  });
+
+  it('re-opens version slots assigned after the snapshot but absent from assignments_before', async () => {
+    const tables = baseTables();
+    tables.schedule_slots = [
+      { id: 'slot1', schedule_version_id: 'ver1', site_id: 'site1', slot_date: '2026-07-04' },
+      { id: 'slot2', schedule_version_id: 'ver1', site_id: 'site1', slot_date: '2026-07-05' },
+    ];
+    // slot2 has NO assignment row at snapshot time (the rowless gap).
+    tables.assignments = [
+      { id: 'a1', schedule_slot_id: 'slot1', provider_id: 'p1',
+        assignment_status: 'assigned', source_type: 'manual' },
+    ];
+    const sb = makeFakeSb(tables);
+
+    const actionId = await takeSnapshot(sb, 'sched1', 'ver1', 'gap snapshot', null);
+    // A later regenerate/auto-fill assigns the rowless slot.
+    await sb.from('assignments').insert({
+      id: 'a2', schedule_slot_id: 'slot2', provider_id: 'p2',
+      assignment_status: 'assigned', source_type: 'auto_generated',
+    });
+
+    const res = await revertAction(sb, actionId);
+    expect(res.ok).toBe(true);
+    // Undo must not leave slot2 assigned — that provider was never there
+    // when the snapshot was taken (possible cross-site double-book).
+    const a2 = sb.__tables.assignments.find(r => r.schedule_slot_id === 'slot2')!;
+    expect(a2.assignment_status).toBe('open');
+    expect(a2.provider_id).toBeNull();
   });
 });

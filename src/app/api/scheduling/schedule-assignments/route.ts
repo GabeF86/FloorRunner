@@ -7,7 +7,7 @@ import {
   withValidationSummary,
   type ValidationSummary,
 } from '../schedules/[id]/grid/route.helpers';
-import { revalidateNeighbors } from './route.helpers';
+import { revalidateNeighbors } from '@/lib/rulesEngine/neighborRevalidation';
 
 // Never prerender — this route hits Supabase per request.
 export const dynamic = 'force-dynamic';

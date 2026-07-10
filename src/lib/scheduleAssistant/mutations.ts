@@ -8,7 +8,7 @@
 // can never diverge on the clinical invariants.
 import { evaluateAssignment, validationFlagsFor } from '@/lib/rulesEngine/evaluate';
 import { applySequenceAutoFill, cleanupSequenceAutoFill } from '@/lib/rulesEngine/sequenceAutoFill';
-import { revalidateNeighbors } from '@/app/api/scheduling/schedule-assignments/route.helpers';
+import { revalidateNeighbors } from '@/lib/rulesEngine/neighborRevalidation';
 import type { CallPatternDoc } from '@/lib/rulesEngine/callPattern';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -19,6 +19,41 @@ type SbError = { message: string; code?: string };
 // 'seed' is migration-only provenance — runtime writers are the manual UI
 // and the assistant, so the enum is narrowed to exactly those two.
 export type PatternSource = 'manual' | 'assistant';
+
+// Invalid model-supplied tool input → fed back to the model as an is_error
+// tool_result so it self-corrects. Lives here (not tools.ts) so the mutation
+// cores can throw it without an import cycle; tools.ts re-exports it.
+export class ToolInputError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ToolInputError';
+  }
+}
+
+// Assistant edits are scoped to ONE schedule version — the one the snapshot
+// captured. A stale or hallucinated-but-real slot id from another version
+// would mutate data the snapshot can't restore, so it is refused as invalid
+// input (the model recovers by calling get_grid for current ids).
+async function assertSlotInVersion(
+  sb: SchedulingClient,
+  slotId: string,
+  expectedVersionId: string,
+): Promise<void> {
+  const { data: slot, error } = await sb
+    .from('schedule_slots')
+    .select('id, schedule_version_id')
+    .eq('id', slotId)
+    .maybeSingle();
+  if (error) throw new Error(`slot lookup failed: ${error.message}`);
+  if (!slot) {
+    throw new ToolInputError(`slot ${slotId} not found — call get_grid for this schedule's current slot ids`);
+  }
+  if (slot.schedule_version_id !== expectedVersionId) {
+    throw new ToolInputError(
+      `slot ${slotId} belongs to a different schedule version — only slots in the current version can be edited; call get_grid for current slot ids`,
+    );
+  }
+}
 
 // Replaces the site's active call pattern. "Transaction" is approximated:
 // archive the current active row, insert the new one as active. The partial
@@ -98,7 +133,9 @@ export async function assignProviderToSlot(
   sb: SchedulingClient,
   slotId: string,
   providerId: string,
+  expectedVersionId: string,
 ): Promise<AssignOutcome> {
+  await assertSlotInVersion(sb, slotId, expectedVersionId);
   const evalResult = await evaluateAssignment(sb, slotId, providerId);
   if (!evalResult.evaluated) {
     console.error(`[scheduleAssistant] validation unavailable for slot ${slotId} — writing needs-re-validation sentinel`);
@@ -111,7 +148,10 @@ export async function assignProviderToSlot(
         schedule_slot_id: slotId,
         provider_id: providerId,
         assignment_status: 'assigned',
-        source_type: 'assistant',
+        // scheduling.source_type is an enum without an 'assistant' value —
+        // assistant edits are manual edits made on the scheduler's behalf;
+        // provenance is tracked via assistant_actions.
+        source_type: 'manual',
         assigned_at: new Date().toISOString(),
         validation_flags: validationFlagsFor(evalResult),
       },
@@ -152,7 +192,9 @@ export interface ClearOutcome {
 export async function clearSlotAssignment(
   sb: SchedulingClient,
   slotId: string,
+  expectedVersionId: string,
 ): Promise<ClearOutcome> {
+  await assertSlotInVersion(sb, slotId, expectedVersionId);
   const { data: existing, error: selErr } = await sb
     .from('assignments')
     .select('id, provider_id, assignment_status')
@@ -172,7 +214,7 @@ export async function clearSlotAssignment(
 
   const { error: insErr } = await sb
     .from('assignments')
-    .insert({ schedule_slot_id: slotId, assignment_status: 'open', source_type: 'assistant' });
+    .insert({ schedule_slot_id: slotId, assignment_status: 'open', source_type: 'manual' });
   if (insErr) throw new Error(`open-row recreate failed: ${insErr.message}`);
 
   await revalidateNeighbors(sb, slotId, existing.provider_id as string);

@@ -18,6 +18,8 @@ interface ChatMessage {
 interface PendingImage { media_type: string; data: string; name: string }
 
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
+// Mirrors the media types the Claude API accepts for base64 image blocks.
+const ALLOWED_IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
 
 const btnStyle: React.CSSProperties = {
   padding: '6px 12px', fontSize: 12, fontWeight: 700, borderRadius: 8,
@@ -38,8 +40,10 @@ export default function AssistantPanel({
   const [input, setInput] = useState('');
   const [image, setImage] = useState<PendingImage | null>(null);
   const [busy, setBusy] = useState(false);
+  const [undoingId, setUndoingId] = useState<string | null>(null);
   const [status, setStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
@@ -48,7 +52,10 @@ export default function AssistantPanel({
   }, [messages, status]);
 
   const attachFile = (file: File) => {
-    if (!file.type.startsWith('image/')) { setError('Only image files can be attached.'); return; }
+    if (!ALLOWED_IMAGE_TYPES.includes(file.type)) {
+      setError('Only JPEG, PNG, GIF or WebP images can be attached.');
+      return;
+    }
     if (file.size > MAX_IMAGE_BYTES) { setError('Image too large — 5MB max.'); return; }
     const reader = new FileReader();
     reader.onload = () => {
@@ -67,7 +74,7 @@ export default function AssistantPanel({
 
   const send = async () => {
     const text = input.trim();
-    if (!text || busy) return;
+    if (!text || busy || undoingId) return;
     setError(null);
     setBusy(true);
     setInput('');
@@ -168,7 +175,10 @@ export default function AssistantPanel({
   };
 
   const undo = async (actionId: string, msgIndex: number) => {
+    if (busy || undoingId) return; // one in-flight mutation at a time
     setError(null);
+    setNotice(null);
+    setUndoingId(actionId);
     try {
       const res = await fetch(`/api/scheduling/assistant/actions/${actionId}/revert`, { method: 'POST' });
       const body = await res.json().catch(() => ({}));
@@ -177,10 +187,15 @@ export default function AssistantPanel({
           ?? (Array.isArray(body.errors) && body.errors.length > 0 ? body.errors.join('; ') : null);
         throw new Error(detail ?? `Undo failed (${res.status})`);
       }
+      if (Array.isArray(body.validationErrors) && body.validationErrors.length > 0) {
+        setNotice(`Reverted, but re-validation was incomplete — some cells may show stale flags (${body.validationErrors.length} issue(s)).`);
+      }
       setMessages(prev => prev.map((m, i) => (i === msgIndex ? { ...m, reverted: true } : m)));
       onMutated();
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : 'Undo failed');
+    } finally {
+      setUndoingId(null);
     }
   };
 
@@ -240,11 +255,17 @@ export default function AssistantPanel({
                   }}>{c}</span>
                 ))}
                 {m.actionId && !m.reverted && (
-                  <button onClick={() => undo(m.actionId!, i)} style={{
-                    fontSize: 10.5, fontWeight: 800, padding: '2px 9px', borderRadius: 999,
-                    background: 'rgba(248,113,113,0.10)', color: '#f87171',
-                    border: '1px solid rgba(248,113,113,0.35)', cursor: 'pointer',
-                  }}>Undo</button>
+                  <button
+                    onClick={() => undo(m.actionId!, i)}
+                    disabled={busy || undoingId !== null}
+                    style={{
+                      fontSize: 10.5, fontWeight: 800, padding: '2px 9px', borderRadius: 999,
+                      background: 'rgba(248,113,113,0.10)',
+                      color: busy || undoingId !== null ? 'var(--text-dim)' : '#f87171',
+                      border: '1px solid rgba(248,113,113,0.35)',
+                      cursor: busy || undoingId !== null ? 'not-allowed' : 'pointer',
+                    }}
+                  >{undoingId === m.actionId ? 'Undoing…' : 'Undo'}</button>
                 )}
                 {m.reverted && (
                   <span style={{ fontSize: 10.5, color: 'var(--text-dim)' }}>reverted</span>
@@ -264,6 +285,20 @@ export default function AssistantPanel({
           margin: '0 16px 8px', padding: '6px 10px', borderRadius: 8, fontSize: 11.5,
           background: 'rgba(248,113,113,0.12)', border: '1px solid rgba(248,113,113,0.3)', color: '#f87171',
         }}>{error}</div>
+      )}
+
+      {/* Warning line (e.g. incomplete re-validation after an undo) */}
+      {notice && (
+        <div style={{
+          margin: '0 16px 8px', padding: '6px 10px', borderRadius: 8, fontSize: 11.5,
+          background: 'rgba(245,158,11,0.10)', border: '1px solid rgba(245,158,11,0.3)', color: '#b45309',
+          display: 'flex', justifyContent: 'space-between', gap: 8,
+        }}>
+          <span>{notice}</span>
+          <button onClick={() => setNotice(null)} style={{
+            background: 'none', border: 'none', color: 'var(--text-dim)', cursor: 'pointer', fontSize: 12,
+          }}>×</button>
+        </div>
       )}
 
       {/* Composer */}

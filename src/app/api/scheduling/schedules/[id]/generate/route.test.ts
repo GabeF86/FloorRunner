@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { NextRequest } from 'next/server';
-import { statusForResult, trimUnfilled, MAX_CANDIDATE_REASONS } from './route.helpers';
+import { statusForResult } from './route.helpers';
+import { trimUnfilled, MAX_CANDIDATE_REASONS } from '@/lib/rulesEngine/trimUnfilled';
 import { makeFakeSupabase } from '@/lib/rulesEngine/__fixtures__/fakeSupabase';
 
 // ── Mocks (route-level tests) ────────────────────────────────────────────────

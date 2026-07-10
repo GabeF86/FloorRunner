@@ -19,7 +19,7 @@ export async function POST(
 
   try {
     const result = await revertAction(sb, id);
-    if (!result.ok && result.errors.some(e => e.includes('not found'))) {
+    if (result.notFound) {
       return NextResponse.json({ error: result.errors.join('; ') }, { status: 404 });
     }
     return NextResponse.json(result, { status: result.ok ? 200 : 500 });

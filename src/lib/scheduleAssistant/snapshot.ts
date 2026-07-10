@@ -29,6 +29,11 @@ interface ConfigBefore {
     definition: CallPatternDoc;
   } | null;
   shift_types: Array<Record<string, unknown>>;
+  // Rows of every rule_definition in the site's active rule sets — restored
+  // on revert so upsert_rule_definition changes are undoable too (and so
+  // post-revert batch validation runs under the ORIGINAL rules, not the
+  // mutated ones). Optional: pre-existing snapshots lack it (no-op restore).
+  rule_definitions?: Array<Record<string, unknown>>;
 }
 
 async function siteIdForSchedule(sb: SchedulingClient, scheduleId: string): Promise<string> {
@@ -63,6 +68,19 @@ export async function takeSnapshot(
     .from('shift_types').select('*').eq('site_id', siteId);
   if (stErr) throw new Error(`shift_types snapshot read failed: ${stErr.message}`);
 
+  // Validation rules for the site's active rule sets — small table, full rows.
+  const { data: ruleSets, error: rsErr } = await sb
+    .from('rule_sets').select('id').eq('site_id', siteId).eq('status', 'active');
+  if (rsErr) throw new Error(`rule_sets snapshot read failed: ${rsErr.message}`);
+  const ruleSetIds = ((ruleSets ?? []) as Array<{ id: string }>).map(r => r.id);
+  let ruleDefinitions: Array<Record<string, unknown>> = [];
+  if (ruleSetIds.length > 0) {
+    const { data, error } = await sb
+      .from('rule_definitions').select('*').in('rule_set_id', ruleSetIds);
+    if (error) throw new Error(`rule_definitions snapshot read failed: ${error.message}`);
+    ruleDefinitions = (data ?? []) as Array<Record<string, unknown>>;
+  }
+
   // Version assignments via slots → assignments (two flat queries; no join
   // filter, so the fake-client path in tests stays trivial).
   const assignments: SnapshotAssignmentRow[] = [];
@@ -90,6 +108,7 @@ export async function takeSnapshot(
         }
       : null,
     shift_types: (shiftTypes ?? []) as Array<Record<string, unknown>>,
+    rule_definitions: ruleDefinitions,
   };
 
   const { data: action, error: insErr } = await sb
@@ -112,6 +131,9 @@ export async function takeSnapshot(
 
 export interface RevertResult {
   ok: boolean;
+  // Structured not-found signal (the action id doesn't exist) — the route
+  // maps this to 404 instead of substring-matching error text.
+  notFound?: boolean;
   // The action created by the revert itself (undo-of-undo target). Null when
   // the revert failed before snapshotting.
   revertActionId: string | null;
@@ -129,7 +151,12 @@ export async function revertAction(sb: SchedulingClient, actionId: string): Prom
     .eq('id', actionId)
     .maybeSingle();
   if (loadErr) return { ok: false, revertActionId: null, errors: [`action load failed: ${loadErr.message}`], validationErrors };
-  if (!action) return { ok: false, revertActionId: null, errors: [`assistant action ${actionId} not found`], validationErrors };
+  if (!action) {
+    return {
+      ok: false, notFound: true, revertActionId: null,
+      errors: [`assistant action ${actionId} not found`], validationErrors,
+    };
+  }
 
   const scheduleId = action.schedule_id as string;
   const versionId = (action.schedule_version_id as string | null) ?? null;
@@ -179,7 +206,17 @@ export async function revertAction(sb: SchedulingClient, actionId: string): Prom
     for (const e of w.rowErrors) errors.push(`shift_type restore failed: ${e.message}`);
   }
 
-  // ── 3. Restore assignments (upsert on UNIQUE(schedule_slot_id)) ────────────
+  // ── 3. Restore rule_definitions (upsert by id, same pattern as shift_types;
+  // absent on pre-existing snapshots → no-op) ────────────────────────────────
+  const rdRows = config?.rule_definitions ?? [];
+  for (const rows of chunk(rdRows, WRITE_CHUNK)) {
+    const w = await bulkWriteWithRowFallback(sb, 'rule_definitions', rows, {
+      onConflict: 'id', label: 'assistant revert rule_definitions',
+    });
+    for (const e of w.rowErrors) errors.push(`rule_definition restore failed: ${e.message}`);
+  }
+
+  // ── 4. Restore assignments (upsert on UNIQUE(schedule_slot_id)) ────────────
   const aRows = assignmentsBefore.map(a => ({
     schedule_slot_id: a.schedule_slot_id,
     provider_id: a.provider_id,
@@ -193,7 +230,36 @@ export async function revertAction(sb: SchedulingClient, actionId: string): Prom
     for (const e of w.rowErrors) errors.push(`assignment restore failed: ${e.message}`);
   }
 
-  // ── 4. Re-run batch validation so stored flags reflect the restored state ──
+  // ── 4b. Set-difference gap: a slot with NO row at snapshot time (e.g. a
+  // clear that failed between delete and re-insert) is absent from
+  // assignments_before; if regenerate/auto-fill assigned it afterwards, the
+  // upsert above leaves it ASSIGNED — a provider the snapshot never had
+  // (possible double-book). Force those slots back to open. ──────────────────
+  if (versionId) {
+    const { data: slots, error: slotErr } = await sb
+      .from('schedule_slots').select('id').eq('schedule_version_id', versionId);
+    if (slotErr) {
+      errors.push(`open-slot restore failed: slot list read failed: ${slotErr.message}`);
+    } else {
+      const known = new Set(assignmentsBefore.map(a => a.schedule_slot_id));
+      const openRows = ((slots ?? []) as Array<{ id: string }>)
+        .filter(s => !known.has(s.id))
+        .map(s => ({
+          schedule_slot_id: s.id,
+          provider_id: null,
+          assignment_status: 'open',
+          validation_flags: null,
+        }));
+      for (const rows of chunk(openRows, WRITE_CHUNK)) {
+        const w = await bulkWriteWithRowFallback(sb, 'assignments', rows, {
+          onConflict: 'schedule_slot_id', label: 'assistant revert open-slot restore',
+        });
+        for (const e of w.rowErrors) errors.push(`open-slot restore failed: ${e.message}`);
+      }
+    }
+  }
+
+  // ── 5. Re-run batch validation so stored flags reflect the restored state ──
   if (versionId) {
     try {
       const siteCtx = await loadSiteValidationContext(sb, siteId);
@@ -204,7 +270,7 @@ export async function revertAction(sb: SchedulingClient, actionId: string): Prom
     }
   }
 
-  // ── 5. Stamp reverted_at ONLY when the restore itself succeeded — a failed
+  // ── 6. Stamp reverted_at ONLY when the restore itself succeeded — a failed
   // restore must stay visibly un-reverted (spec §10) ─────────────────────────
   if (errors.length === 0) {
     const { error } = await sb
