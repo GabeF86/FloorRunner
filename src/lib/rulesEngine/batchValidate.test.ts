@@ -316,7 +316,12 @@ describe('batchValidateVersion', () => {
         tables: batchTables({
           assignments: (filters: Filter[]) => {
             if (filters.some(f => f.method === 'upsert')) return { data: null, error: { message: 'conflict' } };
-            if (filters.some(f => f.method === 'update')) return { data: null, error: null };
+            if (filters.some(f => f.method === 'update')) {
+              // Per-row fallback confirms the touched row via .select();
+              // only DB-confirmed rows count as written.
+              const eqId = filters.find(f => f.method === 'eq' && f.args[0] === 'id');
+              return { data: [{ id: eqId?.args[1] }], error: null };
+            }
             return assignmentsTable(filters);
           },
         }),
@@ -341,7 +346,7 @@ describe('batchValidateVersion', () => {
               const eqId = filters.find(f => f.method === 'eq' && f.args[0] === 'id');
               return eqId?.args[1] === 'a2'
                 ? { data: null, error: { message: 'row gone' } }
-                : { data: null, error: null };
+                : { data: [{ id: eqId?.args[1] }], error: null }; // DB-confirmed row
             }
             return assignmentsTable(filters);
           },

@@ -11,6 +11,14 @@ import type { SolutionPlan } from './genTypes';
 // shape so the parity net exercises the real code paths. Measured at par level 4:
 // 181 assignments, 17 weekend-chain, 1 unfilled.
 
+// Enumerated intentional fixes: IF-1 (seed post-call block), IF-2 (relief
+// reachability/rescan + overlay seed budget), IF-3 (quota relaxation), and
+// IF-4 (skippedDerived recording) are behavior pins in patternEngine.test.ts.
+// IF-5 (pending PTO drives the pre-PTO Thursday placement, spec §6.7) is the
+// only fix that DIVERGES from legacy on same-input fixtures — it is pinned at
+// the bottom of this file. The base parity fixtures contain no pending PTO,
+// so the exact-equality nets below are unaffected by it.
+//
 // Drop fields the pattern-interpreter refactor is allowed to add/change. Only
 // `explanation` (numeric decision detail), the additive `skippedDerived[]`
 // (IF-4), and the additive `UnfilledSlot.shift_type_category` stamp (frozen
@@ -89,5 +97,36 @@ describe('golden parity — holiday call slots', () => {
       const tueC1 = plan.assignments.find(a => a.slot_id === 't-c1');
       expect(tueC1?.provider_id).not.toBe(holidayC1.provider_id);
     }
+  });
+});
+
+// ── IF-5: pending PTO drives the pre-PTO Thursday placement (spec §6.7) ─────
+// solve() builds the pre-PTO index with isBlockingAvailability (pending blocks
+// everywhere ⇒ pending also EARNS the Thursday call); frozen solveLegacy only
+// honors approval_status === 'approved' in its inline predicate. This test
+// pins the divergence as deliberate — a pending-PTO fixture where solve()
+// makes the pre-PTO placement and solveLegacy does not.
+describe('golden parity — IF-5 pending-PTO pre-PTO placement divergence (spec §6.7)', () => {
+  // p2 has PENDING pto over the week of Mon 2026-01-12; Thursday before = 01-08.
+  const pendingCtx = () => buildCtx(
+    [callSlot('thuC1', '2026-01-08', 'C1', 'weekday')],
+    [prov('p1'), prov('p2')],
+    {
+      availByPid: new Map([['p2', [{
+        availability_type: 'pto', start_date: '2026-01-13', end_date: '2026-01-15',
+        approval_status: 'pending',
+      }]]]),
+    },
+  );
+
+  it('v2 gives the pending-PTO provider the prior Thursday via the pre-PTO pass', () => {
+    const thu = solve(pendingCtx()).assignments.find(a => a.slot_id === 'thuC1');
+    expect(thu?.provider_id).toBe('p2');
+    expect(thu?.source).toBe('pre-pto-thursday');
+  });
+
+  it('legacy does NOT run the pre-PTO pass for a pending request (frozen behavior)', () => {
+    const thu = solveLegacy(pendingCtx()).assignments.find(a => a.slot_id === 'thuC1');
+    expect(thu?.source).not.toBe('pre-pto-thursday');
   });
 });

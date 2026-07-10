@@ -19,6 +19,9 @@
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type SupabaseClient = any;
 import { addDays, NEIGHBOR_WINDOW_DAYS, AVAIL_WINDOW_DAYS } from './shared';
+// Function-level-only cycle (commit.ts imports batchValidateVersion/chunk from
+// here); nothing crosses at module top level, so evaluation order is safe.
+import { bulkWriteWithRowFallback } from './commit';
 import {
   providerGroupFromType,
   parseEmbeddedFte,
@@ -357,27 +360,19 @@ export async function batchValidateVersion(
     console.error(`[rulesEngine] batch validation: ${msg}`);
   }
 
+  // Shared bulk-write idiom: one upsert per chunk, per-row fallback on bulk
+  // failure (one concurrently deleted id would otherwise resurrect a ghost row
+  // or trip UNIQUE(schedule_slot_id) and fail the whole chunk). Only rows the
+  // DB confirms count as written.
   let written = 0;
   for (const rows of chunk(payload, WRITE_CHUNK)) {
-    dbQueries++;
-    const { error } = await sb.from('assignments').upsert(rows, { onConflict: 'id' });
-    if (!error) {
-      written += rows.length;
-      continue;
-    }
-    // Bulk upsert failed (e.g. one id was concurrently deleted — the insert
-    // arm would either resurrect a ghost row or trip UNIQUE(schedule_slot_id)
-    // and fail the whole chunk). Fall back to per-row updates: an update on a
-    // deleted id is a harmless no-op, and surviving rows still get flags.
-    console.error(`[rulesEngine] batch validation: bulk flag write failed (${error.message}) — falling back to per-row updates`);
-    for (const row of rows) {
-      dbQueries++;
-      const { error: rowErr } = await sb
-        .from('assignments')
-        .update({ validation_flags: row.validation_flags })
-        .eq('id', row.id);
-      if (rowErr) errors.push(`batch validation: flag write failed for assignment ${row.id}: ${rowErr.message}`);
-      else written++;
+    const w = await bulkWriteWithRowFallback(sb, 'assignments', rows, {
+      onConflict: 'id', label: 'batch validation flag write',
+    });
+    dbQueries += w.dbQueries;
+    written += w.landedIdx.length;
+    for (const e of w.rowErrors) {
+      errors.push(`batch validation: flag write failed for assignment ${rows[e.index].id}: ${e.message}`);
     }
   }
 

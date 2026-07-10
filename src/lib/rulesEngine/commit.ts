@@ -32,6 +32,70 @@ export function __resetMetadataColumnCache(): void {
 // query string); writes go in the request body so WRITE_CHUNK can be larger.
 const READ_CHUNK = 100;
 
+export interface BulkWriteOutcome {
+  landedIdx: number[];                                  // row indices confirmed written
+  rowErrors: Array<{ index: number; message: string }>; // per-row fallback failures
+  dbQueries: number;
+}
+
+// The shared bulk-write idiom (commitMetadata / commitPlan / batchValidate /
+// dayShiftAutoGen — previously four divergent copies): one bulk call for the
+// whole batch; if THAT fails (e.g. one concurrently deleted id would make the
+// upsert's insert arm resurrect a ghost row or trip UNIQUE(schedule_slot_id)
+// and sink the chunk), fall back to per-row writes so one bad row can't lose
+// the batch.
+//
+// opts.onConflict set   → bulk upsert; fallback = per-row UPDATE of the
+//   non-key fields keyed by the conflict column, confirmed via .select() so
+//   only rows the DB actually touched count as landed. A zero-row update (the
+//   row vanished) is a harmless no-op: not landed, not an error.
+// opts.onConflict unset → bulk insert; fallback = per-row inserts.
+//
+// Callers own error MESSAGE formatting (rowErrors carry the row index) and
+// chunking (pass one WRITE_CHUNK-sized batch at a time). NOTE: batchValidate
+// imports this — a deliberate function-level-only cycle with the
+// batchValidateVersion/chunk imports above (nothing crosses at module top
+// level, and function declarations are hoisted, so evaluation order is safe).
+export async function bulkWriteWithRowFallback<T extends object>(
+  sb: SupabaseClient,
+  table: string,
+  rows: T[],
+  opts: { onConflict?: string; label: string },
+): Promise<BulkWriteOutcome> {
+  const out: BulkWriteOutcome = { landedIdx: [], rowErrors: [], dbQueries: 0 };
+  if (rows.length === 0) return out;
+
+  out.dbQueries++;
+  const bulk = opts.onConflict
+    ? await sb.from(table).upsert(rows, { onConflict: opts.onConflict })
+    : await sb.from(table).insert(rows);
+  if (!bulk.error) {
+    out.landedIdx = rows.map((_, i) => i);
+    return out;
+  }
+
+  console.error(`[rulesEngine] ${opts.label}: bulk write failed (${bulk.error.message}) — falling back to per-row writes`);
+  for (let i = 0; i < rows.length; i++) {
+    out.dbQueries++;
+    if (opts.onConflict) {
+      const { [opts.onConflict]: key, ...fields } = rows[i] as Record<string, unknown>;
+      const { data, error } = await sb
+        .from(table)
+        .update(fields)
+        .eq(opts.onConflict, key)
+        .select(opts.onConflict);
+      if (error) out.rowErrors.push({ index: i, message: error.message });
+      else if (Array.isArray(data) && data.length > 0) out.landedIdx.push(i);
+      // else: zero rows updated — the row vanished; silent no-op by design.
+    } else {
+      const { error } = await sb.from(table).insert(rows[i]);
+      if (error) out.rowErrors.push({ index: i, message: error.message });
+      else out.landedIdx.push(i);
+    }
+  }
+  return out;
+}
+
 // Best-effort: write generation_metadata per assignment. Caller should only
 // invoke this when hasGenerationMetadataColumn() is true. One preload of the
 // existing assignment ids (matched by slot+provider), then one bulk upsert
@@ -73,21 +137,12 @@ export async function commitMetadata(
   }
 
   for (const rows of chunk(payload, WRITE_CHUNK)) {
-    dbQueries++;
-    const { error } = await sb.from('assignments').upsert(rows, { onConflict: 'id' });
-    if (!error) continue;
-    // Bulk upsert failed (e.g. a row was concurrently deleted — the insert
-    // arm would resurrect a ghost row or trip UNIQUE(schedule_slot_id) and
-    // fail the whole chunk). Fall back to per-row updates: an update on a
-    // deleted id is a harmless no-op; surviving rows still get metadata.
-    console.error(`[rulesEngine] metadata bulk write failed (${error.message}) — falling back to per-row updates`);
-    for (const row of rows) {
-      dbQueries++;
-      const { error: rowErr } = await sb
-        .from('assignments')
-        .update({ generation_metadata: row.generation_metadata })
-        .eq('id', row.id);
-      if (rowErr) errors.push(`metadata write failed for assignment ${row.id}: ${rowErr.message}`);
+    const w = await bulkWriteWithRowFallback(sb, 'assignments', rows, {
+      onConflict: 'id', label: 'metadata',
+    });
+    dbQueries += w.dbQueries;
+    for (const e of w.rowErrors) {
+      errors.push(`metadata write failed for assignment ${rows[e.index].id}: ${e.message}`);
     }
   }
   return { dbQueries, errors };
@@ -141,7 +196,8 @@ export interface CommitResult {
   dbQueries: number;
 }
 
-// Batched write of the whole plan. Two bulk calls instead of N serial writes.
+// Batched write of the whole plan. Two bulk calls instead of N serial writes;
+// per-row fallback on bulk failure so one bad row no longer loses the batch.
 export async function commitPlan(
   sb: SupabaseClient,
   plan: SolutionPlan,
@@ -153,16 +209,24 @@ export async function commitPlan(
 
   let filled = 0;
   if (updates.length > 0) {
-    dbQueries++;
-    const { error } = await sb.from('assignments').upsert(updates, { onConflict: 'id' });
-    if (error) errors.push(`Batch update failed: ${error.message}`);
-    else filled += updates.length;
+    const w = await bulkWriteWithRowFallback(sb, 'assignments', updates, {
+      onConflict: 'id', label: 'plan update batch',
+    });
+    dbQueries += w.dbQueries;
+    filled += w.landedIdx.length;
+    for (const e of w.rowErrors) {
+      errors.push(`Batch update failed for assignment ${updates[e.index].id}: ${e.message}`);
+    }
   }
   if (inserts.length > 0) {
-    dbQueries++;
-    const { error } = await sb.from('assignments').insert(inserts);
-    if (error) errors.push(`Batch insert failed: ${error.message}`);
-    else filled += inserts.length;
+    const w = await bulkWriteWithRowFallback(sb, 'assignments', inserts, {
+      label: 'plan insert batch',
+    });
+    dbQueries += w.dbQueries;
+    filled += w.landedIdx.length;
+    for (const e of w.rowErrors) {
+      errors.push(`Batch insert failed for slot ${inserts[e.index].schedule_slot_id}: ${e.message}`);
+    }
   }
 
   return { filled, errors, dbQueries };
