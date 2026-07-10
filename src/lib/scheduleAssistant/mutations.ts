@@ -8,6 +8,7 @@
 // can never diverge on the clinical invariants.
 import { evaluateAssignment, validationFlagsFor } from '@/lib/rulesEngine/evaluate';
 import { applySequenceAutoFill, cleanupSequenceAutoFill } from '@/lib/rulesEngine/sequenceAutoFill';
+import { revalidateNeighbors } from '@/app/api/scheduling/schedule-assignments/route.helpers';
 import type { CallPatternDoc } from '@/lib/rulesEngine/callPattern';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -121,6 +122,9 @@ export async function assignProviderToSlot(
   if (error) throw new Error(`assignment write failed: ${error.message}`);
 
   const fill = await applySequenceAutoFill(sb, slotId, providerId);
+  // Same post-write step as the manual route: refresh the provider's ±7-day
+  // neighbors' stored validation_flags (best-effort, never throws).
+  await revalidateNeighbors(sb, slotId, providerId);
   return {
     assignment: data as Record<string, unknown>,
     validation: {
@@ -171,5 +175,6 @@ export async function clearSlotAssignment(
     .insert({ schedule_slot_id: slotId, assignment_status: 'open', source_type: 'assistant' });
   if (insErr) throw new Error(`open-row recreate failed: ${insErr.message}`);
 
+  await revalidateNeighbors(sb, slotId, existing.provider_id as string);
   return { cleared: true, clearedSlotIds, patternWarnings };
 }

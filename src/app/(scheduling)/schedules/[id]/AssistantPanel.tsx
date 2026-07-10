@@ -173,7 +173,9 @@ export default function AssistantPanel({
       const res = await fetch(`/api/scheduling/assistant/actions/${actionId}/revert`, { method: 'POST' });
       const body = await res.json().catch(() => ({}));
       if (!res.ok || body.ok === false) {
-        throw new Error(body.error ?? (body.errors ?? []).join('; ') ?? `Undo failed (${res.status})`);
+        const detail = body.error
+          ?? (Array.isArray(body.errors) && body.errors.length > 0 ? body.errors.join('; ') : null);
+        throw new Error(detail ?? `Undo failed (${res.status})`);
       }
       setMessages(prev => prev.map((m, i) => (i === msgIndex ? { ...m, reverted: true } : m)));
       onMutated();
