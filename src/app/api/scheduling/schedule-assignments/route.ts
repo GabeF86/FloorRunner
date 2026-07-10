@@ -23,10 +23,10 @@ export async function POST(req: NextRequest) {
     console.error(`[rulesEngine] validation unavailable for slot ${body.schedule_slot_id} — writing needs-re-validation sentinel`);
   }
 
-  // One assignment row per slot, enforced by the UNIQUE (schedule_slot_id)
-  // constraint (patch18: assignments_slot_unique). Upsert is atomic, so two
-  // concurrent edits can't both insert a duplicate row for the same slot
-  // (the previous update-else-insert raced).
+  // One assignment row per slot, enforced by assignments_schedule_slot_id_key
+  // (migration 20260524000000_add_assignment_unique_constraints.sql). Upsert
+  // is atomic, so two concurrent edits can't both insert a duplicate row for
+  // the same slot (the previous update-else-insert raced).
   const { data, error } = await sb
     .from('assignments')
     .upsert(

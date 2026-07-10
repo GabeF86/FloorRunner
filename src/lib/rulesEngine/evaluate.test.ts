@@ -110,6 +110,66 @@ describe('evaluated flag', () => {
   });
 });
 
+describe('loadContext fail-closed (serial provider-section query failures)', () => {
+  // A transient failure on ANY context query must yield evaluated:false —
+  // silently-empty availability would validate clean over PTO (invariants 2/6),
+  // a failed cross-site query would hide double-booking (invariant 3).
+  const failure = { data: null, error: { message: 'db down' } };
+  const okTables = (): Record<string, TableCfg> => ({
+    schedule_slots: (filters: Filter[]) => {
+      const eqId = filters.find(f => f.method === 'eq' && f.args[0] === 'id');
+      if (eqId) return { data: SLOT, error: null };
+      return { data: [], error: null }; // sameDay branch
+    },
+    providers: { data: { id: 'p1', provider_type: 'physician', provider_employment_profiles: { fte_value: 1 } }, error: null },
+    provider_site_credentials: { data: null, error: null },
+    provider_availability: { data: [], error: null },
+    assignments: { data: [], error: null },
+  });
+
+  const cases: Array<[string, Record<string, TableCfg>]> = [
+    ['provider row', { ...okTables(), providers: failure }],
+    ['credentials', { ...okTables(), provider_site_credentials: failure }],
+    ['availability', { ...okTables(), provider_availability: failure }],
+    ['neighbors', {
+      ...okTables(),
+      assignments: (filters: Filter[]) =>
+        filters.some(f => f.method === 'gte') ? failure : { data: [], error: null },
+    }],
+    ['cross-site', {
+      ...okTables(),
+      assignments: (filters: Filter[]) =>
+        filters.some(f => f.method === 'gte') ? { data: [], error: null } : failure,
+    }],
+    ['same-day slots', {
+      ...okTables(),
+      schedule_slots: (filters: Filter[]) => {
+        const eqId = filters.find(f => f.method === 'eq' && f.args[0] === 'id');
+        return eqId ? { data: SLOT, error: null } : failure;
+      },
+    }],
+  ];
+
+  for (const [name, tables] of cases) {
+    it(`${name} query failure → evaluated:false, no clean flags to write`, async () => {
+      const { sb, calls } = makeFakeSupabase({ tables });
+      const res = await evaluateAssignment(sb, 'sA', 'p1', siteCtx);
+      expect(res.evaluated).toBe(false);
+      expect(res.violations).toEqual([]);
+      // evaluateAssignment never writes; the guarded write-sites skip on
+      // !evaluated (tested elsewhere) — but assert nothing wrote here either.
+      expect(callsFor(calls, 'assignments', 'update')).toHaveLength(0);
+      expect(callsFor(calls, 'assignments', 'upsert')).toHaveLength(0);
+    });
+  }
+
+  it('sanity: same fake with no failures → evaluated:true', async () => {
+    const { sb } = makeFakeSupabase({ tables: okTables() });
+    const res = await evaluateAssignment(sb, 'sA', 'p1', siteCtx);
+    expect(res.evaluated).toBe(true);
+  });
+});
+
 describe('loadContext neighbor scoping', () => {
   it('scopes the neighbor query to the slot version+site; cross-site query stays unscoped', async () => {
     const { sb, calls } = makeFakeSupabase({

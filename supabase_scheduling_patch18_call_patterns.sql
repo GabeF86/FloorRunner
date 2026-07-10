@@ -109,22 +109,33 @@ WHERE NOT EXISTS (
   SELECT 1 FROM scheduling.call_patterns cp WHERE cp.site_id = s.id AND cp.status = 'active'
 );
 
--- ── assignments: one row per slot ───────────────────────────────────────────
+-- ── assignments: one-row-per-slot sanity check ──────────────────────────────
 -- The schedule-assignments POST route upserts with onConflict:'schedule_slot_id',
--- which requires a UNIQUE constraint the base schema never had (only the plain
--- idx_assignments_slot index). Dedupe first (keep the newest row per slot,
--- preferring assigned over open), then add the unique index.
-WITH ranked AS (
-  SELECT id,
-         row_number() OVER (
-           PARTITION BY schedule_slot_id
-           ORDER BY (assignment_status = 'assigned') DESC, updated_at DESC, created_at DESC
-         ) AS rn
-  FROM scheduling.assignments
-)
-DELETE FROM scheduling.assignments a
-USING ranked r
-WHERE a.id = r.id AND r.rn > 1;
-
-CREATE UNIQUE INDEX IF NOT EXISTS assignments_slot_unique
-  ON scheduling.assignments(schedule_slot_id);
+-- which depends on the UNIQUE constraint added by
+-- supabase/migrations/20260524000000_add_assignment_unique_constraints.sql
+-- (assignments_schedule_slot_id_key, live since 2026-05). This patch does NOT
+-- recreate it — a second unique index on the busiest table would be pure write
+-- overhead. Instead, fail loudly if the constraint has somehow gone missing so
+-- the applier investigates before the upsert path silently breaks.
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_index i
+    JOIN pg_class t ON t.oid = i.indrelid
+    JOIN pg_namespace n ON n.oid = t.relnamespace
+    JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = i.indkey[0]
+    WHERE n.nspname = 'scheduling'
+      AND t.relname = 'assignments'
+      AND i.indisunique
+      AND i.indnkeyatts = 1
+      AND a.attname = 'schedule_slot_id'
+  ) THEN
+    RAISE EXCEPTION USING MESSAGE =
+      'scheduling.assignments has no UNIQUE(schedule_slot_id) constraint '
+      || '(expected assignments_schedule_slot_id_key from migration '
+      || '20260524000000_add_assignment_unique_constraints.sql). The '
+      || 'schedule-assignments POST upsert depends on it — apply that '
+      || 'migration before patch18.';
+  END IF;
+END $$;
