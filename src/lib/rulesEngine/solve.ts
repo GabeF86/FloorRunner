@@ -175,9 +175,10 @@ export function solve(ctx: GenerationContext, opts: SolveOptions = {}): Solution
   };
 
   // ── configurable placement passes (pre-PTO Thursday, etc.) ──
-  // Thursday -> providers with (approved) PTO that week. genContext precomputes
-  // this; bare fixtures don't, so fall back to the shared builder (same approved
-  // semantics; Task 9 revisits the predicate).
+  // Thursday -> providers with blocking PTO that week — PENDING included
+  // (isBlockingAvailability, spec §6.7: pending blocks everywhere, so pending
+  // also drives placement). genContext precomputes this; bare fixtures don't,
+  // so fall back to the shared builder (identical predicate).
   const prePtoByThursday = ctx.prePtoByThursday
     ?? buildPrePtoByThursday(ctx.providers, ctx.availByPid, ctx.slotIndex);
   const tryPlacePrePto = (slot: SlotToFill | undefined, p: CandidateProvider): boolean => {

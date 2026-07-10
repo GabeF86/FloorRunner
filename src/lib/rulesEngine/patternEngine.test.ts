@@ -269,3 +269,25 @@ describe('patternEngine — overlay seed budget', () => {
     expect(plan.unfilled.some(u => u.slot_id === 'monC1')).toBe(false);
   });
 });
+
+// ── 11. pending PTO drives the pre-PTO Thursday placement (spec §6.7) ────────
+// Policy: pending PTO blocks in every engine (isBlockingAvailability), so it
+// must also EARN the pre-PTO Thursday call — otherwise a provider whose
+// request is merely awaiting approval would lose their PTO week to the block
+// without getting the Thursday call before it.
+describe('patternEngine — pending PTO earns the pre-PTO Thursday placement (§6.7)', () => {
+  it('gives a pending-PTO provider the Thursday C1 before their PTO week', () => {
+    // PTO week of Mon 2026-01-12 → Thursday before = 2026-01-08.
+    const thuC1 = callSlot('thuC1', '2026-01-08', 'C1', 'weekday');
+    const ctx = buildCtx([thuC1], [prov('p1'), prov('p2')], {
+      availByPid: new Map([['p2', [{
+        availability_type: 'pto', start_date: '2026-01-13', end_date: '2026-01-15',
+        approval_status: 'pending',
+      }]]]),
+    });
+    const plan = solve(ctx);
+    const thu = plan.assignments.find(a => a.slot_id === 'thuC1');
+    expect(thu?.provider_id).toBe('p2');
+    expect(thu?.source).toBe('pre-pto-thursday');
+  });
+});

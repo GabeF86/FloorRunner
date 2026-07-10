@@ -18,6 +18,19 @@ export const BLOCKING_AVAIL: ReadonlySet<string> = new Set([
   'jury_duty', 'unavailable', 'blocked',
 ]);
 
+// Canonical "does this availability entry block scheduling?" predicate
+// (clinical invariant 2 / spec §6.7): PENDING requests BLOCK — only entries
+// explicitly denied or canceled are ignored. Every engine (call gen, day-shift
+// gen, eligibility, pre-PTO placement) must route through this so no two
+// engines can disagree about a pending request.
+export function isBlockingAvailability(
+  entry: { availability_type: string; approval_status: string },
+): boolean {
+  return entry.approval_status !== 'denied'
+    && entry.approval_status !== 'canceled'
+    && BLOCKING_AVAIL.has(entry.availability_type);
+}
+
 // Multi-day planned-leave types that also trigger a weekend-bookend
 // extension. Ad-hoc single-day types (sick, jury_duty, unavailable,
 // blocked) are intentionally left out — extending them would swallow
@@ -128,14 +141,14 @@ export function dayTypeBucket(dt: string): string {
 
 // ── Pre-PTO Thursday placement index ────────────────────────────────────────
 
-// Thursday-of-prior-week -> providers who have APPROVED blocking leave that
-// week. Drives the pre_pto placement pass (give PTO-bound providers their call
-// before they leave). Pure: precomputed once in genContext, but solve keeps it
-// as a fallback so bare fixtures (no precomputed field) still work.
+// Thursday-of-prior-week -> providers with blocking leave that week. Drives
+// the pre_pto placement pass (give PTO-bound providers their call before they
+// leave). Pure: precomputed once in genContext, but solve keeps it as a
+// fallback so bare fixtures (no precomputed field) still work.
 //
-// NOTE: uses `approval_status === 'approved'` — the SAME semantics solve has
-// always used. Task 9 revisits this with a shared approval predicate; do NOT
-// change it here.
+// Uses isBlockingAvailability — spec §6.7: pending PTO blocks everywhere, so a
+// pending request must also EARN the Thursday placement. A provider whose
+// request is merely awaiting approval is treated exactly like an approved one.
 export function buildPrePtoByThursday(
   providers: CandidateProvider[],
   availByPid: Map<string, AvailabilityEntry[]>,
@@ -144,8 +157,7 @@ export function buildPrePtoByThursday(
   const out = new Map<string, Set<string>>();
   for (const p of providers) {
     for (const a of availByPid.get(p.id) || []) {
-      if (a.approval_status !== 'approved') continue;
-      if (!BLOCKING_AVAIL.has(a.availability_type)) continue;
+      if (!isBlockingAvailability(a)) continue;
       const thu = thursdayBeforeWeekOf(a.start_date);
       if (!slotIndex.has(thu)) continue;
       const set = out.get(thu) || new Set<string>();

@@ -9,6 +9,7 @@ import {
   effectivePtoRange,
   normalizeWeekdays,
   dayTypeBucket,
+  isBlockingAvailability,
 } from './shared';
 
 // Characterization tests pinning the hard-won date / PTO / bucket logic.
@@ -94,6 +95,18 @@ describe('normalizeWeekdays', () => {
   it('preserves a valid 7-element boolean array', () => {
     const v = [false, true, true, true, true, true, false];
     expect(normalizeWeekdays(v)).toEqual(v);
+  });
+});
+
+describe('isBlockingAvailability (canonical predicate — spec §6.7)', () => {
+  it('pending blocks — only denied/canceled are ignored', () => {
+    expect(isBlockingAvailability({ availability_type: 'pto', approval_status: 'pending' })).toBe(true);
+    expect(isBlockingAvailability({ availability_type: 'pto', approval_status: 'approved' })).toBe(true);
+    expect(isBlockingAvailability({ availability_type: 'pto', approval_status: 'denied' })).toBe(false);
+    expect(isBlockingAvailability({ availability_type: 'pto', approval_status: 'canceled' })).toBe(false);
+  });
+  it('non-blocking availability types never block', () => {
+    expect(isBlockingAvailability({ availability_type: 'preference', approval_status: 'approved' })).toBe(false);
   });
 });
 

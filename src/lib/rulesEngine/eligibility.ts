@@ -1,11 +1,11 @@
 import {
-  BLOCKING_AVAIL,
   BOOKEND_EXTENDING_TYPES,
   addDays,
   datesOverlap,
   dayOfWeekUTC,
   effectivePtoRange,
   dayTypeBucket,
+  isBlockingAvailability,
 } from './shared';
 import { CLASSIC_PATTERN, postCallBlockOffsets } from './callPattern';
 import type {
@@ -113,7 +113,10 @@ export function evaluateEligibility(
     const weekAfterEnd = addDays(satDate, 6);     // Fri after the weekend
     const entries = ctx.availByPid.get(p.id) || [];
     for (const a of entries) {
-      if (a.approval_status === 'denied' || a.approval_status === 'canceled') continue;
+      // Canonical predicate (pending blocks — spec §6.7), narrowed to the
+      // bookend-extending subset: only multi-day planned leave pulls the
+      // adjacent weekend out of contention.
+      if (!isBlockingAvailability(a)) continue;
       if (!BOOKEND_EXTENDING_TYPES.has(a.availability_type)) continue;
       if (a.start_date <= weekBeforeEnd && a.end_date >= weekBeforeStart) {
         return { eligible: false, reason: 'weekend-adjacent-pto' };
@@ -124,11 +127,10 @@ export function evaluateEligibility(
     }
   }
 
-  // Availability with PTO bookend.
+  // Availability with PTO bookend (pending blocks — spec §6.7).
   const entries = ctx.availByPid.get(p.id) || [];
   for (const a of entries) {
-    if (a.approval_status === 'denied' || a.approval_status === 'canceled') continue;
-    if (!BLOCKING_AVAIL.has(a.availability_type)) continue;
+    if (!isBlockingAvailability(a)) continue;
     const { start, end } = effectivePtoRange(a);
     if (datesOverlap(start, end, slot.slot_date)) {
       return { eligible: false, reason: 'availability-blocked' };

@@ -98,7 +98,7 @@ export interface GenerationContext {
   // ── precomputed invariants (all optional; solve computes locally when
   //    absent so bare fixtures keep working) ──
   providerById?: Map<string, CandidateProvider>;
-  prePtoByThursday?: Map<string, Set<string>>; // Thursday-of-prior-week -> pids on approved leave
+  prePtoByThursday?: Map<string, Set<string>>; // Thursday-of-prior-week -> pids on blocking leave (pending included, §6.7)
   scheduleDates?: string[];                    // sorted slotIndex date keys
 }
 

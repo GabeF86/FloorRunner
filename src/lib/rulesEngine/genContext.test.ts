@@ -93,13 +93,24 @@ describe('buildPrePtoByThursday', () => {
     expect(out.get('2026-01-08')!.has('p1')).toBe(true);
   });
 
-  it('ignores unapproved leave (Task 9 revisits the predicate)', () => {
+  it('includes pending leave — pending blocks everywhere so it also drives placement (spec §6.7)', () => {
     const providers: CandidateProvider[] = [prov('p1', 1)];
     const avail = new Map<string, AvailabilityEntry[]>([
       ['p1', [{ availability_type: 'pto', start_date: '2026-01-14', end_date: '2026-01-16', approval_status: 'pending' }]],
     ]);
     const slotIndex = new Map<string, Map<string, SlotToFill>>([['2026-01-08', new Map()]]);
-    expect(buildPrePtoByThursday(providers, avail, slotIndex).size).toBe(0);
+    expect(buildPrePtoByThursday(providers, avail, slotIndex).get('2026-01-08')!.has('p1')).toBe(true);
+  });
+
+  it('ignores denied and canceled leave', () => {
+    const providers: CandidateProvider[] = [prov('p1', 1)];
+    for (const status of ['denied', 'canceled']) {
+      const avail = new Map<string, AvailabilityEntry[]>([
+        ['p1', [{ availability_type: 'pto', start_date: '2026-01-14', end_date: '2026-01-16', approval_status: status }]],
+      ]);
+      const slotIndex = new Map<string, Map<string, SlotToFill>>([['2026-01-08', new Map()]]);
+      expect(buildPrePtoByThursday(providers, avail, slotIndex).size).toBe(0);
+    }
   });
 
   it('ignores non-blocking availability types', () => {
