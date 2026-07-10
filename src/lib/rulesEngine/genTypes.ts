@@ -173,6 +173,10 @@ export interface UnfilledSlot {
   slot_id: string;
   slot_date: string;
   shift_type_code: string;
+  // Optional so the FROZEN solveLegacy.ts (and bare test-plan literals) keep
+  // compiling; the v2 solve() stamps it on every unfilled entry so consumers
+  // (e.g. optimize's eviction move set) never need a call-code list.
+  shift_type_category?: string;
   reason: string;
   candidates?: CandidateRejection[];      // per-provider "why not"
 }

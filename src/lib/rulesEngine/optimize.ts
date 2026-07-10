@@ -4,13 +4,9 @@ import { evaluateEligibility } from './eligibility';
 import { CLASSIC_PATTERN } from './callPattern';
 import type { CallPatternDoc } from './callPattern';
 import type {
-  GenerationContext, SolutionPlan, SolutionMetrics, SlotToFill,
+  GenerationContext, SolutionPlan, SolutionMetrics, SlotToFill, UnfilledSlot,
 } from './genTypes';
 
-// Legacy fallback for call-ness of an UNFILLED slot (that shape carries no
-// category) — used only when ctx.shiftTypes is absent (bare fixtures /
-// degraded mode), mirroring solve()'s fallback idiom.
-const LEGACY_CALL_CODES = ['C1', 'C2', 'C3'];
 const MAX_ITERATIONS = 200; // bound on accepted moves (hill-climb is monotone)
 // Worst-case re-solves per scan = unfilled × providers × movable × providers.
 // On a real 12-week/85-provider block that can reach ~50 × 85 × 850 × 85 ≈ 307 M.
@@ -31,7 +27,7 @@ export interface OptimizeOptions {
 // Observability counters for a single optimize() run.
 export interface OptimizeStats {
   resolves: number;   // full solve()+score trials evaluated
-  gatedSkips: number; // trials skipped by the eligibility pre-gate
+  gatedSkips: number; // pre-gate rejections (a hoisted rejection skips many trials at once)
   wallMs: number;     // elapsed wall-clock of the optimize() call
 }
 
@@ -94,11 +90,11 @@ export function optimize(ctx: GenerationContext, opts: OptimizeOptions = {}): Op
   const providerIds = ctx.providers.map(p => p.id).sort();
   const providerById = ctx.providerById ?? new Map(ctx.providers.map(p => [p.id, p]));
   const slotById = new Map<string, SlotToFill>(ctx.slotsToFill.map(s => [s.slot_id, s]));
-  // Call-ness of an unfilled slot: shift-type category when the map is loaded,
-  // legacy code literals otherwise (same idiom as solve's fallbacks).
-  const isCallCode = (code: string): boolean => (ctx.shiftTypes
-    ? ctx.shiftTypes.get(code)?.category === 'call'
-    : LEGACY_CALL_CODES.includes(code));
+  // Call-ness of an unfilled slot: the v2 solve() stamps shift_type_category
+  // on every unfilled entry; the shift-type map covers older plan shapes.
+  // Unknown category -> conservatively not a call (no eviction attempted).
+  const isCallUnfilled = (u: UnfilledSlot): boolean =>
+    (u.shift_type_category ?? ctx.shiftTypes?.get(u.shift_type_code)?.category) === 'call';
 
   let best = solve(ctx);
   let bestMetrics = scoreSolution(best, ctx);
@@ -108,41 +104,42 @@ export function optimize(ctx: GenerationContext, opts: OptimizeOptions = {}): Op
   const budgetExhausted = () =>
     resolvesUsed >= maxResolves || Date.now() - t0 >= wallClockMs;
 
+  // ── Eligibility pre-gate (built once — its inputs never change) ──
+  // The gate state holds ONLY the seeded assignments (+ ctx-derived facts like
+  // PTO, cross-site, credentials, weekday availability inside
+  // evaluateEligibility) — exactly the state every re-solve starts from, and
+  // solve() only ever ADDS to it. Every gate condition is monotone in that
+  // state, so a gated (slot, provider) pair is GUARANTEED to self-reject at
+  // overrideFor()'s identical 'call' check inside the trial's solve(), leaving
+  // the forced slot unfilled. Such a trial can improve the objective only
+  // through second-order cascades (the freed provider filling a DIFFERENT
+  // unfilled slot in the main loop). Gating is therefore an accepted narrowing
+  // of the move set: it never admits an invalid plan, stays deterministic, and
+  // skips only trials whose forced placement is guaranteed to self-reject.
+  // NOTE: the snapshot must NOT include the current best's own (non-seed)
+  // assignments — those are exactly what a trial perturbs (e.g. an eviction
+  // vacates P's slot, freeing P's quota/day), and gating on them would skip
+  // first-order improving moves.
+  const gateState = seedSolveState(ctx, doc);
+  const gateMemo = new Map<string, boolean>();
+  const gatePasses = (slotId: string, pid: string): boolean => {
+    const key = `${slotId}|${pid}`;
+    const memo = gateMemo.get(key);
+    if (memo !== undefined) return memo;
+    const slot = slotById.get(slotId);
+    const p = providerById.get(pid);
+    // Unknown slot/provider: don't gate — fall through to the full resolve.
+    const pass = !slot || !p
+      || evaluateEligibility(slot, p, gateState, ctx, 'call').eligible;
+    gateMemo.set(key, pass);
+    return pass;
+  };
+
   for (let iter = 0; iter < maxIters && !budgetExhausted(); iter++) {
     let improved = false;
 
-    // ── Eligibility pre-gate (rebuilt once per scan) ──
-    // Why gating cannot change the chosen plan (parity-critical): the gate
-    // state holds ONLY the seeded assignments (+ ctx-derived facts like PTO,
-    // cross-site, credentials, weekday availability inside evaluateEligibility)
-    // — exactly the state every re-solve starts from, and solve() only ever
-    // ADDS to it. Every gate condition is monotone in that state, so a gated
-    // (slot, provider) pair would also fail overrideFor()'s identical 'call'
-    // check inside the trial's solve(): the forced provider self-rejects, the
-    // slot goes unfilled, `unfilled` grows, and compareMetrics rejects the
-    // trial as no-improvement. Gating therefore only SKIPS resolves the
-    // ungated optimizer would have rejected anyway.
-    // NOTE: the snapshot must NOT include the current best's own (non-seed)
-    // assignments — those are exactly what a trial perturbs (e.g. an eviction
-    // vacates P's slot, freeing P's quota/day), and gating on them would skip
-    // improving moves.
-    const gateState = seedSolveState(ctx, doc);
-    const gateMemo = new Map<string, boolean>();
-    const gatePasses = (slotId: string, pid: string): boolean => {
-      const key = `${slotId}|${pid}`;
-      const memo = gateMemo.get(key);
-      if (memo !== undefined) return memo;
-      const slot = slotById.get(slotId);
-      const p = providerById.get(pid);
-      // Unknown slot/provider: don't gate — fall through to the full resolve.
-      const pass = !slot || !p
-        || evaluateEligibility(slot, p, gateState, ctx, 'call').eligible;
-      gateMemo.set(key, pass);
-      return pass;
-    };
-
     const unfilledCallIds = best.unfilled
-      .filter(u => isCallCode(u.shift_type_code))
+      .filter(isCallUnfilled)
       .map(u => u.slot_id).sort();
     const movable = movableCallSlotIds(best, doc);
     // pid -> movable slot ids they hold, built once per scan (movable is
@@ -166,14 +163,15 @@ export function optimize(ctx: GenerationContext, opts: OptimizeOptions = {}): Op
       for (const pid of providerIds) {
         // P must currently hold at least one movable slot.
         const pSlots = movableByPid.get(pid) ?? [];
+        if (pSlots.length === 0) continue;
+        // Hoisted gate: if P can't take U in any trial, every (slot, evictee)
+        // combination for this P is dead — counted as ONE gated skip.
+        if (!gatePasses(uId, pid)) { gatedSkips++; continue; }
         for (const sId of pSlots) {
           for (const qid of providerIds) {
             if (qid === pid) continue;
             if (budgetExhausted()) break outer; // budget guard
-            if (!gatePasses(uId, pid) || !gatePasses(sId, qid)) {
-              gatedSkips++;
-              continue;
-            }
+            if (!gatePasses(sId, qid)) { gatedSkips++; continue; }
             const trial = new Map(bestAssign);
             trial.set(uId, pid);   // P fills the gap
             trial.set(sId, qid);   // Q takes P's vacated slot

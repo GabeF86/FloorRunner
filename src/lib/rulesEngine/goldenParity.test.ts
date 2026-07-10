@@ -12,12 +12,13 @@ import type { SolutionPlan } from './genTypes';
 // 181 assignments, 17 weekend-chain, 1 unfilled.
 
 // Drop fields the pattern-interpreter refactor is allowed to add/change. Only
-// `explanation` (numeric decision detail) and the additive `skippedDerived[]`
-// (IF-4) are stripped here; assignment identity (slot, provider, source) and the
-// unfilled list must match legacy exactly.
+// `explanation` (numeric decision detail), the additive `skippedDerived[]`
+// (IF-4), and the additive `UnfilledSlot.shift_type_category` stamp (frozen
+// legacy never sets it) are stripped here; assignment identity (slot,
+// provider, source) and the rest of the unfilled list must match legacy exactly.
 const stripAdditive = (plan: SolutionPlan) => ({
   assignments: plan.assignments.map(a => ({ ...a, explanation: undefined })),
-  unfilled: plan.unfilled,
+  unfilled: plan.unfilled.map(u => ({ ...u, shift_type_category: undefined })),
 });
 
 describe('golden parity: v2 engine + classic pattern ≡ legacy engine', () => {

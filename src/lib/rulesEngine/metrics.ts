@@ -32,6 +32,8 @@ function populationStdev(values: number[]): number {
 // offsets across that block's chains together with 0 (the anchor itself).
 // Classic: offsets {-1, +1} -> Fri-Sun around each Saturday — exact parity
 // with the previous WEEKEND_BLOCK_DAY_TYPES behavior on engine-produced plans.
+// Deliberately broad: windows anchor on ANY assignment matching anchorDayType
+// and exempt ALL pairs inside — this is a metric tiebreak only, never validity.
 function blockExemptionWindows(
   doc: CallPatternDoc, plan: SolutionPlan,
 ): Array<{ start: string; end: string }> {

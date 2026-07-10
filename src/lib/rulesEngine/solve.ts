@@ -230,7 +230,8 @@ export function solve(ctx: GenerationContext, opts: SolveOptions = {}): Solution
         for (const s of spanSlots) {
           plan.unfilled.push({
             slot_id: s.slot_id, slot_date: s.slot_date,
-            shift_type_code: s.shift_type_code, reason: 'No provider can cover full span',
+            shift_type_code: s.shift_type_code, shift_type_category: s.shift_type_category,
+            reason: 'No provider can cover full span',
           });
         }
         continue;
@@ -249,7 +250,8 @@ export function solve(ctx: GenerationContext, opts: SolveOptions = {}): Solution
     if (forced === null) {
       plan.unfilled.push({
         slot_id: slot.slot_id, slot_date: slot.slot_date,
-        shift_type_code: slot.shift_type_code, reason: 'Forced provider ineligible',
+        shift_type_code: slot.shift_type_code, shift_type_category: slot.shift_type_category,
+        reason: 'Forced provider ineligible',
       });
       continue;
     }
@@ -287,7 +289,7 @@ export function solve(ctx: GenerationContext, opts: SolveOptions = {}): Solution
       }));
       plan.unfilled.push({
         slot_id: slot.slot_id, slot_date: slot.slot_date,
-        shift_type_code: slot.shift_type_code,
+        shift_type_code: slot.shift_type_code, shift_type_category: slot.shift_type_category,
         reason: 'No eligible providers', candidates: candidateReasons,
       });
       continue;
@@ -356,7 +358,8 @@ export function solve(ctx: GenerationContext, opts: SolveOptions = {}): Solution
         if (!pick) {
           plan.unfilled.push({
             slot_id: slot.slot_id, slot_date: slot.slot_date,
-            shift_type_code: slot.shift_type_code, reason: 'No eligible relief provider',
+            shift_type_code: slot.shift_type_code, shift_type_category: slot.shift_type_category,
+            reason: 'No eligible relief provider',
           });
           continue;
         }

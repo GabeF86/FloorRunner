@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { scoreSolution } from './metrics';
 import type { CallPatternDoc } from './callPattern';
 import type {
-  GenerationContext, CandidateProvider, SolutionPlan, PlannedAssignment, ShiftTypeInfo,
+  GenerationContext, CandidateProvider, SolutionPlan, PlannedAssignment,
 } from './genTypes';
 
 function prov(id: string, fte = 1): CandidateProvider {
@@ -123,13 +123,10 @@ describe('scoreSolution', () => {
 });
 
 describe('scoreSolution — category-driven call-ness', () => {
-  const ncInfo: ShiftTypeInfo = {
-    code: 'NC', category: 'call', call_rank: 0, relief_rank: null, is_overlay: false,
-    generation_engine: 'call', requires_post_call_rule: true, call_coverage_type: null,
-  };
-
   it("a custom call code 'NC' contributes to fairnessStdev and burnout exactly as C1", () => {
     // Two adjacent weekday calls (Mon 01-05, Tue 01-06), all on pA; pB idle.
+    // Call-ness comes from the category STAMPED on the assignment (callA sets
+    // 'call'); scoreSolution never reads ctx.shiftTypes.
     const mkPlan = (code: string): SolutionPlan => ({
       assignments: [
         callA({ slot_id: 'a', slot_date: '2026-01-05', shift_type_code: code, provider_id: 'pA' }),
@@ -137,9 +134,7 @@ describe('scoreSolution — category-driven call-ness', () => {
       ],
       unfilled: [],
     });
-    const ncCtx = ctx([prov('pA'), prov('pB')], new Map(),
-      { shiftTypes: new Map([['NC', ncInfo]]) });
-    const mNC = scoreSolution(mkPlan('NC'), ncCtx);
+    const mNC = scoreSolution(mkPlan('NC'), ctx([prov('pA'), prov('pB')]));
     const mC1 = scoreSolution(mkPlan('C1'), ctx([prov('pA'), prov('pB')]));
     expect(mNC.fairnessStdev).toBeGreaterThan(0);
     expect(mNC.fairnessStdev).toBeCloseTo(mC1.fairnessStdev);
