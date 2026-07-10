@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { optimize, extractCallAssignment, compareMetrics } from './optimize';
 import { solve } from './solve';
 import { scoreSolution } from './metrics';
+import { CLASSIC_PATTERN } from './callPattern';
 import type { GenerationContext, SlotToFill, CandidateProvider } from './genTypes';
 
 function prov(id: string, fte = 1, over: Partial<CandidateProvider> = {}): CandidateProvider {
@@ -79,7 +80,7 @@ describe('optimize — eviction fills a skip greedy left behind', () => {
     const seed = solve(ctx);
     const seedScore = scoreSolution(seed, ctx);
 
-    const optimized = optimize(ctx);
+    const optimized = optimize(ctx).plan;
     const optScore = scoreSolution(optimized, ctx);
 
     // Optimizer must do at least as well on skips, and ideally fill both.
@@ -105,7 +106,7 @@ describe('optimize — eviction fills a skip greedy left behind', () => {
       bucketTarget: new Map([['pX|weekday|C1', 1], ['pY|weekday|C1', 1]]),
     });
     const seed = solve(ctx);
-    const opt = optimize(ctx);
+    const opt = optimize(ctx).plan;
     expect(scoreSolution(opt, ctx).skipped).toBeLessThan(scoreSolution(seed, ctx).skipped);
     expect(opt.assignments.some(a => a.slot_id === 's1')).toBe(true);
     expect(opt.assignments.some(a => a.slot_id === 's2')).toBe(true);
@@ -118,7 +119,7 @@ describe('optimize — eviction fills a skip greedy left behind', () => {
     ];
     const ctx = buildCtx(slots, [prov('pA'), prov('pB'), prov('pC')]);
     const seed = solve(ctx);
-    const optimized = optimize(ctx);
+    const optimized = optimize(ctx).plan;
     expect(scoreSolution(optimized, ctx).skipped)
       .toBeLessThanOrEqual(scoreSolution(seed, ctx).skipped);
   });
@@ -128,8 +129,8 @@ describe('optimize — eviction fills a skip greedy left behind', () => {
       [callSlot('s1', '2026-01-06', 'C1'), callSlot('s2', '2026-01-13', 'C1')],
       [prov('pB'), prov('pA')],
     );
-    const a = optimize(mk());
-    const b = optimize(mk());
+    const a = optimize(mk()).plan;
+    const b = optimize(mk()).plan;
     expect(a.assignments.map(x => `${x.slot_id}:${x.provider_id}`).sort())
       .toEqual(b.assignments.map(x => `${x.slot_id}:${x.provider_id}`).sort());
   });
@@ -142,10 +143,83 @@ describe('optimize — eviction fills a skip greedy left behind', () => {
     const s2 = callSlot('s2', '2026-01-13', 'C1');
     const ctx = buildCtx([s1, s2], [prov('pA'), prov('pB')]); // generous quota (buildCtx sets 99)
     const seed = solve(ctx);
-    const opt = optimize(ctx);
+    const opt = optimize(ctx).plan;
     const seedM = scoreSolution(seed, ctx);
     const optM = scoreSolution(opt, ctx);
     expect(optM.fairnessStdev).toBeLessThanOrEqual(seedM.fairnessStdev + 1e-9);
+  });
+});
+
+describe('optimize — eligibility pre-gate, wall-clock budget, movable day types', () => {
+  it('spends no resolve on a provider who is on PTO for the whole block (pre-gate)', () => {
+    // pA takes Tue s1; its post-call block strands Wed s2 (pZ is on PTO all
+    // month). EVERY candidate move involves pZ -> all trials gate out:
+    // eviction (s2<-pA, s1<-pZ) and swap (s1->pZ). Zero resolves spent.
+    const pA = prov('pA');
+    const pZ = prov('pZ');
+    const slots = [callSlot('s1', '2026-01-06', 'C1'), callSlot('s2', '2026-01-07', 'C1')];
+    const ctx = buildCtx(slots, [pA, pZ], {
+      availByPid: new Map([['pZ', [{
+        availability_type: 'pto', start_date: '2026-01-01', end_date: '2026-01-31',
+        approval_status: 'approved',
+      }]]]),
+    });
+    const seed = solve(ctx);
+    expect(seed.unfilled.map(u => u.slot_id)).toEqual(['s2']); // scenario sanity
+    const { plan, stats } = optimize(ctx);
+    expect(stats.resolves).toBe(0);
+    expect(stats.gatedSkips).toBeGreaterThan(0);
+    expect(typeof stats.wallMs).toBe('number');
+    // Gating skipped only no-improvement trials: outcome matches the seed.
+    expect(plan.assignments.map(a => `${a.slot_id}:${a.provider_id}`).sort())
+      .toEqual(seed.assignments.map(a => `${a.slot_id}:${a.provider_id}`).sort());
+  });
+
+  it('a wallClockMs budget of 0 returns the seed plan unchanged', () => {
+    // Same fixture as the stranded-slot test: normal optimize DOES improve it
+    // (existing test above), so an unchanged result proves the budget bit.
+    const pX = prov('pX');
+    const pY = prov('pY', 1, { available_weekdays: [true, true, true, false, true, true, true] });
+    const slots = [callSlot('s1', '2026-01-06', 'C1'), callSlot('s2', '2026-01-07', 'C1')];
+    const ctx = buildCtx(slots, [pX, pY]);
+    const seed = solve(ctx);
+    const { plan, stats } = optimize(ctx, { wallClockMs: 0 });
+    expect(stats.resolves).toBe(0);
+    expect(plan.assignments.map(a => `${a.slot_id}:${a.provider_id}`).sort())
+      .toEqual(seed.assignments.map(a => `${a.slot_id}:${a.provider_id}`).sort());
+    expect(plan.unfilled.map(u => u.slot_id)).toEqual(seed.unfilled.map(u => u.slot_id));
+  });
+
+  it('does not move a saturday main-loop assignment under the classic pattern', () => {
+    // Two Saturday C1 slots, weekend quota 1 each. Greedy: s1->pX, s2 stranded
+    // (pX quota-full, pY on PTO that day). The eviction fix (s1->pY, s2->pX)
+    // exists but requires MOVING a saturday slot — classic
+    // optimizerMovableDayTypes is weekday+friday, so the optimizer must not
+    // touch it and s2 stays unfilled.
+    const mkCtx = (over: Partial<GenerationContext> = {}) => buildCtx(
+      [callSlot('s1', '2026-01-03', 'C1', 'saturday'), callSlot('s2', '2026-01-10', 'C1', 'saturday')],
+      [prov('pX'), prov('pY')],
+      {
+        bucketTarget: new Map([['pX|weekend|C1', 1], ['pY|weekend|C1', 1]]),
+        availByPid: new Map([['pY', [{
+          availability_type: 'pto', start_date: '2026-01-10', end_date: '2026-01-10',
+          approval_status: 'approved',
+        }]]]),
+        ...over,
+      },
+    );
+    const classic = optimize(mkCtx()).plan;
+    expect(classic.assignments.find(a => a.slot_id === 's1')?.provider_id).toBe('pX');
+    expect(classic.unfilled.map(u => u.slot_id)).toEqual(['s2']);
+
+    // Control (proves the scenario is fixable): a pattern that DOES allow
+    // moving saturday slots lets the eviction fill both.
+    const saturdayMovable = optimize(mkCtx({
+      callPattern: { ...CLASSIC_PATTERN, optimizerMovableDayTypes: ['weekday', 'friday', 'saturday'] },
+    })).plan;
+    expect(saturdayMovable.unfilled).toEqual([]);
+    expect(saturdayMovable.assignments.find(a => a.slot_id === 's1')?.provider_id).toBe('pY');
+    expect(saturdayMovable.assignments.find(a => a.slot_id === 's2')?.provider_id).toBe('pX');
   });
 });
 
@@ -178,7 +252,7 @@ describe('golden-master / equivalence', () => {
     const ctx = richCtx();
     const seed = solve(ctx);
     const seedM = scoreSolution(seed, ctx);
-    const opt = optimize(ctx);
+    const opt = optimize(ctx).plan;
     const optM = scoreSolution(opt, ctx);
     expect(optM.skipped).toBeLessThanOrEqual(seedM.skipped);
     // On equal skips, fairness must not get worse.

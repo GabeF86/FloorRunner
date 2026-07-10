@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { toResultAssignment, resolveOptimizeEnabled } from './autoGenerate';
+import { toResultAssignment, resolveOptimizeEnabled, resolveWallClockMs } from './autoGenerate';
 import type { PlannedAssignment } from './genTypes';
 
 describe('resolveOptimizeEnabled', () => {
@@ -11,6 +11,20 @@ describe('resolveOptimizeEnabled', () => {
   });
   it('honors an explicit true', () => {
     expect(resolveOptimizeEnabled(true)).toBe(true);
+  });
+});
+
+describe('resolveWallClockMs', () => {
+  it('prefers an explicit param over the env var', () => {
+    expect(resolveWallClockMs(500, '1000')).toBe(500);
+  });
+  it('falls back to the env var when no param is given', () => {
+    expect(resolveWallClockMs(undefined, '1500')).toBe(1500);
+  });
+  it('returns undefined (optimizer default) when neither is usable', () => {
+    expect(resolveWallClockMs(undefined, undefined)).toBeUndefined();
+    expect(resolveWallClockMs(undefined, 'not-a-number')).toBeUndefined();
+    expect(resolveWallClockMs(-5, undefined)).toBeUndefined();
   });
 });
 

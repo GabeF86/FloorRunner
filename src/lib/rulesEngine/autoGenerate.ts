@@ -6,17 +6,34 @@ import { solve } from './solve';
 import { optimize } from './optimize';
 import { commitPlan, commitValidation, commitMetadata, hasGenerationMetadataColumn } from './commit';
 import { scoreSolution } from './metrics';
+import type { OptimizeStats } from './optimize';
 import type { SupabaseClient } from './shared';
 import type { UnfilledSlot, PlannedAssignment, AssignmentExplanation, SolutionMetrics, PlacementSource } from './genTypes';
 
 export interface AutoGenerateOptions {
   overrideProviderIds?: string[];
   optimize?: boolean; // default true; set false to use raw greedy construction
+  // Optimizer wall-clock budget (ms). Falls back to the
+  // SCHEDULING_OPTIMIZE_WALL_MS env var, then the optimizer default (2000).
+  wallClockMs?: number;
 }
 
 // Pure: optimization is on by default; an explicit boolean overrides.
 export function resolveOptimizeEnabled(flag: boolean | undefined): boolean {
   return flag !== false;
+}
+
+// Pure: explicit param wins, then the env var; undefined lets optimize()
+// apply its own default (2000 ms). Non-numeric / negative values are ignored.
+export function resolveWallClockMs(
+  param: number | undefined, env: string | undefined,
+): number | undefined {
+  if (param !== undefined && Number.isFinite(param) && param >= 0) return param;
+  if (env !== undefined && env.trim() !== '') {
+    const n = Number(env);
+    if (Number.isFinite(n) && n >= 0) return n;
+  }
+  return undefined;
 }
 
 export interface GenerationResult {
@@ -38,6 +55,7 @@ export interface GenerationResult {
   ok: boolean;
   metrics?: SolutionMetrics;
   seedMetrics?: SolutionMetrics; // greedy baseline, for before/after comparison
+  optimizeStats?: OptimizeStats; // resolves/gatedSkips/wallMs, when optimization ran
   perf?: {
     par_level: number; total_slots: number; call_slots: number;
     providers: number; elapsed_ms: number; db_queries: number;
@@ -78,7 +96,15 @@ export async function autoGenerate(
   try {
     const seedPlan = solve(ctx);
     seedMetrics = scoreSolution(seedPlan, ctx);
-    plan = resolveOptimizeEnabled(options.optimize) ? optimize(ctx) : seedPlan;
+    if (resolveOptimizeEnabled(options.optimize)) {
+      const optimized = optimize(ctx, {
+        wallClockMs: resolveWallClockMs(options.wallClockMs, process.env.SCHEDULING_OPTIMIZE_WALL_MS),
+      });
+      plan = optimized.plan;
+      result.optimizeStats = optimized.stats;
+    } else {
+      plan = seedPlan;
+    }
     commit = await commitPlan(sb, plan);
   } catch (e: unknown) {
     result.errors.push(

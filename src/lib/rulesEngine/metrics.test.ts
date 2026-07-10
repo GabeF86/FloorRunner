@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import { scoreSolution } from './metrics';
+import type { CallPatternDoc } from './callPattern';
 import type {
-  GenerationContext, CandidateProvider, SolutionPlan, PlannedAssignment,
+  GenerationContext, CandidateProvider, SolutionPlan, PlannedAssignment, ShiftTypeInfo,
 } from './genTypes';
 
 function prov(id: string, fte = 1): CandidateProvider {
@@ -19,13 +20,15 @@ function callA(over: Partial<PlannedAssignment>): PlannedAssignment {
   };
 }
 function ctx(providers: CandidateProvider[],
-            historical: Map<string, Map<string, number>> = new Map()): GenerationContext {
+            historical: Map<string, Map<string, number>> = new Map(),
+            over: Partial<GenerationContext> = {}): GenerationContext {
   return {
     scheduleVersionId: 'v1', siteId: 'site1', parLevel: 12,
     slotsToFill: [], slotIndex: new Map(), providers,
     credByPid: new Map(), availByPid: new Map(), crossSiteByDate: new Map(),
     historicalAssignedByPid: historical, historicalTotalByBucket: new Map(),
     bucketTotals: new Map(), bucketTarget: new Map(), seedAssignments: [],
+    ...over,
   };
 }
 
@@ -116,5 +119,67 @@ describe('scoreSolution', () => {
     };
     const m = scoreSolution(plan, ctx([prov('pA')]));
     expect(m.burnout).toBe(0);
+  });
+});
+
+describe('scoreSolution — category-driven call-ness', () => {
+  const ncInfo: ShiftTypeInfo = {
+    code: 'NC', category: 'call', call_rank: 0, relief_rank: null, is_overlay: false,
+    generation_engine: 'call', requires_post_call_rule: true, call_coverage_type: null,
+  };
+
+  it("a custom call code 'NC' contributes to fairnessStdev and burnout exactly as C1", () => {
+    // Two adjacent weekday calls (Mon 01-05, Tue 01-06), all on pA; pB idle.
+    const mkPlan = (code: string): SolutionPlan => ({
+      assignments: [
+        callA({ slot_id: 'a', slot_date: '2026-01-05', shift_type_code: code, provider_id: 'pA' }),
+        callA({ slot_id: 'b', slot_date: '2026-01-06', shift_type_code: code, provider_id: 'pA' }),
+      ],
+      unfilled: [],
+    });
+    const ncCtx = ctx([prov('pA'), prov('pB')], new Map(),
+      { shiftTypes: new Map([['NC', ncInfo]]) });
+    const mNC = scoreSolution(mkPlan('NC'), ncCtx);
+    const mC1 = scoreSolution(mkPlan('C1'), ctx([prov('pA'), prov('pB')]));
+    expect(mNC.fairnessStdev).toBeGreaterThan(0);
+    expect(mNC.fairnessStdev).toBeCloseTo(mC1.fairnessStdev);
+    expect(mNC.burnout).toBe(1);
+    expect(mNC.burnout).toBe(mC1.burnout);
+    expect(mNC.providersUsed).toBe(1);
+  });
+});
+
+describe('scoreSolution — pattern-aware burnout exemption', () => {
+  it('counts a Fri+Sat call pair as burnout under a pattern with NO blocks', () => {
+    // Same dates the classic pattern exempts (Fri 01-02 + Sat 01-03), but the
+    // site pattern has no block chains -> no exemption window -> burnout.
+    const noBlocks: CallPatternDoc = {
+      version: 1, blocks: [], dayChains: [], spans: [], placementPasses: [],
+      reliefPass: null, optimizerMovableDayTypes: ['weekday', 'friday'],
+    };
+    const plan: SolutionPlan = {
+      assignments: [
+        callA({ slot_id: 'a', slot_date: '2026-01-02', derived_day_type: 'friday', provider_id: 'pA' }),
+        callA({ slot_id: 'b', slot_date: '2026-01-03', derived_day_type: 'saturday', provider_id: 'pA' }),
+      ],
+      unfilled: [],
+    };
+    const m = scoreSolution(plan, ctx([prov('pA')], new Map(), { callPattern: noBlocks }));
+    expect(m.burnout).toBe(1);
+  });
+
+  it('exempts a pair only when both dates fall in the SAME saturday-anchored window', () => {
+    // Sun 01-04 + Mon 01-05 are 1 day apart, but Mon is outside the Fri-Sun
+    // window anchored on Sat 01-03 -> burnout (classic parity).
+    const plan: SolutionPlan = {
+      assignments: [
+        callA({ slot_id: 'a', slot_date: '2026-01-03', derived_day_type: 'saturday', provider_id: 'pB' }),
+        callA({ slot_id: 'b', slot_date: '2026-01-04', derived_day_type: 'sunday', provider_id: 'pA' }),
+        callA({ slot_id: 'c', slot_date: '2026-01-05', derived_day_type: 'weekday', provider_id: 'pA' }),
+      ],
+      unfilled: [],
+    };
+    const m = scoreSolution(plan, ctx([prov('pA'), prov('pB')]));
+    expect(m.burnout).toBe(1);
   });
 });

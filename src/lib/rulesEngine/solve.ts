@@ -2,6 +2,7 @@ import { addDays, daysBetween, dayTypeBucket, buildPrePtoByThursday } from './sh
 import { evaluateEligibility } from './eligibility';
 import { emptySolveState } from './genTypes';
 import { CLASSIC_PATTERN, dayChainsFor, postCallBlockOffsets, blockChainsFor } from './callPattern';
+import type { CallPatternDoc } from './callPattern';
 import type {
   GenerationContext, SlotToFill, CandidateProvider, SolveState,
   SolutionPlan, PlacementSource, AssignmentExplanation, CandidateRejection,
@@ -35,7 +36,6 @@ function reliefCodesFor(shiftTypes: Map<string, ShiftTypeInfo> | undefined): str
 export function solve(ctx: GenerationContext, opts: SolveOptions = {}): SolutionPlan {
   const plan: SolutionPlan = { assignments: [], unfilled: [], skippedDerived: [] };
   const skippedDerived = plan.skippedDerived!;
-  const state = emptySolveState();
 
   const doc = ctx.callPattern ?? CLASSIC_PATTERN;
   const shiftInfo = (code: string) => ctx.shiftTypes?.get(code);
@@ -44,21 +44,8 @@ export function solve(ctx: GenerationContext, opts: SolveOptions = {}): Solution
     shiftInfo(code)?.call_rank ?? (code === 'C1' ? 0 : code === 'C2' ? 1 : 2); // legacy fallback (no shiftTypes in ctx)
   const reliefCodes = reliefCodesFor(ctx.shiftTypes);
 
-  // ── seed pre-existing assignments into state ──
-  for (const seed of ctx.seedAssignments) {
-    // Overlay seeds do NOT consume the one-assignment-per-day budget (mirrors
-    // record()); the post-call block offsets below STILL apply unconditionally.
-    if (!isOverlay(seed.shift_type_code)) markAssigned(state, seed.slot_date, seed.provider_id);
-    if (seed.shift_type_category === 'call') {
-      incBucket(state, seed.provider_id, seed.derived_day_type, seed.shift_type_code);
-      addCallDate(state, seed.provider_id, seed.slot_date);
-    }
-    // IF-1: a seeded call blocks its pattern post-call day(s) before solve runs,
-    // so the same provider can't be scored onto the blocked next day.
-    for (const off of postCallBlockOffsets(doc, seed.shift_type_code, seed.derived_day_type)) {
-      markAssigned(state, addDays(seed.slot_date, off), seed.provider_id);
-    }
-  }
+  // Seed pre-existing assignments into state (shared with optimize's pre-gate).
+  const state = seedSolveState(ctx, doc);
 
   const providerById = ctx.providerById ?? new Map(ctx.providers.map(p => [p.id, p]));
 
@@ -379,6 +366,31 @@ export function solve(ctx: GenerationContext, opts: SolveOptions = {}): Solution
   }
 
   return plan;
+}
+
+// Seed pre-existing assignments into a fresh SolveState — exactly what solve()
+// starts from before ANY placement pass. Exported for the optimizer's
+// eligibility pre-gate: because solve() only ever ADDS to this state, a
+// provider ineligible against it is ineligible at every later point in every
+// re-solve, no matter what call overrides the trial forces.
+export function seedSolveState(ctx: GenerationContext, doc: CallPatternDoc): SolveState {
+  const state = emptySolveState();
+  const isOverlay = (code: string) => ctx.shiftTypes?.get(code)?.is_overlay ?? false;
+  for (const seed of ctx.seedAssignments) {
+    // Overlay seeds do NOT consume the one-assignment-per-day budget (mirrors
+    // record()); the post-call block offsets below STILL apply unconditionally.
+    if (!isOverlay(seed.shift_type_code)) markAssigned(state, seed.slot_date, seed.provider_id);
+    if (seed.shift_type_category === 'call') {
+      incBucket(state, seed.provider_id, seed.derived_day_type, seed.shift_type_code);
+      addCallDate(state, seed.provider_id, seed.slot_date);
+    }
+    // IF-1: a seeded call blocks its pattern post-call day(s) before solve runs,
+    // so the same provider can't be scored onto the blocked next day.
+    for (const off of postCallBlockOffsets(doc, seed.shift_type_code, seed.derived_day_type)) {
+      markAssigned(state, addDays(seed.slot_date, off), seed.provider_id);
+    }
+  }
+  return state;
 }
 
 // Map an eligibility rejection reason to a skippedDerived reason.
