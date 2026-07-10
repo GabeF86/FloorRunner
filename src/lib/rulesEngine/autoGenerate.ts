@@ -123,8 +123,10 @@ export async function autoGenerate(
   // only means validation_flags couldn't be written. Surface a soft note.
   let validationQueries = 0;
   try {
-    const validation = await commitValidation(sb, ctx.siteId, plan.assignments);
+    const validation = await commitValidation(sb, ctx.siteId, ctx.scheduleVersionId);
     validationQueries = validation.dbQueries;
+    // Soft notes (e.g. 'validation-unavailable' rows) — never flips ok.
+    result.errors.push(...validation.errors);
   } catch (e: unknown) {
     result.errors.push(
       `Validation pass failed (assignments were still saved): ${e instanceof Error ? e.message : String(e)}`,

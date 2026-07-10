@@ -20,6 +20,23 @@ function addDays(iso: string, delta: number): string {
   return d.toISOString().slice(0, 10);
 }
 
+// providers.provider_type → the coarse provider_group used by rule scoping.
+// Shared with batchValidate so the batch path maps identically.
+export function providerGroupFromType(t: string): 'physician' | 'crna' | 'both' {
+  return t === 'physician' ? 'physician' : t === 'crna' || t === 'aa' ? 'crna' : 'both';
+}
+
+// Parse the provider_employment_profiles(fte_value) embed off a providers row.
+// PostgREST returns an object for the one-to-one relation, but be tolerant of
+// an array shape (and of numeric-as-string serialization).
+export function parseEmbeddedFte(rel: unknown): number | null {
+  const row = Array.isArray(rel) ? rel[0] : rel;
+  if (!row || typeof row !== 'object') return null;
+  const v = (row as Record<string, unknown>).fte_value;
+  const n = typeof v === 'number' ? v : v != null ? Number(v) : NaN;
+  return Number.isFinite(n) ? n : null;
+}
+
 // Pre-loaded per-site validation context. When provided to loadContext, the
 // shift-type and rule-definition queries are skipped (N+1 fix for batch validation).
 export interface SiteValidationContext {
@@ -99,19 +116,21 @@ export async function loadContext(
   // 4. Provider-specific data (only if a provider is assigned)
   let credentials: ProviderSiteCredentials | null = null;
   let providerGroup: EvaluationContext['providerGroup'] = null;
+  let fteValue: number | null = null;
   let neighborAssignments: EvaluationContext['neighborAssignments'] = [];
   let availability: AvailabilityRow[] = [];
 
   if (providerId) {
-    // Provider basic info (for provider_group)
+    // Provider basic info (provider_group + FTE for fairness scaling)
     const { data: provider } = await sb
       .from('providers')
-      .select('id, provider_type')
+      .select('id, provider_type, provider_employment_profiles(fte_value)')
       .eq('id', providerId)
       .maybeSingle();
     if (provider) {
-      const t = (provider as { provider_type: string }).provider_type;
-      providerGroup = t === 'physician' ? 'physician' : t === 'crna' || t === 'aa' ? 'crna' : 'both';
+      const p = provider as Record<string, unknown>;
+      providerGroup = providerGroupFromType(p.provider_type as string);
+      fteValue = parseEmbeddedFte(p.provider_employment_profiles);
     }
 
     // Site credentials
@@ -141,7 +160,11 @@ export async function loadContext(
     }
 
     // Neighbor assignments — look at a wider window (±31 days) so frequency
-    // checks have a full month on each side. Cheap query.
+    // checks have a full month on each side. Scoped to THIS slot's schedule
+    // version + site: sequence/rest/frequency checks must not see other
+    // versions' drafts or other sites' schedules as "neighbors". (Cross-site
+    // double-booking is detected separately by the deliberately-unscoped
+    // cross-site query below.)
     const winStart = addDays(slotRow.slot_date, -31);
     const winEnd = addDays(slotRow.slot_date, 31);
 
@@ -152,6 +175,8 @@ export async function loadContext(
       )
       .eq('provider_id', providerId)
       .eq('assignment_status', 'assigned')
+      .eq('schedule_slots.schedule_version_id', scheduleVersionId)
+      .eq('schedule_slots.site_id', slotRow.site_id)
       .gte('schedule_slots.slot_date', winStart)
       .lte('schedule_slots.slot_date', winEnd);
 
@@ -242,6 +267,7 @@ export async function loadContext(
     providerId,
     providerGroup,
     credentials,
+    fte_value: fteValue,
     neighborAssignments,
     availability,
     sameDayAssignments,

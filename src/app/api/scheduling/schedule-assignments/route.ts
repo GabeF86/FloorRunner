@@ -11,8 +11,14 @@ export async function POST(req: NextRequest) {
   const body = await req.json();
 
   // Run rules engine BEFORE persisting so we can store violations alongside
-  // the assignment in a single round-trip.
+  // the assignment in a single round-trip. If the evaluation was incomplete
+  // (context unavailable / evaluator threw), the assignment still saves but
+  // validation_flags are NOT written — never persist a fake-clean [] (the
+  // response's `validation.evaluated:false` tells the client why).
   const evalResult = await evaluateAssignment(sb, body.schedule_slot_id, body.provider_id);
+  if (!evalResult.evaluated) {
+    console.error(`[rulesEngine] validation unavailable for slot ${body.schedule_slot_id} — validation_flags not written`);
+  }
 
   // One assignment row per slot, enforced by the UNIQUE (schedule_slot_id)
   // constraint. Upsert is atomic, so two concurrent edits can't both insert a
@@ -26,7 +32,7 @@ export async function POST(req: NextRequest) {
         assignment_status: 'assigned',
         source_type: 'manual',
         assigned_at: new Date().toISOString(),
-        validation_flags: evalResult.violations,
+        ...(evalResult.evaluated ? { validation_flags: evalResult.violations } : {}),
       },
       { onConflict: 'schedule_slot_id' },
     )
@@ -136,6 +142,12 @@ async function revalidateNeighbors(
     }>) {
       if (row.schedule_slot_id === changedSlotId) continue;
       const result = await evaluateAssignment(sb, row.schedule_slot_id, providerId);
+      // Invariant 6: an incomplete evaluation must not overwrite stored flags
+      // with something that looks like a clean re-validation.
+      if (!result.evaluated) {
+        console.error(`[rulesEngine] neighbor revalidation unavailable for assignment ${row.id} — validation_flags not updated`);
+        continue;
+      }
       await sb
         .from('assignments')
         .update({ validation_flags: result.violations })

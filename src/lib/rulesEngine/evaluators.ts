@@ -202,6 +202,15 @@ const eligibility: Evaluator = ctx => {
         why = `Requires credential "${required}".`;
         break;
       default:
+        // Never skip silently: an unrecognized requirement_type means the
+        // rule is NOT being enforced — surface that as an advisory flag.
+        violations.push({
+          rule_id: rule.id,
+          rule_name: rule.rule_name,
+          category: 'eligibility',
+          severity: 'warning',
+          message: `Unknown rule vocabulary: ${requirement}`,
+        });
         continue;
     }
     if (!ok) {
@@ -336,8 +345,13 @@ const sequence: Evaluator = ctx => {
 
     const offset = relationship === 'pre_call' ? -1 : 1;
 
+    // Scope gates anchor on the TRIGGER assignment: applies_to_shift_types
+    // scopes which trigger codes the rule covers, applies_to_day_types scopes
+    // which day the trigger falls on (e.g. weekday-only post-call chains).
+    if (!ruleAppliesToShift(rule, trigger)) continue;
+
     // Case A: this assignment is the trigger shift
-    if (ctx.shiftType.code === trigger) {
+    if (ctx.shiftType.code === trigger && ruleAppliesToDayType(rule, ctx.slot.derived_day_type)) {
       const wantDate = shiftDate(ctx.slot.slot_date, offset);
       const conflict = ctx.neighborAssignments.find(
         n => n.slot_date === wantDate && n.shift_type_code !== linked,
@@ -371,7 +385,7 @@ const sequence: Evaluator = ctx => {
       const priorTrigger = ctx.neighborAssignments.find(
         n => n.slot_date === priorDate && n.shift_type_code === trigger,
       );
-      if (priorTrigger) {
+      if (priorTrigger && ruleAppliesToDayType(rule, priorTrigger.day_type)) {
         violations.push({
           rule_id: rule.id,
           rule_name: rule.rule_name,
@@ -669,8 +683,12 @@ const fairness: Evaluator = ctx => {
     // We can't compute the group average from a single-cell evaluation, so
     // we use a heuristic: if the provider is at or above 150% of a
     // reasonable target, flag it. The target can come from the provider's
-    // profile (via frequency rules) or we default to 6/month.
-    const maxReasonable = method === 'equal' ? 6 : 8;
+    // profile (via frequency rules) or we default to 6/month — scaled by
+    // FTE so a part-timer's fair share is proportionally smaller
+    // (clinical invariant 5: call burden distributes per-FTE).
+    const fte = typeof ctx.fte_value === 'number' && ctx.fte_value > 0 ? ctx.fte_value : 1;
+    const base = method === 'equal' ? 6 : 8;
+    const maxReasonable = Math.ceil(base * fte);
     if (count > maxReasonable) {
       violations.push({
         rule_id: rule.id,

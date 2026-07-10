@@ -1,5 +1,5 @@
-import { evaluateAssignment } from './evaluate';
 import { loadSiteValidationContext } from './loadContext';
+import { batchValidateVersion, chunk, WRITE_CHUNK } from './batchValidate';
 import type { SupabaseClient } from './shared';
 import type { SolutionPlan, PlannedAssignment } from './genTypes';
 
@@ -29,25 +29,49 @@ export function __resetMetadataColumnCache(): void {
 }
 
 // Best-effort: write generation_metadata per assignment. Caller should only
-// invoke this when hasGenerationMetadataColumn() is true. Batched updates,
-// keyed by (schedule_slot_id, provider_id) like the validation pass.
+// invoke this when hasGenerationMetadataColumn() is true. One preload of the
+// existing assignment ids (matched by slot+provider), then one bulk upsert
+// keyed by assignment id — instead of N serial (slot, provider) updates.
 export async function commitMetadata(
   sb: SupabaseClient,
   assignments: PlannedAssignment[],
 ): Promise<{ dbQueries: number; errors: string[] }> {
   const errors: string[] = [];
   let dbQueries = 0;
-  const CONCURRENCY = 10;
-  for (let i = 0; i < assignments.length; i += CONCURRENCY) {
-    const batch = assignments.slice(i, i + CONCURRENCY);
-    await Promise.all(batch.map(async a => {
-      dbQueries++;
-      const { error } = await sb.from('assignments')
-        .update({ generation_metadata: buildMetadataPayload(a) })
-        .eq('schedule_slot_id', a.slot_id)
-        .eq('provider_id', a.provider_id);
-      if (error) errors.push(`metadata write failed for slot ${a.slot_id}: ${error.message}`);
-    }));
+  if (assignments.length === 0) return { dbQueries, errors };
+
+  const bySlotProvider = new Map<string, PlannedAssignment>();
+  for (const a of assignments) bySlotProvider.set(`${a.slot_id}|${a.provider_id}`, a);
+  const slotIds = [...new Set(assignments.map(a => a.slot_id))];
+
+  // Preload the existing row ids for the plan's slots.
+  const payload: Array<{ id: string; schedule_slot_id: string; generation_metadata: Record<string, unknown> }> = [];
+  for (const ids of chunk(slotIds, WRITE_CHUNK)) {
+    dbQueries++;
+    const { data, error } = await sb
+      .from('assignments')
+      .select('id, schedule_slot_id, provider_id')
+      .in('schedule_slot_id', ids);
+    if (error) {
+      errors.push(`metadata id fetch failed: ${error.message}`);
+      continue;
+    }
+    for (const row of (data || []) as Array<{ id: string; schedule_slot_id: string; provider_id: string | null }>) {
+      const planned = bySlotProvider.get(`${row.schedule_slot_id}|${row.provider_id}`);
+      if (!planned) continue; // row belongs to someone else / was reassigned
+      payload.push({
+        id: row.id,
+        // schedule_slot_id satisfies NOT NULL on the (never taken) insert arm.
+        schedule_slot_id: row.schedule_slot_id,
+        generation_metadata: buildMetadataPayload(planned),
+      });
+    }
+  }
+
+  for (const rows of chunk(payload, WRITE_CHUNK)) {
+    dbQueries++;
+    const { error } = await sb.from('assignments').upsert(rows, { onConflict: 'id' });
+    if (error) errors.push(`metadata write failed: ${error.message}`);
   }
   return { dbQueries, errors };
 }
@@ -127,17 +151,18 @@ export async function commitPlan(
   return { filled, errors, dbQueries };
 }
 
-// INVARIANT: every assignment must belong to `siteId`. loadSiteValidationContext
-// keys off this value (a schedule version is single-site, so this always holds
-// for the orchestrator's call site).
-// Validation pass — loads the per-site rule/shift-type context ONCE (M3 fix)
-// and threads it into each evaluateAssignment, then writes validation_flags
-// in parallel batches.
+// INVARIANT: the schedule version must belong to `siteId` (a schedule version
+// is single-site, so this always holds for the orchestrator's call site).
+// Validation pass — loads the per-site rule/shift-type context ONCE, then
+// delegates to batchValidateVersion, which validates EVERY assignment row in
+// the version in ~5 queries and persists with one bulk upsert. Assignments
+// that could not be evaluated are skipped, never written clean (invariant 6);
+// they surface in `errors` as 'validation-unavailable'.
 export async function commitValidation(
   sb: SupabaseClient,
   siteId: string,
-  assignments: PlannedAssignment[],
-): Promise<{ dbQueries: number }> {
+  scheduleVersionId: string,
+): Promise<{ dbQueries: number; errors: string[] }> {
   // NOTE: dbQueries is an approximate lower bound — loadSiteValidationContext
   // itself issues 2-3 queries but is counted once. Used for smoke-test signal,
   // not exact accounting.
@@ -145,18 +170,6 @@ export async function commitValidation(
   dbQueries++;
   const siteCtx = await loadSiteValidationContext(sb, siteId);
 
-  const CONCURRENCY = 10;
-  for (let i = 0; i < assignments.length; i += CONCURRENCY) {
-    const batch = assignments.slice(i, i + CONCURRENCY);
-    await Promise.all(batch.map(async a => {
-      dbQueries++;
-      const ev = await evaluateAssignment(sb, a.slot_id, a.provider_id, siteCtx);
-      dbQueries++;
-      await sb.from('assignments')
-        .update({ validation_flags: ev.violations })
-        .eq('schedule_slot_id', a.slot_id)
-        .eq('provider_id', a.provider_id);
-    }));
-  }
-  return { dbQueries };
+  const batch = await batchValidateVersion(sb, scheduleVersionId, siteCtx);
+  return { dbQueries: dbQueries + batch.dbQueries, errors: batch.errors };
 }
