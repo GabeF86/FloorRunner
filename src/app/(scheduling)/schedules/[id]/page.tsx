@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback, useRef, useMemo, Fragment } from 'react';
 import Link from 'next/link';
 import { gridTokens, cellBackground } from './gridTheme';
+import AssistantPanel from './AssistantPanel';
 // Pure, client-safe helper shared with the grid API route — one bucket rule
 // (hard / soft / warning-never-soft) for both server and client counting.
 import { validationSummaryFor, type ValidationSummary } from '@/app/api/scheduling/schedules/[id]/grid/route.helpers';
@@ -233,6 +234,7 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
   const [pickerSearch, setPickerSearch] = useState('');
   const [actionError, setActionError] = useState<string | null>(null);
   const [showCounts, setShowCounts] = useState(false);
+  const [showAssistant, setShowAssistant] = useState(false);
   const pickerRef = useRef<HTMLDivElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
 
@@ -1093,6 +1095,14 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
           Call Counts
         </button>
 
+        <button
+          onClick={() => setShowAssistant(v => !v)}
+          style={{ padding: '7px 15px', fontSize: 12.5, fontWeight: 700, borderRadius: 8, cursor: 'pointer',
+            background: showAssistant ? 'rgba(99,102,241,0.16)' : 'transparent',
+            color: showAssistant ? '#a5b4fc' : 'var(--text-muted)',
+            border: showAssistant ? '1px solid rgba(99,102,241,0.4)' : '1px solid var(--border)' }}
+        >Assistant ✨</button>
+
         {/* Pool selector + Auto-Generate.
             A custom pool replaces the default rule-based pool entirely. When
             none is set, we show "Default Pool" as a cue that auto-gen will
@@ -1695,6 +1705,9 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
             } : prev);
           }}
         />
+      )}
+      {showAssistant && (
+        <AssistantPanel scheduleId={id} onMutated={loadGrid} onClose={() => setShowAssistant(false)} />
       )}
     </div>
   );
