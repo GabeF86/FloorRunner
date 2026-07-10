@@ -119,6 +119,9 @@ export async function autoGenerate(
 
   result.errors.push(...commit.errors);
   if (commit.errors.length > 0) {
+    // Invariant 4: skip records must stay visible even when the commit fails —
+    // the plan was solved, so its suppressed derived placements are known.
+    result.skippedDerived = plan.skippedDerived ?? [];
     return result; // commit failure -> ok false (assignments not reliably written)
   }
 

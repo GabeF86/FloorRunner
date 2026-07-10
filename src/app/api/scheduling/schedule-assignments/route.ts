@@ -92,11 +92,14 @@ export async function POST(req: NextRequest) {
   // null; revalidateNeighbors below evaluates them (same provider, within
   // ±7 days) and stores real flags.
   const fill = await applySequenceAutoFill(sb, body.schedule_slot_id, body.provider_id);
-  await revalidateNeighbors(sb, body.schedule_slot_id, body.provider_id);
+  const revalidatedSlotIds = await revalidateNeighbors(sb, body.schedule_slot_id, body.provider_id);
   // Re-select AFTER revalidateNeighbors so the returned rows carry fresh
-  // validation_flags for the auto-filled siblings too.
+  // validation_flags — and include the revalidated neighbor slots themselves,
+  // whose stored flags may have just changed (e.g. a new hard violation
+  // introduced by this edit).
   const { assignment, siblings } = await selectAffectedRows(
-    sb, body.schedule_slot_id, [...fill.filledSlotIds, ...fill.evictedSlotIds]);
+    sb, body.schedule_slot_id,
+    [...fill.filledSlotIds, ...fill.evictedSlotIds, ...revalidatedSlotIds]);
   // Backward-compatible response: existing fields plus the auto-fill outcome
   // (skips use the SkippedDerived vocabulary — clinical invariant 4;
   // evictedSlotIds reports pre-fills reverted by a higher-precedence fill;
@@ -186,13 +189,15 @@ export async function DELETE(req: NextRequest) {
       .select()
       .single();
     if (insertErr) return NextResponse.json({ error: insertErr.message }, { status: 500 });
+    let revalidatedSlotIds: string[] = [];
     if (existing.provider_id) {
-      await revalidateNeighbors(sb, existing.schedule_slot_id, existing.provider_id);
+      revalidatedSlotIds = await revalidateNeighbors(sb, existing.schedule_slot_id, existing.provider_id);
     }
-    // Re-select the recreated open row + the cleared auto-fill rows in the
-    // grid column shape so the client can patch every affected cell.
+    // Re-select the recreated open row + the cleared auto-fill rows + any
+    // neighbors whose stored flags were just rewritten (a violation cleared
+    // by this delete must reach the client too) in the grid column shape.
     const { assignment, siblings } = await selectAffectedRows(
-      sb, existing.schedule_slot_id, clearedSlotIds);
+      sb, existing.schedule_slot_id, [...clearedSlotIds, ...revalidatedSlotIds]);
     // Backward-compatible: the recreated open row plus which linked auto-fills
     // were cleared alongside the delete (and any call-pattern load warnings).
     return NextResponse.json({ ...newOpen, clearedSlotIds, patternWarnings, assignment, siblings });
@@ -208,20 +213,26 @@ export async function DELETE(req: NextRequest) {
 // expectation for Tuesday's slot). After every write we re-evaluate the
 // provider's other assignments within ±7 days and update their stored
 // validation_flags. Quiet on errors — best-effort, never blocks the response.
+//
+// Returns the slot ids whose stored flags were actually rewritten so the
+// caller can include them in the affected-row re-select — otherwise a
+// neighbor cell whose violations just changed would keep stale flags
+// client-side until the next full grid load.
 
 async function revalidateNeighbors(
   sb: ReturnType<typeof sbSchedulingServer>,
   changedSlotId: string,
   providerId: string | null,
-) {
-  if (!providerId) return;
+): Promise<string[]> {
+  const revalidatedSlotIds: string[] = [];
+  if (!providerId) return revalidatedSlotIds;
   try {
     const { data: changedSlot } = await sb
       .from('schedule_slots')
       .select('slot_date')
       .eq('id', changedSlotId)
       .maybeSingle();
-    if (!changedSlot) return;
+    if (!changedSlot) return revalidatedSlotIds;
     const center = (changedSlot as { slot_date: string }).slot_date;
     const start = shiftDate(center, -7);
     const end = shiftDate(center, 7);
@@ -246,14 +257,16 @@ async function revalidateNeighbors(
         console.error(`[rulesEngine] neighbor revalidation unavailable for assignment ${row.id} — validation_flags not updated`);
         continue;
       }
-      await sb
+      const { error: updateErr } = await sb
         .from('assignments')
         .update({ validation_flags: result.violations })
         .eq('id', row.id);
+      if (!updateErr) revalidatedSlotIds.push(row.schedule_slot_id);
     }
   } catch (err) {
     console.error('[rulesEngine] neighbor revalidation failed:', err);
   }
+  return revalidatedSlotIds;
 }
 
 function shiftDate(iso: string, delta: number): string {

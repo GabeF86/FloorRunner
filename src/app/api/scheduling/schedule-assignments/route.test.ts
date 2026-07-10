@@ -126,6 +126,31 @@ describe('POST /api/scheduling/schedule-assignments', () => {
     expect(json.assignment.schedule_slot_id).toBe('slot-A');
     expect(json.siblings).toEqual([]);
   });
+
+  it('includes slots revalidated as neighbors in the re-select so their fresh flags reach the client', async () => {
+    // Neighbor revalidation finds slot-N (same provider, ±7 days) and rewrites
+    // its stored flags — the re-select must cover it, or the client keeps
+    // stale flags on that cell (freshness regression vs a full grid reload).
+    const { sb, calls } = makeFakeSupabase({
+      tables: {
+        schedule_slots: { data: { slot_date: '2026-01-05' }, error: null },
+        assignments: (filters) => {
+          if (has(filters, 'upsert')) return { data: { id: 'a-slot-A', schedule_slot_id: 'slot-A', provider_id: 'p1' }, error: null };
+          if (has(filters, 'in', 'schedule_slot_id')) return { data: [joinedRow('slot-A'), joinedRow('slot-N')], error: null };
+          if (has(filters, 'eq', 'provider_id')) return { data: [{ id: 'a-slot-N', schedule_slot_id: 'slot-N' }], error: null };
+          return { data: [], error: null }; // the flag-update write
+        },
+      },
+    });
+    holder.sb = sb;
+
+    const res = await POST(fakeReq({ schedule_slot_id: 'slot-A', provider_id: 'p1' }));
+    const json = await res.json();
+
+    const inCall = callsFor(calls, 'assignments', 'in').find(c => c.args[0] === 'schedule_slot_id');
+    expect((inCall?.args[1] as string[]).sort()).toEqual(['slot-A', 'slot-N']);
+    expect(json.siblings.map((s: { schedule_slot_id: string }) => s.schedule_slot_id)).toEqual(['slot-N']);
+  });
 });
 
 // ── PATCH ────────────────────────────────────────────────────────────────────

@@ -3,6 +3,9 @@
 import { useState, useEffect, useCallback, useRef, useMemo, Fragment } from 'react';
 import Link from 'next/link';
 import { gridTokens, cellBackground } from './gridTheme';
+// Pure, client-safe helper shared with the grid API route — one bucket rule
+// (hard / soft / warning-never-soft) for both server and client counting.
+import { validationSummaryFor, type ValidationSummary } from '@/app/api/scheduling/schedules/[id]/grid/route.helpers';
 
 /* ── Interfaces ──────────────────────────────────────────────────────────── */
 
@@ -85,14 +88,6 @@ interface ValidationFlag {
   message: string;
 }
 
-// Server-computed severity counts per assignment (grid route). null = the
-// assignment was never validated (flags column null), distinct from all-zero.
-interface ValidationSummary {
-  hard: number;
-  soft: number;
-  warning: number;
-}
-
 interface AssignmentInfo {
   id: string;
   provider_id: string | null;
@@ -100,6 +95,8 @@ interface AssignmentInfo {
   is_open_call: boolean;
   manually_overridden: boolean;
   validation_flags?: ValidationFlag[] | null;
+  // Server-computed severity counts (grid route helpers' ValidationSummary).
+  // null = never validated (flags column null), distinct from all-zero.
   validation_summary?: ValidationSummary | null;
   providers: ProviderInfo | null;
 }
@@ -217,18 +214,6 @@ function colorWithAlpha(hex: string | null, alpha: number): string {
   const g = parseInt(h.substring(2, 4), 16);
   const b = parseInt(h.substring(4, 6), 16);
   return `rgba(${r},${g},${b},${alpha})`;
-}
-
-// Client-side fallback when a row lacks the server-computed validation_summary.
-// Warnings (sentinel flags / unknown severities) never inflate the soft count.
-function summarizeFlags(flags: ValidationFlag[]): ValidationSummary {
-  const s: ValidationSummary = { hard: 0, soft: 0, warning: 0 };
-  for (const f of flags) {
-    if (f.severity === 'hard') s.hard++;
-    else if (f.severity === 'soft') s.soft++;
-    else s.warning++;
-  }
-  return s;
 }
 
 /* ── Main Page ───────────────────────────────────────────────────────────── */
@@ -758,7 +743,7 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
       const data = await res.json().catch(() => null);
       if (!res.ok) {
         setGrid({ ...grid, slots: prevSlots });
-        setActionError('Failed to remove assignment');
+        setActionError(data?.error || 'Failed to remove assignment');
         // Linked auto-fills may have been cleared before the failure — resync.
         await loadGrid();
         return;
@@ -863,9 +848,13 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
         // (even an empty array means it was checked and passed).
         if (a.validation_flags === null || a.validation_flags === undefined) continue;
         assignmentsChecked++;
-        // Prefer the server-computed summary; fall back to counting flags.
-        // Either way, warnings (sentinel flags) never inflate the soft count.
-        const s = a.validation_summary ?? summarizeFlags(a.validation_flags);
+        // Prefer the server-computed summary; fall back to counting flags with
+        // the same shared bucket rule. Either way, warnings (sentinel flags)
+        // never inflate the soft count. (validationSummaryFor only returns
+        // null for a non-array, and flags is guarded non-null above.)
+        const s = a.validation_summary
+          ?? validationSummaryFor(a.validation_flags)
+          ?? { hard: 0, soft: 0, warning: 0 };
         hardCount += s.hard;
         softCount += s.soft;
         warningCount += s.warning;
@@ -878,7 +867,10 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
       }
     }
     const byRule = [...ruleAgg.values()].sort((a, b) => (b.severity === 'hard' ? 1 : 0) - (a.severity === 'hard' ? 1 : 0) || b.count - a.count);
-    return { assignmentsChecked, totalViolations: hardCount + softCount, hardCount, softCount, warningCount, byRule };
+    // totalViolations = every stored flag (hard + soft + warning) — same
+    // definition as the activity route's total_violations; the severity
+    // breakdown is what distinguishes real violations from warnings.
+    return { assignmentsChecked, totalViolations: hardCount + softCount + warningCount, hardCount, softCount, warningCount, byRule };
   }, [grid]);
 
   const [showRulesSummary, setShowRulesSummary] = useState(false);

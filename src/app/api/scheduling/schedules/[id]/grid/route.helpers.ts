@@ -6,8 +6,9 @@
 // page (src/app/(scheduling)/schedules/[id]/page.tsx) reads via its Schedule /
 // Slot / AssignmentInfo interfaces. If the page grows a new field, add it here
 // (route.test.ts pins the mapping). Each constant stays a single literal so
-// supabase-js can type-parse the select string (concatenation widens to
-// `string` and breaks its parser).
+// supabase-js can type-parse the select string (`+` concatenation widens to
+// `string` and breaks its parser; a template literal interpolating another
+// literal-typed constant is fine — the result stays literal-typed).
 
 export const GRID_SCHEDULE_COLUMNS =
   'id, organization_id, site_id, schedule_name, schedule_type, provider_group, date_start, date_end, status, included_provider_ids, sites(name, short_name, timezone, call_par_level)';
