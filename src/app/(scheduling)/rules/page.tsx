@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import Link from 'next/link';
+import { PageHeader, Card, Badge, Button, Table, EmptyState, Modal, type BadgeTone } from '@/components/ui';
 
 interface RuleSet {
   id: string;
@@ -26,11 +27,13 @@ interface Site {
   short_name: string | null;
 }
 
-const STATUS_COLORS: Record<string, { color: string; bg: string }> = {
-  draft:    { color: '#64748b', bg: 'rgba(100,116,139,0.15)' },
-  active:   { color: '#10b981', bg: 'rgba(16,185,129,0.15)' },
-  archived: { color: 'var(--text-muted)', bg: 'rgba(100,116,139,0.15)' },
+const STATUS_TONES: Record<string, BadgeTone> = {
+  draft:    'neutral',
+  active:   'ok',
+  archived: 'neutral',
 };
+
+const TABLE_HEADERS = ['Name', 'Site', 'Status', 'Rules', 'Created'];
 
 export default function RulesPage() {
   const [ruleSets, setRuleSets] = useState<RuleSet[]>([]);
@@ -74,88 +77,76 @@ export default function RulesPage() {
     ? ruleSets
     : ruleSets.filter(rs => rs.status === filterStatus);
 
-  if (loading) return <div style={{ padding: 40, color: 'var(--text-muted)' }}>Loading...</div>;
+  if (loading) {
+    return (
+      <div>
+        <PageHeader title="Rules Engine" />
+        <Card pad={false}>
+          <Table headers={TABLE_HEADERS} rows={undefined} minWidth={560} />
+        </Card>
+      </div>
+    );
+  }
 
   return (
-    <div style={{ padding: '24px 32px' }}>
-      {/* Header */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24 }}>
-        <div>
-          <h1 style={{ fontSize: 22, fontWeight: 800, color: 'var(--text)' }}>Rules Engine</h1>
-          <p style={{ fontSize: 13, color: 'var(--text-muted)', marginTop: 2 }}>
-            Configure scheduling constraints and automation rules per site
-          </p>
-        </div>
-        <button onClick={() => setShowCreate(true)} style={{
-          padding: '10px 20px', borderRadius: 8, cursor: 'pointer', fontWeight: 700, fontSize: 13,
-          background: 'linear-gradient(135deg,#0ea5e9,#6366f1)', color: '#fff', border: 'none',
-        }}>+ Create Rule Set</button>
-      </div>
+    <div>
+      <PageHeader
+        title="Rules Engine"
+        subtitle="Configure scheduling constraints and automation rules per site"
+        actions={<Button onClick={() => setShowCreate(true)}>+ Create Rule Set</Button>}
+      />
 
       {/* Status filter */}
       <div style={{ display: 'flex', gap: 6, marginBottom: 20 }}>
         {['all', 'draft', 'active', 'archived'].map(s => (
-          <button key={s} onClick={() => setFilterStatus(s)} style={{
-            padding: '6px 14px', borderRadius: 6, cursor: 'pointer', fontSize: 12, fontWeight: 700,
-            border: `1px solid ${filterStatus === s ? '#0ea5e9' : 'var(--border)'}`,
-            background: filterStatus === s ? 'rgba(14,165,233,0.1)' : 'transparent',
-            color: filterStatus === s ? '#0ea5e9' : 'var(--text-muted)',
-            textTransform: 'capitalize',
-          }}>{s === 'all' ? `All (${ruleSets.length})` : `${s} (${ruleSets.filter(r => r.status === s).length})`}</button>
+          <Button
+            key={s}
+            variant="secondary"
+            size="sm"
+            onClick={() => setFilterStatus(s)}
+            style={{
+              textTransform: 'capitalize',
+              ...(filterStatus === s
+                ? { borderColor: 'var(--blue)', background: 'var(--info-bg)', color: 'var(--blue)' }
+                : { color: 'var(--text-muted)' }),
+            }}
+          >
+            {s === 'all' ? `All (${ruleSets.length})` : `${s} (${ruleSets.filter(r => r.status === s).length})`}
+          </Button>
         ))}
       </div>
 
       {/* Table */}
-      <div style={{ background: 'var(--bg-surface)', border: '1px solid var(--border)', borderRadius: 12, overflow: 'hidden' }}>
-        {/* Table header */}
-        <div style={{
-          display: 'grid', gridTemplateColumns: '2fr 1.5fr 100px 80px 140px',
-          padding: '12px 20px', borderBottom: '1px solid var(--border)',
-          fontSize: 11, fontWeight: 700, color: 'var(--text-dim)', letterSpacing: 0.5, textTransform: 'uppercase',
-        }}>
-          <span>Name</span>
-          <span>Site</span>
-          <span>Status</span>
-          <span style={{ textAlign: 'center' }}>Rules</span>
-          <span>Created</span>
-        </div>
-
-        {/* Rows */}
-        {filtered.map(rs => {
-          const sc = STATUS_COLORS[rs.status] || STATUS_COLORS.draft;
-          const ruleCount = rs.rule_definitions?.length || 0;
-          return (
-            <Link key={rs.id} href={`/rules/${rs.id}`} style={{ textDecoration: 'none' }}>
-              <div style={{
-                display: 'grid', gridTemplateColumns: '2fr 1.5fr 100px 80px 140px',
-                padding: '14px 20px', borderBottom: '1px solid var(--border)',
-                cursor: 'pointer', transition: 'background 0.1s',
-                alignItems: 'center',
-              }}
-              onMouseEnter={e => { (e.currentTarget as HTMLDivElement).style.background = 'rgba(14,165,233,0.04)'; }}
-              onMouseLeave={e => { (e.currentTarget as HTMLDivElement).style.background = 'transparent'; }}
-              >
-                <span style={{ fontSize: 14, fontWeight: 700, color: 'var(--text)' }}>{rs.name}</span>
-                <span style={{ fontSize: 13, color: 'var(--text-muted)' }}>{rs.sites?.name || 'Unknown'}</span>
-                <span>
-                  <span style={{
-                    fontSize: 11, fontWeight: 700, padding: '3px 10px', borderRadius: 6,
-                    background: sc.bg, color: sc.color, textTransform: 'capitalize',
-                  }}>{rs.status}</span>
-                </span>
-                <span style={{ fontSize: 13, color: 'var(--text-muted)', textAlign: 'center', fontWeight: 600 }}>{ruleCount}</span>
-                <span style={{ fontSize: 12, color: 'var(--text-dim)' }}>{new Date(rs.created_at).toLocaleDateString()}</span>
-              </div>
-            </Link>
-          );
-        })}
-
-        {filtered.length === 0 && (
-          <div style={{ padding: 48, textAlign: 'center', color: 'var(--text-dim)', fontStyle: 'italic' }}>
-            {filterStatus === 'all' ? 'No rule sets created yet. Click "Create Rule Set" to get started.' : `No ${filterStatus} rule sets.`}
-          </div>
-        )}
-      </div>
+      <Card pad={false}>
+        <Table
+          headers={TABLE_HEADERS}
+          minWidth={560}
+          rows={filtered.map(rs => {
+            const ruleCount = rs.rule_definitions?.length || 0;
+            return [
+              <Link key="name" href={`/rules/${rs.id}`} style={{ textDecoration: 'none', color: 'var(--text-strong)', fontWeight: 700 }}>
+                {rs.name}
+              </Link>,
+              rs.sites?.name || 'Unknown',
+              <Badge key="status" tone={STATUS_TONES[rs.status] || 'neutral'}>{rs.status}</Badge>,
+              String(ruleCount),
+              new Date(rs.created_at).toLocaleDateString(),
+            ];
+          })}
+          empty={
+            <EmptyState
+              icon="⚖"
+              title={filterStatus === 'all' ? 'No rule sets created yet' : `No ${filterStatus} rule sets`}
+              hint={filterStatus === 'all'
+                ? "Create a rule set to encode a site's scheduling constraints — the engine validates every schedule against them."
+                : 'Switch the status filter to see rule sets in other states.'}
+              action={filterStatus === 'all'
+                ? <Button size="sm" onClick={() => setShowCreate(true)}>+ Create Rule Set</Button>
+                : undefined}
+            />
+          }
+        />
+      </Card>
 
       {showCreate && (
         <CreateRuleSetModal
@@ -202,27 +193,28 @@ function CreateRuleSetModal({ orgId, sites, onClose, onCreated }: {
   };
 
   return (
-    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.75)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 200 }} onClick={onClose}>
-      <div className="modal-box" style={{ background: 'var(--bg-surface)', border: '1px solid var(--border)', borderRadius: 16, padding: 28, width: 460, maxHeight: '85vh', overflowY: 'auto' }} onClick={e => e.stopPropagation()}>
-        <div style={{ fontSize: 17, fontWeight: 800, color: 'var(--text-strong)', marginBottom: 22 }}>Create Rule Set</div>
+    <Modal
+      open
+      onClose={onClose}
+      title="Create Rule Set"
+      width={460}
+      footer={
+        <>
+          <Button variant="secondary" onClick={onClose}>Cancel</Button>
+          <Button onClick={submit} disabled={saving || !name.trim() || !siteId}>
+            {saving ? 'Creating...' : 'Create'}
+          </Button>
+        </>
+      }
+    >
+      <label style={labelStyle}>Rule Set Name *</label>
+      <input style={inputStyle} placeholder="e.g. Paoli Hospital Main Rules" value={name} onChange={e => setName(e.target.value)} />
 
-        <label style={labelStyle}>Rule Set Name *</label>
-        <input style={inputStyle} placeholder="e.g. Paoli Hospital Main Rules" value={name} onChange={e => setName(e.target.value)} />
-
-        <label style={labelStyle}>Site *</label>
-        <select value={siteId} onChange={e => setSiteId(e.target.value)} style={{ ...inputStyle, cursor: 'pointer' }}>
-          {sites.length === 0 && <option value="">No sites available</option>}
-          {sites.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
-        </select>
-
-        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 12 }}>
-          <button onClick={onClose} style={{ padding: '9px 18px', borderRadius: 8, cursor: 'pointer', background: 'transparent', color: 'var(--text-muted)', border: '1px solid var(--border)', fontWeight: 600, fontSize: 13 }}>Cancel</button>
-          <button onClick={submit} disabled={saving || !name.trim() || !siteId} style={{
-            padding: '9px 20px', borderRadius: 8, cursor: 'pointer', fontWeight: 700, fontSize: 13,
-            background: 'linear-gradient(135deg,#0ea5e9,#6366f1)', color: '#fff', border: 'none', opacity: (saving || !name.trim() || !siteId) ? 0.5 : 1,
-          }}>{saving ? 'Creating...' : 'Create'}</button>
-        </div>
-      </div>
-    </div>
+      <label style={labelStyle}>Site *</label>
+      <select value={siteId} onChange={e => setSiteId(e.target.value)} style={{ ...inputStyle, cursor: 'pointer' }}>
+        {sites.length === 0 && <option value="">No sites available</option>}
+        {sites.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+      </select>
+    </Modal>
   );
 }
