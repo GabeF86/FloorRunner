@@ -5,7 +5,7 @@ Anesthesia department management: scheduling engine + staffing calculators + OR 
 ## Commands
 - `npm test` — vitest suite (engine + calculators). Single file: `npx vitest run src/lib/rulesEngine/solve.test.ts`
 - `npm run dev` — dev server
-- Legacy exception: `src/lib/gridCalculator/__tests__/rulesNormalizer.test.ts` runs via `npx tsx`, not vitest.
+- Legacy exception: the tsx-based test files under `src/lib/gridCalculator/` (its `__tests__` directories, incl. `seeds/_templates/__tests__`) run via `npx tsx`, not vitest — they surface as 10 "No test suite found" file errors in `npm test`; that's expected.
 
 ## Architecture
 - `src/lib/rulesEngine/` — call-schedule generation. Pipeline: `loadGenerationContext` (all DB reads) → `solve()` (pure greedy, interprets the site's CallPatternDoc) → `optimize()` (bounded hill-climb) → `commitPlan` → batch validation. See `ALGORITHM.md`.
@@ -23,8 +23,10 @@ Anesthesia department management: scheduling engine + staffing calculators + OR 
 
 ## Testing conventions
 - Golden parity: `solve()` with the seeded classic pattern must match `solveLegacy` output on the parity fixtures (`src/lib/rulesEngine/goldenParity.test.ts`) except enumerated intentional fixes listed in that file.
+- `solveLegacy.ts` is kept in-tree deliberately (frozen, never edited) — parity remains valuable until the first real-world v2 generation is validated.
 - Engine tests build pure `GenerationContext` fixtures — no DB. DB-coupled modules use an injected fake supabase client.
 - LLM modules use injected fake clients + fixtures; never call the network in tests.
 
 ## Migrations
 Root-level `supabase_scheduling_patchN_*.sql` files, applied to the live Supabase project manually/via MCP after review. RLS exists but the app uses the service-role key (auth deferred, internal-only).
+**patch18 is PENDING manual application** (no connected MCP server matches the `.env.local` project — see the header in `supabase_scheduling_patch18_call_patterns.sql`). The engine falls back gracefully without it ('apply patch18' warnings); the assistant and call-pattern features require it.

@@ -214,6 +214,8 @@ function baseTables(over: Record<string, TableCfg> = {}): Record<string, TableCf
     // par_level 1 keeps Σ(FTE-target) ≥ bucket totals so the quota warning
     // stays quiet unless a test deliberately raises the par level.
     schedule_slots: { data: [rawSlot({ id: 's1', date: '2026-01-07', code: 'C1', category: 'call' })], error: null },
+    // Parent-schedule lookup for the conflict scan's schedule-scoped exclusion.
+    schedule_versions: { data: { schedule_id: 'sched1' }, error: null },
     sites: { data: { call_par_level: 1 }, error: null },
     shift_types: { data: BASE_SHIFT_TYPES, error: null },
     call_patterns: { data: null, error: null },
@@ -402,6 +404,69 @@ describe('loadGenerationContext — cross-site window (requirement 5)', () => {
     const lte = calls.find(c => c.table === 'assignments' && c.method === 'lte');
     expect(gte!.args).toEqual(['schedule_slots.slot_date', '2026-01-04']);
     expect(lte!.args).toEqual(['schedule_slots.slot_date', '2026-02-02']);
+  });
+});
+
+// Invariant 3: no double-booking across ANY site and ANY schedule version.
+// The conflict scan excludes by parent SCHEDULE (sibling versions of this
+// schedule are clones — the versions route copies slots+assignments), so a
+// same-site assignment in ANOTHER schedule now conflicts, while a sibling
+// version of this schedule never self-conflicts. Mirrors dayShiftAutoGen.
+describe('loadGenerationContext — conflict scan scope (other schedules, same site included)', () => {
+  const conflictRow = (scheduleId: string) => ({
+    provider_id: 'p1',
+    schedule_slots: {
+      slot_date: '2026-01-07', site_id: 'site1',
+      schedule_versions: { schedule_id: scheduleId },
+    },
+  });
+  // Emulate the DB's neq filters so the test is sensitive to the query shape.
+  const conflictAwareAssignments = (rows: Array<ReturnType<typeof conflictRow>>): TableCfg =>
+    (filters: Filter[]) => {
+      const neqs = filters.filter(f => f.method === 'neq');
+      return {
+        data: rows.filter(r => neqs.every(f => {
+          const [col, val] = f.args as [string, unknown];
+          if (col === 'schedule_slots.site_id') return r.schedule_slots.site_id !== val;
+          if (col === 'schedule_slots.schedule_versions.schedule_id') {
+            return r.schedule_slots.schedule_versions.schedule_id !== val;
+          }
+          return true;
+        })),
+        error: null,
+      };
+    };
+
+  it('a same-site assignment in ANOTHER schedule lands in crossSiteByDate; a sibling version of THIS schedule does not', async () => {
+    const { res, calls } = await run({
+      assignments: conflictAwareAssignments([
+        conflictRow('schedOther'), // other schedule, same site → conflict
+      ]),
+    });
+    expect(res.ctx!.crossSiteByDate.get('p1')?.has('2026-01-07')).toBe(true);
+    const neqs = calls.filter(c => c.table === 'assignments' && c.method === 'neq');
+    expect(neqs.some(c => c.args[0] === 'schedule_slots.schedule_versions.schedule_id' && c.args[1] === 'sched1')).toBe(true);
+    expect(neqs.some(c => c.args[0] === 'schedule_slots.site_id')).toBe(false);
+  });
+
+  it('sibling versions of the SAME schedule are clones — excluded from the conflict map', async () => {
+    const { res } = await run({
+      assignments: conflictAwareAssignments([conflictRow('sched1')]),
+    });
+    expect(res.ctx!.crossSiteByDate.get('p1')?.has('2026-01-07') ?? false).toBe(false);
+  });
+
+  it('falls back to the legacy other-sites-only scope (with a warning) when the version row is unreadable', async () => {
+    const { res, calls } = await run({
+      schedule_versions: { data: null, error: { message: 'gone' } },
+      assignments: conflictAwareAssignments([conflictRow('schedOther')]),
+    });
+    // Same-site row is invisible again (degraded), but generation still runs
+    // and says so instead of silently changing scope.
+    expect(res.ctx!.crossSiteByDate.get('p1')?.has('2026-01-07') ?? false).toBe(false);
+    expect((res.ctx!.warnings ?? []).some(w => w.includes('conflict scan degraded'))).toBe(true);
+    const neqs = calls.filter(c => c.table === 'assignments' && c.method === 'neq');
+    expect(neqs.some(c => c.args[0] === 'schedule_slots.site_id' && c.args[1] === 'site1')).toBe(true);
   });
 });
 

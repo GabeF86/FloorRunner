@@ -13,7 +13,9 @@ import type { CallPatternDoc } from '@/lib/rulesEngine/callPattern';
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type SchedulingClient = any;
 
-const READ_CHUNK = 200;
+// Chunk size for id-list reads (.in filters ride in the query string, so keep
+// batches small). Shared with tools.ts's assignment-count read.
+export const READ_CHUNK = 200;
 
 interface SnapshotAssignmentRow {
   schedule_slot_id: string;

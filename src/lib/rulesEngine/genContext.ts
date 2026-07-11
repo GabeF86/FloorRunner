@@ -467,28 +467,52 @@ export async function loadGenerationContext(
     availByPid.set(a.provider_id as string, list);
   }
 
-  // ── 6. Preload existing cross-site assignments for these providers ────────
-  // Anything assigned to these providers on dates in the schedule range, at
-  // OTHER sites — used for same-day cross-site conflict checks.
+  // ── 6. Preload conflicting assignments in OTHER schedules ─────────────────
+  // Anything assigned to these providers on dates in the schedule range, in
+  // any OTHER schedule — other sites AND other schedules at this same site
+  // (invariant 3: no double-booking across any site, any schedule version).
+  // Exclusion is by parent SCHEDULE, not by version: sibling versions of this
+  // schedule are clones/alternatives (the versions route copies
+  // slots+assignments), so counting them would make every
+  // regenerate-into-a-new-version self-conflict. Mirrors dayShiftAutoGen.
   //
   // Window = the FULL slotIndex date range (call AND derived slots — derived
   // fills like D1/D2 can land a provider on a day with no open call slot),
-  // widened ±1 day so post-call/adjacency guards see a neighbor booked at the
-  // other site. Deriving this from slotsToFill (call slots only) left a hole
+  // widened ±1 day so post-call/adjacency guards see a neighbor booked
+  // elsewhere. Deriving this from slotsToFill (call slots only) left a hole
   // on derived-only edge dates.
+  countQ();
+  const { data: verRow } = await sb
+    .from('schedule_versions')
+    .select('schedule_id')
+    .eq('id', scheduleVersionId)
+    .single();
+  const parentScheduleId = (verRow as { schedule_id?: string } | null)?.schedule_id ?? null;
+  if (!parentScheduleId) {
+    warnings.push('schedule_versions lookup failed — conflict scan degraded to other-sites-only (same-site double-booking in other schedules is invisible)');
+  }
+
   const crossWindowStart = addDays(allSlotDates[0], -1);
   const crossWindowEnd = addDays(allSlotDates[allSlotDates.length - 1], 1);
   countQ();
-  const { data: crossSite } = await sb
+  let conflictQuery = sb
     .from('assignments')
-    .select('provider_id, schedule_slots!inner(slot_date, site_id)')
+    .select('provider_id, schedule_slots!inner(slot_date, site_id, schedule_versions!inner(schedule_id))')
     .in('provider_id', providerIds)
     .eq('assignment_status', 'assigned')
     .gte('schedule_slots.slot_date', crossWindowStart)
-    .lte('schedule_slots.slot_date', crossWindowEnd)
-    .neq('schedule_slots.site_id', siteId);
+    .lte('schedule_slots.slot_date', crossWindowEnd);
+  conflictQuery = parentScheduleId
+    ? conflictQuery.neq('schedule_slots.schedule_versions.schedule_id', parentScheduleId)
+    // Degraded fallback (warned above): the legacy other-sites-only scope.
+    // Never falls back to version-only exclusion — that would self-conflict
+    // cloned sibling versions.
+    : conflictQuery.neq('schedule_slots.site_id', siteId);
+  const { data: crossSite } = await conflictQuery;
 
-  // crossSiteByDate: pid -> Set<date> — provider is assigned at a different site on these dates
+  // crossSiteByDate: pid -> Set<date> — provider is assigned elsewhere (another
+  // site, or another schedule at this same site) on these dates. Field name
+  // kept: it feeds the eligibility 'cross-site' rejection vocabulary.
   const crossSiteByDate = new Map<string, Set<string>>();
   for (const a of (crossSite || []) as Array<Record<string, unknown>>) {
     const s = a.schedule_slots as { slot_date: string };

@@ -1,3 +1,27 @@
+-- ╔══════════════════════════════════════════════════════════════════════════╗
+-- ║ STATUS: NOT APPLIED as of 2026-07-10.                                     ║
+-- ║                                                                           ║
+-- ║ Target project: qhwdbtixhzdsgwwtcfrm (the ref in .env.local's             ║
+-- ║ SUPABASE_URL). Neither connected Supabase MCP server matches that ref     ║
+-- ║ (nxseoevbwporxeawacmg, wfbccpshdbndlwvwghyy), so per the scheduling-v2    ║
+-- ║ plan's guard this patch was NOT applied automatically. Apply it MANUALLY  ║
+-- ║ — paste into the target project's SQL editor, or run apply_migration via  ║
+-- ║ an MCP server connected to qhwdbtixhzdsgwwtcfrm.                          ║
+-- ║                                                                           ║
+-- ║ Safety: the DO block at the bottom ASSERTS that the unique index          ║
+-- ║ assignments_schedule_slot_id_key (UNIQUE(schedule_slot_id), from          ║
+-- ║ migration 20260524000000_add_assignment_unique_constraints.sql) exists    ║
+-- ║ and raises if it doesn't — resolve that first if it fires.                ║
+-- ║                                                                           ║
+-- ║ Until applied: the engine runs DEGRADED BUT SAFE — genContext falls back  ║
+-- ║ to legacy code paths and pushes 'apply patch18' warnings ("shift_types    ║
+-- ║ engine columns missing", "call_patterns table missing",                   ║
+-- ║ "historical_call_counts RPC unavailable — using legacy scan").            ║
+-- ║ The schedule assistant (assistant_actions snapshots/undo) and the         ║
+-- ║ call-pattern features (call_patterns CRUD, per-site patterns) REQUIRE     ║
+-- ║ this patch and will not work without it.                                  ║
+-- ╚══════════════════════════════════════════════════════════════════════════╝
+--
 -- Patch 18: call patterns (data-driven call structures), shift_type engine
 -- columns, assistant undo snapshots, historical-fairness aggregate, indexes.
 -- Spec: docs/superpowers/specs/2026-07-07-scheduling-v2-design.md §4.
@@ -128,6 +152,8 @@ BEGIN
     WHERE n.nspname = 'scheduling'
       AND t.relname = 'assignments'
       AND i.indisunique
+      AND i.indisvalid          -- exclude half-built/failed CONCURRENTLY indexes
+      AND i.indpred IS NULL     -- a PARTIAL unique index can't back ON CONFLICT
       AND i.indnkeyatts = 1
       AND a.attname = 'schedule_slot_id'
   ) THEN

@@ -18,17 +18,23 @@ export const BLOCKING_AVAIL: ReadonlySet<string> = new Set([
   'jury_duty', 'unavailable', 'blocked',
 ]);
 
+// An availability entry the scheduler ignores entirely: the request was
+// denied or canceled. Counterpart of isBlockingAvailability for availability
+// types outside BLOCKING_AVAIL (e.g. no_call_request soft flags) that still
+// need the same status semantics.
+export function isDismissedAvailability(entry: { approval_status: string }): boolean {
+  return entry.approval_status === 'denied' || entry.approval_status === 'canceled';
+}
+
 // Canonical "does this availability entry block scheduling?" predicate
 // (clinical invariant 2 / spec §6.7): PENDING requests BLOCK — only entries
 // explicitly denied or canceled are ignored. Every engine (call gen, day-shift
-// gen, eligibility, pre-PTO placement) must route through this so no two
-// engines can disagree about a pending request.
+// gen, eligibility, pre-PTO placement, validation) must route through this so
+// no two engines can disagree about a pending request.
 export function isBlockingAvailability(
   entry: { availability_type: string; approval_status: string },
 ): boolean {
-  return entry.approval_status !== 'denied'
-    && entry.approval_status !== 'canceled'
-    && BLOCKING_AVAIL.has(entry.availability_type);
+  return !isDismissedAvailability(entry) && BLOCKING_AVAIL.has(entry.availability_type);
 }
 
 // Multi-day planned-leave types that also trigger a weekend-bookend

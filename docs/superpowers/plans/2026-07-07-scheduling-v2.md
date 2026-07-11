@@ -27,27 +27,27 @@
 - Create: `.claude/agents/call-structure-designer.md`
 - Modify: `package.json` (zod dep via npm)
 
-- [ ] **Step 1: Create branch**
+- [x] **Step 1: Create branch**
 
 ```bash
 cd /Users/gabrielfarkas/Desktop/FloorRunner && git checkout -b scheduling-v2
 ```
 
-- [ ] **Step 2: Install zod**
+- [x] **Step 2: Install zod**
 
 ```bash
 npm install zod
 ```
 Expected: `zod` appears in `package.json` dependencies; lockfile updated.
 
-- [ ] **Step 3: Verify existing suite is green before any changes**
+- [x] **Step 3: Verify existing suite is green before any changes**
 
 ```bash
 npm test
 ```
 Expected: PASS (record the test count — this is the baseline). If anything fails on a clean checkout, STOP and report BLOCKED with the output.
 
-- [ ] **Step 4: Write CLAUDE.md**
+- [x] **Step 4: Write CLAUDE.md**
 
 ```markdown
 # FloorRunner
@@ -82,7 +82,7 @@ Anesthesia department management: scheduling engine + staffing calculators + OR 
 Root-level `supabase_scheduling_patchN_*.sql` files, applied to the live Supabase project manually/via MCP after review. RLS exists but the app uses the service-role key (auth deferred, internal-only).
 ```
 
-- [ ] **Step 5: Write the three agent definitions**
+- [x] **Step 5: Write the three agent definitions**
 
 `.claude/agents/schedule-engine-reviewer.md`:
 ```markdown
@@ -138,7 +138,7 @@ You translate call-structure descriptions into `CallPatternDoc` JSON for FloorRu
 5. Output: the validated JSON, required shift-type rows, and the dry-run grid. Flag anything the schema cannot express instead of approximating silently.
 ```
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add CLAUDE.md .claude/agents package.json package-lock.json
@@ -154,7 +154,7 @@ git commit -m "scheduling-v2: branch setup, zod, CLAUDE.md, domain agent definit
 
 No tests (pure DDL; not applied until Task 15). Correctness is reviewed by reading against the spec §4.
 
-- [ ] **Step 1: Write the patch file**
+- [x] **Step 1: Write the patch file**
 
 ```sql
 -- Patch 18: call patterns (data-driven call structures), shift_type engine
@@ -271,7 +271,7 @@ WHERE NOT EXISTS (
 
 **Caveat for the implementer:** check whether `scheduling.tg_set_updated_at()` exists in `supabase_scheduling_schema.sql` (grep `tg_set_updated_at\|set_updated_at`). If the schema uses a different trigger-function name for `updated_at`, use that name; if none exists, drop the trigger statement.
 
-- [ ] **Step 2: Sanity-check the SQL parses (no live DB)**
+- [x] **Step 2: Sanity-check the SQL parses (no live DB)**
 
 ```bash
 npx supabase --version >/dev/null 2>&1 && echo ok
@@ -279,7 +279,7 @@ grep -c "CREATE TABLE IF NOT EXISTS scheduling" supabase_scheduling_patch18_call
 ```
 Expected: `2` (call_patterns + assistant_actions). Visual review against spec §4 — every table/column/index in the spec is present.
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add supabase_scheduling_patch18_call_patterns.sql
@@ -294,7 +294,7 @@ git commit -m "scheduling-v2: patch18 DDL — call_patterns, shift_type engine c
 - Create: `src/lib/rulesEngine/callPattern.ts`
 - Create: `src/lib/rulesEngine/callPattern.test.ts`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 `src/lib/rulesEngine/callPattern.test.ts`:
 ```typescript
@@ -363,14 +363,14 @@ describe('helpers', () => {
 });
 ```
 
-- [ ] **Step 2: Run to verify it fails**
+- [x] **Step 2: Run to verify it fails**
 
 ```bash
 npx vitest run src/lib/rulesEngine/callPattern.test.ts
 ```
 Expected: FAIL — cannot resolve `./callPattern`.
 
-- [ ] **Step 3: Implement `src/lib/rulesEngine/callPattern.ts`**
+- [x] **Step 3: Implement `src/lib/rulesEngine/callPattern.ts`**
 
 ```typescript
 // CallPatternDoc — the declarative call-structure vocabulary. This is the
@@ -505,14 +505,14 @@ export function patternWarnings(doc: CallPatternDoc, knownCodes: ReadonlySet<str
 }
 ```
 
-- [ ] **Step 4: Run tests**
+- [x] **Step 4: Run tests**
 
 ```bash
 npx vitest run src/lib/rulesEngine/callPattern.test.ts
 ```
 Expected: PASS (all cases).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/lib/rulesEngine/callPattern.ts src/lib/rulesEngine/callPattern.test.ts
@@ -529,7 +529,7 @@ Freeze today's behavior BEFORE touching solve. The parity test is the safety net
 - Create: `src/lib/rulesEngine/solveLegacy.ts` (verbatim copy of current `solve.ts`, renamed export)
 - Create: `src/lib/rulesEngine/goldenParity.test.ts`
 
-- [ ] **Step 1: Snapshot the current solver**
+- [x] **Step 1: Snapshot the current solver**
 
 ```bash
 cp src/lib/rulesEngine/solve.ts src/lib/rulesEngine/solveLegacy.ts
@@ -541,7 +541,7 @@ Then in `solveLegacy.ts` rename the export: `export function solve(` → `export
 // behavior. DO NOT EDIT. Deleted in the final task of the v2 plan.
 ```
 
-- [ ] **Step 2: Write the parity harness**
+- [x] **Step 2: Write the parity harness**
 
 `src/lib/rulesEngine/goldenParity.test.ts` — the fixture builder is the important part. Study `src/lib/rulesEngine/solve.test.ts` first and REUSE its context-builder helpers if they are exported or extractable; otherwise build:
 
@@ -600,14 +600,14 @@ describe('golden parity: v2 engine + classic pattern ≡ legacy engine', () => {
 
 Note for the implementer: at this task's commit point `solve` and `solveLegacy` are the same code, so parity trivially passes — that is intentional; the harness exists so Task 5 can refactor against it. `ctx.callPattern` does not exist yet; the `solve(ctx)` call is unchanged legacy behavior.
 
-- [ ] **Step 3: Run**
+- [x] **Step 3: Run**
 
 ```bash
 npx vitest run src/lib/rulesEngine/goldenParity.test.ts && npm test
 ```
 Expected: PASS, full suite still green.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add src/lib/rulesEngine/solveLegacy.ts src/lib/rulesEngine/goldenParity.test.ts
@@ -627,7 +627,7 @@ The centerpiece. `solve()` interprets `ctx.callPattern ?? CLASSIC_PATTERN`; all 
 - Modify: `src/lib/rulesEngine/solve.test.ts` (only if imports/fixtures need the new optional fields — they shouldn't)
 - Test: `src/lib/rulesEngine/goldenParity.test.ts` (must stay green), new `src/lib/rulesEngine/patternEngine.test.ts`
 
-- [ ] **Step 1: Extend genTypes.ts (additive, optional — old fixtures keep compiling)**
+- [x] **Step 1: Extend genTypes.ts (additive, optional — old fixtures keep compiling)**
 
 ```typescript
 // add imports at top:
@@ -663,7 +663,7 @@ export interface SkippedDerived {
 ```
 `emptySolveState` unchanged. Update `SolutionPlan` construction sites (`solve.ts` line 11, optimize's evaluate) to include `skippedDerived: []`.
 
-- [ ] **Step 2: Write failing tests for the new behavior**
+- [x] **Step 2: Write failing tests for the new behavior**
 
 `src/lib/rulesEngine/patternEngine.test.ts` — reuse the fixture builder from goldenParity (export it from that file or a shared `__fixtures__/buildContext.ts`). Cases, each a concrete test:
 
@@ -700,14 +700,14 @@ export interface SkippedDerived {
 ```
 Write all 8 concretely with the builder; keep each under ~30 lines.
 
-- [ ] **Step 3: Run to verify the new tests fail and parity still passes**
+- [x] **Step 3: Run to verify the new tests fail and parity still passes**
 
 ```bash
 npx vitest run src/lib/rulesEngine/patternEngine.test.ts src/lib/rulesEngine/goldenParity.test.ts
 ```
 Expected: patternEngine FAILs (behavior not implemented), goldenParity PASS.
 
-- [ ] **Step 4: Rewrite solve.ts as the pattern interpreter**
+- [x] **Step 4: Rewrite solve.ts as the pattern interpreter**
 
 Structure (keep the file under ~400 lines; extract nothing to new files except what's listed):
 
@@ -743,7 +743,7 @@ Behavior mapping (each bullet replaces a hard-coded block of the legacy file —
 9. **`tryFillDerived`**: on each early-return, push to `plan.skippedDerived` with the matching reason (`no-slot`, `already-handled`, `ineligible`) EXCEPT `no-slot` when the pattern simply has no slot that day (that is normal — only record `no-slot` when the trigger's link expected a slot: i.e. always record it; the UI can filter). For `ineligible`, refine: if the provider's availability blocks that date → `'pto'`; if `ctx.crossSiteByDate` hits → `'cross-site'`; if same-date conflict → `'occupied'`; else `'ineligible'`. Determine by calling `evaluateEligibility` and mapping its `reason`.
 10. Delete `RELIEF_CODES`, `callTierPriority` literal (use `callRank`), and both `['C1','C2','C3']` literals. `grep -n "C1'\|C2'\|C3'\|D4'\|/\^D" src/lib/rulesEngine/solve.ts` must return ZERO structural matches (string literals may remain only in comments).
 
-- [ ] **Step 5: eligibility.ts — flag/pattern-driven guards**
+- [x] **Step 5: eligibility.ts — flag/pattern-driven guards**
 
 Replace the C1 literal block (lines 54-62) with:
 ```typescript
@@ -768,14 +768,14 @@ And add the same-date overlay exemption at the top (replacing lines 38-41):
 ```
 (Overlay-vs-overlay stacking on one date is allowed; a non-overlay slot still can't be given to someone holding a non-overlay assignment. `markAssigned` for overlay placements must NOT add to `assignedOnDate` — do this in `record()`: `if (!isOverlay(slot)) markAssigned(...)` — but blocks from dayChains always mark.) Note: the symmetric "had a post-call-flagged shift yesterday" case is covered structurally by the seed/dayChain `blocks` marking the next day in `assignedOnDate` — no extra eligibility check needed; verify test 1 passes through that path.
 
-- [ ] **Step 6: Run everything**
+- [x] **Step 6: Run everything**
 
 ```bash
 npx vitest run src/lib/rulesEngine/ && npm test
 ```
 Expected: patternEngine PASS; goldenParity PASS (the parity fixtures must not exercise IF-1..IF-4 paths — if a parity fixture trips one (e.g. its PTO provider chains a skipped D1, changing nothing in output but adding skippedDerived entries), `stripAdditive` already ignores additive fields; if an actual assignment diff appears, verify it maps to IF-1/2/3 and split that fixture into its own test with the legacy expectation replaced and a comment citing the IF number). Existing solve.test.ts expectations that change must each cite an IF number in the updated test.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add -A src/lib/rulesEngine
@@ -791,7 +791,7 @@ git commit -m "scheduling-v2: solve() interprets CallPatternDoc; seed post-call 
 - Modify: `src/lib/rulesEngine/genTypes.ts` (promote precomputed fields)
 - Test: `src/lib/rulesEngine/genContext.test.ts` (new — fake supabase client)
 
-- [ ] **Step 1: Failing tests** — build a fake supabase client (chainable `{from, select, eq, in, lt, gte, lte, order, rpc}` returning canned rows; copy the fake-client pattern from `src/lib/boardApi.test.ts` if one exists, else write a ~40-line builder). Cases:
+- [x] **Step 1: Failing tests** — build a fake supabase client (chainable `{from, select, eq, in, lt, gte, lte, order, rpc}` returning canned rows; copy the fake-client pattern from `src/lib/boardApi.test.ts` if one exists, else write a ~40-line builder). Cases:
 
 ```typescript
 // 1. loads full shift_types rows into ctx.shiftTypes keyed by code (call_rank,
@@ -809,7 +809,7 @@ git commit -m "scheduling-v2: solve() interprets CallPatternDoc; seed post-call 
 //    < bucketTotal for any bucket produces the quota warning string.
 ```
 
-- [ ] **Step 2: Implement.** Key edits in `genContext.ts`:
+- [x] **Step 2: Implement.** Key edits in `genContext.ts`:
 - shift_types select: replace `shift_types(code, category)` narrow selects with a dedicated site-wide query `from('shift_types').select('code, category, call_rank, relief_rank, is_overlay, generation_engine, requires_post_call_rule, call_coverage_type').eq('site_id', siteId).eq('is_active', true)` → build `shiftTypes` map. (Keep the nested join for slots as-is.)
 - pattern: `from('call_patterns').select('definition').eq('site_id', siteId).eq('status','active').maybeSingle()` → `CallPatternDocSchema.safeParse`; on failure push warning `'Active call pattern failed validation: <first issue>'`.
 - historical: replace the unbounded select (lines ~365-393) with `sb.rpc('historical_call_counts', { p_site_id: siteId, p_before: minDate })`; rows `{provider_id, bucket, code, n}` → same maps (`key = \`${bucket}|${code}\``). If the RPC errors (function not yet applied to live DB), FALL BACK to the legacy query and push a warning — this keeps dev environments working before Task 15 applies patch18.
@@ -818,9 +818,9 @@ git commit -m "scheduling-v2: solve() interprets CallPatternDoc; seed post-call 
 - quota warning: after computing bucketTarget, for each bucket compare `Σ targets` vs `bucketTotals` and warn: `'Bucket <bucket>: FTE-weighted quota (<sum>) cannot cover <total> slots — check call_par_level vs pool FTE'`.
 - `warnings` array flows into the GenerationResult in `autoGenerate.ts` (add `warnings: ctx.warnings ?? []` to the result object) — grep `GenerationResult` in `genTypes.ts`/`autoGenerate.ts` and add the field.
 
-- [ ] **Step 3: Run** `npx vitest run src/lib/rulesEngine/ && npm test` — all green (parity untouched: fixtures don't set the new fields).
+- [x] **Step 3: Run** `npx vitest run src/lib/rulesEngine/ && npm test` — all green (parity untouched: fixtures don't set the new fields).
 
-- [ ] **Step 4: Commit** — `git commit -am "scheduling-v2: genContext loads call pattern + full shift types, RPC fairness aggregate, cross-site window fix, load-time warnings"`
+- [x] **Step 4: Commit** — `git commit -am "scheduling-v2: genContext loads call pattern + full shift types, RPC fairness aggregate, cross-site window fix, load-time warnings"`
 
 ---
 
@@ -830,7 +830,7 @@ git commit -m "scheduling-v2: solve() interprets CallPatternDoc; seed post-call 
 - Modify: `src/lib/rulesEngine/metrics.ts`, `src/lib/rulesEngine/optimize.ts`
 - Test: extend `src/lib/rulesEngine/metrics.test.ts`, `src/lib/rulesEngine/optimize.test.ts`
 
-- [ ] **Step 1: Failing tests**
+- [x] **Step 1: Failing tests**
 ```typescript
 // metrics: a custom call code 'NC' (category call in shiftTypes) contributes to
 //   fairnessStdev and burnout exactly as C1 does. Burnout exemption: two call dates
@@ -845,13 +845,13 @@ git commit -m "scheduling-v2: solve() interprets CallPatternDoc; seed post-call 
 //   saturday main-loop assignment is not moved).
 ```
 
-- [ ] **Step 2: Implement.**
+- [x] **Step 2: Implement.**
 - `metrics.ts`: drop `CALL_CODES` (line 4); call-ness = `a.shift_type_category === 'call'`. Burnout exemption: replace the hard-coded Fri–Sun window with: for each `doc.blocks` (doc from `ctx.callPattern ?? CLASSIC_PATTERN` — scoreSolution already receives ctx), a pair of call dates (d1,d2) is exempt when both fall inside `[anchor + minOff, anchor + maxOff]` for the same anchor date, where anchor dates are the dates in the plan whose derived day type === `block.anchorDayType`, and minOff/maxOff = min/max link offsets in that block's chains together with 0. Classic: min −1, max +1 → Fri–Sun around each Saturday — exact parity.
 - `optimize.ts`: (1) `CALL_CODES` → category check on the plan assignments; (2) movable filter uses `doc.optimizerMovableDayTypes`; (3) build `pid → movable slot ids` map once per scan (replaces per-candidate `movable.filter`); (4) pre-gate: before `evaluate(ctx, trial)`, rebuild a cheap `SolveState` snapshot of the current best ONCE per scan and check `evaluateEligibility(slotOfInterest, candidate, snapshotState, ctx, 'call').eligible` — skip the resolve when ineligible (count as `gatedSkips`); (5) wall-clock: `opts.wallClockMs ?? 2000`, checked per trial via `Date.now()` captured at entry — note vitest runs allow Date.now; add `wallClockMs` to the optimize options type and thread from autoGenerate env/param (default 2000, `SCHEDULING_OPTIMIZE_WALL_MS` env override); (6) return `stats` alongside the plan (adjust `autoGenerate.ts` call site + result type; include stats in GenerationResult for observability).
 
-- [ ] **Step 3: Run** `npx vitest run src/lib/rulesEngine/ && npm test` — green incl. parity (optimizer output for classic fixtures must be identical: pre-gating only SKIPS trials that would have been rejected as no-improvement anyway — verify: a gated trial in legacy resolves to a plan where the forced provider self-rejects → `unfilled` grows → compareMetrics rejects it. So gating cannot change the chosen plan. State this reasoning in a comment. The wall-clock default must be generous enough that fixture-sized optimizations never hit it.)
+- [x] **Step 3: Run** `npx vitest run src/lib/rulesEngine/ && npm test` — green incl. parity (optimizer output for classic fixtures must be identical: pre-gating only SKIPS trials that would have been rejected as no-improvement anyway — verify: a gated trial in legacy resolves to a plan where the forced provider self-rejects → `unfilled` grows → compareMetrics rejects it. So gating cannot change the chosen plan. State this reasoning in a comment. The wall-clock default must be generous enough that fixture-sized optimizations never hit it.)
 
-- [ ] **Step 4: Commit** — `git commit -am "scheduling-v2: metrics/optimize category-driven, eligibility pre-gating, wall-clock budget, pattern-aware burnout"`
+- [x] **Step 4: Commit** — `git commit -am "scheduling-v2: metrics/optimize category-driven, eligibility pre-gating, wall-clock budget, pattern-aware burnout"`
 
 ---
 
@@ -862,7 +862,7 @@ git commit -m "scheduling-v2: solve() interprets CallPatternDoc; seed post-call 
 - Modify: `src/app/api/scheduling/schedule-assignments/[id]/validate/route.ts`, `src/app/api/scheduling/schedule-assignments/route.ts` (revalidateNeighbors)
 - Create: `src/lib/rulesEngine/evaluators.test.ts`, `src/lib/rulesEngine/batchValidate.ts` (+ test)
 
-- [ ] **Step 1: Failing tests**
+- [x] **Step 1: Failing tests**
 
 `evaluators.test.ts` — hand-built `EvaluationContext` fixtures (read `types.ts:99-152` for the shape), one describe per evaluator: timeOff (pending blocks, denied passes), weekendAdjacentPto, sequence (honors `applies_to_day_types` — currently dropped), rest, frequency (period edges), coverage, pairing, fairness, openSlot, crossSite (`allow_multi_site`). Plus: **fairness scales by FTE** — 0.5-FTE provider with 4 calls flags, 1.0-FTE with 4 does not (new `fte_value` on the context; threshold = `ceil(base * fte)`); **unknown requirement_type** in an eligibility rule produces a warning-severity violation `'Unknown rule vocabulary: <type>'` instead of silent skip.
 
@@ -870,15 +870,15 @@ git commit -m "scheduling-v2: solve() interprets CallPatternDoc; seed post-call 
 
 `evaluate.test.ts` addition — when loadContext returns null, result has `evaluated: false` and callers (unit-test the route handler function or commitValidation with a fake sb) do NOT write validation_flags.
 
-- [ ] **Step 2: Implement.**
+- [x] **Step 2: Implement.**
 - `EvaluateResult` gains `evaluated: boolean` (true only when context loaded and no evaluator threw; evaluator throw → catch, set evaluated false, still return other violations). All three write-sites (`commit.ts:151-159`, validate route, revalidateNeighbors) skip the DB write and surface `{error: 'validation-unavailable'}`/console.error when `!evaluated`.
 - `loadContext.ts` neighbor query: add `.eq('schedule_slots.schedule_version_id', slotRow.schedule_version_id)` and `.eq('schedule_slots.site_id', slotRow.site_id)`; keep the crossSite evaluator's own unscoped query (lines 217-222) as-is.
 - `batchValidate.ts`: load once per version — all slots+assignments (one query), all availability for assigned providers in range (one), all neighbor assignments for those providers ±31d scoped to version+site (one), credentials (one), then evaluate in memory reusing `evaluators.ts` by constructing `EvaluationContext` per assignment from the preloaded maps; bulk write with one `upsert` on `assignments` (id + validation_flags) — chunk at 500 rows. `commit.ts` `commitValidation` delegates to it; `commitMetadata` similarly becomes one bulk upsert keyed by existing assignment id (fetch ids in the same preload).
 - fairness evaluator: add `fte_value` to EvaluationContext provider load (one column), scale.
 - sequence evaluator + loader: select and honor `applies_to_day_types`/`applies_to_shift_types`.
 
-- [ ] **Step 3: Run** `npx vitest run src/lib/rulesEngine/ && npm test` → green.
-- [ ] **Step 4: Commit** — `git commit -am "scheduling-v2: batch validation (~6 queries), evaluated flag stops silent-green, neighbor scoping, per-FTE fairness, evaluators test suite"`
+- [x] **Step 3: Run** `npx vitest run src/lib/rulesEngine/ && npm test` → green.
+- [x] **Step 4: Commit** — `git commit -am "scheduling-v2: batch validation (~6 queries), evaluated flag stops silent-green, neighbor scoping, per-FTE fairness, evaluators test suite"`
 
 ---
 
@@ -888,7 +888,7 @@ git commit -m "scheduling-v2: solve() interprets CallPatternDoc; seed post-call 
 - Modify: `src/lib/rulesEngine/dayShiftAutoGen.ts`, `src/lib/rulesEngine/shared.ts`, `src/lib/rulesEngine/solve.ts` (pre-PTO pass predicate), `src/lib/rulesEngine/eligibility.ts` (predicate reuse)
 - Create: `src/lib/rulesEngine/dayShiftAutoGen.test.ts`
 
-- [ ] **Step 1: Failing tests** (fake supabase with call recording):
+- [x] **Step 1: Failing tests** (fake supabase with call recording):
 ```typescript
 // 1. Pending PTO blocks a day-doc placement (today only approved blocks) — provider
 //    with approval_status 'pending' pto over the date is NOT placed.
@@ -899,12 +899,12 @@ git commit -m "scheduling-v2: solve() interprets CallPatternDoc; seed post-call 
 //    processed (regex retired).
 ```
 
-- [ ] **Step 2: Implement.**
+- [x] **Step 2: Implement.**
 - `shared.ts`: `export function isBlockingAvailability(entry: {availability_type: string; approval_status: string}): boolean { return entry.approval_status !== 'denied' && entry.approval_status !== 'canceled' && BLOCKING_AVAIL.has(entry.availability_type); }` — use it in `eligibility.ts` (both loops), `dayShiftAutoGen.ts:298`, and solve's pre-PTO pass (replacing `approval_status !== 'approved'` — NOTE this changes pre-PTO behavior for pending PTO: pending now also earns the Thursday placement; add a patternEngine test asserting it and cite the spec §6.7 policy: pending blocks everywhere ⇒ pending also drives placement).
 - `dayShiftAutoGen.ts`: fetch shift_types with `generation_engine` and filter `=== 'day_pool'` (keep the regex as a fallback ONLY when the column is missing from the row payload — i.e. `row.generation_engine ? row.generation_engine === 'day_pool' : !/^D\d+$/i.test(code)`); accumulate placements into `pendingUpdates`/`pendingInserts` arrays, write once at the end via the same shapes commit.ts uses (`.update` per-chunk with `.in('id', ids)` won't work for per-row provider ids — use one `upsert` with the full row list for updates, one `insert` for new rows; mirror `commit.ts partitionForWrite` exactly); precompute per-provider blocked-date sets once (Map<pid, Set<date>> from availability via `isBlockingAvailability` + `effectivePtoRange`).
 
-- [ ] **Step 3: Run** `npx vitest run src/lib/rulesEngine/dayShiftAutoGen.test.ts && npm test` → green.
-- [ ] **Step 4: Commit** — `git commit -am "scheduling-v2: day-shift engine bulk writes, shared pending-PTO predicate, generation_engine ownership"`
+- [x] **Step 3: Run** `npx vitest run src/lib/rulesEngine/dayShiftAutoGen.test.ts && npm test` → green.
+- [x] **Step 4: Commit** — `git commit -am "scheduling-v2: day-shift engine bulk writes, shared pending-PTO predicate, generation_engine ownership"`
 
 ---
 
@@ -914,7 +914,7 @@ git commit -m "scheduling-v2: solve() interprets CallPatternDoc; seed post-call 
 - Modify: `src/lib/rulesEngine/sequenceAutoFill.ts`, its call sites in `src/app/api/scheduling/schedule-assignments/route.ts` and `[id]/route.ts` (grep `applySequenceAutoFill` / `cleanupSequenceFills` for the exact list)
 - Create: `src/lib/rulesEngine/sequenceAutoFill.test.ts`
 
-- [ ] **Step 1: Failing tests** (fake supabase):
+- [x] **Step 1: Failing tests** (fake supabase):
 ```typescript
 // 1. Manual C2 on Mon at site A triggers D1 fill on Tue (classic pattern link).
 // 2. CROSS-SITE FIX: provider already 'assigned' on Tue at site B (different
@@ -929,10 +929,10 @@ git commit -m "scheduling-v2: solve() interprets CallPatternDoc; seed post-call 
 //    slots query per invocation (≤5 total DB calls; assert via recording fake).
 ```
 
-- [ ] **Step 2: Implement.** Replace the rule_definitions-driven `loadActiveSequenceRulesForSite` with the site's active call pattern (`call_patterns` select, cached per-request via a parameter: call sites load it once and pass `doc` in). Links = `dayChainsFor(doc, triggerCode, triggerDayType)` links (offset ±N). Same-day conflict check becomes provider-wide: `from('assignments').select('id, schedule_slots!inner(slot_date)').eq('provider_id', pid).eq('assignment_status','assigned').eq('schedule_slots.slot_date', linkedDate)` — NO version filter (any site, any version). Batch: fetch the provider's assignments for `triggerDate ± maxOffset` once, availability once, candidate slots once; evaluate in memory. Return `{ filledSlotIds, skips }`; route handlers include `skips` in their JSON response. `cleanupSequenceFills` (delete path) mirrors the same pattern-link derivation.
+- [x] **Step 2: Implement.** Replace the rule_definitions-driven `loadActiveSequenceRulesForSite` with the site's active call pattern (`call_patterns` select, cached per-request via a parameter: call sites load it once and pass `doc` in). Links = `dayChainsFor(doc, triggerCode, triggerDayType)` links (offset ±N). Same-day conflict check becomes provider-wide: `from('assignments').select('id, schedule_slots!inner(slot_date)').eq('provider_id', pid).eq('assignment_status','assigned').eq('schedule_slots.slot_date', linkedDate)` — NO version filter (any site, any version). Batch: fetch the provider's assignments for `triggerDate ± maxOffset` once, availability once, candidate slots once; evaluate in memory. Return `{ filledSlotIds, skips }`; route handlers include `skips` in their JSON response. `cleanupSequenceFills` (delete path) mirrors the same pattern-link derivation.
 
-- [ ] **Step 3: Run** `npx vitest run src/lib/rulesEngine/sequenceAutoFill.test.ts && npm test` → green.
-- [ ] **Step 4: Commit** — `git commit -am "scheduling-v2: sequence auto-fill reads call pattern, provider-wide cross-site check, skip reporting, batched queries"`
+- [x] **Step 3: Run** `npx vitest run src/lib/rulesEngine/sequenceAutoFill.test.ts && npm test` → green.
+- [x] **Step 4: Commit** — `git commit -am "scheduling-v2: sequence auto-fill reads call pattern, provider-wide cross-site check, skip reporting, batched queries"`
 
 ---
 
@@ -942,9 +942,9 @@ git commit -m "scheduling-v2: solve() interprets CallPatternDoc; seed post-call 
 - Modify: `src/app/api/scheduling/schedules/route.ts` (slot materialization, ~lines 108-164)
 - Test: extend `src/app/api/scheduling/schedules/[id]/generate/route.test.ts` pattern — create `src/app/api/scheduling/schedules/route.test.ts` with a fake sb
 
-- [ ] **Step 1: Failing test:** a template with `required_count: 2` produces 2 slot rows for that date/shift_type with `slot_index` 0 and 1 and `required_count: 1` each; genContext load warning fires for any legacy slot row with `required_count > 1` (add to Task 6's warning block if not already: `'Slot <date> <code> has required_count>1 (legacy); generate covers only one — split into sibling slots'` — add it now in genContext with a test).
-- [ ] **Step 2: Implement** — in the creation loop, `for (let i = 0; i < required_count; i++)` push a slot row `{..., required_count: 1, slot_index: i}` plus its open assignment row. Keep bulk inserts (arrays).
-- [ ] **Step 3: Run + commit** — `git commit -am "scheduling-v2: required_count materializes sibling slots; legacy multi-count warning"`
+- [x] **Step 1: Failing test:** a template with `required_count: 2` produces 2 slot rows for that date/shift_type with `slot_index` 0 and 1 and `required_count: 1` each; genContext load warning fires for any legacy slot row with `required_count > 1` (add to Task 6's warning block if not already: `'Slot <date> <code> has required_count>1 (legacy); generate covers only one — split into sibling slots'` — add it now in genContext with a test).
+- [x] **Step 2: Implement** — in the creation loop, `for (let i = 0; i < required_count; i++)` push a slot row `{..., required_count: 1, slot_index: i}` plus its open assignment row. Keep bulk inserts (arrays).
+- [x] **Step 3: Run + commit** — `git commit -am "scheduling-v2: required_count materializes sibling slots; legacy multi-count warning"`
 
 ---
 
@@ -956,14 +956,14 @@ git commit -m "scheduling-v2: solve() interprets CallPatternDoc; seed post-call 
 - Modify: `src/app/api/scheduling/schedule-assignments/route.ts` (POST returns joined row + sequence fills)
 - Modify: `src/app/(scheduling)/schedules/[id]/page.tsx` (assignProvider/removeAssignment: patch local state, drop `loadGrid()` refetch)
 
-- [ ] **Step 1: Tests** — route-level: extend `generate/route.test.ts`: response unfilled entries carry at most 3 candidate reasons + `omittedCandidates` count; response includes `warnings` and `skippedDerived`. Grid route: assert select string contains explicit columns and no `'*'` (unit-test the exported column list constant). Client page: no vitest harness for the monolith — make the change surgical and verify via `npm run build` type-check.
-- [ ] **Step 2: Implement.**
+- [x] **Step 1: Tests** — route-level: extend `generate/route.test.ts`: response unfilled entries carry at most 3 candidate reasons + `omittedCandidates` count; response includes `warnings` and `skippedDerived`. Grid route: assert select string contains explicit columns and no `'*'` (unit-test the exported column list constant). Client page: no vitest harness for the monolith — make the change surgical and verify via `npm run build` type-check.
+- [x] **Step 2: Implement.**
 - generate route: `export const maxDuration = 300;` after the imports; before returning, map `result.unfilled` → `candidates: c.candidates?.slice(0,3), omittedCandidates: Math.max(0, (c.candidates?.length ?? 0) - 3)`; include `warnings`, `skippedDerived`, `optimizeStats` from the engine result.
 - grid route: replace `select('*')`-style strings with explicit columns the page actually reads (grep the page's usage of `slot.`/`assignment.` fields first, list them, select exactly those); add `validation_summary: {hard, soft}` computed server-side per assignment from validation_flags while STILL including full `validation_flags` (the page renders messages in tooltips — verify by grepping `validation_flags` in page.tsx; if only counts + messages-on-click are used, ship summary + messages array trimmed to `severity, message`).
 - assignment POST/PATCH: after write + `applySequenceAutoFill`, re-select the affected assignment row(s) (the manual one + any auto-filled/cleaned sibling ids returned by auto-fill) with the same column shape as the grid route, return `{assignment, siblings, skips}`.
 - page.tsx `assignProvider` (~line 678) / `removeAssignment` (~700): replace `await loadGrid()` with applying the returned rows into the `grid` state (find the state setter — patch matching slot ids), keeping the optimistic update as the immediate paint. On response error, fall back to `loadGrid()`.
-- [ ] **Step 3: Verify** `npm test && npm run build` — both green. Manually trace one edit path in the code (no dev server needed).
-- [ ] **Step 4: Commit** — `git commit -am "scheduling-v2: generate maxDuration+trimmed payload, explicit grid columns, cell edits patch state without full refetch"`
+- [x] **Step 3: Verify** `npm test && npm run build` — both green. Manually trace one edit path in the code (no dev server needed).
+- [x] **Step 4: Commit** — `git commit -am "scheduling-v2: generate maxDuration+trimmed payload, explicit grid columns, cell edits patch state without full refetch"`
 
 ---
 
@@ -975,9 +975,9 @@ git commit -m "scheduling-v2: solve() interprets CallPatternDoc; seed post-call 
 - Create: `src/lib/validation/scheduling.ts` (zod schemas: ShiftTypeUpsert, RuleDefinitionUpsert)
 - Test: `src/app/api/scheduling/call-patterns/route.test.ts` (+ validation unit tests in `src/lib/validation/scheduling.test.ts`)
 
-- [ ] **Step 1: Failing tests:** PUT with invalid CallPatternDoc → 400 with zod issue path; PUT valid doc → archives prior active (status 'archived'), inserts new active, returns it; GET returns active + recent history. ShiftTypeUpsert rejects unknown keys, wrong enum for generation_engine; RuleDefinitionUpsert requires rule_set_id/rule_name/rule_category and rejects unknown top-level keys.
-- [ ] **Step 2: Implement** — PUT `{site_id, definition, name?, source?}`: `CallPatternDocSchema.parse` (400 on ZodError with `{error, issues}` envelope matching the normalize-rules route's 400 convention); transactionally-ish: update current active → archived, insert new (unique partial index enforces one active — on conflict retry once). shift-types/rule-definitions POST/PATCH: `Schema.parse(body)` before insert/update; keep response shapes unchanged.
-- [ ] **Step 3: Run + commit** — `git commit -am "scheduling-v2: call-patterns CRUD, zod-validated shift-type and rule mutations"`
+- [x] **Step 1: Failing tests:** PUT with invalid CallPatternDoc → 400 with zod issue path; PUT valid doc → archives prior active (status 'archived'), inserts new active, returns it; GET returns active + recent history. ShiftTypeUpsert rejects unknown keys, wrong enum for generation_engine; RuleDefinitionUpsert requires rule_set_id/rule_name/rule_category and rejects unknown top-level keys.
+- [x] **Step 2: Implement** — PUT `{site_id, definition, name?, source?}`: `CallPatternDocSchema.parse` (400 on ZodError with `{error, issues}` envelope matching the normalize-rules route's 400 convention); transactionally-ish: update current active → archived, insert new (unique partial index enforces one active — on conflict retry once). shift-types/rule-definitions POST/PATCH: `Schema.parse(body)` before insert/update; keep response shapes unchanged.
+- [x] **Step 3: Run + commit** — `git commit -am "scheduling-v2: call-patterns CRUD, zod-validated shift-type and rule mutations"`
 
 ---
 
@@ -997,10 +997,10 @@ The largest task. Read spec §7 fully first. All Claude API usage follows the cl
 - Modify: `src/app/(scheduling)/schedules/[id]/page.tsx` — mount `<AssistantPanel scheduleId={id} onMutated={loadGrid} />` + header toggle state only (≤15 lines touched).
 - Tests: `src/lib/scheduleAssistant/assistant.test.ts` with a fake client emitting canned tool_use sequences (fixture pattern from rulesNormalizer fixtures, but vitest): (1) NL "make weekends the proposed structure" fixture → update_call_pattern executed with valid doc, snapshot taken BEFORE it, regenerate called after, changes[] has 2 entries; (2) invalid tool input → tool_result is_error fed back, model's corrected second call succeeds; (3) read-only conversation takes NO snapshot; (4) snapshot round-trip: revertAction restores pattern + assignments (fake sb records upserts); (5) image block passes through to the request payload verbatim.
 
-- [ ] **Step 1: tests first** (fake client + fake sb) — write all 5, watch them fail.
-- [ ] **Step 2: implement modules in dependency order** (client → tools/mutations → snapshot → assistant → routes → panel).
-- [ ] **Step 3:** `npx vitest run src/lib/scheduleAssistant/ && npm test && npm run build` — all green.
-- [ ] **Step 4: Commit** — `git commit -am "scheduling-v2: Claude schedule assistant — tool-use loop, snapshot/undo, SSE route, drawer UI"`
+- [x] **Step 1: tests first** (fake client + fake sb) — write all 5, watch them fail.
+- [x] **Step 2: implement modules in dependency order** (client → tools/mutations → snapshot → assistant → routes → panel).
+- [x] **Step 3:** `npx vitest run src/lib/scheduleAssistant/ && npm test && npm run build` — all green.
+- [x] **Step 4: Commit** — `git commit -am "scheduling-v2: Claude schedule assistant — tool-use loop, snapshot/undo, SSE route, drawer UI"`
 
 ---
 
@@ -1011,10 +1011,10 @@ The largest task. Read spec §7 fully first. All Claude API usage follows the cl
 - Delete: `src/lib/rulesEngine/solveLegacy.ts` + its parity test imports → convert goldenParity.test.ts fixtures into engine regression snapshots (inline expected plans), or keep legacy one more cycle — DECISION: keep `solveLegacy` in-tree (it's cheap, and parity remains valuable until the first real-world v2 generation is validated); just note it in CLAUDE.md. Skip deletion.
 - Apply: `supabase_scheduling_patch18_call_patterns.sql`
 
-- [ ] **Step 1: Identify the live project** — read `.env.local` (grep `SUPABASE_URL`); compare its project ref against `mcp__supabase__get_project_url` and `mcp__supabase-chiefos__get_project_url`. Apply patch18 via the MATCHING server's `apply_migration` (name `patch18_call_patterns`). If neither matches or `.env.local` is absent, DO NOT APPLY — leave the SQL file with a README note in the final summary.
-- [ ] **Step 2: Post-apply spot checks** (matching server): `execute_sql`: `select count(*) from scheduling.call_patterns where status='active'` (= number of sites); `select code, call_rank, relief_rank, generation_engine from scheduling.shift_types order by code limit 20` (backfill sane); `select * from scheduling.historical_call_counts((select id from scheduling.sites limit 1), current_date) limit 5` (runs without error).
-- [ ] **Step 3: ALGORITHM.md** — update §7/§8/§9 to describe pattern-doc interpretation (chains/blocks/spans/placement/relief now data); REPLACE the "to change the weekend chain, edit solve.ts" change-table rows with "edit the site's call pattern (assistant or PUT /api/scheduling/call-patterns)"; add a §15 "Call patterns" section with the classic JSON and the invariants list; note `skippedDerived`, quota relaxation, warnings.
-- [ ] **Step 4: Full verification** — `npm test && npm run build`; run the schedule-engine-reviewer agent on the full branch diff; fix findings.
+- [ ] **Step 1: Identify the live project** — read `.env.local` (grep `SUPABASE_URL`); compare its project ref against `mcp__supabase__get_project_url` and `mcp__supabase-chiefos__get_project_url`. Apply patch18 via the MATCHING server's `apply_migration` (name `patch18_call_patterns`). If neither matches or `.env.local` is absent, DO NOT APPLY — leave the SQL file with a README note in the final summary. *(deferred: no matching MCP server — `.env.local` ref qhwdbtixhzdsgwwtcfrm matches neither connected server; apply manually — see the header in `supabase_scheduling_patch18_call_patterns.sql`)*
+- [ ] **Step 2: Post-apply spot checks** (matching server): `execute_sql`: `select count(*) from scheduling.call_patterns where status='active'` (= number of sites); `select code, call_rank, relief_rank, generation_engine from scheduling.shift_types order by code limit 20` (backfill sane); `select * from scheduling.historical_call_counts((select id from scheduling.sites limit 1), current_date) limit 5` (runs without error). *(deferred with Step 1 — run after the manual apply)*
+- [x] **Step 3: ALGORITHM.md** — update §7/§8/§9 to describe pattern-doc interpretation (chains/blocks/spans/placement/relief now data); REPLACE the "to change the weekend chain, edit solve.ts" change-table rows with "edit the site's call pattern (assistant or PUT /api/scheduling/call-patterns)"; add a §15 "Call patterns" section with the classic JSON and the invariants list; note `skippedDerived`, quota relaxation, warnings.
+- [x] **Step 4: Full verification** — `npm test && npm run build`; run the schedule-engine-reviewer agent on the full branch diff; fix findings. *(417 tests green + tsc + build; schedule-engine-reviewer ran on the Task 15 diff — its findings (schedule-scoped conflict exclusion in both engines, assignment_status filter) fixed and re-reviewed to APPROVE)*
 - [ ] **Step 5: Merge** — `git checkout main && git merge --no-ff scheduling-v2 -m "Scheduling v2: data-driven call patterns, engine hardening, Claude assistant"`. Do not push (no remote workflow established).
 
 ---
@@ -1024,3 +1024,20 @@ The largest task. Read spec §7 fully first. All Claude API usage follows the cl
 - Spec §4 data model → Task 2. §5 schema → Task 3. §6.1 → Task 6. §6.2/6.3 → Task 5. §6.4 → Task 7. §6.5 → Task 8. §6.6 → Task 10. §6.7 → Task 9. §6.8 → Tasks 12, 13. §7 → Task 14. §8 agents/CLAUDE.md → Task 1. §9 testing → Tasks 4, 5, 8, 9, 10, 14. §11 rollout → Tasks 1, 15.
 - Known deliberate deferrals repeated from spec §2 (not tasks): auth/RLS, staffing-calculator generalization, day_classes, background jobs, page split, pattern editor UI.
 - Type-consistency check: `CallPatternDoc`/`CLASSIC_PATTERN`/`dayChainsFor`/`postCallBlockOffsets`/`blockChainsFor`/`patternWarnings` names used identically in Tasks 3, 5, 6, 7, 10, 14. `SkippedDerived` vocabulary shared Tasks 5/10/12. `ShiftTypeInfo` Tasks 5/6/9. `evaluated` flag Tasks 8/14 (revert revalidation).
+
+---
+
+## Post-plan notes (Task 15 close-out, 2026-07-10)
+
+**Migration disposition:** patch18 NOT applied. `.env.local` targets project `qhwdbtixhzdsgwwtcfrm`; the connected Supabase MCP servers are `nxseoevbwporxeawacmg` and `wfbccpshdbndlwvwghyy` — neither matches, so per the Step 1 guard the patch must be applied manually (SQL editor, or a matching MCP server). Full disposition + degraded-mode behavior documented in the header of `supabase_scheduling_patch18_call_patterns.sql` and CLAUDE.md's Migrations section. Until applied, the engine runs degraded-but-safe ('apply patch18' warnings); the assistant and call-pattern features require it.
+
+**solveLegacy:** kept in-tree deliberately (frozen). Golden parity remains the safety net until the first real-world v2 generation is validated. Noted in CLAUDE.md testing conventions.
+
+**Known-deferred items** (surfaced during the per-task reviews; consciously not fixed in this branch):
+- `bulkWriteWithRowFallback`: commit.ts ⇄ batchValidate.ts function-level import cycle — safe (nothing crosses at module top level; documented in both files), but a future extraction into a small write-helpers module would remove it.
+- `'pending'` / `'external_fill'` assignment/occupancy statuses — whether they count as "occupied" is a systemic convention decision across engines + UI; today only provider-bearing `assigned` rows count.
+- `sequenceAutoFill`: fills made earlier in the SAME invocation are invisible to later links (misconfigured-pattern edge — a doc whose links collide within one trigger; harmless under the classic doc).
+- Warning-only cells (amber dot) in the grid UI — validation warnings render in tooltips but there's no at-a-glance cell marker.
+- `page.tsx` (schedules/[id]) extraction — the grid page remains a monolith; deferred with the pattern-editor UI.
+- Generation-results UI consuming `warnings`/`skippedDerived` — the API returns both; the results panel doesn't render them yet.
+- `DayShiftGenerationResult` has no `warnings` channel — the day-shift engine's degraded conflict-scan fallback (schedule_versions row unreadable) is silent, where genContext warns. Follow-up: add `warnings: string[]` to the result (using `errors` would falsely alarm the UI).

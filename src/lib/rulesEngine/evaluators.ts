@@ -10,7 +10,11 @@ import type {
   RuleViolation,
   DayType,
 } from './types';
-import { BOOKEND_EXTENDING_TYPES } from './shared';
+import {
+  BOOKEND_EXTENDING_TYPES,
+  isBlockingAvailability,
+  isDismissedAvailability,
+} from './shared';
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -229,18 +233,10 @@ const eligibility: Evaluator = ctx => {
 
 // ── Time Off ───────────────────────────────────────────────────────────────
 
-// Always-on: any approved unavailability overlapping the slot date is a hard violation.
-// Rule-driven additions (like blocking on no_call_request) come from rules.
-const TIME_OFF_BLOCKING = new Set([
-  'pto',
-  'sick',
-  'fmla',
-  'parental_leave',
-  'military_leave',
-  'jury_duty',
-  'unavailable',
-  'blocked',
-]);
+// Always-on: any non-dismissed blocking unavailability overlapping the slot
+// date is a hard violation (isBlockingAvailability — the canonical predicate
+// from shared.ts: pending blocks, only denied/canceled are ignored).
+// no_call_request isn't a blocking type; it soft-flags call assignments only.
 
 const timeOff: Evaluator = ctx => {
   if (!ctx.providerId) return [];
@@ -248,10 +244,9 @@ const timeOff: Evaluator = ctx => {
   const date = ctx.slot.slot_date;
 
   for (const a of ctx.availability) {
-    if (a.approval_status === 'denied' || a.approval_status === 'canceled') continue;
     if (a.start_date > date || a.end_date < date) continue;
 
-    if (TIME_OFF_BLOCKING.has(a.availability_type)) {
+    if (isBlockingAvailability(a)) {
       violations.push({
         rule_id: null,
         rule_name: `Conflicts with ${a.availability_type.toUpperCase()}`,
@@ -259,7 +254,11 @@ const timeOff: Evaluator = ctx => {
         severity: 'hard',
         message: `Provider has ${a.availability_type} from ${a.start_date} to ${a.end_date}.`,
       });
-    } else if (a.availability_type === 'no_call_request' && ctx.shiftType.category === 'call') {
+    } else if (
+      a.availability_type === 'no_call_request' &&
+      ctx.shiftType.category === 'call' &&
+      !isDismissedAvailability(a)
+    ) {
       violations.push({
         rule_id: null,
         rule_name: 'No-call request',
@@ -298,7 +297,11 @@ const weekendAdjacentPto: Evaluator = ctx => {
   const weekAfterEnd = shiftDate(satDate, 6);
 
   for (const a of ctx.availability) {
-    if (a.approval_status === 'denied' || a.approval_status === 'canceled') continue;
+    // Canonical status predicate, narrowed to the bookend-extending subset —
+    // only multi-day planned leave pulls the adjacent weekend out of play.
+    // (BOOKEND_EXTENDING_TYPES ⊆ BLOCKING_AVAIL, so this is purely the same
+    // denied/canceled skip the inline check used to do.)
+    if (!isBlockingAvailability(a)) continue;
     if (!BOOKEND_EXTENDING_TYPES.has(a.availability_type)) continue;
 
     const overlapsBefore =
