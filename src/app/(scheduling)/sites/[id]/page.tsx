@@ -533,7 +533,7 @@ function ShiftTypeModal({ siteId, existing, onClose, onSaved }: {
   return (
     <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.75)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 200 }} onClick={onClose}>
       <div className="modal-box" style={{ background: 'var(--bg-surface)', border: '1px solid var(--border)', borderRadius: 16, padding: 28, width: 540, maxHeight: '85vh', overflowY: 'auto' }} onClick={e => e.stopPropagation()}>
-        <div style={{ fontSize: 17, fontWeight: 800, color: '#f1f5f9', marginBottom: 22 }}>
+        <div style={{ fontSize: 17, fontWeight: 800, color: 'var(--text-strong)', marginBottom: 22 }}>
           {existing ? 'Edit Shift Type' : 'Add Shift Type'}
         </div>
 
@@ -814,7 +814,7 @@ function AddTemplateModal({ siteId, shiftTypes, onClose, onSaved }: {
   return (
     <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.75)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 200 }} onClick={onClose}>
       <div className="modal-box" style={{ background: 'var(--bg-surface)', border: '1px solid var(--border)', borderRadius: 16, padding: 28, width: 440, maxHeight: '85vh', overflowY: 'auto' }} onClick={e => e.stopPropagation()}>
-        <div style={{ fontSize: 17, fontWeight: 800, color: '#f1f5f9', marginBottom: 22 }}>Add Shift Template</div>
+        <div style={{ fontSize: 17, fontWeight: 800, color: 'var(--text-strong)', marginBottom: 22 }}>Add Shift Template</div>
 
         <label style={modalLabelStyle}>Day Type</label>
         <select value={dayType} onChange={e => setDayType(e.target.value)} style={{ ...modalInputStyle, cursor: 'pointer' }}>
@@ -1001,7 +1001,7 @@ function AddHolidayModal({ orgId, siteId, onClose, onSaved }: {
   return (
     <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.75)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 200 }} onClick={onClose}>
       <div className="modal-box" style={{ background: 'var(--bg-surface)', border: '1px solid var(--border)', borderRadius: 16, padding: 28, width: 440, maxHeight: '85vh', overflowY: 'auto' }} onClick={e => e.stopPropagation()}>
-        <div style={{ fontSize: 17, fontWeight: 800, color: '#f1f5f9', marginBottom: 22 }}>Add Holiday</div>
+        <div style={{ fontSize: 17, fontWeight: 800, color: 'var(--text-strong)', marginBottom: 22 }}>Add Holiday</div>
 
         <label style={modalLabelStyle}>Holiday Name *</label>
         <input style={modalInputStyle} placeholder="Christmas Day" value={holidayName} onChange={e => setHolidayName(e.target.value)} />

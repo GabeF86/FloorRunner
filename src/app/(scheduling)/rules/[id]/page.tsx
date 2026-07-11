@@ -731,7 +731,7 @@ function RuleBuilderModal({ ruleSetId, shiftTypes, existing, onClose, onSaved }:
         background: 'var(--bg-surface)', border: '1px solid var(--border)', borderRadius: 16,
         padding: 28, width: 620, maxHeight: '90vh', overflowY: 'auto',
       }} onClick={e => e.stopPropagation()}>
-        <div style={{ fontSize: 17, fontWeight: 800, color: '#f1f5f9', marginBottom: 22 }}>
+        <div style={{ fontSize: 17, fontWeight: 800, color: 'var(--text-strong)', marginBottom: 22 }}>
           {isEdit ? 'Edit Rule' : 'Add Rule'}
         </div>
 

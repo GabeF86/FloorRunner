@@ -28,7 +28,7 @@ const STATUS_COLORS: Record<string, { color: string; bg: string; label: string }
   review:    { color: '#fbbf24', bg: 'rgba(251,191,36,0.15)', label: 'Review' },
   published: { color: '#10b981', bg: 'rgba(16,185,129,0.15)', label: 'Published' },
   revised:   { color: '#fb923c', bg: 'rgba(251,146,60,0.15)', label: 'Revised' },
-  archived:  { color: '#334155', bg: 'rgba(51,65,85,0.25)', label: 'Archived' },
+  archived:  { color: 'var(--text-muted)', bg: 'rgba(100,116,139,0.15)', label: 'Archived' },
 };
 
 const TYPE_COLORS: Record<string, { color: string; bg: string; label: string }> = {
@@ -295,7 +295,7 @@ function CreateScheduleModal({ orgId, sites, onClose, onCreated }: { orgId: stri
   return (
     <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.75)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 200 }} onClick={onClose}>
       <div className="modal-box" style={{ background: 'var(--bg-surface)', border: '1px solid var(--border)', borderRadius: 16, padding: 28, width: 480, maxHeight: '85vh', overflowY: 'auto' }} onClick={e => e.stopPropagation()}>
-        <div style={{ fontSize: 17, fontWeight: 800, color: '#f1f5f9', marginBottom: 22 }}>Create Schedule</div>
+        <div style={{ fontSize: 17, fontWeight: 800, color: 'var(--text-strong)', marginBottom: 22 }}>Create Schedule</div>
 
         <label style={labelStyle}>Site *</label>
         <select value={siteId} onChange={e => setSiteId(e.target.value)} style={{ ...inputStyle, cursor: 'pointer' }}>

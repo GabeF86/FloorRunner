@@ -196,7 +196,7 @@ function AddSiteModal({ orgId, onClose, onAdded }: { orgId: string; onClose: () 
   return (
     <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.75)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 200 }} onClick={onClose}>
       <div className="modal-box" style={{ background: 'var(--bg-surface)', border: '1px solid var(--border)', borderRadius: 16, padding: 28, width: 480, maxHeight: '85vh', overflowY: 'auto' }} onClick={e => e.stopPropagation()}>
-        <div style={{ fontSize: 17, fontWeight: 800, color: '#f1f5f9', marginBottom: 22 }}>Add Site</div>
+        <div style={{ fontSize: 17, fontWeight: 800, color: 'var(--text-strong)', marginBottom: 22 }}>Add Site</div>
 
         <label style={labelStyle}>Site Name *</label>
         <input style={inputStyle} placeholder="Main Hospital" value={name} onChange={e => setName(e.target.value)} />

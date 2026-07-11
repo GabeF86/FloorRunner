@@ -280,7 +280,7 @@ function DefinitionModal({ mode, def, orgId, sites, onClose, onSaved }: {
   return (
     <div style={modalBackdrop} onClick={onClose}>
       <div style={modalBox} onClick={e => e.stopPropagation()}>
-        <div style={{ fontSize: 17, fontWeight: 800, color: '#f1f5f9', marginBottom: 20 }}>
+        <div style={{ fontSize: 17, fontWeight: 800, color: 'var(--text-strong)', marginBottom: 20 }}>
           {mode === 'create' ? 'New Custom Field' : `Edit "${def!.display_label}"`}
         </div>
 

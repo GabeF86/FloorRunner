@@ -29,7 +29,7 @@ interface Site {
 const STATUS_COLORS: Record<string, { color: string; bg: string }> = {
   draft:    { color: '#64748b', bg: 'rgba(100,116,139,0.15)' },
   active:   { color: '#10b981', bg: 'rgba(16,185,129,0.15)' },
-  archived: { color: '#334155', bg: 'rgba(51,65,85,0.15)' },
+  archived: { color: 'var(--text-muted)', bg: 'rgba(100,116,139,0.15)' },
 };
 
 export default function RulesPage() {
@@ -204,7 +204,7 @@ function CreateRuleSetModal({ orgId, sites, onClose, onCreated }: {
   return (
     <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.75)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 200 }} onClick={onClose}>
       <div className="modal-box" style={{ background: 'var(--bg-surface)', border: '1px solid var(--border)', borderRadius: 16, padding: 28, width: 460, maxHeight: '85vh', overflowY: 'auto' }} onClick={e => e.stopPropagation()}>
-        <div style={{ fontSize: 17, fontWeight: 800, color: '#f1f5f9', marginBottom: 22 }}>Create Rule Set</div>
+        <div style={{ fontSize: 17, fontWeight: 800, color: 'var(--text-strong)', marginBottom: 22 }}>Create Rule Set</div>
 
         <label style={labelStyle}>Rule Set Name *</label>
         <input style={inputStyle} placeholder="e.g. Paoli Hospital Main Rules" value={name} onChange={e => setName(e.target.value)} />

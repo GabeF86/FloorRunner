@@ -77,7 +77,6 @@ export default function BoardClient({ initialSites, initialStaff, initialAssignm
   const [siteHeights,   setSiteHeights]   = useState<Record<string, number>>({});
   const [hospital, setHospital] = useState<Hospital | ''>('');
   const [sidebarWidth, setSidebarWidth] = useState<number>(290);
-  const [theme, setTheme] = useState<'dark' | 'light'>('dark');
   const [viewMode, setViewMode] = useState<'grid' | 'network'>('grid');
 
   // Hydrate from localStorage after mount to avoid SSR mismatch
@@ -85,10 +84,6 @@ export default function BoardClient({ initialSites, initialStaff, initialAssignm
     try { const v = localStorage.getItem('siteHeights'); if (v) setSiteHeights(JSON.parse(v)); } catch {}
     try { const v = localStorage.getItem('hospital'); if (v) setHospital(v as Hospital); } catch {}
     try { const v = localStorage.getItem('sidebarWidth'); if (v) setSidebarWidth(parseInt(v)); } catch {}
-    try {
-      const t = localStorage.getItem('theme');
-      if (t === 'light' || t === 'dark') setTheme(t);
-    } catch {}
     try {
       const m = localStorage.getItem('boardViewMode');
       if (m === 'grid' || m === 'network') setViewMode(m);
@@ -100,14 +95,6 @@ export default function BoardClient({ initialSites, initialStaff, initialAssignm
     try { localStorage.setItem('boardViewMode', m); } catch {}
   }, []);
 
-  const toggleTheme = useCallback(() => {
-    setTheme((prev) => {
-      const next = prev === 'dark' ? 'light' : 'dark';
-      try { localStorage.setItem('theme', next); } catch {}
-      document.documentElement.setAttribute('data-theme', next);
-      return next;
-    });
-  }, []);
   const sidebarResizing = useRef(false);
 
   const [viewDate, setViewDate] = useState(today);
@@ -523,14 +510,6 @@ export default function BoardClient({ initialSites, initialStaff, initialAssignm
 
         <BarDivider />
 
-        {/* Brand */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginRight: 4 }}>
-          <span style={{ width: 22, height: 22, borderRadius: 5, background: 'linear-gradient(135deg,#0ea5e9,#6366f1)', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontSize: 12, color: '#fff' }}>⚕</span>
-          <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-bright)', letterSpacing: -0.2 }}>ORBoard</span>
-        </div>
-
-        <BarDivider />
-
         {/* Date nav */}
         <button onClick={() => { const p = addDays(viewDate, -1); setViewDate(p < today ? today : p); }} style={chevButton} title="Previous day">‹</button>
         <span style={{ fontFamily: 'var(--font-mono), ui-monospace, monospace', fontSize: 11, color: 'var(--text)', minWidth: 110, textAlign: 'center' }}>
@@ -583,7 +562,6 @@ export default function BoardClient({ initialSites, initialStaff, initialAssignm
           {isToday && <Pill label="LIVE" color="#10b981" pulse />}
           <BarDivider />
           <button onClick={() => setShowPrint(true)} style={ghostButton} title="Print sheet">🖨 Print</button>
-          <ThemeToggle theme={theme} onToggle={toggleTheme} />
         </div>
       </header>
 
@@ -822,30 +800,6 @@ function facilityAbbrev(h: Hospital): string {
   if (h === 'Lankenau Hospital') return 'Lank';
   if (h === 'Riddle Hospital') return 'Rid';
   return h as string;
-}
-
-function ThemeToggle({ theme, onToggle }: { theme: 'dark' | 'light'; onToggle: () => void }) {
-  const [hov, setHov] = useState(false);
-  const isDark = theme === 'dark';
-  return (
-    <button
-      onClick={onToggle}
-      onMouseEnter={() => setHov(true)}
-      onMouseLeave={() => setHov(false)}
-      title={isDark ? 'Switch to light mode' : 'Switch to dark mode'}
-      style={{
-        width: 26, height: 26, borderRadius: 4,
-        background: hov ? 'rgba(14,165,233,0.12)' : 'transparent',
-        border: '0.5px solid ' + (hov ? 'rgba(14,165,233,0.35)' : 'var(--border)'),
-        color: hov ? '#0ea5e9' : 'var(--text-muted)',
-        cursor: 'pointer', fontSize: 13,
-        display: 'flex', alignItems: 'center', justifyContent: 'center',
-        transition: 'all 0.15s',
-      }}
-    >
-      {isDark ? '☀' : '☾'}
-    </button>
-  );
 }
 
 function NavArrow({ dir, onClick }: { dir: 'left' | 'right'; onClick: () => void }) {

@@ -1992,7 +1992,7 @@ function PoolSelectorModal({
       >
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
           <div>
-            <div style={{ fontSize: 16, fontWeight: 800, color: '#f1f5f9' }}>Select Pool of Physicians</div>
+            <div style={{ fontSize: 16, fontWeight: 800, color: 'var(--text-strong)' }}>Select Pool of Physicians</div>
             <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>
               Auto-Generate will consider only the checked providers.
               Eligibility filters (credentials, availability, weekday) still apply.
