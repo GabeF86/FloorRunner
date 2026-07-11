@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import Link from 'next/link';
+import { PageHeader, Card, Badge, Button, Modal, EmptyState } from '@/components/ui';
 
 /* ── Interfaces ──────────────────────────────────────────────────────────── */
 
@@ -176,37 +177,25 @@ export default function SiteDetailPage({ params }: { params: { id: string } }) {
     <div style={{ padding: '24px 32px' }}>
       {/* Breadcrumb */}
       <div style={{ fontSize: 12, color: 'var(--text-dim)', marginBottom: 16 }}>
-        <Link href="/sites" style={{ color: '#0ea5e9', textDecoration: 'none' }}>Sites</Link>
+        <Link href="/sites" style={{ color: 'var(--blue)', textDecoration: 'none' }}>Sites</Link>
         <span style={{ margin: '0 6px' }}>/</span>
         <span>{site.name}</span>
       </div>
 
       {/* Header */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 16, marginBottom: 24 }}>
-        <div style={{
-          width: 56, height: 56, borderRadius: 12, display: 'flex', alignItems: 'center', justifyContent: 'center',
-          fontSize: 20, fontWeight: 800, background: tc.bg, color: tc.color, border: `1px solid ${tc.color}30`,
-        }}>{site.short_name?.slice(0, 2) || site.name.slice(0, 2).toUpperCase()}</div>
-        <div>
-          <h1 style={{ fontSize: 22, fontWeight: 800, color: 'var(--text)' }}>{site.name}</h1>
-          <div style={{ display: 'flex', gap: 8, marginTop: 4 }}>
+      <PageHeader
+        title={site.name}
+        subtitle={
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
             <span style={{ fontSize: 11, fontWeight: 700, padding: '2px 8px', borderRadius: 6, background: tc.bg, color: tc.color }}>
               {tc.label}
             </span>
-            <span style={{
-              fontSize: 11, fontWeight: 600, padding: '2px 8px', borderRadius: 6,
-              background: site.is_active ? 'rgba(16,185,129,0.12)' : 'rgba(100,116,139,0.12)',
-              color: site.is_active ? '#10b981' : '#64748b',
-            }}>{site.is_active ? 'Active' : 'Inactive'}</span>
-            {site.timezone && (
-              <span style={{ fontSize: 11, fontWeight: 600, padding: '2px 8px', borderRadius: 6, background: 'rgba(99,102,241,0.12)', color: '#818cf8' }}>
-                {site.timezone}
-              </span>
-            )}
+            <Badge tone={site.is_active ? 'ok' : 'neutral'}>{site.is_active ? 'Active' : 'Inactive'}</Badge>
+            {site.timezone && <Badge tone="info">{site.timezone}</Badge>}
           </div>
-        </div>
-        {saving && <span style={{ fontSize: 11, color: '#0ea5e9', marginLeft: 'auto' }}>Saving...</span>}
-      </div>
+        }
+        actions={saving ? <span style={{ fontSize: 11, color: 'var(--blue)' }}>Saving...</span> : undefined}
+      />
 
       {/* Tabs */}
       <div style={{ display: 'flex', gap: 0, borderBottom: '1px solid var(--border)', marginBottom: 24 }}>
@@ -319,7 +308,7 @@ function GeneralTab({ site, onSave }: { site: SiteDetail; onSave: (u: Record<str
         }}
       />
 
-      <button onClick={handleSave} style={saveBtnStyle}>Save Changes</button>
+      <Button onClick={handleSave}>Save Changes</Button>
     </div>
   );
 }
@@ -341,13 +330,10 @@ function ShiftTypesTab({ site, onReload }: { site: SiteDetail; onReload: () => v
     <div>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
         <SectionLabel>Shift Types ({shiftTypes.length})</SectionLabel>
-        <button onClick={() => { setEditId(null); setShowAdd(true); }} style={{
-          padding: '8px 16px', borderRadius: 8, cursor: 'pointer', fontWeight: 700, fontSize: 12,
-          background: 'linear-gradient(135deg,#0ea5e9,#6366f1)', color: '#fff', border: 'none',
-        }}>+ Add Shift Type</button>
+        <Button size="sm" onClick={() => { setEditId(null); setShowAdd(true); }}>+ Add Shift Type</Button>
       </div>
 
-      <div style={{ background: 'var(--bg-surface)', border: '1px solid var(--border)', borderRadius: 12, overflow: 'hidden' }}>
+      <Card pad={false}>
         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
           <thead>
             <tr style={{ borderBottom: '1px solid var(--border)', background: 'rgba(14,165,233,0.04)' }}>
@@ -419,25 +405,21 @@ function ShiftTypesTab({ site, onReload }: { site: SiteDetail; onReload: () => v
                     </div>
                   </td>
                   <td style={{ padding: '10px 14px' }}>
-                    <button onClick={(e) => { e.stopPropagation(); handleDelete(st.id); }} style={{
-                      padding: '4px 8px', borderRadius: 6, cursor: 'pointer', fontSize: 11,
-                      background: 'rgba(248,113,113,0.1)', color: '#f87171', border: '1px solid rgba(248,113,113,0.2)',
-                      fontWeight: 600,
-                    }}>Delete</button>
+                    <Button variant="danger" size="sm" onClick={(e) => { e.stopPropagation(); handleDelete(st.id); }}>Delete</Button>
                   </td>
                 </tr>
               );
             })}
             {shiftTypes.length === 0 && (
               <tr>
-                <td colSpan={9} style={{ padding: '40px 14px', textAlign: 'center', color: 'var(--text-dim)', fontStyle: 'italic' }}>
-                  No shift types configured. Add one to get started.
+                <td colSpan={9} style={{ padding: 0 }}>
+                  <EmptyState icon="◴" title="No shift types configured" hint="Add one to get started." />
                 </td>
               </tr>
             )}
           </tbody>
         </table>
-      </div>
+      </Card>
 
       {showAdd && (
         <ShiftTypeModal
@@ -531,12 +513,18 @@ function ShiftTypeModal({ siteId, existing, onClose, onSaved }: {
   };
 
   return (
-    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.75)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 200 }} onClick={onClose}>
-      <div className="modal-box" style={{ background: 'var(--bg-surface)', border: '1px solid var(--border)', borderRadius: 16, padding: 28, width: 540, maxHeight: '85vh', overflowY: 'auto' }} onClick={e => e.stopPropagation()}>
-        <div style={{ fontSize: 17, fontWeight: 800, color: 'var(--text-strong)', marginBottom: 22 }}>
-          {existing ? 'Edit Shift Type' : 'Add Shift Type'}
-        </div>
-
+    <Modal
+      open
+      onClose={onClose}
+      title={existing ? 'Edit Shift Type' : 'Add Shift Type'}
+      width={540}
+      footer={
+        <>
+          <Button variant="secondary" onClick={onClose}>Cancel</Button>
+          <Button onClick={submit} disabled={saving}>{saving ? 'Saving...' : existing ? 'Save Changes' : 'Add Shift Type'}</Button>
+        </>
+      }
+    >
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 4 }}>
           <div>
             <label style={modalLabelStyle}>Name *</label>
@@ -663,15 +651,7 @@ function ShiftTypeModal({ siteId, existing, onClose, onSaved }: {
           <Toggle label="Can Auto-Assign" checked={autoAssign} onChange={setAutoAssign} />
           <Toggle label="Manual Only" checked={manualOnly} onChange={setManualOnly} />
         </div>
-
-        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 12 }}>
-          <button onClick={onClose} style={cancelBtnStyle}>Cancel</button>
-          <button onClick={submit} disabled={saving} style={{
-            ...saveBtnStyle, opacity: saving ? 0.5 : 1,
-          }}>{saving ? 'Saving...' : existing ? 'Save Changes' : 'Add Shift Type'}</button>
-        </div>
-      </div>
-    </div>
+    </Modal>
   );
 }
 
@@ -698,19 +678,13 @@ function ShiftTemplatesTab({ site, onReload }: { site: SiteDetail; onReload: () 
     <div>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
         <SectionLabel>Shift Templates ({templates.length})</SectionLabel>
-        <button onClick={() => setShowAdd(true)} style={{
-          padding: '8px 16px', borderRadius: 8, cursor: 'pointer', fontWeight: 700, fontSize: 12,
-          background: 'linear-gradient(135deg,#0ea5e9,#6366f1)', color: '#fff', border: 'none',
-        }}>+ Add Template</button>
+        <Button size="sm" onClick={() => setShowAdd(true)}>+ Add Template</Button>
       </div>
 
       {Object.keys(grouped).length === 0 && (
-        <div style={{
-          padding: 40, textAlign: 'center', color: 'var(--text-dim)', fontStyle: 'italic',
-          background: 'var(--bg-surface)', border: '1px solid var(--border)', borderRadius: 12,
-        }}>
-          No shift templates configured. Add one to define daily staffing requirements.
-        </div>
+        <Card>
+          <EmptyState icon="▦" title="No shift templates configured" hint="Add one to define daily staffing requirements." />
+        </Card>
       )}
 
       {Object.entries(grouped).map(([dayType, items]) => {
@@ -721,7 +695,7 @@ function ShiftTemplatesTab({ site, onReload }: { site: SiteDetail; onReload: () 
               fontSize: 12, fontWeight: 800, color: 'var(--text-muted)', letterSpacing: 1,
               textTransform: 'uppercase', marginBottom: 8, paddingLeft: 2,
             }}>{dtLabel}</div>
-            <div style={{ background: 'var(--bg-surface)', border: '1px solid var(--border)', borderRadius: 10, overflow: 'hidden' }}>
+            <Card pad={false}>
               {items.map((t, i) => {
                 const stColor = t.shift_types?.color_hex || '#64748b';
                 return (
@@ -755,16 +729,12 @@ function ShiftTemplatesTab({ site, onReload }: { site: SiteDetail; onReload: () 
                           P{t.generation_priority}
                         </span>
                       )}
-                      <button onClick={() => handleDelete(t.id)} style={{
-                        padding: '3px 8px', borderRadius: 6, cursor: 'pointer', fontSize: 11,
-                        background: 'rgba(248,113,113,0.1)', color: '#f87171', border: '1px solid rgba(248,113,113,0.2)',
-                        fontWeight: 600,
-                      }}>Delete</button>
+                      <Button variant="danger" size="sm" onClick={() => handleDelete(t.id)}>Delete</Button>
                     </div>
                   </div>
                 );
               })}
-            </div>
+            </Card>
           </div>
         );
       })}
@@ -812,10 +782,18 @@ function AddTemplateModal({ siteId, shiftTypes, onClose, onSaved }: {
   };
 
   return (
-    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.75)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 200 }} onClick={onClose}>
-      <div className="modal-box" style={{ background: 'var(--bg-surface)', border: '1px solid var(--border)', borderRadius: 16, padding: 28, width: 440, maxHeight: '85vh', overflowY: 'auto' }} onClick={e => e.stopPropagation()}>
-        <div style={{ fontSize: 17, fontWeight: 800, color: 'var(--text-strong)', marginBottom: 22 }}>Add Shift Template</div>
-
+    <Modal
+      open
+      onClose={onClose}
+      title="Add Shift Template"
+      width={440}
+      footer={
+        <>
+          <Button variant="secondary" onClick={onClose}>Cancel</Button>
+          <Button onClick={submit} disabled={saving}>{saving ? 'Adding...' : 'Add Template'}</Button>
+        </>
+      }
+    >
         <label style={modalLabelStyle}>Day Type</label>
         <select value={dayType} onChange={e => setDayType(e.target.value)} style={{ ...modalInputStyle, cursor: 'pointer' }}>
           {DAY_TYPES.map(d => (
@@ -853,15 +831,7 @@ function AddTemplateModal({ siteId, shiftTypes, onClose, onSaved }: {
             <input type="number" style={modalInputStyle} value={genPriority} onChange={e => setGenPriority(e.target.value)} />
           </div>
         </div>
-
-        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 12 }}>
-          <button onClick={onClose} style={cancelBtnStyle}>Cancel</button>
-          <button onClick={submit} disabled={saving} style={{
-            ...saveBtnStyle, opacity: saving ? 0.5 : 1,
-          }}>{saving ? 'Adding...' : 'Add Template'}</button>
-        </div>
-      </div>
-    </div>
+    </Modal>
   );
 }
 
@@ -883,13 +853,10 @@ function HolidaysTab({ site, holidays, onReload }: { site: SiteDetail; holidays:
     <div>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
         <SectionLabel>Holidays ({relevantHolidays.length})</SectionLabel>
-        <button onClick={() => setShowAdd(true)} style={{
-          padding: '8px 16px', borderRadius: 8, cursor: 'pointer', fontWeight: 700, fontSize: 12,
-          background: 'linear-gradient(135deg,#0ea5e9,#6366f1)', color: '#fff', border: 'none',
-        }}>+ Add Holiday</button>
+        <Button size="sm" onClick={() => setShowAdd(true)}>+ Add Holiday</Button>
       </div>
 
-      <div style={{ background: 'var(--bg-surface)', border: '1px solid var(--border)', borderRadius: 12, overflow: 'hidden' }}>
+      <Card pad={false}>
         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
           <thead>
             <tr style={{ borderBottom: '1px solid var(--border)', background: 'rgba(14,165,233,0.04)' }}>
@@ -934,25 +901,21 @@ function HolidaysTab({ site, holidays, onReload }: { site: SiteDetail; holidays:
                     {h.site_id ? 'Site' : 'Org-wide'}
                   </td>
                   <td style={{ padding: '10px 14px' }}>
-                    <button onClick={() => handleDelete(h.id)} style={{
-                      padding: '4px 8px', borderRadius: 6, cursor: 'pointer', fontSize: 11,
-                      background: 'rgba(248,113,113,0.1)', color: '#f87171', border: '1px solid rgba(248,113,113,0.2)',
-                      fontWeight: 600,
-                    }}>Delete</button>
+                    <Button variant="danger" size="sm" onClick={() => handleDelete(h.id)}>Delete</Button>
                   </td>
                 </tr>
               );
             })}
             {relevantHolidays.length === 0 && (
               <tr>
-                <td colSpan={6} style={{ padding: '40px 14px', textAlign: 'center', color: 'var(--text-dim)', fontStyle: 'italic' }}>
-                  No holidays configured. Add holidays to define schedule exceptions.
+                <td colSpan={6} style={{ padding: 0 }}>
+                  <EmptyState icon="✦" title="No holidays configured" hint="Add holidays to define schedule exceptions." />
                 </td>
               </tr>
             )}
           </tbody>
         </table>
-      </div>
+      </Card>
 
       {showAdd && (
         <AddHolidayModal
@@ -999,10 +962,18 @@ function AddHolidayModal({ orgId, siteId, onClose, onSaved }: {
   };
 
   return (
-    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.75)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 200 }} onClick={onClose}>
-      <div className="modal-box" style={{ background: 'var(--bg-surface)', border: '1px solid var(--border)', borderRadius: 16, padding: 28, width: 440, maxHeight: '85vh', overflowY: 'auto' }} onClick={e => e.stopPropagation()}>
-        <div style={{ fontSize: 17, fontWeight: 800, color: 'var(--text-strong)', marginBottom: 22 }}>Add Holiday</div>
-
+    <Modal
+      open
+      onClose={onClose}
+      title="Add Holiday"
+      width={440}
+      footer={
+        <>
+          <Button variant="secondary" onClick={onClose}>Cancel</Button>
+          <Button onClick={submit} disabled={saving}>{saving ? 'Adding...' : 'Add Holiday'}</Button>
+        </>
+      }
+    >
         <label style={modalLabelStyle}>Holiday Name *</label>
         <input style={modalInputStyle} placeholder="Christmas Day" value={holidayName} onChange={e => setHolidayName(e.target.value)} />
 
@@ -1058,15 +1029,7 @@ function AddHolidayModal({ orgId, siteId, onClose, onSaved }: {
             </label>
           </div>
         </div>
-
-        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 12 }}>
-          <button onClick={onClose} style={cancelBtnStyle}>Cancel</button>
-          <button onClick={submit} disabled={saving} style={{
-            ...saveBtnStyle, opacity: saving ? 0.5 : 1,
-          }}>{saving ? 'Adding...' : 'Add Holiday'}</button>
-        </div>
-      </div>
-    </div>
+    </Modal>
   );
 }
 
@@ -1089,14 +1052,6 @@ const modalInputStyle: React.CSSProperties = {
   width: '100%', padding: '10px 12px', borderRadius: 8,
   border: '1px solid var(--border)', background: 'var(--bg-deep)',
   color: 'var(--text)', fontSize: 14, marginBottom: 12,
-};
-const saveBtnStyle: React.CSSProperties = {
-  padding: '10px 24px', borderRadius: 8, cursor: 'pointer', fontWeight: 700, fontSize: 13,
-  background: 'linear-gradient(135deg,#0ea5e9,#6366f1)', color: '#fff', border: 'none',
-};
-const cancelBtnStyle: React.CSSProperties = {
-  padding: '9px 18px', borderRadius: 8, cursor: 'pointer', background: 'transparent',
-  color: 'var(--text-muted)', border: '1px solid var(--border)', fontWeight: 600, fontSize: 13,
 };
 
 function Field({ label, value, onChange, type }: { label: string; value: string; onChange: (v: string) => void; type?: string }) {
