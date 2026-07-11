@@ -21,6 +21,18 @@ const STATUS_TONE: Record<string, BadgeTone> = {
   archived: 'neutral',
 };
 
+// Zero-count onboarding hints are links — the underline makes the affordance
+// visible (a plain muted line reads as static text).
+const ZERO_HINT_STYLE: React.CSSProperties = {
+  marginTop: 'var(--space-2)',
+  fontSize: 'var(--fs-sm)',
+  color: 'var(--text-muted)',
+  lineHeight: 1.4,
+  textDecoration: 'underline',
+  textDecorationColor: 'var(--border-strong)',
+  textUnderlineOffset: 3,
+};
+
 function StatCard({
   label,
   panel,
@@ -57,9 +69,7 @@ function StatCard({
           </div>
           {(panel.data ?? 0) === 0 && (
             <Link href={href} style={{ textDecoration: 'none' }}>
-              <div style={{ marginTop: 'var(--space-2)', fontSize: 'var(--fs-sm)', color: 'var(--text-muted)', lineHeight: 1.4 }}>
-                {zeroHint}
-              </div>
+              <div style={ZERO_HINT_STYLE}>{zeroHint}</div>
             </Link>
           )}
         </>
@@ -93,9 +103,7 @@ function SchedulesStatCard({ panel }: { panel: DashboardData['schedules'] }) {
           <div style={{ fontSize: 28, fontWeight: 800, lineHeight: 1.1, color: 'var(--text-strong)' }}>{total}</div>
           {total === 0 ? (
             <Link href="/schedules" style={{ textDecoration: 'none' }}>
-              <div style={{ marginTop: 'var(--space-2)', fontSize: 'var(--fs-sm)', color: 'var(--text-muted)', lineHeight: 1.4 }}>
-                Create your first schedule to start generating call coverage.
-              </div>
+              <div style={ZERO_HINT_STYLE}>Create your first schedule to start generating call coverage.</div>
             </Link>
           ) : (
             <div style={{ marginTop: 'var(--space-2)', display: 'flex', flexWrap: 'wrap', gap: 'var(--space-1)' }}>

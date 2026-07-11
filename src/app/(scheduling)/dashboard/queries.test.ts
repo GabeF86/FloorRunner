@@ -3,6 +3,11 @@
 // network). Flag semantics come from the grid route helpers
 // (validationSummaryFor): null flags = never validated (NOT clean), and
 // 'warning' severity never counts as a hard violation.
+//
+// Transport-truncation coverage: PostgREST caps un-ranged selects at 1000
+// rows WITHOUT an error, so the attention rollup must paginate to the exact
+// count and every count-style panel must come from { count: 'exact' } —
+// a partial aggregate must surface a panel error, never render as fact.
 
 import { describe, it, expect } from 'vitest';
 import { makeFakeSupabase, fromCount, callsFor } from '@/lib/rulesEngine/__fixtures__/fakeSupabase';
@@ -10,7 +15,6 @@ import {
   summarizeSchedules,
   todaysCall,
   attentionFor,
-  pendingCount,
   loadDashboardData,
   type TodaysCallSlotRow,
   type AttentionSlotRow,
@@ -270,60 +274,54 @@ describe('attentionFor', () => {
   });
 });
 
-// ── pendingCount ─────────────────────────────────────────────────────────────
-
-describe('pendingCount', () => {
-  it('counts only pending rows', () => {
-    expect(pendingCount([
-      { approval_status: 'pending' },
-      { approval_status: 'approved' },
-      { approval_status: 'pending' },
-    ])).toBe(2);
-  });
-
-  it('handles null/empty input', () => {
-    expect(pendingCount(null)).toBe(0);
-    expect(pendingCount([])).toBe(0);
-  });
-});
-
 // ── loadDashboardData ────────────────────────────────────────────────────────
 
 const TODAY = '2026-07-10';
 
+// Reads the recorded 'range' filter of the current builder to serve the right
+// page — the idiom paginated consumers use against the fake.
+function pageOf<T>(all: T[], filters: Array<{ method: string; args: unknown[] }>): { data: T[]; count: number } {
+  const range = filters.find(f => f.method === 'range');
+  const [from, to] = (range?.args ?? [0, all.length - 1]) as [number, number];
+  return { data: all.slice(from, to + 1), count: all.length };
+}
+
 function fullFake() {
   return makeFakeSupabase({
     tables: {
-      providers: { data: [{ id: 'p1' }, { id: 'p2' }, { id: 'p3' }] },
-      sites: { data: [{ id: 'site-1' }, { id: 'site-2' }] },
+      // Stat panels are head-only exact counts — no rows come back.
+      providers: { data: null, count: 3 },
+      sites: { data: null, count: 2 },
+      provider_availability: { data: null, count: 1 },
       schedules: {
         data: [
-          { id: 'sch-1', schedule_name: 'July Call', status: 'published', date_start: '2026-07-01', date_end: '2026-07-31' },
-          { id: 'sch-2', schedule_name: 'August Call', status: 'draft', date_start: '2026-08-01', date_end: '2026-08-31' },
+          { id: 'sch-1', schedule_name: 'July Call', status: 'published', date_start: '2026-07-01', date_end: '2026-07-31', current_version_number: 1 },
+          { id: 'sch-2', schedule_name: 'August Call', status: 'draft', date_start: '2026-08-01', date_end: '2026-08-31', current_version_number: 2 },
         ],
+        count: 2,
       },
-      provider_availability: { data: [{ id: 'av-1', approval_status: 'pending' }] },
       // schedule_slots serves both query shapes: today's call (eq slot_date)
-      // vs the attention rollup (in schedule_versions.schedule_id).
+      // vs the attention rollup (or-scoped to latest versions, ranged).
       schedule_slots: (filters) => {
         const isToday = filters.some(f => f.method === 'eq' && f.args[0] === 'slot_date');
-        if (isToday) return { data: [callSlot()] };
-        return {
-          data: [
+        if (isToday) return { data: [callSlot()], count: 1 };
+        return pageOf(
+          [
             attnSlot({ id: 's-open', assignments: [] }),
             attnSlot({
               id: 's-hard',
               assignments: [{ provider_id: 'p1', assignment_status: 'assigned', validation_flags: [{ severity: 'hard' }] }],
             }),
           ],
-        };
+          filters,
+        );
       },
     },
   });
 }
 
 describe('loadDashboardData', () => {
-  it('loads every panel in ≤6 selects and shapes the results', async () => {
+  it('loads every panel in ≤6 logical selects and shapes the results', async () => {
     const { sb, calls } = fullFake();
     const data = await loadDashboardData(sb, TODAY);
 
@@ -347,6 +345,31 @@ describe('loadDashboardData', () => {
     ]);
   });
 
+  it('uses head-only exact counts for the providers/sites/pending stat panels', async () => {
+    const { sb, calls } = fullFake();
+    await loadDashboardData(sb, TODAY);
+    for (const table of ['providers', 'sites', 'provider_availability']) {
+      const select = callsFor(calls, table, 'select')[0];
+      expect(select.args[1]).toEqual({ count: 'exact', head: true });
+    }
+  });
+
+  it('errors a stat panel when the count comes back null (no zeros-as-fact)', async () => {
+    const { sb } = makeFakeSupabase({
+      tables: {
+        providers: { data: null, count: null }, // transport anomaly: no error, no count
+        sites: { data: null, count: 0 },
+        schedules: { data: [], count: 0 },
+        provider_availability: { data: null, count: 0 },
+        schedule_slots: { data: [], count: 0 },
+      },
+    });
+    const data = await loadDashboardData(sb, TODAY);
+    expect(data.providers.data).toBeNull();
+    expect(data.providers.error).toContain('count unavailable');
+    expect(data.sites).toEqual({ data: 0, error: null });
+  });
+
   it("filters today's call slots on the provided date", async () => {
     const { sb, calls } = fullFake();
     await loadDashboardData(sb, TODAY);
@@ -354,14 +377,152 @@ describe('loadDashboardData', () => {
     expect(eqs.some(c => c.args[0] === 'slot_date' && c.args[1] === TODAY)).toBe(true);
   });
 
+  it("errors the today's-call panel when the row count says the page was truncated", async () => {
+    const { sb } = makeFakeSupabase({
+      tables: {
+        providers: { data: null, count: 0 },
+        sites: { data: null, count: 0 },
+        schedules: { data: [], count: 0 },
+        provider_availability: { data: null, count: 0 },
+        // 1 row returned but 5 matched — must NOT render a partial panel.
+        schedule_slots: { data: [callSlot()], count: 5 },
+      },
+    });
+    const data = await loadDashboardData(sb, TODAY);
+    expect(data.todaysCall.data).toBeNull();
+    expect(data.todaysCall.error).toContain('truncated');
+  });
+
+  it('scopes the attention rollup to each schedule\'s current version via an embedded or-filter', async () => {
+    const { sb, calls } = fullFake();
+    await loadDashboardData(sb, TODAY);
+    const ors = callsFor(calls, 'schedule_slots', 'or');
+    expect(ors.length).toBeGreaterThan(0);
+    expect(ors[0].args[0]).toBe(
+      'and(schedule_id.eq.sch-1,version_number.eq.1),and(schedule_id.eq.sch-2,version_number.eq.2)',
+    );
+    expect(ors[0].args[1]).toEqual({ referencedTable: 'schedule_versions' });
+  });
+
+  it('paginates the attention rollup past the 1000-row page cap and aggregates every page', async () => {
+    // 1500 matching slots: 1499 unfilled + one hard-flagged assignment that
+    // only exists on page 2 — proving continuation rows reach the aggregate.
+    const bigRollup: AttentionSlotRow[] = [];
+    for (let i = 0; i < 1499; i++) bigRollup.push(attnSlot({ id: `s-${i}`, assignments: [] }));
+    bigRollup.push(attnSlot({
+      id: 's-1499',
+      assignments: [{ provider_id: 'p1', assignment_status: 'assigned', validation_flags: [{ severity: 'hard' }] }],
+    }));
+
+    const { sb, calls } = makeFakeSupabase({
+      tables: {
+        providers: { data: null, count: 0 },
+        sites: { data: null, count: 0 },
+        provider_availability: { data: null, count: 0 },
+        schedules: {
+          data: [{ id: 'sch-1', schedule_name: 'July Call', status: 'draft', date_start: '2026-07-01', date_end: '2026-07-31', current_version_number: 1 }],
+          count: 1,
+        },
+        schedule_slots: (filters) => {
+          const isToday = filters.some(f => f.method === 'eq' && f.args[0] === 'slot_date');
+          if (isToday) return { data: [], count: 0 };
+          return pageOf(bigRollup, filters);
+        },
+      },
+    });
+    const data = await loadDashboardData(sb, TODAY);
+    expect(data.attention.error).toBeNull();
+    expect(data.attention.data).toEqual([
+      { schedule_id: 'sch-1', schedule_name: 'July Call', status: 'draft', unfilled: 1499, hard: 1, assigned: 1, checked: 1 },
+    ]);
+    // 1 today's-call select + 2 rollup pages.
+    expect(fromCount(calls, 'schedule_slots')).toBe(3);
+  });
+
+  it('surfaces a panel error on a mid-pagination failure — never a partial aggregate', async () => {
+    const bigRollup: AttentionSlotRow[] = [];
+    for (let i = 0; i < 1500; i++) bigRollup.push(attnSlot({ id: `s-${i}`, assignments: [] }));
+
+    const { sb } = makeFakeSupabase({
+      tables: {
+        providers: { data: null, count: 0 },
+        sites: { data: null, count: 0 },
+        provider_availability: { data: null, count: 0 },
+        schedules: {
+          data: [{ id: 'sch-1', schedule_name: 'July Call', status: 'draft', date_start: '2026-07-01', date_end: '2026-07-31', current_version_number: 1 }],
+          count: 1,
+        },
+        schedule_slots: (filters) => {
+          const isToday = filters.some(f => f.method === 'eq' && f.args[0] === 'slot_date');
+          if (isToday) return { data: [], count: 0 };
+          const range = filters.find(f => f.method === 'range');
+          const from = (range?.args?.[0] as number) ?? 0;
+          if (from >= 1000) return { data: null, error: { message: 'page 2 exploded' } };
+          return pageOf(bigRollup, filters);
+        },
+      },
+    });
+    const data = await loadDashboardData(sb, TODAY);
+    expect(data.attention.data).toBeNull();
+    expect(data.attention.error).toContain('page 2 exploded');
+  });
+
+  it('surfaces a panel error when pagination stalls short of the reported count', async () => {
+    const { sb } = makeFakeSupabase({
+      tables: {
+        providers: { data: null, count: 0 },
+        sites: { data: null, count: 0 },
+        provider_availability: { data: null, count: 0 },
+        schedules: {
+          data: [{ id: 'sch-1', schedule_name: 'July Call', status: 'draft', date_start: '2026-07-01', date_end: '2026-07-31', current_version_number: 1 }],
+          count: 1,
+        },
+        schedule_slots: (filters) => {
+          const isToday = filters.some(f => f.method === 'eq' && f.args[0] === 'slot_date');
+          if (isToday) return { data: [], count: 0 };
+          const range = filters.find(f => f.method === 'range');
+          const from = (range?.args?.[0] as number) ?? 0;
+          // count promises 1500 but page 2 comes back empty.
+          if (from >= 1000) return { data: [], count: 1500 };
+          return { data: Array.from({ length: 1000 }, (_, i) => attnSlot({ id: `s-${i}`, assignments: [] })), count: 1500 };
+        },
+      },
+    });
+    const data = await loadDashboardData(sb, TODAY);
+    expect(data.attention.data).toBeNull();
+    expect(data.attention.error).toBeTruthy();
+  });
+
+  it('errors the attention panel when the rollup count is unavailable (possible truncation)', async () => {
+    const { sb } = makeFakeSupabase({
+      tables: {
+        providers: { data: null, count: 0 },
+        sites: { data: null, count: 0 },
+        provider_availability: { data: null, count: 0 },
+        schedules: {
+          data: [{ id: 'sch-1', schedule_name: 'July Call', status: 'draft', date_start: '2026-07-01', date_end: '2026-07-31', current_version_number: 1 }],
+          count: 1,
+        },
+        schedule_slots: (filters) => {
+          const isToday = filters.some(f => f.method === 'eq' && f.args[0] === 'slot_date');
+          if (isToday) return { data: [], count: 0 };
+          return { data: [attnSlot()], count: null };
+        },
+      },
+    });
+    const data = await loadDashboardData(sb, TODAY);
+    expect(data.attention.data).toBeNull();
+    expect(data.attention.error).toContain('count unavailable');
+  });
+
   it('fails soft per panel: a providers error leaves other panels intact', async () => {
     const { sb } = makeFakeSupabase({
       tables: {
         providers: { data: null, error: { message: 'boom' } },
-        sites: { data: [{ id: 'site-1' }] },
-        schedules: { data: [] },
-        provider_availability: { data: [] },
-        schedule_slots: { data: [] },
+        sites: { data: null, count: 1 },
+        schedules: { data: [], count: 0 },
+        provider_availability: { data: null, count: 0 },
+        schedule_slots: { data: [], count: 0 },
       },
     });
     const data = await loadDashboardData(sb, TODAY);
@@ -374,11 +535,11 @@ describe('loadDashboardData', () => {
   it('propagates a schedules error to the attention panel and skips the rollup query', async () => {
     const { sb, calls } = makeFakeSupabase({
       tables: {
-        providers: { data: [] },
-        sites: { data: [] },
+        providers: { data: null, count: 0 },
+        sites: { data: null, count: 0 },
         schedules: { data: null, error: { message: 'schedules unavailable' } },
-        provider_availability: { data: [] },
-        schedule_slots: { data: [] },
+        provider_availability: { data: null, count: 0 },
+        schedule_slots: { data: [], count: 0 },
       },
     });
     const data = await loadDashboardData(sb, TODAY);
@@ -393,11 +554,11 @@ describe('loadDashboardData', () => {
   it('skips the rollup query when there are no active schedules', async () => {
     const { sb, calls } = makeFakeSupabase({
       tables: {
-        providers: { data: [] },
-        sites: { data: [] },
-        schedules: { data: [] },
-        provider_availability: { data: [] },
-        schedule_slots: { data: [] },
+        providers: { data: null, count: 0 },
+        sites: { data: null, count: 0 },
+        schedules: { data: [], count: 0 },
+        provider_availability: { data: null, count: 0 },
+        schedule_slots: { data: [], count: 0 },
       },
     });
     const data = await loadDashboardData(sb, TODAY);
@@ -409,10 +570,10 @@ describe('loadDashboardData', () => {
   it("reports a today's-call query error without faking an empty panel", async () => {
     const { sb } = makeFakeSupabase({
       tables: {
-        providers: { data: [] },
-        sites: { data: [] },
-        schedules: { data: [] },
-        provider_availability: { data: [] },
+        providers: { data: null, count: 0 },
+        sites: { data: null, count: 0 },
+        schedules: { data: [], count: 0 },
+        provider_availability: { data: null, count: 0 },
         schedule_slots: { data: null, error: { message: 'slots query failed' } },
       },
     });

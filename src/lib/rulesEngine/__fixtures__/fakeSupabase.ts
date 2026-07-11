@@ -3,17 +3,19 @@
 // methods (update/upsert/insert/delete) plus a recorded 'from' call so tests
 // can count round-trips.
 //
-// Table config is either a canned {data,error} or a function of the recorded
-// filters (lets one table serve multiple query shapes — e.g. serial
-// loadContext hits schedule_slots twice with different filters).
+// Table config is either a canned {data,error,count} or a function of the
+// recorded filters (lets one table serve multiple query shapes — e.g. serial
+// loadContext hits schedule_slots twice with different filters, and paginated
+// consumers can key pages off the recorded 'range' args). `count` backs
+// consumers that select with { count: 'exact' }.
 
-export type Canned = { data?: unknown; error?: unknown };
+export type Canned = { data?: unknown; error?: unknown; count?: number | null };
 export type Filter = { method: string; args: unknown[] };
 export type TableCfg = Canned | ((filters: Filter[]) => Canned);
 export interface RecordedCall { table?: string; fn?: string; method: string; args: unknown[] }
 
 const CHAIN_METHODS = [
-  'select', 'eq', 'neq', 'in', 'or', 'lt', 'lte', 'gte', 'gt', 'order', 'limit',
+  'select', 'eq', 'neq', 'in', 'or', 'lt', 'lte', 'gte', 'gt', 'order', 'limit', 'range',
   'update', 'upsert', 'insert', 'delete',
 ] as const;
 
@@ -27,9 +29,9 @@ export function makeFakeSupabase(
   function makeBuilder(table: string) {
     const filters: Filter[] = [];
     const cfg = tables[table];
-    const resolve = (): { data: unknown; error: unknown } => {
+    const resolve = (): { data: unknown; error: unknown; count: number | null } => {
       const c: Canned = typeof cfg === 'function' ? cfg(filters) : (cfg ?? { data: [], error: null });
-      return { data: c.data ?? null, error: c.error ?? null };
+      return { data: c.data ?? null, error: c.error ?? null, count: c.count ?? null };
     };
     const rec = (method: string, args: unknown[]) => {
       filters.push({ method, args });

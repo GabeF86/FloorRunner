@@ -1,9 +1,15 @@
-// Dashboard data layer: one loadDashboardData(sb) doing ≤6 selects, plus the
-// pure aggregation functions it feeds (unit-tested with canned rows).
+// Dashboard data layer: one loadDashboardData(sb) doing ≤6 logical selects,
+// plus the pure aggregation functions it feeds (unit-tested with canned rows).
 //
 // Fail-soft per panel: every query's `error` is checked and surfaced on that
 // panel's { data, error } envelope — a failed panel renders an error Banner,
 // never fake zeros (same no-silent-clean ethos as EvaluateResult.evaluated).
+//
+// Transport truncation: PostgREST silently caps un-ranged selects at 1000
+// rows (no error!). Count-style panels therefore use head-only exact counts,
+// the attention rollup paginates with .range() until the exact count is
+// assembled, and row-fetching selects carry a count guard — a truncated or
+// partial result becomes a panel error, never an undercount rendered as fact.
 //
 // Validation-flag semantics are IMPORTED from the grid route helpers, not
 // reimplemented: null flags = never validated (distinct from checked-and-
@@ -26,6 +32,9 @@ export interface ScheduleRow {
   status: string; // scheduling.schedule_status: draft | review | published | revised | archived
   date_start: string;
   date_end: string;
+  // Maintained by the schedules POST (v1) and versions POST (bump) routes —
+  // scopes the attention rollup to each schedule's latest version.
+  current_version_number: number;
 }
 
 // PostgREST embeds slot→assignments as an ARRAY on databases without the
@@ -198,11 +207,6 @@ export function attentionFor(rows: AttentionSlotRow[]): AttentionEntry[] {
   return [...bySchedule.values()];
 }
 
-/** Pending provider_availability rows (PENDING blocks every engine, so it's the actionable inbox count). */
-export function pendingCount(rows: Array<{ approval_status: string }> | null | undefined): number {
-  return (rows ?? []).filter(r => r.approval_status === 'pending').length;
-}
-
 // ── loadDashboardData ────────────────────────────────────────────────────────
 
 export interface Panel<T> {
@@ -222,7 +226,7 @@ export interface DashboardData {
   attention: Panel<AttentionPanelEntry[]>;
 }
 
-const SCHEDULE_COLUMNS = 'id, schedule_name, status, date_start, date_end';
+const SCHEDULE_COLUMNS = 'id, schedule_name, status, date_start, date_end, current_version_number';
 
 // Join shapes mirror the grid/master-schedule routes (explicit columns, no '*').
 const TODAYS_CALL_COLUMNS =
@@ -231,59 +235,136 @@ const TODAYS_CALL_COLUMNS =
 const ATTENTION_COLUMNS =
   'id, assignments(provider_id, assignment_status, validation_flags), schedule_versions!inner(schedule_id, version_number)';
 
+// PostgREST's silent per-request row cap; also the .range() page size for the
+// rollup. Live repro: 2,201 matching slot rows returned exactly 1,000 with no
+// error until pagination was added.
+const PAGE_SIZE = 1000;
+const MAX_PAGES = 50;
+
 function panel<T>(data: T | null, error: { message?: string } | null, label: string): Panel<T> {
   if (error) return { data: null, error: `${label}: ${error.message ?? 'query failed'}` };
   return { data, error: null };
 }
 
+// A head-only { count: 'exact' } result → Panel<number>. A null count without
+// an error is a transport anomaly — surfaced, never rendered as zero.
+function countPanel(
+  res: { count: number | null; error: { message?: string } | null },
+  label: string,
+): Panel<number> {
+  if (res.error) return panel<number>(null, res.error, label);
+  if (res.count == null) return { data: null, error: `${label}: count unavailable` };
+  return { data: res.count, error: null };
+}
+
+// Row-fetching select guard: rows are the data, count proves completeness.
+// Returns an error message when the reported count says the page was cut off.
+function truncationOf(
+  res: { data: unknown; count: number | null },
+  label: string,
+): string | null {
+  const len = Array.isArray(res.data) ? res.data.length : 0;
+  if (res.count != null && len < res.count) {
+    return `${label}: results truncated (${len} of ${res.count} rows)`;
+  }
+  return null;
+}
+
+// Fetches every attention-rollup row for the given schedules' CURRENT
+// versions, paginating past the row cap. Any failure or shortfall mid-way
+// returns an error — never a partial aggregate.
+async function fetchRollupRows(
+  sb: SchedulingClient,
+  schedules: ScheduleRow[],
+): Promise<{ rows: AttentionSlotRow[]; errorMsg: null } | { rows: null; errorMsg: string }> {
+  // Latest-version scoping: (schedule_id, current_version_number) pairs on
+  // the embedded (inner-joined) schedule_versions. Only latest-version rows
+  // survive attentionFor anyway; this keeps the transfer to what's rendered.
+  const scope = schedules
+    .map(s => `and(schedule_id.eq.${s.id},version_number.eq.${s.current_version_number})`)
+    .join(',');
+
+  const rows: AttentionSlotRow[] = [];
+  for (let page = 0; page < MAX_PAGES; page++) {
+    const from = page * PAGE_SIZE;
+    const res = await sb
+      .from('schedule_slots')
+      .select(ATTENTION_COLUMNS, { count: 'exact' })
+      .or(scope, { referencedTable: 'schedule_versions' })
+      .order('id') // stable order — required for coherent .range() pages
+      .range(from, from + PAGE_SIZE - 1);
+    if (res.error) return { rows: null, errorMsg: res.error.message ?? 'query failed' };
+    if (res.count == null) return { rows: null, errorMsg: 'row count unavailable (possible truncation)' };
+    const batch = (res.data ?? []) as AttentionSlotRow[];
+    rows.push(...batch);
+    if (rows.length >= res.count) return { rows, errorMsg: null };
+    if (batch.length === 0) {
+      return { rows: null, errorMsg: `pagination stalled at ${rows.length} of ${res.count} rows` };
+    }
+  }
+  return { rows: null, errorMsg: `rollup exceeded ${MAX_PAGES}-page budget` };
+}
+
 /**
- * All dashboard reads in ≤6 selects. `today` defaults to the same UTC
+ * All dashboard reads in ≤6 logical selects (the attention rollup may issue
+ * continuation pages of its one select). `today` defaults to the same UTC
  * date-string convention the board's page.tsx uses.
  */
 export async function loadDashboardData(
   sb: SchedulingClient,
   today: string = new Date().toISOString().split('T')[0],
 ): Promise<DashboardData> {
-  // 5 independent selects in parallel.
+  // 5 independent selects in parallel. Counts are head-only + exact — a row
+  // fetch counted client-side silently understates past the 1000-row cap.
   const [providersRes, sitesRes, schedulesRes, todayRes, pendingRes] = await Promise.all([
-    sb.from('providers').select('id').eq('status', 'active'),
-    sb.from('sites').select('id').eq('is_active', true),
-    sb.from('schedules').select(SCHEDULE_COLUMNS).neq('status', 'archived').order('date_start', { ascending: false }),
+    sb.from('providers').select('id', { count: 'exact', head: true }).eq('status', 'active'),
+    sb.from('sites').select('id', { count: 'exact', head: true }).eq('is_active', true),
+    sb
+      .from('schedules')
+      .select(SCHEDULE_COLUMNS, { count: 'exact' })
+      .neq('status', 'archived')
+      .order('date_start', { ascending: false }),
     sb
       .from('schedule_slots')
-      .select(TODAYS_CALL_COLUMNS)
+      .select(TODAYS_CALL_COLUMNS, { count: 'exact' })
       .eq('slot_date', today)
       .eq('shift_types.category', 'call')
       .eq('schedule_versions.version_status', 'published'),
-    sb.from('provider_availability').select('id, approval_status').eq('approval_status', 'pending'),
+    sb
+      .from('provider_availability')
+      .select('id', { count: 'exact', head: true })
+      .eq('approval_status', 'pending'),
   ]);
 
+  const schedulesTrunc = schedulesRes.error ? null : truncationOf(schedulesRes, 'Schedules');
   const scheduleRows = (schedulesRes.data ?? []) as ScheduleRow[];
-  const schedules = panel(
-    schedulesRes.error ? null : { byStatus: summarizeSchedules(scheduleRows), rows: scheduleRows },
-    schedulesRes.error,
-    'Schedules',
-  );
+  const schedules: DashboardData['schedules'] = schedulesRes.error
+    ? panel<{ byStatus: Record<string, number>; rows: ScheduleRow[] }>(null, schedulesRes.error, 'Schedules')
+    : schedulesTrunc
+      ? { data: null, error: schedulesTrunc }
+      : { data: { byStatus: summarizeSchedules(scheduleRows), rows: scheduleRows }, error: null };
 
-  // 6th select: attention rollup over the active schedules found above.
-  // Skipped (not faked) when the schedules query failed; skipped as genuinely
-  // empty when there are no active schedules.
+  const todayTrunc = todayRes.error ? null : truncationOf(todayRes, "Today's call");
+  const todaysCallPanel: DashboardData['todaysCall'] = todayRes.error
+    ? panel<CallEntry[]>(null, todayRes.error, "Today's call")
+    : todayTrunc
+      ? { data: null, error: todayTrunc }
+      : { data: todaysCall((todayRes.data ?? []) as unknown as TodaysCallSlotRow[]), error: null };
+
+  // 6th logical select: attention rollup over the active schedules found
+  // above (paginated). Skipped (not faked) when the schedules panel failed;
+  // skipped as genuinely empty when there are no active schedules.
   let attention: DashboardData['attention'];
-  if (schedulesRes.error) {
+  if (schedules.error) {
     attention = { data: null, error: 'Needs attention: schedules could not be loaded' };
   } else if (scheduleRows.length === 0) {
     attention = { data: [], error: null };
   } else {
-    const rollupRes = await sb
-      .from('schedule_slots')
-      .select(ATTENTION_COLUMNS)
-      .in('schedule_versions.schedule_id', scheduleRows.map(s => s.id));
-    if (rollupRes.error) {
-      attention = panel<AttentionPanelEntry[]>(null, rollupRes.error, 'Needs attention');
+    const rollup = await fetchRollupRows(sb, scheduleRows);
+    if (rollup.rows === null) {
+      attention = { data: null, error: `Needs attention: ${rollup.errorMsg}` };
     } else {
-      const rolled = new Map(
-        attentionFor((rollupRes.data ?? []) as unknown as AttentionSlotRow[]).map(e => [e.schedule_id, e]),
-      );
+      const rolled = new Map(attentionFor(rollup.rows).map(e => [e.schedule_id, e]));
       // Every active schedule gets a card — one with no slot rows yet shows
       // genuine zeros (assigned 0 / unfilled 0 renders as "no slots yet",
       // never as validated-clean).
@@ -298,19 +379,11 @@ export async function loadDashboardData(
 
   return {
     today,
-    providers: panel(providersRes.error ? null : (providersRes.data ?? []).length, providersRes.error, 'Providers'),
-    sites: panel(sitesRes.error ? null : (sitesRes.data ?? []).length, sitesRes.error, 'Sites'),
+    providers: countPanel(providersRes, 'Providers'),
+    sites: countPanel(sitesRes, 'Sites'),
     schedules,
-    todaysCall: panel(
-      todayRes.error ? null : todaysCall((todayRes.data ?? []) as unknown as TodaysCallSlotRow[]),
-      todayRes.error,
-      "Today's call",
-    ),
-    pendingRequests: panel(
-      pendingRes.error ? null : pendingCount((pendingRes.data ?? []) as Array<{ approval_status: string }>),
-      pendingRes.error,
-      'Pending requests',
-    ),
+    todaysCall: todaysCallPanel,
+    pendingRequests: countPanel(pendingRes, 'Pending requests'),
     attention,
   };
 }
