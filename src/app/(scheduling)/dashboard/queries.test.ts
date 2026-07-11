@@ -1,0 +1,423 @@
+// Dashboard query/aggregation tests — pure functions over canned rows plus
+// loadDashboardData against the shared fake supabase client (no DB, no
+// network). Flag semantics come from the grid route helpers
+// (validationSummaryFor): null flags = never validated (NOT clean), and
+// 'warning' severity never counts as a hard violation.
+
+import { describe, it, expect } from 'vitest';
+import { makeFakeSupabase, fromCount, callsFor } from '@/lib/rulesEngine/__fixtures__/fakeSupabase';
+import {
+  summarizeSchedules,
+  todaysCall,
+  attentionFor,
+  pendingCount,
+  loadDashboardData,
+  type TodaysCallSlotRow,
+  type AttentionSlotRow,
+} from './queries';
+
+// ── Row builders ─────────────────────────────────────────────────────────────
+
+function callSlot(over: Partial<TodaysCallSlotRow> & Record<string, unknown> = {}): TodaysCallSlotRow {
+  return {
+    id: 'slot-1',
+    slot_date: '2026-07-10',
+    sites: { name: 'Mercy General', short_name: 'MG' },
+    shift_types: { code: 'C1', name: 'First call', category: 'call', display_order: 1 },
+    assignments: [
+      {
+        provider_id: 'p1',
+        assignment_status: 'assigned',
+        providers: { last_name: 'Smith', short_display_name: 'J.Smith', initials: 'JS' },
+      },
+    ],
+    schedule_versions: {
+      schedule_id: 'sch-1',
+      version_number: 1,
+      version_status: 'published',
+      schedules: { status: 'published' },
+    },
+    ...over,
+  } as TodaysCallSlotRow;
+}
+
+function attnSlot(over: Partial<AttentionSlotRow> & Record<string, unknown> = {}): AttentionSlotRow {
+  return {
+    id: 'slot-1',
+    assignments: [
+      { provider_id: 'p1', assignment_status: 'assigned', validation_flags: [] },
+    ],
+    schedule_versions: { schedule_id: 'sch-1', version_number: 1 },
+    ...over,
+  } as AttentionSlotRow;
+}
+
+// ── summarizeSchedules ───────────────────────────────────────────────────────
+
+describe('summarizeSchedules', () => {
+  it('counts schedules by status', () => {
+    const rows = [
+      { status: 'draft' },
+      { status: 'draft' },
+      { status: 'published' },
+      { status: 'review' },
+    ];
+    expect(summarizeSchedules(rows)).toEqual({ draft: 2, published: 1, review: 1 });
+  });
+
+  it('returns an empty record for no schedules', () => {
+    expect(summarizeSchedules([])).toEqual({});
+  });
+});
+
+// ── todaysCall ───────────────────────────────────────────────────────────────
+
+describe('todaysCall', () => {
+  it('maps published-version call slots to {provider_name, site_name, code}', () => {
+    const out = todaysCall([callSlot()]);
+    expect(out).toEqual([{ provider_name: 'J.Smith', site_name: 'MG', code: 'C1' }]);
+  });
+
+  it('sorts by code (numeric-aware), then site name', () => {
+    const rows = [
+      callSlot({ id: 's-a', shift_types: { code: 'C10', name: null, category: 'call', display_order: 3 } }),
+      callSlot({ id: 's-b', shift_types: { code: 'C2', name: null, category: 'call', display_order: 2 } }),
+      callSlot({
+        id: 's-c',
+        shift_types: { code: 'C2', name: null, category: 'call', display_order: 2 },
+        sites: { name: 'Alpha Hospital', short_name: 'AH' },
+      }),
+      callSlot({ id: 's-d', shift_types: { code: 'C1', name: null, category: 'call', display_order: 1 } }),
+    ];
+    expect(todaysCall(rows).map(e => `${e.code}@${e.site_name}`)).toEqual([
+      'C1@MG', 'C2@AH', 'C2@MG', 'C10@MG',
+    ]);
+  });
+
+  it('excludes non-call shift categories', () => {
+    const rows = [
+      callSlot({ shift_types: { code: 'OR1', name: null, category: 'regular', display_order: 1 } }),
+    ];
+    expect(todaysCall(rows)).toEqual([]);
+  });
+
+  it('excludes non-published versions and archived schedules', () => {
+    const rows = [
+      callSlot({
+        schedule_versions: { schedule_id: 'sch-1', version_number: 2, version_status: 'draft', schedules: { status: 'draft' } },
+      }),
+      callSlot({
+        schedule_versions: { schedule_id: 'sch-2', version_number: 1, version_status: 'published', schedules: { status: 'archived' } },
+      }),
+    ];
+    expect(todaysCall(rows)).toEqual([]);
+  });
+
+  it('uses only the latest published version per schedule', () => {
+    const rows = [
+      callSlot({
+        id: 's-old',
+        assignments: [{ provider_id: 'p-old', assignment_status: 'assigned', providers: { last_name: 'Old', short_display_name: 'Dr.Old', initials: 'DO' } }],
+        schedule_versions: { schedule_id: 'sch-1', version_number: 1, version_status: 'published', schedules: { status: 'published' } },
+      }),
+      callSlot({
+        id: 's-new',
+        assignments: [{ provider_id: 'p-new', assignment_status: 'assigned', providers: { last_name: 'New', short_display_name: 'Dr.New', initials: 'DN' } }],
+        schedule_versions: { schedule_id: 'sch-1', version_number: 3, version_status: 'published', schedules: { status: 'published' } },
+      }),
+    ];
+    expect(todaysCall(rows).map(e => e.provider_name)).toEqual(['Dr.New']);
+  });
+
+  it('skips unassigned, canceled, and declined assignments', () => {
+    const rows = [
+      callSlot({ assignments: [] }),
+      callSlot({ id: 's-2', assignments: [{ provider_id: null, assignment_status: 'open', providers: null }] }),
+      callSlot({
+        id: 's-3',
+        assignments: [{ provider_id: 'p9', assignment_status: 'canceled', providers: { last_name: 'Gone', short_display_name: null, initials: null } }],
+      }),
+      callSlot({
+        id: 's-4',
+        assignments: [{ provider_id: 'p8', assignment_status: 'declined', providers: { last_name: 'No', short_display_name: null, initials: null } }],
+      }),
+    ];
+    expect(todaysCall(rows)).toEqual([]);
+  });
+
+  it('accepts a single-object assignments embed (UNIQUE(schedule_slot_id) makes PostgREST return to-one)', () => {
+    const rows = [
+      callSlot({
+        assignments: {
+          provider_id: 'p1',
+          assignment_status: 'assigned',
+          providers: { last_name: 'Smith', short_display_name: 'J.Smith', initials: 'JS' },
+        },
+      }),
+    ];
+    expect(todaysCall(rows)).toEqual([{ provider_name: 'J.Smith', site_name: 'MG', code: 'C1' }]);
+  });
+
+  it('falls back through short_display_name → last_name → initials for the provider name', () => {
+    const rows = [
+      callSlot({
+        assignments: [{ provider_id: 'p1', assignment_status: 'assigned', providers: { last_name: 'Smith', short_display_name: null, initials: 'JS' } }],
+      }),
+      callSlot({
+        id: 's-2',
+        shift_types: { code: 'C2', name: null, category: 'call', display_order: 2 },
+        assignments: [{ provider_id: 'p2', assignment_status: 'assigned', providers: { last_name: null, short_display_name: null, initials: 'QQ' } }],
+      }),
+    ];
+    expect(todaysCall(rows).map(e => e.provider_name)).toEqual(['Smith', 'QQ']);
+  });
+});
+
+// ── attentionFor ─────────────────────────────────────────────────────────────
+
+describe('attentionFor', () => {
+  it('counts unfilled slots and hard violations per schedule', () => {
+    const rows = [
+      attnSlot({ id: 's-1', assignments: [] }), // unfilled: no assignment rows
+      attnSlot({ id: 's-2', assignments: [{ provider_id: null, assignment_status: 'open', validation_flags: null }] }), // unfilled: open
+      attnSlot({
+        id: 's-3',
+        assignments: [{ provider_id: 'p1', assignment_status: 'assigned', validation_flags: [{ severity: 'hard' }, { severity: 'soft' }] }],
+      }),
+      attnSlot({
+        id: 's-4',
+        assignments: [{ provider_id: 'p2', assignment_status: 'assigned', validation_flags: [{ severity: 'hard' }] }],
+      }),
+    ];
+    expect(attentionFor(rows)).toEqual([
+      { schedule_id: 'sch-1', unfilled: 2, hard: 2, assigned: 2, checked: 2 },
+    ]);
+  });
+
+  it('treats null validation_flags as never-validated, not clean (checked stays 0)', () => {
+    const rows = [
+      attnSlot({ assignments: [{ provider_id: 'p1', assignment_status: 'assigned', validation_flags: null }] }),
+    ];
+    expect(attentionFor(rows)).toEqual([
+      { schedule_id: 'sch-1', unfilled: 0, hard: 0, assigned: 1, checked: 0 },
+    ]);
+  });
+
+  it('never counts warning-severity or unknown-severity flags as hard', () => {
+    const rows = [
+      attnSlot({
+        assignments: [{
+          provider_id: 'p1',
+          assignment_status: 'assigned',
+          validation_flags: [{ severity: 'warning' }, { severity: 'soft' }, {}],
+        }],
+      }),
+    ];
+    expect(attentionFor(rows)).toEqual([
+      { schedule_id: 'sch-1', unfilled: 0, hard: 0, assigned: 1, checked: 1 },
+    ]);
+  });
+
+  it('counts a slot as filled when any assignment carries a provider', () => {
+    const rows = [
+      attnSlot({
+        assignments: [
+          { provider_id: null, assignment_status: 'open', validation_flags: null },
+          { provider_id: 'p1', assignment_status: 'assigned', validation_flags: [] },
+        ],
+      }),
+    ];
+    expect(attentionFor(rows)[0].unfilled).toBe(0);
+  });
+
+  it('counts a canceled provider-bearing assignment as unfilled', () => {
+    const rows = [
+      attnSlot({ assignments: [{ provider_id: 'p1', assignment_status: 'canceled', validation_flags: [] }] }),
+    ];
+    expect(attentionFor(rows)[0].unfilled).toBe(1);
+  });
+
+  it('accepts a single-object assignments embed (to-one shape from the live unique constraint)', () => {
+    const rows = [
+      attnSlot({
+        id: 's-1',
+        assignments: { provider_id: 'p1', assignment_status: 'assigned', validation_flags: [{ severity: 'hard' }] },
+      }),
+      attnSlot({
+        id: 's-2',
+        assignments: { provider_id: null, assignment_status: 'open', validation_flags: null },
+      }),
+    ];
+    expect(attentionFor(rows)).toEqual([
+      { schedule_id: 'sch-1', unfilled: 1, hard: 1, assigned: 1, checked: 1 },
+    ]);
+  });
+
+  it('only counts the latest version of each schedule', () => {
+    const rows = [
+      attnSlot({ id: 's-1', assignments: [], schedule_versions: { schedule_id: 'sch-1', version_number: 1 } }),
+      attnSlot({
+        id: 's-2',
+        assignments: [{ provider_id: 'p1', assignment_status: 'assigned', validation_flags: [] }],
+        schedule_versions: { schedule_id: 'sch-1', version_number: 2 },
+      }),
+      attnSlot({ id: 's-3', assignments: [], schedule_versions: { schedule_id: 'sch-2', version_number: 1 } }),
+    ];
+    expect(attentionFor(rows)).toEqual([
+      { schedule_id: 'sch-1', unfilled: 0, hard: 0, assigned: 1, checked: 1 },
+      { schedule_id: 'sch-2', unfilled: 1, hard: 0, assigned: 0, checked: 0 },
+    ]);
+  });
+});
+
+// ── pendingCount ─────────────────────────────────────────────────────────────
+
+describe('pendingCount', () => {
+  it('counts only pending rows', () => {
+    expect(pendingCount([
+      { approval_status: 'pending' },
+      { approval_status: 'approved' },
+      { approval_status: 'pending' },
+    ])).toBe(2);
+  });
+
+  it('handles null/empty input', () => {
+    expect(pendingCount(null)).toBe(0);
+    expect(pendingCount([])).toBe(0);
+  });
+});
+
+// ── loadDashboardData ────────────────────────────────────────────────────────
+
+const TODAY = '2026-07-10';
+
+function fullFake() {
+  return makeFakeSupabase({
+    tables: {
+      providers: { data: [{ id: 'p1' }, { id: 'p2' }, { id: 'p3' }] },
+      sites: { data: [{ id: 'site-1' }, { id: 'site-2' }] },
+      schedules: {
+        data: [
+          { id: 'sch-1', schedule_name: 'July Call', status: 'published', date_start: '2026-07-01', date_end: '2026-07-31' },
+          { id: 'sch-2', schedule_name: 'August Call', status: 'draft', date_start: '2026-08-01', date_end: '2026-08-31' },
+        ],
+      },
+      provider_availability: { data: [{ id: 'av-1', approval_status: 'pending' }] },
+      // schedule_slots serves both query shapes: today's call (eq slot_date)
+      // vs the attention rollup (in schedule_versions.schedule_id).
+      schedule_slots: (filters) => {
+        const isToday = filters.some(f => f.method === 'eq' && f.args[0] === 'slot_date');
+        if (isToday) return { data: [callSlot()] };
+        return {
+          data: [
+            attnSlot({ id: 's-open', assignments: [] }),
+            attnSlot({
+              id: 's-hard',
+              assignments: [{ provider_id: 'p1', assignment_status: 'assigned', validation_flags: [{ severity: 'hard' }] }],
+            }),
+          ],
+        };
+      },
+    },
+  });
+}
+
+describe('loadDashboardData', () => {
+  it('loads every panel in ≤6 selects and shapes the results', async () => {
+    const { sb, calls } = fullFake();
+    const data = await loadDashboardData(sb, TODAY);
+
+    expect(fromCount(calls)).toBeLessThanOrEqual(6);
+    expect(data.today).toBe(TODAY);
+    expect(data.providers).toEqual({ data: 3, error: null });
+    expect(data.sites).toEqual({ data: 2, error: null });
+    expect(data.schedules.error).toBeNull();
+    expect(data.schedules.data?.byStatus).toEqual({ published: 1, draft: 1 });
+    expect(data.todaysCall).toEqual({
+      data: [{ provider_name: 'J.Smith', site_name: 'MG', code: 'C1' }],
+      error: null,
+    });
+    expect(data.pendingRequests).toEqual({ data: 1, error: null });
+    expect(data.attention.error).toBeNull();
+    // Every active schedule gets an entry — sch-2 has no slot rows yet and
+    // shows genuine zeros (assigned 0 = "no slots yet", never validated-clean).
+    expect(data.attention.data).toEqual([
+      { schedule_id: 'sch-1', schedule_name: 'July Call', status: 'published', unfilled: 1, hard: 1, assigned: 1, checked: 1 },
+      { schedule_id: 'sch-2', schedule_name: 'August Call', status: 'draft', unfilled: 0, hard: 0, assigned: 0, checked: 0 },
+    ]);
+  });
+
+  it("filters today's call slots on the provided date", async () => {
+    const { sb, calls } = fullFake();
+    await loadDashboardData(sb, TODAY);
+    const eqs = callsFor(calls, 'schedule_slots', 'eq');
+    expect(eqs.some(c => c.args[0] === 'slot_date' && c.args[1] === TODAY)).toBe(true);
+  });
+
+  it('fails soft per panel: a providers error leaves other panels intact', async () => {
+    const { sb } = makeFakeSupabase({
+      tables: {
+        providers: { data: null, error: { message: 'boom' } },
+        sites: { data: [{ id: 'site-1' }] },
+        schedules: { data: [] },
+        provider_availability: { data: [] },
+        schedule_slots: { data: [] },
+      },
+    });
+    const data = await loadDashboardData(sb, TODAY);
+    expect(data.providers.data).toBeNull();
+    expect(data.providers.error).toContain('boom');
+    expect(data.sites).toEqual({ data: 1, error: null });
+    expect(data.pendingRequests).toEqual({ data: 0, error: null });
+  });
+
+  it('propagates a schedules error to the attention panel and skips the rollup query', async () => {
+    const { sb, calls } = makeFakeSupabase({
+      tables: {
+        providers: { data: [] },
+        sites: { data: [] },
+        schedules: { data: null, error: { message: 'schedules unavailable' } },
+        provider_availability: { data: [] },
+        schedule_slots: { data: [] },
+      },
+    });
+    const data = await loadDashboardData(sb, TODAY);
+    expect(data.schedules.data).toBeNull();
+    expect(data.schedules.error).toContain('schedules unavailable');
+    expect(data.attention.data).toBeNull();
+    expect(data.attention.error).toBeTruthy();
+    // Only the today's-call query hit schedule_slots — no rollup without schedules.
+    expect(fromCount(calls, 'schedule_slots')).toBe(1);
+  });
+
+  it('skips the rollup query when there are no active schedules', async () => {
+    const { sb, calls } = makeFakeSupabase({
+      tables: {
+        providers: { data: [] },
+        sites: { data: [] },
+        schedules: { data: [] },
+        provider_availability: { data: [] },
+        schedule_slots: { data: [] },
+      },
+    });
+    const data = await loadDashboardData(sb, TODAY);
+    expect(data.attention).toEqual({ data: [], error: null });
+    expect(fromCount(calls, 'schedule_slots')).toBe(1);
+    expect(fromCount(calls)).toBeLessThanOrEqual(6);
+  });
+
+  it("reports a today's-call query error without faking an empty panel", async () => {
+    const { sb } = makeFakeSupabase({
+      tables: {
+        providers: { data: [] },
+        sites: { data: [] },
+        schedules: { data: [] },
+        provider_availability: { data: [] },
+        schedule_slots: { data: null, error: { message: 'slots query failed' } },
+      },
+    });
+    const data = await loadDashboardData(sb, TODAY);
+    expect(data.todaysCall.data).toBeNull();
+    expect(data.todaysCall.error).toContain('slots query failed');
+  });
+});
