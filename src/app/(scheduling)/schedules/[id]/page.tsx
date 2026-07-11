@@ -3,6 +3,10 @@
 import { useState, useEffect, useCallback, useRef, useMemo, Fragment } from 'react';
 import Link from 'next/link';
 import { gridTokens, cellBackground } from './gridTheme';
+import AssistantPanel from './AssistantPanel';
+// Pure, client-safe helper shared with the grid API route — one bucket rule
+// (hard / soft / warning-never-soft) for both server and client counting.
+import { validationSummaryFor, type ValidationSummary } from '@/app/api/scheduling/schedules/[id]/grid/route.helpers';
 
 /* ── Interfaces ──────────────────────────────────────────────────────────── */
 
@@ -79,7 +83,9 @@ interface ValidationFlag {
   rule_id: string | null;
   rule_name: string;
   category: string;
-  severity: 'hard' | 'soft';
+  // 'warning' = sentinel flags (e.g. 'validation unavailable — needs
+  // re-validation') — counted separately, never as soft violations.
+  severity: 'hard' | 'soft' | 'warning';
   message: string;
 }
 
@@ -90,7 +96,17 @@ interface AssignmentInfo {
   is_open_call: boolean;
   manually_overridden: boolean;
   validation_flags?: ValidationFlag[] | null;
+  // Server-computed severity counts (grid route helpers' ValidationSummary).
+  // null = never validated (flags column null), distinct from all-zero.
+  validation_summary?: ValidationSummary | null;
   providers: ProviderInfo | null;
+}
+
+// An assignment row as returned by the schedule-assignments API: the grid
+// cell shape plus the slot it belongs to, so edits can be patched into grid
+// state in place without a full refetch.
+interface AssignmentRow extends AssignmentInfo {
+  schedule_slot_id: string;
 }
 
 interface Slot {
@@ -218,6 +234,7 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
   const [pickerSearch, setPickerSearch] = useState('');
   const [actionError, setActionError] = useState<string | null>(null);
   const [showCounts, setShowCounts] = useState(false);
+  const [showAssistant, setShowAssistant] = useState(false);
   const pickerRef = useRef<HTMLDivElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
 
@@ -641,6 +658,25 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
 
   /* ── Assignment Actions ─────────────────────────────────────────────────── */
 
+  // Patch API-returned assignment rows into grid state by slot id. The
+  // schedule-assignments routes return every affected row (the edited cell +
+  // auto-filled/evicted/cleared siblings) in the grid column shape, so cell
+  // edits don't need a full loadGrid() refetch. One assignment row per slot
+  // (UNIQUE schedule_slot_id), so each matched slot's array is replaced.
+  const applyAssignmentRows = useCallback((rows: AssignmentRow[]) => {
+    setGrid(g => {
+      if (!g) return g;
+      const bySlot = new Map(rows.map(r => [r.schedule_slot_id, r]));
+      return {
+        ...g,
+        slots: g.slots.map(s => {
+          const row = bySlot.get(s.id);
+          return row ? { ...s, assignments: [row] } : s;
+        }),
+      };
+    });
+  }, []);
+
   const assignProvider = async (slotId: string, providerId: string) => {
     if (!grid) return;
     // Optimistic update
@@ -670,12 +706,22 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ schedule_slot_id: slotId, provider_id: providerId }),
       });
+      const data = await res.json().catch(() => null);
       if (!res.ok) {
-        const errData = await res.json().catch(() => ({}));
-        throw new Error(errData.error || 'Failed to assign');
+        setGrid({ ...grid, slots: prevSlots });
+        setActionError(data?.error || 'Failed to assign');
+        // The write may have partially landed (sequence auto-fill runs after
+        // the upsert) — resync from the server rather than trusting local state.
+        await loadGrid();
+        return;
       }
-      // Reload to get real IDs
-      await loadGrid();
+      // Patch the returned rows (real ids + validation flags + auto-filled
+      // siblings) over the optimistic paint; no full refetch needed.
+      if (data?.assignment) {
+        applyAssignmentRows([data.assignment as AssignmentRow, ...((data.siblings ?? []) as AssignmentRow[])]);
+      } else {
+        await loadGrid();
+      }
     } catch (e) {
       setGrid({ ...grid, slots: prevSlots });
       setActionError(e instanceof Error ? e.message : 'Failed to assign provider');
@@ -696,8 +742,20 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
 
     try {
       const res = await fetch(`/api/scheduling/schedule-assignments?id=${assignmentId}`, { method: 'DELETE' });
-      if (!res.ok) throw new Error('Failed to remove');
-      await loadGrid();
+      const data = await res.json().catch(() => null);
+      if (!res.ok) {
+        setGrid({ ...grid, slots: prevSlots });
+        setActionError(data?.error || 'Failed to remove assignment');
+        // Linked auto-fills may have been cleared before the failure — resync.
+        await loadGrid();
+        return;
+      }
+      // Patch the recreated open row + any cleared auto-fill siblings in place.
+      if (data?.assignment) {
+        applyAssignmentRows([data.assignment as AssignmentRow, ...((data.siblings ?? []) as AssignmentRow[])]);
+      } else {
+        await loadGrid();
+      }
     } catch {
       setGrid({ ...grid, slots: prevSlots });
       setActionError('Failed to remove assignment');
@@ -730,7 +788,11 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
   };
 
   const [generating, setGenerating] = useState(false);
-  const [genResult, setGenResult] = useState<{ filled: number; skipped: number; errors: string[] } | null>(null);
+  const [genResult, setGenResult] = useState<{
+    filled: number; skipped: number; errors: string[];
+    warnings: string[];                              // load-time advisories (apply patch18, quota shortfalls, …)
+    skippedDerived: Array<{ reason: string }>;       // suppressed derived fills (clinical invariant 4)
+  } | null>(null);
   const [showPoolModal, setShowPoolModal] = useState(false);
 
   const autoGenerateSchedule = async () => {
@@ -742,7 +804,11 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
       const res = await fetch(`/api/scheduling/schedules/${id}/generate`, { method: 'POST' });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Generation failed');
-      setGenResult({ filled: data.filled, skipped: data.skipped, errors: data.errors });
+      setGenResult({
+        filled: data.filled, skipped: data.skipped, errors: data.errors,
+        warnings: Array.isArray(data.warnings) ? data.warnings : [],
+        skippedDerived: Array.isArray(data.skippedDerived) ? data.skippedDerived : [],
+      });
       await loadGrid();
     } catch (e) {
       setActionError(e instanceof Error ? e.message : 'Auto-generation failed');
@@ -779,11 +845,12 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
   // currently violated. Each violation is one rule firing on one assignment;
   // the same rule can violate many times across the schedule.
   const rulesSummary = useMemo(() => {
-    if (!grid) return { assignmentsChecked: 0, totalViolations: 0, hardCount: 0, softCount: 0, byRule: [] as { rule_id: string | null; rule_name: string; severity: 'hard' | 'soft'; count: number }[] };
+    if (!grid) return { assignmentsChecked: 0, totalViolations: 0, hardCount: 0, softCount: 0, warningCount: 0, byRule: [] as { rule_id: string | null; rule_name: string; severity: ValidationFlag['severity']; count: number }[] };
     let assignmentsChecked = 0;
     let hardCount = 0;
     let softCount = 0;
-    const ruleAgg = new Map<string, { rule_id: string | null; rule_name: string; severity: 'hard' | 'soft'; count: number }>();
+    let warningCount = 0;
+    const ruleAgg = new Map<string, { rule_id: string | null; rule_name: string; severity: ValidationFlag['severity']; count: number }>();
     for (const slot of grid.slots) {
       for (const a of slot.assignments) {
         if (!a.provider_id) continue;
@@ -791,8 +858,17 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
         // (even an empty array means it was checked and passed).
         if (a.validation_flags === null || a.validation_flags === undefined) continue;
         assignmentsChecked++;
+        // Prefer the server-computed summary; fall back to counting flags with
+        // the same shared bucket rule. Either way, warnings (sentinel flags)
+        // never inflate the soft count. (validationSummaryFor only returns
+        // null for a non-array, and flags is guarded non-null above.)
+        const s = a.validation_summary
+          ?? validationSummaryFor(a.validation_flags)
+          ?? { hard: 0, soft: 0, warning: 0 };
+        hardCount += s.hard;
+        softCount += s.soft;
+        warningCount += s.warning;
         for (const f of a.validation_flags) {
-          if (f.severity === 'hard') hardCount++; else softCount++;
           const key = (f.rule_id ?? f.rule_name) + '|' + f.severity;
           const ex = ruleAgg.get(key);
           if (ex) ex.count++;
@@ -801,7 +877,10 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
       }
     }
     const byRule = [...ruleAgg.values()].sort((a, b) => (b.severity === 'hard' ? 1 : 0) - (a.severity === 'hard' ? 1 : 0) || b.count - a.count);
-    return { assignmentsChecked, totalViolations: hardCount + softCount, hardCount, softCount, byRule };
+    // totalViolations = every stored flag (hard + soft + warning) — same
+    // definition as the activity route's total_violations; the severity
+    // breakdown is what distinguishes real violations from warnings.
+    return { assignmentsChecked, totalViolations: hardCount + softCount + warningCount, hardCount, softCount, warningCount, byRule };
   }, [grid]);
 
   const [showRulesSummary, setShowRulesSummary] = useState(false);
@@ -871,18 +950,18 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
               fontSize: 11.5, fontFamily: 'var(--font-mono), ui-monospace, monospace',
               background: rulesSummary.hardCount > 0
                 ? 'rgba(239,68,68,0.10)'
-                : rulesSummary.softCount > 0
+                : rulesSummary.softCount + rulesSummary.warningCount > 0
                 ? 'rgba(245,158,11,0.10)'
                 : 'rgba(16,185,129,0.10)',
               color: rulesSummary.hardCount > 0
                 ? '#dc2626'
-                : rulesSummary.softCount > 0
+                : rulesSummary.softCount + rulesSummary.warningCount > 0
                 ? '#b45309'
                 : '#0e7c52',
               border: '0.5px solid ' + (
                 rulesSummary.hardCount > 0
                   ? 'rgba(239,68,68,0.35)'
-                  : rulesSummary.softCount > 0
+                  : rulesSummary.softCount + rulesSummary.warningCount > 0
                   ? 'rgba(245,158,11,0.35)'
                   : 'rgba(16,185,129,0.35)'
               ),
@@ -892,14 +971,14 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
               width: 6, height: 6, borderRadius: '50%',
               background: rulesSummary.hardCount > 0
                 ? '#dc2626'
-                : rulesSummary.softCount > 0
+                : rulesSummary.softCount + rulesSummary.warningCount > 0
                 ? '#b45309'
                 : '#16a34a',
             }} />
             checked {rulesSummary.assignmentsChecked} ·{' '}
-            {rulesSummary.hardCount + rulesSummary.softCount === 0
+            {rulesSummary.hardCount + rulesSummary.softCount + rulesSummary.warningCount === 0
               ? 'all clean'
-              : `${rulesSummary.hardCount}H · ${rulesSummary.softCount}S`}
+              : `${rulesSummary.hardCount}H · ${rulesSummary.softCount}S${rulesSummary.warningCount > 0 ? ` · ${rulesSummary.warningCount}W` : ''}`}
           </button>
           {showRulesSummary && (
             <div
@@ -925,6 +1004,10 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
               <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: 'var(--text-muted)', marginBottom: 8 }}>
                 <span>Soft violations</span>
                 <span style={{ fontFamily: 'var(--font-mono), ui-monospace, monospace', color: rulesSummary.softCount > 0 ? '#b45309' : 'var(--text-dim)' }}>{rulesSummary.softCount}</span>
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: 'var(--text-muted)', marginBottom: 8 }}>
+                <span>Warnings (needs re-validation)</span>
+                <span style={{ fontFamily: 'var(--font-mono), ui-monospace, monospace', color: rulesSummary.warningCount > 0 ? '#b45309' : 'var(--text-dim)' }}>{rulesSummary.warningCount}</span>
               </div>
               {rulesSummary.byRule.length > 0 ? (
                 <>
@@ -1020,6 +1103,14 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
           Call Counts
         </button>
 
+        <button
+          onClick={() => setShowAssistant(v => !v)}
+          style={{ padding: '7px 15px', fontSize: 12.5, fontWeight: 700, borderRadius: 8, cursor: 'pointer',
+            background: showAssistant ? 'rgba(99,102,241,0.16)' : 'transparent',
+            color: showAssistant ? '#a5b4fc' : 'var(--text-muted)',
+            border: showAssistant ? '1px solid rgba(99,102,241,0.4)' : '1px solid var(--border)' }}
+        >Assistant ✨</button>
+
         {/* Pool selector + Auto-Generate.
             A custom pool replaces the default rule-based pool entirely. When
             none is set, we show "Default Pool" as a cue that auto-gen will
@@ -1086,11 +1177,29 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
           color: 'var(--text)',
           display: 'flex', justifyContent: 'space-between', alignItems: 'center',
         }}>
-          <span>
-            Filled {genResult.filled} slot{genResult.filled !== 1 ? 's' : ''}.
-            {genResult.skipped > 0 && ` ${genResult.skipped} could not be filled.`}
-            {genResult.errors.length > 0 && ` ${genResult.errors.length} error(s).`}
-          </span>
+          <div>
+            <span>
+              Filled {genResult.filled} slot{genResult.filled !== 1 ? 's' : ''}.
+              {genResult.skipped > 0 && ` ${genResult.skipped} could not be filled.`}
+              {genResult.errors.length > 0 && ` ${genResult.errors.length} error(s).`}
+            </span>
+            {genResult.warnings.length > 0 && (
+              <div style={{ marginTop: 4, color: 'var(--text-dim)' }}>
+                {genResult.warnings.length} warning{genResult.warnings.length !== 1 ? 's' : ''}: {genResult.warnings.slice(0, 3).join(' · ')}
+                {genResult.warnings.length > 3 && ` … and ${genResult.warnings.length - 3} more`}
+              </div>
+            )}
+            {genResult.skippedDerived.length > 0 && (
+              <div style={{ marginTop: 4, color: 'var(--text-dim)' }}>
+                {genResult.skippedDerived.length} derived shift{genResult.skippedDerived.length !== 1 ? 's' : ''} skipped (
+                {Object.entries(genResult.skippedDerived.reduce<Record<string, number>>((m, s) => {
+                  m[s.reason] = (m[s.reason] || 0) + 1;
+                  return m;
+                }, {})).map(([reason, n]) => `${n} ${reason}`).join(', ')}
+                ) — left unassigned, see unfilled/derived report.
+              </div>
+            )}
+          </div>
           <button onClick={() => setGenResult(null)} style={{
             background: 'none', border: 'none', color: 'var(--text-dim)', cursor: 'pointer', fontSize: 14,
           }}>x</button>
@@ -1622,6 +1731,9 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
             } : prev);
           }}
         />
+      )}
+      {showAssistant && (
+        <AssistantPanel scheduleId={id} onMutated={loadGrid} onClose={() => setShowAssistant(false)} />
       )}
     </div>
   );

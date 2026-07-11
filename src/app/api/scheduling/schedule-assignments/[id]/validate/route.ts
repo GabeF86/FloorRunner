@@ -25,6 +25,13 @@ export async function POST(_req: NextRequest, { params }: { params: { id: string
     (assignment as { provider_id: string | null }).provider_id,
   );
 
+  // Invariant 6: never persist flags from an incomplete evaluation — the
+  // stored value would masquerade as a clean re-validation.
+  if (!result.evaluated) {
+    console.error(`[rulesEngine] validation unavailable for assignment ${params.id} — validation_flags not updated`);
+    return NextResponse.json({ ...result, error: 'validation-unavailable' }, { status: 503 });
+  }
+
   await sb
     .from('assignments')
     .update({ validation_flags: result.violations })

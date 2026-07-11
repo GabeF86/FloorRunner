@@ -127,8 +127,15 @@ export async function POST(req: NextRequest) {
     if (matching.length === 0 && dayType === 'friday') {
       matching = (templates || []).filter((t: Record<string, unknown>) => t.day_type === 'weekday');
     }
+    // required_count materializes as SIBLING slot rows (slot_index 0..N-1),
+    // each with required_count: 1 and its own open assignment row —
+    // scheduling.assignments has UNIQUE(schedule_slot_id), so one assignment
+    // per slot is the data model and siblings are how multi-coverage works.
     for (const tmpl of matching) {
-      const count = (tmpl.required_count as number) || 1;
+      // required_count <= 0 means "no slots for this template" — never coerce
+      // 0 to 1 (Task 11 review finding). null/undefined keep the default of 1.
+      const count = (tmpl.required_count as number | null | undefined) ?? 1;
+      if (count <= 0) continue;
       for (let i = 0; i < count; i++) {
         slotRows.push({
           schedule_version_id: version.id,
@@ -136,6 +143,7 @@ export async function POST(req: NextRequest) {
           slot_date: dateStr,
           shift_type_id: tmpl.shift_type_id,
           slot_index: i,
+          required_count: 1,
           derived_day_type: dayType,
           locked: false,
         });

@@ -13,7 +13,10 @@ export type RuleCategory =
   | 'fairness'
   | 'open_slot'
   | 'time_off'
-  | 'cross_site';
+  | 'cross_site'
+  // Sentinel-only category for engine-generated flags (e.g. the
+  // 'validation unavailable' marker) — never a rule_definitions value.
+  | 'system';
 
 export type ProviderGroup = 'physician' | 'crna' | 'both';
 
@@ -105,8 +108,12 @@ export interface EvaluationContext {
   providerId: string | null;
   providerGroup: ProviderGroup | null;
   credentials: ProviderSiteCredentials | null;
+  // Provider FTE (provider_employment_profiles.fte_value); null when unknown.
+  // Fairness thresholds scale by this so part-timers flag at a lower burden.
+  fte_value: number | null;
 
-  // Provider's other assignments in a ±14 day window around the slot
+  // Provider's other assignments in a ±NEIGHBOR_WINDOW_DAYS (31d) window
+  // around the slot, scoped to the slot's schedule version + site
   // (each row carries its joined slot+shift_type for date/code lookups)
   neighborAssignments: Array<{
     assignment_id: string;
@@ -151,7 +158,9 @@ export interface EvaluationContext {
   shiftTypesById: Map<string, ShiftTypeRow>;
 }
 
-export type ViolationSeverity = 'hard' | 'soft';
+// 'warning' = advisory only (e.g. unknown rule vocabulary) — surfaces in the
+// flag list but is counted in neither hardCount nor softCount.
+export type ViolationSeverity = 'hard' | 'soft' | 'warning';
 
 export interface RuleViolation {
   rule_id: string | null; // null for implicit checks (e.g. credentialing)

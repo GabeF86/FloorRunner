@@ -9,7 +9,9 @@ interface ValidationFlag {
   rule_id: string | null;
   rule_name: string;
   category: string;
-  severity: 'hard' | 'soft';
+  // 'warning' = sentinel flags (e.g. 'validation unavailable — needs
+  // re-validation'). Counted separately — never as soft violations.
+  severity: 'hard' | 'soft' | 'warning';
   message: string;
 }
 
@@ -18,6 +20,7 @@ interface PerRuleActivity {
   rule_name: string;
   hard_count: number;
   soft_count: number;
+  warning_count: number;
   total: number;
 }
 
@@ -29,6 +32,7 @@ interface ActivityResponse {
   total_violations: number;
   hard_count: number;
   soft_count: number;
+  warning_count: number;
   per_rule: PerRuleActivity[];
 }
 
@@ -86,6 +90,7 @@ export async function GET(
       total_violations: 0,
       hard_count: 0,
       soft_count: 0,
+      warning_count: 0,
       per_rule: [],
     };
     return NextResponse.json(empty);
@@ -98,6 +103,7 @@ export async function GET(
   let totalViolations = 0;
   let hardCount = 0;
   let softCount = 0;
+  let warningCount = 0;
   const perRule = new Map<string, PerRuleActivity>();
 
   const CHUNK = 1000;
@@ -117,13 +123,17 @@ export async function GET(
       if (flags.length > 0) assignmentsWithViolations++;
       for (const f of flags) {
         totalViolations++;
+        // Anything that isn't explicitly hard/soft (sentinel 'warning' flags,
+        // unknown severities) counts as a warning — never inflates soft.
         if (f.severity === 'hard') hardCount++;
-        else softCount++;
+        else if (f.severity === 'soft') softCount++;
+        else warningCount++;
         const key = (f.rule_id ?? f.rule_name);
         const ex = perRule.get(key);
         if (ex) {
           if (f.severity === 'hard') ex.hard_count++;
-          else ex.soft_count++;
+          else if (f.severity === 'soft') ex.soft_count++;
+          else ex.warning_count++;
           ex.total++;
         } else {
           perRule.set(key, {
@@ -131,6 +141,7 @@ export async function GET(
             rule_name: f.rule_name,
             hard_count: f.severity === 'hard' ? 1 : 0,
             soft_count: f.severity === 'soft' ? 1 : 0,
+            warning_count: f.severity !== 'hard' && f.severity !== 'soft' ? 1 : 0,
             total: 1,
           });
         }
@@ -146,6 +157,7 @@ export async function GET(
     total_violations: totalViolations,
     hard_count: hardCount,
     soft_count: softCount,
+    warning_count: warningCount,
     per_rule: [...perRule.values()].sort((a, b) => b.total - a.total),
   };
   return NextResponse.json(response);

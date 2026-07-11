@@ -1,12 +1,13 @@
 import {
-  BLOCKING_AVAIL,
   BOOKEND_EXTENDING_TYPES,
   addDays,
   datesOverlap,
   dayOfWeekUTC,
   effectivePtoRange,
   dayTypeBucket,
+  isBlockingAvailability,
 } from './shared';
+import { CLASSIC_PATTERN, postCallBlockOffsets } from './callPattern';
 import type {
   GenerationContext, SlotToFill, CandidateProvider, SolveState,
   GateSet, EligibilityResult,
@@ -35,8 +36,10 @@ export function evaluateEligibility(
     return { eligible: false, reason: 'group-mismatch' };
   }
 
-  // Same-date conflict (this schedule)
-  if (state.assignedOnDate.get(slot.slot_date)?.has(p.id)) {
+  // Same-date conflict (this schedule). Overlay slots (is_overlay shift types)
+  // neither consume nor collide with the one-assignment-per-day budget.
+  const slotOverlay = ctx.shiftTypes?.get(slot.shift_type_code)?.is_overlay ?? false;
+  if (!slotOverlay && state.assignedOnDate.get(slot.slot_date)?.has(p.id)) {
     return { eligible: false, reason: 'same-date' };
   }
 
@@ -51,17 +54,26 @@ export function evaluateEligibility(
     return { eligible: false, reason: 'weekday-unavailable' };
   }
 
-  // C1 post-call day-off guard (call gate only). Saturday C1 is excepted.
-  if (gate === 'call'
-    && slot.shift_type_code === 'C1'
-    && slot.derived_day_type !== 'saturday') {
+  // 'call-no-quota' is the IF-3 quota-relaxation gate: identical to 'call'
+  // except the bucket-quota check below — relaxation may only waive the
+  // quota, never a safety gate (invariant 2).
+  const callGate = gate === 'call' || gate === 'call-no-quota';
+
+  // Post-call day-off guard (call gates only), pattern-driven: a code whose
+  // day-chain blocks the NEXT day must not be placed when the provider is
+  // already busy that next day. Day-type scoping (e.g. the classic Saturday C1
+  // exemption) falls out of the pattern doc's dayChain blocks.
+  const doc = ctx.callPattern ?? CLASSIC_PATTERN;
+  if (callGate
+    && postCallBlockOffsets(doc, slot.shift_type_code, slot.derived_day_type).includes(1)) {
     const dayAfter = addDays(slot.slot_date, 1);
     if (state.assignedOnDate.get(dayAfter)?.has(p.id)) {
       return { eligible: false, reason: 'post-call-guard' };
     }
   }
 
-  // Bucket quota (call gate only): "would one more push us past target?"
+  // Bucket quota (the full 'call' gate ONLY — waived under 'call-no-quota'):
+  // "would one more push us past target?"
   if (gate === 'call') {
     const k = `${p.id}|${dayTypeBucket(slot.derived_day_type)}|${slot.shift_type_code}`;
     const assigned = state.bucketAssigned.get(k) || 0;
@@ -107,7 +119,10 @@ export function evaluateEligibility(
     const weekAfterEnd = addDays(satDate, 6);     // Fri after the weekend
     const entries = ctx.availByPid.get(p.id) || [];
     for (const a of entries) {
-      if (a.approval_status === 'denied' || a.approval_status === 'canceled') continue;
+      // Canonical predicate (pending blocks — spec §6.7), narrowed to the
+      // bookend-extending subset: only multi-day planned leave pulls the
+      // adjacent weekend out of contention.
+      if (!isBlockingAvailability(a)) continue;
       if (!BOOKEND_EXTENDING_TYPES.has(a.availability_type)) continue;
       if (a.start_date <= weekBeforeEnd && a.end_date >= weekBeforeStart) {
         return { eligible: false, reason: 'weekend-adjacent-pto' };
@@ -118,11 +133,10 @@ export function evaluateEligibility(
     }
   }
 
-  // Availability with PTO bookend.
+  // Availability with PTO bookend (pending blocks — spec §6.7).
   const entries = ctx.availByPid.get(p.id) || [];
   for (const a of entries) {
-    if (a.approval_status === 'denied' || a.approval_status === 'canceled') continue;
-    if (!BLOCKING_AVAIL.has(a.availability_type)) continue;
+    if (!isBlockingAvailability(a)) continue;
     const { start, end } = effectivePtoRange(a);
     if (datesOverlap(start, end, slot.slot_date)) {
       return { eligible: false, reason: 'availability-blocked' };
