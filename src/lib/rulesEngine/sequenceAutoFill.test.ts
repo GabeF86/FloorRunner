@@ -155,6 +155,24 @@ describe('applySequenceAutoFill — pattern-driven fill', () => {
     expect(fromCount(calls, 'call_patterns')).toBe(0);
   });
 
+  // Live DB: UNIQUE(schedule_slot_id) → PostgREST returns the slot's
+  // assignments embed as ONE OBJECT, not an array. The candidate-slot parse
+  // seam must normalize (an object here used to throw in the fill pass).
+  it('single-OBJECT assignments embed (live one-to-one shape) still fills via the open row', async () => {
+    const { sb, calls } = makeFakeSupabase({
+      tables: tables({
+        trigger: triggerSlot({ date: MON }),
+        slots: [{ ...slot({ id: 'slot-d1-tue', date: TUE, code: 'D1' }), assignments: openRow('open-1') }],
+      }),
+    });
+    const result = await applySequenceAutoFill(sb, 'trig', 'p1', CLASSIC_PATTERN);
+    expect(result.filledSlotIds).toEqual(['slot-d1-tue']);
+    const up = updates(calls);
+    expect(up).toHaveLength(1); // updated the existing open row — no duplicate insert
+    expect(up[0].provider_id).toBe('p1');
+    expect(inserts(calls)).toHaveLength(0);
+  });
+
   it('inserts a fresh row (validation_flags null, not the [] column default) when the slot has no open row', async () => {
     const { sb, calls } = makeFakeSupabase({
       tables: tables({

@@ -20,6 +20,7 @@
 // (clinical invariant 4: left unassigned AND recorded, never silently dropped).
 
 import { addDays, daysBetween, isBlockingAvailability } from './shared';
+import { embedArray } from '@/lib/embed';
 import {
   CLASSIC_PATTERN,
   CallPatternDocSchema,
@@ -312,7 +313,9 @@ async function loadCandidateSlots(
       slot_date: raw.slot_date as string,
       locked: !!raw.locked,
       st: (raw.shift_types as StRow | null) ?? null,
-      assignments: (raw.assignments as CandidateSlot['assignments']) || [],
+      // UNIQUE(schedule_slot_id) → PostgREST returns this embed as a single
+      // OBJECT (or null) against the live DB; dev fakes return arrays.
+      assignments: embedArray(raw.assignments) as CandidateSlot['assignments'],
     })),
   );
 }

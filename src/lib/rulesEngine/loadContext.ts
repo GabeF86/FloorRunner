@@ -3,6 +3,7 @@
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type SupabaseClient = any;
 import { addDays, NEIGHBOR_WINDOW_DAYS, AVAIL_WINDOW_DAYS } from './shared';
+import { embedArray } from '@/lib/embed';
 import type {
   EvaluationContext,
   RuleDefinition,
@@ -281,7 +282,9 @@ export async function loadContext(
     sameDayAssignments = ((sameDay || []) as Array<Record<string, unknown>>).flatMap(s => {
       const st = shiftTypesById.get(s.shift_type_id as string);
       if (!st) return [];
-      const assignments = (s.assignments as Array<{ provider_id: string | null }>) || [];
+      // UNIQUE(schedule_slot_id) → PostgREST returns this embed as a single
+      // OBJECT (or null) against the live DB; dev fakes return arrays.
+      const assignments = embedArray(s.assignments) as Array<{ provider_id: string | null }>;
       return assignments.map(a => ({
         slot_id: s.id as string,
         slot_date: s.slot_date as string,

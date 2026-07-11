@@ -370,3 +370,35 @@ describe('chunk', () => {
     expect(chunk([], WRITE_CHUNK)).toEqual([]);
   });
 });
+
+// ── one-to-one assignments embed (live UNIQUE(schedule_slot_id)) ────────────
+// PostgREST returns each slot's assignments embed as ONE OBJECT (or null),
+// not an array, against the live DB. batchValidateVersion must normalize —
+// an object here used to throw while building targets (→ validation dead).
+describe('batchValidateVersion — one-to-one assignments embed', () => {
+  it('object-shaped embeds still yield one target per assignment row, parity intact', async () => {
+    const objSlots = SLOTS.map(s => ({ ...s, assignments: s.assignments[0] })); // live shape
+    const { sb } = makeFakeSupabase({
+      tables: batchTables({ schedule_slots: { data: objSlots, error: null } }),
+    });
+    const batch = await batchValidateVersion(sb, 'v1', siteCtx);
+    expect(batch.errors).toEqual([]);
+    expect(batch.results).toHaveLength(5);
+    expect(batch.results.every(r => r.evaluated)).toBe(true);
+    // Same-day coverage math (sameDayFor) must see the normalized rows too:
+    // the open C1 slot sC still gets its open_slot violation.
+    const a3 = batch.results.find(r => r.assignmentId === 'a3')!;
+    expect(a3.violations.length).toBeGreaterThan(0);
+  });
+
+  it('null embed (one-to-one, no row) contributes no target and does not throw', async () => {
+    const objSlots = SLOTS.map(s => ({ ...s, assignments: s.assignments[0] }));
+    const withNull = [...objSlots, { ...SLOTS[0], id: 'sNull', assignments: null }];
+    const { sb } = makeFakeSupabase({
+      tables: batchTables({ schedule_slots: { data: withNull, error: null } }),
+    });
+    const batch = await batchValidateVersion(sb, 'v1', siteCtx);
+    expect(batch.errors).toEqual([]);
+    expect(batch.results).toHaveLength(5); // sNull adds nothing
+  });
+});

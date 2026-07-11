@@ -25,6 +25,7 @@ import type {
 } from './genTypes';
 
 import { CallPatternDocSchema, patternWarnings, type CallPatternDoc } from './callPattern';
+import { embedArray } from '@/lib/embed';
 
 const DEFAULT_PAR_LEVEL = 12; // fallback when site.call_par_level isn't set
 const NEIGHBOR_WINDOW_DAYS = 31;
@@ -245,7 +246,9 @@ export async function loadGenerationContext(
     const st = raw.shift_types as { code: string; category: string } | null;
     if (!st) continue;
 
-    const assignments = (raw.assignments as Array<{ id: string; provider_id: string | null }>) || [];
+    // UNIQUE(schedule_slot_id) → PostgREST returns this embed as a single
+    // OBJECT (or null) against the live DB; dev fakes return arrays.
+    const assignments = embedArray(raw.assignments) as Array<{ id: string; provider_id: string | null }>;
     const required = (raw.required_count as number) || 1;
     const assignedCount = assignments.filter(a => a.provider_id).length;
     if (assignedCount >= required) continue;
@@ -599,7 +602,7 @@ export async function loadGenerationContext(
   for (const raw of rawSlots as Array<Record<string, unknown>>) {
     const st = raw.shift_types as { code: string; category: string } | null;
     if (!st || st.category !== 'call') continue;
-    const assignments = (raw.assignments as Array<{ provider_id: string | null }>) || [];
+    const assignments = embedArray(raw.assignments) as Array<{ provider_id: string | null }>;
     const n = assignments.filter(a => a.provider_id).length;
     if (n > 0) {
       const dt = (raw.derived_day_type as string) || 'weekday';
@@ -652,7 +655,7 @@ export async function loadGenerationContext(
   for (const raw of rawSlots as Array<Record<string, unknown>>) {
     const st = raw.shift_types as { code: string; category: string } | null;
     if (!st) continue;
-    const assignments = (raw.assignments as Array<{ id: string; provider_id: string | null; assignment_status?: string }>) || [];
+    const assignments = embedArray(raw.assignments) as Array<{ id: string; provider_id: string | null; assignment_status?: string }>;
     for (const a of assignments) {
       if (a.provider_id) {
         seedAssignments.push({

@@ -19,6 +19,7 @@
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type SupabaseClient = any;
 import { addDays, NEIGHBOR_WINDOW_DAYS, AVAIL_WINDOW_DAYS } from './shared';
+import { embedArray } from '@/lib/embed';
 // Function-level-only cycle (commit.ts imports batchValidateVersion/chunk from
 // here); nothing crosses at module top level, so evaluation order is safe.
 import { bulkWriteWithRowFallback } from './commit';
@@ -99,7 +100,13 @@ export async function batchValidateVersion(
     errors.push(`batch validation: validation-unavailable — slot load failed: ${slotErr.message}`);
     return { results: [], dbQueries, errors, written: 0 };
   }
-  const slots = (slotData || []) as RawSlotRow[];
+  // UNIQUE(schedule_slot_id) → PostgREST returns each slot's assignments
+  // embed as a single OBJECT (or null) against the live DB; dev fakes return
+  // arrays. Normalize once here — targets and sameDayFor both walk it.
+  const slots = ((slotData || []) as RawSlotRow[]).map(s => ({
+    ...s,
+    assignments: embedArray(s.assignments),
+  }));
   if (slots.length === 0) return { results: [], dbQueries, errors, written: 0 };
 
   const targets: Array<{ assignmentId: string; slot: RawSlotRow; providerId: string | null }> = [];

@@ -168,6 +168,25 @@ describe('loadContext fail-closed (serial provider-section query failures)', () 
     const res = await evaluateAssignment(sb, 'sA', 'p1', siteCtx);
     expect(res.evaluated).toBe(true);
   });
+
+  // Live DB: UNIQUE(schedule_slot_id) → PostgREST returns the same-day slots'
+  // assignments embed as ONE OBJECT, not an array. The sameDayAssignments
+  // parse seam must normalize (an object here used to throw → evaluation dead).
+  it('single-OBJECT assignments embed on the same-day slots read (live one-to-one shape) still evaluates', async () => {
+    const { sb } = makeFakeSupabase({
+      tables: {
+        ...okTables(),
+        schedule_slots: (filters: Filter[]) => {
+          const eqId = filters.find(f => f.method === 'eq' && f.args[0] === 'id');
+          if (eqId) return { data: SLOT, error: null };
+          // sameDay branch: object-shaped embed, as the live DB returns it
+          return { data: [{ ...SLOT, assignments: { provider_id: 'p1' } }], error: null };
+        },
+      },
+    });
+    const res = await evaluateAssignment(sb, 'sA', 'p1', siteCtx);
+    expect(res.evaluated).toBe(true);
+  });
 });
 
 describe('loadContext neighbor scoping', () => {

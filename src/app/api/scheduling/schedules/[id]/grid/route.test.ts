@@ -80,7 +80,17 @@ describe('validationSummaryFor', () => {
 
 // ── Route-level ──────────────────────────────────────────────────────────────
 
-function setup() {
+const ASSIGNMENT_ROW = {
+  id: 'a-1', schedule_slot_id: 'slot-1', provider_id: 'p1',
+  assignment_status: 'assigned', is_open_call: false, manually_overridden: false,
+  validation_flags: [{ severity: 'hard' }, { severity: 'warning' }],
+  providers: { id: 'p1', last_name: 'Smith', short_display_name: 'S. Smith', initials: 'SS', provider_type: 'physician' },
+};
+
+// `assignmentsEmbed` defaults to the array shape (dev fakes / pre-constraint
+// DBs); the live DB's UNIQUE(schedule_slot_id) makes PostgREST return the
+// embed as a SINGLE OBJECT — tests cover both.
+function setup(assignmentsEmbed: unknown = [ASSIGNMENT_ROW]) {
   const { sb, calls } = makeFakeSupabase({
     tables: {
       schedules: {
@@ -99,12 +109,7 @@ function setup() {
           id: 'slot-1', slot_date: '2026-01-05', shift_type_id: 'st-C1', slot_index: 0,
           locked: false, derived_day_type: 'weekday',
           shift_types: { id: 'st-C1', code: 'C1' },
-          assignments: [{
-            id: 'a-1', schedule_slot_id: 'slot-1', provider_id: 'p1',
-            assignment_status: 'assigned', is_open_call: false, manually_overridden: false,
-            validation_flags: [{ severity: 'hard' }, { severity: 'warning' }],
-            providers: { id: 'p1', last_name: 'Smith', short_display_name: 'S. Smith', initials: 'SS', provider_type: 'physician' },
-          }],
+          assignments: assignmentsEmbed,
         }],
         error: null,
       },
@@ -138,5 +143,24 @@ describe('GET /api/scheduling/schedules/:id/grid', () => {
     const a = json.slots[0].assignments[0];
     expect(a.validation_summary).toEqual({ hard: 1, soft: 0, warning: 1 });
     expect(a.validation_flags).toEqual([{ severity: 'hard' }, { severity: 'warning' }]);
+  });
+
+  // Live DB: UNIQUE(schedule_slot_id) → PostgREST returns the embed as ONE
+  // OBJECT, not an array. The route must normalize instead of 500ing.
+  it('normalizes a single-OBJECT assignments embed (one-to-one live shape) into an array', async () => {
+    setup(ASSIGNMENT_ROW); // object, not [object]
+    const { res, json } = await get();
+    expect(res.status).toBe(200);
+    expect(Array.isArray(json.slots[0].assignments)).toBe(true);
+    const a = json.slots[0].assignments[0];
+    expect(a.id).toBe('a-1');
+    expect(a.validation_summary).toEqual({ hard: 1, soft: 0, warning: 1 });
+  });
+
+  it('normalizes a null assignments embed (one-to-one, no row) into an empty array', async () => {
+    setup(null);
+    const { res, json } = await get();
+    expect(res.status).toBe(200);
+    expect(json.slots[0].assignments).toEqual([]);
   });
 });
