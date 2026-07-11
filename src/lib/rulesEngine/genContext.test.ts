@@ -530,3 +530,54 @@ describe('loadGenerationContext — load-time warnings (requirement 6-9)', () =>
     expect(ctx.prePtoByThursday).toBeInstanceOf(Map);
   });
 });
+
+// ── one-to-one assignments embed (live UNIQUE(schedule_slot_id)) ────────────
+// PostgREST returns each slot's assignments embed as ONE OBJECT (or null),
+// not an array, against the live DB. loadGenerationContext must normalize —
+// an object here used to break open-slot detection and seed collection.
+describe('loadGenerationContext — one-to-one assignments embed', () => {
+  it('single-OBJECT assigned embed: seed collected, slot NOT re-queued as open', async () => {
+    const { res } = await run({
+      schedule_slots: { data: [
+        {
+          ...rawSlot({ id: 's1', date: '2026-01-07', code: 'C1', category: 'call' }),
+          assignments: { id: 'a1', provider_id: 'p1', assignment_status: 'assigned' }, // live shape
+        },
+        // A second, open slot keeps the version from being fully assigned —
+        // a zero-open version takes an early return that skips seed collection
+        // (pre-existing behavior, independent of embed shape).
+        rawSlot({ id: 's2', date: '2026-01-08', code: 'C1', category: 'call' }),
+      ], error: null },
+    });
+    expect(res.ctx).not.toBeNull();
+    expect(res.ctx!.seedAssignments).toContainEqual(expect.objectContaining({
+      provider_id: 'p1', shift_type_code: 'C1', slot_date: '2026-01-07',
+    }));
+    expect(res.ctx!.slotsToFill.map(s => s.slot_id)).not.toContain('s1');
+  });
+
+  it('single-OBJECT open-row embed: slot queued as open with that row id', async () => {
+    const { res } = await run({
+      schedule_slots: { data: [{
+        ...rawSlot({ id: 's1', date: '2026-01-07', code: 'C1', category: 'call' }),
+        assignments: { id: 'a-open', provider_id: null, assignment_status: 'open' }, // live shape
+      }], error: null },
+    });
+    expect(res.ctx).not.toBeNull();
+    expect(res.ctx!.seedAssignments).toEqual([]);
+    const s1 = res.ctx!.slotsToFill.find(s => s.slot_id === 's1');
+    expect(s1).toBeDefined();
+  });
+
+  it('null embed (one-to-one, no row): slot queued as open, no seeds', async () => {
+    const { res } = await run({
+      schedule_slots: { data: [{
+        ...rawSlot({ id: 's1', date: '2026-01-07', code: 'C1', category: 'call' }),
+        assignments: null, // live shape
+      }], error: null },
+    });
+    expect(res.ctx).not.toBeNull();
+    expect(res.ctx!.seedAssignments).toEqual([]);
+    expect(res.ctx!.slotsToFill.map(s => s.slot_id)).toContain('s1');
+  });
+});

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { sbSchedulingServer } from '@/lib/supabaseScheduling';
+import { embedArray } from '@/lib/embed';
 
 // GET /api/scheduling/master-schedule?site_id=...&from=...&to=...
 // Returns a combined view of all published schedules for a site in the given
@@ -61,6 +62,13 @@ export async function GET(req: NextRequest) {
       allSlots.push(
         ...(slots as Array<Record<string, unknown>>).map(s => ({
           ...s,
+          // UNIQUE(schedule_slot_id) makes PostgREST return the assignments
+          // embed as a SINGLE OBJECT (or null), not an array — normalize so
+          // the provider-collection loop below and the JSON consumers always
+          // see an array.
+          assignments: embedArray(
+            s.assignments as Record<string, unknown> | Record<string, unknown>[] | null,
+          ),
           schedule_id: sched.id,
           schedule_name: sched.schedule_name,
           schedule_type: sched.schedule_type,

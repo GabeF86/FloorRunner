@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { sbSchedulingServer } from '@/lib/supabaseScheduling';
+import { embedArray } from '@/lib/embed';
 import {
   GRID_SCHEDULE_COLUMNS,
   GRID_SLOT_COLUMNS,
@@ -49,9 +50,12 @@ export async function GET(
     .order('slot_index');
   if (slotErr) return NextResponse.json({ error: slotErr.message }, { status: 500 });
 
-  const slots = ((rawSlots ?? []) as Array<{ assignments?: Array<{ validation_flags?: unknown }> }>).map(s => ({
+  // UNIQUE(schedule_slot_id) makes PostgREST return the assignments embed as
+  // a SINGLE OBJECT (or null), not an array — embedArray normalizes both.
+  type RawAssignment = { validation_flags?: unknown };
+  const slots = ((rawSlots ?? []) as Array<{ assignments?: RawAssignment | RawAssignment[] | null }>).map(s => ({
     ...s,
-    assignments: (s.assignments ?? []).map(withValidationSummary),
+    assignments: embedArray(s.assignments).map(withValidationSummary),
   }));
 
   // 4. Fetch providers for org filtered by provider_group
