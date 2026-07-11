@@ -38,9 +38,9 @@ export interface SequenceAutoFillResult {
   // sequence is never silent.
   evictedSlotIds: string[];
   skips: SkippedDerived[];
-  // Call-pattern load problems (invalid doc / read error → classic fallback),
-  // same convention as genContext warnings. Empty when the caller passed the
-  // doc in.
+  // Load problems, same convention as genContext warnings: call-pattern
+  // issues (invalid doc / read error → classic fallback), pre-patch18 rank
+  // degradation, and aborted reads. Deduped; never silently swallowed.
   patternWarnings: string[];
 }
 
@@ -139,7 +139,13 @@ interface AvailRow {
 // (relief_rank) beat plain derived codes (D1/D2/D3/…, both ranks null).
 // "Lower call_rank trigger wins"; a realized call trigger therefore always
 // outranks a derived pre-fill — the old hard-coded "D1 beats D3".
-function shiftRank(st: StRow | null | undefined): number {
+//
+// `degradedRanks` = the rank columns were unreadable (pre-patch18 DB, narrow
+// retry): calls outrank non-calls, ties within a class are stable.
+function shiftRank(st: StRow | null | undefined, degradedRanks = false): number {
+  if (degradedRanks) {
+    return st?.category === 'call' ? 0 : Number.MAX_SAFE_INTEGER;
+  }
   if (st?.call_rank != null) return st.call_rank;
   if (st?.relief_rank != null) return 1000 + st.relief_rank;
   return Number.MAX_SAFE_INTEGER;
@@ -158,24 +164,78 @@ function preFillCodes(doc: CallPatternDoc): Set<string> {
   return out;
 }
 
-async function loadTriggerSlot(sb: SupabaseClient, slotId: string): Promise<TriggerSlot | null> {
-  const { data } = await sb
-    .from('schedule_slots')
-    .select('id, site_id, slot_date, derived_day_type, schedule_version_id, shift_types(code, category, call_rank, relief_rank)')
-    .eq('id', slotId)
-    .maybeSingle();
-  if (!data) return null;
-  const raw = data as Record<string, unknown>;
-  const st = (raw.shift_types as StRow | null) ?? null;
-  if (!st?.code) return null;
-  return {
-    id: raw.id as string,
-    site_id: raw.site_id as string,
-    slot_date: raw.slot_date as string,
-    derived_day_type: (raw.derived_day_type as string) || 'weekday',
-    schedule_version_id: raw.schedule_version_id as string,
-    st,
-  };
+// ── loaders — wide select, narrow retry on missing patch18 columns ──────────
+//
+// Pre-patch18 DBs lack shift_types.call_rank/relief_rank; the wide selects
+// 42703 there. Each loader retries with the narrow shift-type embed (rank
+// precedence degrades to category ranking — see shiftRank) and reports the
+// degradation. NON-column errors are never swallowed: the loader returns
+// `failed: true` with a warning (+ console.error) and the caller aborts —
+// an empty-looking window would silently pass the rest/conflict guards.
+
+const WIDE_ST = 'code, category, call_rank, relief_rank, requires_post_call_rule';
+const NARROW_ST = 'code, category, requires_post_call_rule';
+
+export const RANKS_DEGRADED_WARNING =
+  'shift_types rank columns missing — sequence precedence degraded to category ranking (apply patch18)';
+
+function isMissingColumnError(err: { code?: string; message?: string } | null | undefined): boolean {
+  if (!err) return false;
+  if (err.code === '42703') return true;
+  return /column/i.test(err.message || '');
+}
+
+interface LoadOutcome<T> {
+  data: T;
+  degradedRanks: boolean;
+  warnings: string[];
+  failed: boolean; // non-column read error — caller must abort loudly
+}
+
+function failedLoad<T>(label: string, err: { message?: string } | null, empty: T): LoadOutcome<T> {
+  const warning = `${label} read failed (${err?.message || 'unknown error'}) — sequence auto-fill skipped`;
+  console.error(`[sequenceAutoFill] ${warning}`);
+  return { data: empty, degradedRanks: false, warnings: [warning], failed: true };
+}
+
+// Run `query(select)` wide, retry narrow on a missing-column error.
+async function loadWithNarrowRetry<T>(
+  label: string,
+  empty: T,
+  query: (stColumns: string) => Promise<{ data: unknown; error: { code?: string; message?: string } | null }>,
+  parse: (data: unknown) => T,
+): Promise<LoadOutcome<T>> {
+  const wide = await query(WIDE_ST);
+  if (!wide.error) return { data: parse(wide.data), degradedRanks: false, warnings: [], failed: false };
+  if (!isMissingColumnError(wide.error)) return failedLoad(label, wide.error, empty);
+  const narrow = await query(NARROW_ST);
+  if (narrow.error) return failedLoad(label, narrow.error, empty);
+  return { data: parse(narrow.data), degradedRanks: true, warnings: [RANKS_DEGRADED_WARNING], failed: false };
+}
+
+async function loadTriggerSlot(sb: SupabaseClient, slotId: string): Promise<LoadOutcome<TriggerSlot | null>> {
+  return loadWithNarrowRetry<TriggerSlot | null>(
+    'trigger slot', null,
+    stCols => sb
+      .from('schedule_slots')
+      .select(`id, site_id, slot_date, derived_day_type, schedule_version_id, shift_types(${stCols})`)
+      .eq('id', slotId)
+      .maybeSingle(),
+    data => {
+      if (!data) return null;
+      const raw = data as Record<string, unknown>;
+      const st = (raw.shift_types as StRow | null) ?? null;
+      if (!st?.code) return null;
+      return {
+        id: raw.id as string,
+        site_id: raw.site_id as string,
+        slot_date: raw.slot_date as string,
+        derived_day_type: (raw.derived_day_type as string) || 'weekday',
+        schedule_version_id: raw.schedule_version_id as string,
+        st,
+      };
+    },
+  );
 }
 
 // Provider-wide assignments window: ANY site, ANY schedule version (clinical
@@ -186,29 +246,34 @@ async function loadAssignmentsWindow(
   providerId: string,
   start: string,
   end: string,
-): Promise<WindowAssignment[]> {
-  const { data } = await sb
-    .from('assignments')
-    .select('id, source_type, schedule_slots!inner(id, slot_date, site_id, schedule_version_id, shift_types(code, category, call_rank, relief_rank, requires_post_call_rule))')
-    .eq('provider_id', providerId)
-    .eq('assignment_status', 'assigned')
-    .gte('schedule_slots.slot_date', start)
-    .lte('schedule_slots.slot_date', end);
-  const out: WindowAssignment[] = [];
-  for (const raw of ((data || []) as Array<Record<string, unknown>>)) {
-    const ss = raw.schedule_slots as Record<string, unknown> | null;
-    if (!ss) continue;
-    out.push({
-      id: raw.id as string,
-      source_type: (raw.source_type as string) ?? 'manual',
-      slot_id: ss.id as string,
-      slot_date: ss.slot_date as string,
-      site_id: (ss.site_id as string) ?? '',
-      schedule_version_id: (ss.schedule_version_id as string) ?? '',
-      st: (ss.shift_types as StRow | null) ?? null,
-    });
-  }
-  return out;
+): Promise<LoadOutcome<WindowAssignment[]>> {
+  return loadWithNarrowRetry<WindowAssignment[]>(
+    'assignments window', [],
+    stCols => sb
+      .from('assignments')
+      .select(`id, source_type, schedule_slots!inner(id, slot_date, site_id, schedule_version_id, shift_types(${stCols}))`)
+      .eq('provider_id', providerId)
+      .eq('assignment_status', 'assigned')
+      .gte('schedule_slots.slot_date', start)
+      .lte('schedule_slots.slot_date', end),
+    data => {
+      const out: WindowAssignment[] = [];
+      for (const raw of ((data || []) as Array<Record<string, unknown>>)) {
+        const ss = raw.schedule_slots as Record<string, unknown> | null;
+        if (!ss) continue;
+        out.push({
+          id: raw.id as string,
+          source_type: (raw.source_type as string) ?? 'manual',
+          slot_id: ss.id as string,
+          slot_date: ss.slot_date as string,
+          site_id: (ss.site_id as string) ?? '',
+          schedule_version_id: (ss.schedule_version_id as string) ?? '',
+          st: (ss.shift_types as StRow | null) ?? null,
+        });
+      }
+      return out;
+    },
+  );
 }
 
 async function loadAvailabilityWindow(
@@ -216,14 +281,15 @@ async function loadAvailabilityWindow(
   providerId: string,
   start: string,
   end: string,
-): Promise<AvailRow[]> {
-  const { data } = await sb
+): Promise<LoadOutcome<AvailRow[]>> {
+  const { data, error } = await sb
     .from('provider_availability')
     .select('availability_type, approval_status, start_date, end_date')
     .eq('provider_id', providerId)
     .lte('start_date', end)
     .gte('end_date', start);
-  return (data || []) as AvailRow[];
+  if (error) return failedLoad('availability window', error, [] as AvailRow[]);
+  return { data: (data || []) as AvailRow[], degradedRanks: false, warnings: [], failed: false };
 }
 
 async function loadCandidateSlots(
@@ -231,21 +297,24 @@ async function loadCandidateSlots(
   versionId: string,
   start: string,
   end: string,
-): Promise<CandidateSlot[]> {
-  const { data } = await sb
-    .from('schedule_slots')
-    .select('id, site_id, slot_date, locked, shift_types(code, category, call_rank, relief_rank), assignments(id, provider_id, assignment_status, source_type)')
-    .eq('schedule_version_id', versionId)
-    .gte('slot_date', start)
-    .lte('slot_date', end);
-  return ((data || []) as Array<Record<string, unknown>>).map(raw => ({
-    id: raw.id as string,
-    site_id: (raw.site_id as string) ?? '',
-    slot_date: raw.slot_date as string,
-    locked: !!raw.locked,
-    st: (raw.shift_types as StRow | null) ?? null,
-    assignments: (raw.assignments as CandidateSlot['assignments']) || [],
-  }));
+): Promise<LoadOutcome<CandidateSlot[]>> {
+  return loadWithNarrowRetry<CandidateSlot[]>(
+    'candidate slots', [],
+    stCols => sb
+      .from('schedule_slots')
+      .select(`id, site_id, slot_date, locked, shift_types(${stCols}), assignments(id, provider_id, assignment_status, source_type)`)
+      .eq('schedule_version_id', versionId)
+      .gte('slot_date', start)
+      .lte('slot_date', end),
+    data => ((data || []) as Array<Record<string, unknown>>).map(raw => ({
+      id: raw.id as string,
+      site_id: (raw.site_id as string) ?? '',
+      slot_date: raw.slot_date as string,
+      locked: !!raw.locked,
+      st: (raw.shift_types as StRow | null) ?? null,
+      assignments: (raw.assignments as CandidateSlot['assignments']) || [],
+    })),
+  );
 }
 
 // Revert an assignment row to an open slot. validation_flags goes to null —
@@ -306,15 +375,21 @@ export async function applySequenceAutoFill(
   };
   const skip = (date: string, code: string, reason: SkippedDerived['reason']) =>
     result.skips.push({ date, code, provider_id: providerId, reason });
+  const warn = (ws: string[]) => {
+    for (const w of ws) if (!result.patternWarnings.includes(w)) result.patternWarnings.push(w);
+  };
 
-  const trigger = await loadTriggerSlot(sb, triggerSlotId);
+  const triggerLoad = await loadTriggerSlot(sb, triggerSlotId);
+  warn(triggerLoad.warnings);
+  if (triggerLoad.failed) return result;
+  const trigger = triggerLoad.data;
   if (!trigger) return result;
 
   let pattern = doc;
   if (!pattern) {
     const loaded = await loadActiveCallPattern(sb, trigger.site_id);
     pattern = loaded.doc;
-    result.patternWarnings.push(...loaded.warnings);
+    warn(loaded.warnings);
   }
   const links = dayChainsFor(pattern, trigger.st.code!, trigger.derived_day_type)
     .flatMap(c => c.links ?? []);
@@ -328,13 +403,26 @@ export async function applySequenceAutoFill(
   const windowEnd = addDays(trigger.slot_date, maxAbs);
 
   // The three reads are independent — one round-trip of latency, not three.
-  const [windowAssignments, availability, candidateSlots] = await Promise.all([
+  const [windowLoad, availLoad, candLoad] = await Promise.all([
     loadAssignmentsWindow(sb, providerId, windowStart, windowEnd),
     loadAvailabilityWindow(sb, providerId, windowStart, windowEnd),
     loadCandidateSlots(sb, trigger.schedule_version_id, addDays(trigger.slot_date, -maxAbs), windowEnd),
   ]);
+  warn([...windowLoad.warnings, ...availLoad.warnings, ...candLoad.warnings]);
+  // A failed read must abort: an empty-looking window would silently pass the
+  // occupancy/conflict/rest guards below and place fills it shouldn't.
+  if (windowLoad.failed || availLoad.failed || candLoad.failed) return result;
+  const windowAssignments = windowLoad.data;
+  const availability = availLoad.data;
+  const candidateSlots = candLoad.data;
 
-  const triggerRank = shiftRank(trigger.st);
+  // Rank precedence degrades as a set: if ANY side's rank columns were
+  // unreadable, ranks are incomparable — use category ranking throughout.
+  const ranksDegraded =
+    triggerLoad.degradedRanks || windowLoad.degradedRanks || candLoad.degradedRanks;
+  const rank = (st: StRow | null | undefined) => shiftRank(st, ranksDegraded);
+
+  const triggerRank = rank(trigger.st);
   const evictableCodes = preFillCodes(pattern);
   const evictedIds = new Set<string>();
 
@@ -363,7 +451,7 @@ export async function applySequenceAutoFill(
       const owned = windowAssignments.some(a =>
         a.slot_date === priorDate
         && a.st?.category === 'call'
-        && shiftRank(a.st) <= triggerRank);
+        && rank(a.st) <= triggerRank);
       if (owned) { skip(linkedDate, code, 'already-handled'); continue; }
     }
 
@@ -401,7 +489,7 @@ export async function applySequenceAutoFill(
         if (a.source_type !== 'auto_generated') continue;
         if (a.st?.category === 'call') continue;
         if (!a.st?.code || !evictableCodes.has(a.st.code)) continue;
-        if (triggerRank > shiftRank(a.st)) continue; // occupant outranks the incoming fill
+        if (triggerRank > rank(a.st)) continue; // occupant outranks the incoming fill
         if (await revertToOpen(sb, a.id)) {
           evictedIds.add(a.id);
           result.evictedSlotIds.push(a.slot_id);
@@ -495,24 +583,33 @@ export async function cleanupSequenceAutoFill(
   doc?: CallPatternDoc,
 ): Promise<SequenceCleanupResult> {
   const result: SequenceCleanupResult = { clearedSlotIds: [], patternWarnings: [] };
+  const warn = (ws: string[]) => {
+    for (const w of ws) if (!result.patternWarnings.includes(w)) result.patternWarnings.push(w);
+  };
 
-  const trigger = await loadTriggerSlot(sb, triggerSlotId);
+  const triggerLoad = await loadTriggerSlot(sb, triggerSlotId);
+  warn(triggerLoad.warnings);
+  if (triggerLoad.failed) return result;
+  const trigger = triggerLoad.data;
   if (!trigger) return result;
 
   let pattern = doc;
   if (!pattern) {
     const loaded = await loadActiveCallPattern(sb, trigger.site_id);
     pattern = loaded.doc;
-    result.patternWarnings.push(...loaded.warnings);
+    warn(loaded.warnings);
   }
   const links = dayChainsFor(pattern, trigger.st.code!, trigger.derived_day_type)
     .flatMap(c => c.links ?? []);
   if (links.length === 0) return result;
 
   const maxAbs = Math.max(...links.map(l => Math.abs(l.offset)));
-  const slots = await loadCandidateSlots(
+  const slotsLoad = await loadCandidateSlots(
     sb, trigger.schedule_version_id,
     addDays(trigger.slot_date, -maxAbs), addDays(trigger.slot_date, maxAbs));
+  warn(slotsLoad.warnings);
+  if (slotsLoad.failed) return result;
+  const slots = slotsLoad.data;
 
   // Dedupe by assignment id: two links sharing date+code must not double-write.
   const processed = new Set<string>();

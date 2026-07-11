@@ -102,7 +102,11 @@ export interface GenerationContext {
   scheduleDates?: string[];                    // sorted slotIndex date keys
 }
 
-export type GateSet = 'call' | 'derived';
+// 'call' = the full set; 'call-no-quota' = every call gate EXCEPT the bucket
+// quota (used ONLY by IF-3 quota relaxation — relaxation may waive the quota,
+// never a safety gate); 'derived' = structural placements (drops quota + the
+// post-call guard, keeps every safety gate).
+export type GateSet = 'call' | 'call-no-quota' | 'derived';
 
 export type RejectionReason =
   | 'group-mismatch'

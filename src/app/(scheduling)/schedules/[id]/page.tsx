@@ -788,7 +788,11 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
   };
 
   const [generating, setGenerating] = useState(false);
-  const [genResult, setGenResult] = useState<{ filled: number; skipped: number; errors: string[] } | null>(null);
+  const [genResult, setGenResult] = useState<{
+    filled: number; skipped: number; errors: string[];
+    warnings: string[];                              // load-time advisories (apply patch18, quota shortfalls, …)
+    skippedDerived: Array<{ reason: string }>;       // suppressed derived fills (clinical invariant 4)
+  } | null>(null);
   const [showPoolModal, setShowPoolModal] = useState(false);
 
   const autoGenerateSchedule = async () => {
@@ -800,7 +804,11 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
       const res = await fetch(`/api/scheduling/schedules/${id}/generate`, { method: 'POST' });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Generation failed');
-      setGenResult({ filled: data.filled, skipped: data.skipped, errors: data.errors });
+      setGenResult({
+        filled: data.filled, skipped: data.skipped, errors: data.errors,
+        warnings: Array.isArray(data.warnings) ? data.warnings : [],
+        skippedDerived: Array.isArray(data.skippedDerived) ? data.skippedDerived : [],
+      });
       await loadGrid();
     } catch (e) {
       setActionError(e instanceof Error ? e.message : 'Auto-generation failed');
@@ -1169,11 +1177,29 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
           color: 'var(--text)',
           display: 'flex', justifyContent: 'space-between', alignItems: 'center',
         }}>
-          <span>
-            Filled {genResult.filled} slot{genResult.filled !== 1 ? 's' : ''}.
-            {genResult.skipped > 0 && ` ${genResult.skipped} could not be filled.`}
-            {genResult.errors.length > 0 && ` ${genResult.errors.length} error(s).`}
-          </span>
+          <div>
+            <span>
+              Filled {genResult.filled} slot{genResult.filled !== 1 ? 's' : ''}.
+              {genResult.skipped > 0 && ` ${genResult.skipped} could not be filled.`}
+              {genResult.errors.length > 0 && ` ${genResult.errors.length} error(s).`}
+            </span>
+            {genResult.warnings.length > 0 && (
+              <div style={{ marginTop: 4, color: 'var(--text-dim)' }}>
+                {genResult.warnings.length} warning{genResult.warnings.length !== 1 ? 's' : ''}: {genResult.warnings.slice(0, 3).join(' · ')}
+                {genResult.warnings.length > 3 && ` … and ${genResult.warnings.length - 3} more`}
+              </div>
+            )}
+            {genResult.skippedDerived.length > 0 && (
+              <div style={{ marginTop: 4, color: 'var(--text-dim)' }}>
+                {genResult.skippedDerived.length} derived shift{genResult.skippedDerived.length !== 1 ? 's' : ''} skipped (
+                {Object.entries(genResult.skippedDerived.reduce<Record<string, number>>((m, s) => {
+                  m[s.reason] = (m[s.reason] || 0) + 1;
+                  return m;
+                }, {})).map(([reason, n]) => `${n} ${reason}`).join(', ')}
+                ) — left unassigned, see unfilled/derived report.
+              </div>
+            )}
+          </div>
           <button onClick={() => setGenResult(null)} style={{
             background: 'none', border: 'none', color: 'var(--text-dim)', cursor: 'pointer', fontSize: 14,
           }}>x</button>

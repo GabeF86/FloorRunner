@@ -97,6 +97,57 @@ describe('patternEngine — IF-3 quota relaxation', () => {
     expect(a?.explanation).toBeDefined();
     expect(plan.unfilled.some(u => u.slot_id === 'c1')).toBe(false);
   });
+
+  // Relaxation may only waive the QUOTA, never a safety gate. 'bucket-quota'
+  // is the sweep's FIRST failure reason (the quota gate runs before
+  // credentials/PTO in evaluateEligibility), so the branch must re-gate with
+  // the quota waived before placing anyone (clinical invariant 2).
+  it('never places a PTO-blocked provider via quota relaxation', () => {
+    const c1 = callSlot('c1', '2026-01-07', 'C1', 'weekday');
+    const ctx = buildCtx([c1], [prov('pA'), prov('pB')], {
+      bucketTarget: new Map([['pA|weekday|C1', 0], ['pB|weekday|C1', 0]]),
+      availByPid: new Map([['pA', [{
+        availability_type: 'pto', start_date: '2026-01-07', end_date: '2026-01-07',
+        approval_status: 'approved',
+      }]]]),
+    });
+    const plan = solve(ctx);
+    const a = plan.assignments.find(x => x.slot_id === 'c1');
+    // pA would win the relaxation score (tie → id) but is on PTO.
+    expect(a?.provider_id).toBe('pB');
+    expect(a?.source).toBe('quota-relaxed');
+    expect(plan.assignments.some(x => x.provider_id === 'pA')).toBe(false);
+  });
+
+  it('never places a credential-excluded provider via quota relaxation', () => {
+    const c1 = callSlot('c1', '2026-01-07', 'C1', 'weekday');
+    const ctx = buildCtx([c1], [prov('pA'), prov('pB')], {
+      bucketTarget: new Map([['pA|weekday|C1', 0], ['pB|weekday|C1', 0]]),
+      credByPid: new Map([['pA', cred({ excluded_shift_types: ['C1'] })]]),
+    });
+    const plan = solve(ctx);
+    const a = plan.assignments.find(x => x.slot_id === 'c1');
+    expect(a?.provider_id).toBe('pB');
+    expect(a?.source).toBe('quota-relaxed');
+    expect(plan.assignments.some(x => x.provider_id === 'pA')).toBe(false);
+  });
+
+  it('leaves the slot unfilled (with the real blockers) when nobody passes even with the quota waived', () => {
+    const c1 = callSlot('c1', '2026-01-07', 'C1', 'weekday');
+    const ctx = buildCtx([c1], [prov('pA')], {
+      bucketTarget: new Map([['pA|weekday|C1', 0]]),
+      availByPid: new Map([['pA', [{
+        availability_type: 'pto', start_date: '2026-01-07', end_date: '2026-01-07',
+        approval_status: 'approved',
+      }]]]),
+    });
+    const plan = solve(ctx);
+    expect(plan.assignments).toHaveLength(0);
+    const u = plan.unfilled.find(x => x.slot_id === 'c1');
+    expect(u?.reason).toBe('No eligible providers');
+    // The rejection reports the REAL blocker, not the masking 'bucket-quota'.
+    expect(u?.candidates?.[0]).toMatchObject({ provider_id: 'pA', reason: 'availability-blocked' });
+  });
 });
 
 // ── 5. NEW STRUCTURE (spec §5.3): the proposed weekend doc ───────────────────

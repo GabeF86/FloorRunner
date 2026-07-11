@@ -30,9 +30,10 @@ function reliefCodesFor(shiftTypes: Map<string, ShiftTypeInfo> | undefined): str
 // there are NO structural shift-code literals here. The two remaining code
 // literals are marked legacy fallbacks used only when ctx.shiftTypes is absent
 // (pure fixtures). Behavior with the classic pattern is byte-identical to
-// solveLegacy (golden-parity net) except four intentional fixes:
+// solveLegacy (golden-parity net) except five intentional fixes:
 //   IF-1 seeded call blocks its post-call day  IF-2 relief D6+ reachability/rescan
 //   IF-3 quota relaxation                       IF-4 skippedDerived reporting
+//   IF-5 pending PTO drives the pre-PTO Thursday placement (spec §6.7)
 export function solve(ctx: GenerationContext, opts: SolveOptions = {}): SolutionPlan {
   const plan: SolutionPlan = { assignments: [], unfilled: [], skippedDerived: [] };
   const skippedDerived = plan.skippedDerived!;
@@ -270,18 +271,39 @@ export function solve(ctx: GenerationContext, opts: SolveOptions = {}): Solution
 
     if (candidates.length === 0) {
       const rejections = sweep.map(x => x.r.reason ?? 'group-mismatch');
-      // IF-3 quota relaxation: when the ONLY thing stopping every provider is the
-      // bucket quota, place the lowest-lifetime-ratio provider anyway.
+      // IF-3 quota relaxation: when every sweep rejection is 'bucket-quota',
+      // place the lowest-lifetime-ratio provider anyway — but 'bucket-quota'
+      // is only the FIRST failure (the quota gate runs before credentials/
+      // adjacent-PTO/availability in evaluateEligibility), so re-gate with
+      // the quota waived ('call-no-quota') and relax only within that set.
+      // Relaxation may waive the quota, never a safety gate (invariant 2).
       if (rejections.length > 0 && rejections.every(r => r === 'bucket-quota')) {
-        const scored = scoreCall(ctx.providers, slot);
-        const winner = scored[0];
-        record(slot, winner.p, 'quota-relaxed', {
-          ratioAtAssignment: winner.ratio,
-          daysSinceLastCall: Number.isFinite(winner.recency) ? winner.recency : null,
-          competingCandidates: ctx.providers.length,
+        const relaxSweep = ctx.providers.map(p => ({
+          p, r: evaluateEligibility(slot, p, state, ctx, 'call-no-quota'),
+        }));
+        const relaxable = relaxSweep.filter(x => x.r.eligible).map(x => x.p);
+        if (relaxable.length > 0) {
+          const winner = scoreCall(relaxable, slot)[0];
+          record(slot, winner.p, 'quota-relaxed', {
+            ratioAtAssignment: winner.ratio,
+            daysSinceLastCall: Number.isFinite(winner.recency) ? winner.recency : null,
+            competingCandidates: relaxable.length,
+          });
+          applyDayChains(slot, winner.p);
+          applyBlockChains(slot, winner.p);
+          continue;
+        }
+        // Nobody is placeable even with the quota waived. Report the REAL
+        // blockers (a quota-only rejection stays 'bucket-quota').
+        plan.unfilled.push({
+          slot_id: slot.slot_id, slot_date: slot.slot_date,
+          shift_type_code: slot.shift_type_code, shift_type_category: slot.shift_type_category,
+          reason: 'No eligible providers',
+          candidates: relaxSweep.map(x => ({
+            provider_id: x.p.id, provider_name: x.p.short_display_name,
+            reason: x.r.reason ?? 'bucket-quota',
+          })),
         });
-        applyDayChains(slot, winner.p);
-        applyBlockChains(slot, winner.p);
         continue;
       }
       const candidateReasons: CandidateRejection[] = sweep.map(x => ({

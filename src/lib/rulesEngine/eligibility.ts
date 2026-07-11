@@ -54,12 +54,17 @@ export function evaluateEligibility(
     return { eligible: false, reason: 'weekday-unavailable' };
   }
 
-  // Post-call day-off guard (call gate only), pattern-driven: a code whose
+  // 'call-no-quota' is the IF-3 quota-relaxation gate: identical to 'call'
+  // except the bucket-quota check below — relaxation may only waive the
+  // quota, never a safety gate (invariant 2).
+  const callGate = gate === 'call' || gate === 'call-no-quota';
+
+  // Post-call day-off guard (call gates only), pattern-driven: a code whose
   // day-chain blocks the NEXT day must not be placed when the provider is
   // already busy that next day. Day-type scoping (e.g. the classic Saturday C1
   // exemption) falls out of the pattern doc's dayChain blocks.
   const doc = ctx.callPattern ?? CLASSIC_PATTERN;
-  if (gate === 'call'
+  if (callGate
     && postCallBlockOffsets(doc, slot.shift_type_code, slot.derived_day_type).includes(1)) {
     const dayAfter = addDays(slot.slot_date, 1);
     if (state.assignedOnDate.get(dayAfter)?.has(p.id)) {
@@ -67,7 +72,8 @@ export function evaluateEligibility(
     }
   }
 
-  // Bucket quota (call gate only): "would one more push us past target?"
+  // Bucket quota (the full 'call' gate ONLY — waived under 'call-no-quota'):
+  // "would one more push us past target?"
   if (gate === 'call') {
     const k = `${p.id}|${dayTypeBucket(slot.derived_day_type)}|${slot.shift_type_code}`;
     const assigned = state.bucketAssigned.get(k) || 0;

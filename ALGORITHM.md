@@ -117,7 +117,7 @@ Data: `doc.blocks` — same-provider multi-day chains anchored on a day type. Ea
 | C2 | Sunday C1, Friday D2 |
 | C3 | Sunday C3 |
 
-Handled when the main loop places (or a seed occupies) the anchor slot; target slots are looked up via `slotIndex`. Call-category targets are gated with the full call gate, non-call targets with the derived gate; suppressed non-call fills are recorded in `skippedDerived` (call targets fall through to the main loop — never dropped). A different structure (e.g. Friday-anchored chains) is a pattern edit, not an engine edit.
+Handled when the main loop places the anchor slot (a seeded/manual anchor does NOT trigger chain fills — seeds only mark solve state); target slots are looked up via `slotIndex`. Call-category targets are gated with the full call gate, non-call targets with the derived gate; suppressed non-call fills are recorded in `skippedDerived` (call targets fall through to the main loop — never dropped). A different structure (e.g. Friday-anchored chains) is a pattern edit, not an engine edit.
 
 ## 9. Day chains (post-/pre-call fills and blocks)
 
@@ -237,4 +237,4 @@ Field map: `blocks` → §8; `dayChains` → §9 (+ the §5 post-call guard); `s
 5. Call burden distributes per-FTE (bucket quotas + fairness metrics).
 6. Validation must never silently report clean on failure (`EvaluateResult.evaluated`).
 
-Golden parity: `solve()` with the classic pattern reproduces the frozen legacy engine (`solveLegacy.ts`, kept in-tree deliberately) on the parity fixtures, except four enumerated intentional fixes (IF-1 seeded post-call blocking, IF-2 relief reachability/rescan, IF-3 quota relaxation, IF-4 skippedDerived reporting) — see `goldenParity.test.ts`.
+Golden parity: `solve()` with the classic pattern reproduces the frozen legacy engine (`solveLegacy.ts`, kept in-tree deliberately) on the parity fixtures, except five enumerated intentional fixes (IF-1 seeded post-call blocking, IF-2 relief reachability/rescan, IF-3 quota relaxation, IF-4 skippedDerived reporting, IF-5 pending PTO drives the pre-PTO Thursday placement) — see `goldenParity.test.ts`.

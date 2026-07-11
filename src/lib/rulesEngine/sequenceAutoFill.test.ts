@@ -761,3 +761,95 @@ describe('loadActiveCallPattern', () => {
     expect(fromCount(calls)).toBe(0);
   });
 });
+
+// ── pre-patch18 degraded mode: rank columns missing / read errors ────────────
+//
+// On a live DB without patch18, shift_types.call_rank/relief_rank don't exist
+// and every wide select 42703s. The module must NOT silently no-op (dead
+// manual C2→D1 fills, dead cleanup, dead skips): it retries with a narrow
+// shift-type embed, degrades rank precedence to category ranking, and says so.
+// Non-column errors abort LOUDLY — an empty-looking window would silently pass
+// the occupancy/rest guards.
+
+describe('sequenceAutoFill — pre-patch18 degraded mode', () => {
+  const MISSING_COL = { message: 'column shift_types.call_rank does not exist', code: '42703' };
+  const wideSelected = (filters: Array<{ method: string; args: unknown[] }>) =>
+    filters.some(f => f.method === 'select' && String(f.args[0]).includes('call_rank'));
+  const narrowSt = (code: string, o: { category?: string; requires_post_call_rule?: boolean } = {}) =>
+    ({ code, category: o.category ?? 'derived', requires_post_call_rule: o.requires_post_call_rule ?? false });
+
+  function degradedTables(o: { slots?: unknown[]; assignments?: unknown[] }): Record<string, TableCfg> {
+    return {
+      schedule_slots: (filters) => {
+        if (wideSelected(filters)) return { data: null, error: MISSING_COL };
+        return filters.some(f => f.method === 'eq' && f.args[0] === 'id')
+          ? { data: {
+              id: 'trig', site_id: 'siteA', slot_date: MON, derived_day_type: 'weekday',
+              schedule_version_id: 'v1', shift_types: narrowSt('C2', { category: 'call' }),
+            } }
+          : { data: o.slots ?? [] };
+      },
+      assignments: (filters) => {
+        if (filters.some(f => ['update', 'insert', 'upsert'].includes(f.method))) {
+          return { data: [{}], error: null };
+        }
+        if (wideSelected(filters)) return { data: null, error: MISSING_COL };
+        return { data: o.assignments ?? [], error: null };
+      },
+      provider_availability: { data: [] },
+      call_patterns: { data: null },
+    };
+  }
+
+  it('still fills C2→D1 via the narrow retry, with a degradation warning', async () => {
+    const { sb, calls } = makeFakeSupabase({
+      tables: degradedTables({
+        slots: [{
+          id: 'slot-d1-tue', site_id: 'siteA', slot_date: TUE, locked: false,
+          shift_types: narrowSt('D1'), assignments: [openRow('open-1')],
+        }],
+      }),
+    });
+    const result = await applySequenceAutoFill(sb, 'trig', 'p1', CLASSIC_PATTERN);
+    expect(result.filledSlotIds).toEqual(['slot-d1-tue']);
+    expect(updates(calls)).toHaveLength(1);
+    // Degradation is surfaced (deduped to one warning), never silent.
+    const degraded = result.patternWarnings.filter(w => w.includes('apply patch18'));
+    expect(degraded).toHaveLength(1);
+    expect(degraded[0]).toMatch(/rank columns missing/);
+  });
+
+  it('cleanup still clears the linked auto-fill via the narrow retry', async () => {
+    const { sb, calls } = makeFakeSupabase({
+      tables: degradedTables({
+        slots: [{
+          id: 'slot-d1-tue', site_id: 'siteA', slot_date: TUE, locked: false,
+          shift_types: narrowSt('D1'),
+          assignments: [{ id: 'a-fill', provider_id: 'p1', assignment_status: 'assigned', source_type: 'auto_generated' }],
+        }],
+      }),
+    });
+    const result = await cleanupSequenceAutoFill(sb, 'trig', 'p1', CLASSIC_PATTERN);
+    expect(result.clearedSlotIds).toEqual(['slot-d1-tue']);
+    expect(updates(calls)).toHaveLength(1); // the revert-to-open write
+    expect(result.patternWarnings.some(w => w.includes('apply patch18'))).toBe(true);
+  });
+
+  it('a non-column read error aborts loudly: warning returned, nothing filled, nothing silent', async () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const cfg = degradedTables({
+      slots: [{
+        id: 'slot-d1-tue', site_id: 'siteA', slot_date: TUE, locked: false,
+        shift_types: narrowSt('D1'), assignments: [openRow('open-1')],
+      }],
+    });
+    // Trigger fetch works (narrow), but the assignments-window read fails hard.
+    cfg.assignments = () => ({ data: null, error: { message: 'connection reset by peer' } });
+    const { sb, calls } = makeFakeSupabase({ tables: cfg });
+    const result = await applySequenceAutoFill(sb, 'trig', 'p1', CLASSIC_PATTERN);
+    expect(result.filledSlotIds).toEqual([]);
+    expect(callsFor(calls, 'assignments', 'update')).toHaveLength(0); // no writes
+    expect(result.patternWarnings.some(w => w.includes('connection reset by peer'))).toBe(true);
+    expect(err).toHaveBeenCalled();
+  });
+});
