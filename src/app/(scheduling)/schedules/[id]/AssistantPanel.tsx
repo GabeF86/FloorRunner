@@ -9,6 +9,7 @@
 import { useState } from 'react';
 import ChatDrawer from '@/components/chat/ChatDrawer';
 import { useSSEChat, ChatMessage } from '@/components/chat/useSSEChat';
+import { formatUsageFooter, parseUsage } from '@/components/chat/usageCost';
 
 const ASSISTANT_ENDPOINT = '/api/scheduling/assistant';
 
@@ -17,6 +18,7 @@ interface ActionExtra {
   changes?: unknown;
   actionId?: unknown;
   reverted?: boolean;
+  usage?: unknown;
 }
 
 export default function AssistantPanel({
@@ -72,37 +74,50 @@ export default function AssistantPanel({
     const extra = m.extra as ActionExtra | undefined;
     if (!extra) return null;
     const changes = Array.isArray(extra.changes) ? (extra.changes as string[]) : [];
-    if (changes.length === 0) return null;
+    const usage = parseUsage(extra.usage);
+    if (changes.length === 0 && !usage) return null;
     const actionId = typeof extra.actionId === 'string' ? extra.actionId : null;
     const reverted = extra.reverted === true;
     const undoDisabled = chat.busy || undoingId !== null;
     return (
-      <div style={{ marginTop: 8, display: 'flex', flexWrap: 'wrap', gap: 5, alignItems: 'center' }}>
-        {changes.map((c, j) => (
-          <span key={j} style={{
-            fontSize: 10.5, fontWeight: 700, padding: '2px 8px', borderRadius: 999,
-            background: 'var(--ok-bg)', color: 'var(--ok)',
-            border: '1px solid color-mix(in srgb, var(--ok) 35%, transparent)',
-            textDecoration: reverted ? 'line-through' : 'none',
-          }}>{c}</span>
-        ))}
-        {actionId && !reverted && (
-          <button
-            onClick={() => undo(actionId, i)}
-            disabled={undoDisabled}
-            style={{
-              fontSize: 10.5, fontWeight: 800, padding: '2px 9px', borderRadius: 999,
-              background: 'var(--danger-bg)',
-              color: undoDisabled ? 'var(--text-dim)' : 'var(--danger)',
-              border: '1px solid color-mix(in srgb, var(--danger) 35%, transparent)',
-              cursor: undoDisabled ? 'not-allowed' : 'pointer',
-            }}
-          >{undoingId === actionId ? 'Undoing…' : 'Undo'}</button>
+      <>
+        {changes.length > 0 && (
+          <div style={{ marginTop: 8, display: 'flex', flexWrap: 'wrap', gap: 5, alignItems: 'center' }}>
+            {changes.map((c, j) => (
+              <span key={j} style={{
+                fontSize: 10.5, fontWeight: 700, padding: '2px 8px', borderRadius: 999,
+                background: 'var(--ok-bg)', color: 'var(--ok)',
+                border: '1px solid color-mix(in srgb, var(--ok) 35%, transparent)',
+                textDecoration: reverted ? 'line-through' : 'none',
+              }}>{c}</span>
+            ))}
+            {actionId && !reverted && (
+              <button
+                onClick={() => undo(actionId, i)}
+                disabled={undoDisabled}
+                style={{
+                  fontSize: 10.5, fontWeight: 800, padding: '2px 9px', borderRadius: 999,
+                  background: 'var(--danger-bg)',
+                  color: undoDisabled ? 'var(--text-dim)' : 'var(--danger)',
+                  border: '1px solid color-mix(in srgb, var(--danger) 35%, transparent)',
+                  cursor: undoDisabled ? 'not-allowed' : 'pointer',
+                }}
+              >{undoingId === actionId ? 'Undoing…' : 'Undo'}</button>
+            )}
+            {reverted && (
+              <span style={{ fontSize: 10.5, color: 'var(--text-dim)' }}>reverted</span>
+            )}
+          </div>
         )}
-        {reverted && (
-          <span style={{ fontSize: 10.5, color: 'var(--text-dim)' }}>reverted</span>
+        {usage && (
+          <div
+            title="Token usage for this exchange (whole tool loop) · cost estimated at Claude Opus 4.8 rates"
+            style={{ marginTop: 6, fontSize: 10, color: 'var(--text-dim)' }}
+          >
+            {formatUsageFooter(usage)}
+          </div>
         )}
-      </div>
+      </>
     );
   };
 
