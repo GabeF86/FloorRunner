@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback, useRef, useMemo, Fragment } from 'react';
 import Link from 'next/link';
 import { gridTokens, cellBackground } from './gridTheme';
+import { fteWeightedTarget } from './fteTarget';
 import AssistantPanel from './AssistantPanel';
 import { PageHeader, Badge, Button, Banner, scheduleStatusTone } from '@/components/ui';
 // Pure, client-safe helper shared with the grid API route — one bucket rule
@@ -547,7 +548,7 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
       for (const a of slot.assignments) {
         if (!a.provider_id) continue;
         const fte = fteByPid.get(a.provider_id) ?? 1;
-        const target = (blockTotal / parLevel) * fte;
+        const target = fteWeightedTarget(blockTotal, parLevel, fte);
         const count = providerCounts.get(`${a.provider_id}|${slot.shift_types.code}|${bucket}`) || 0;
         // Strict comparison: count > target. A 0.5 FTE with target 2.5
         // reads red on their 3rd C1; a 1.0 FTE with target 5.0 reads red
@@ -2211,7 +2212,7 @@ function CallCountsModal({ grid, onClose }: { grid: GridData; onClose: () => voi
     let total = 0;
     for (const b of BUCKETS) {
       const blockTotal = blockTotals[`${b.key}|${code}`] || 0;
-      const target = (blockTotal / parLevel) * fte;
+      const target = fteWeightedTarget(blockTotal, parLevel, fte);
       const count = getCount(pid, b.key, code);
       total += Math.max(0, count - Math.floor(target));
     }
