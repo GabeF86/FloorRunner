@@ -64,21 +64,27 @@ function makeFakeSb(
     const filters: Array<(r: Row) => boolean> = [];
     let orderBy: { col: string; asc: boolean } | null = null;
     let limitN: number | null = null;
+    let rangeArgs: [number, number] | null = null;
     let action: { kind: Op['kind'] | 'select'; payload?: unknown; onConflict?: string } = { kind: 'select' };
 
     const matching = () => rowsOf().filter(r => filters.every(f => f(r)));
 
-    const exec = async (): Promise<{ data: Row[]; error: null | { message: string } }> => {
+    const exec = async (): Promise<{ data: Row[]; error: null | { message: string }; count?: number | null }> => {
       const forced = opts?.errorOn?.({ kind: action.kind, table });
-      if (forced) return { data: [], error: { message: forced } };
+      if (forced) return { data: [], error: { message: forced }, count: null };
       if (action.kind === 'select') {
         let rs = matching().map(r => ({ ...r }));
         if (orderBy) {
           const { col, asc } = orderBy;
           rs.sort((a, b) => ((a[col] as number) < (b[col] as number) ? -1 : 1) * (asc ? 1 : -1));
         }
+        // PostgREST count:'exact' semantics: total matching rows, computed
+        // before limit/range windowing — the analysis tools' paginated reads
+        // need it to know when all pages have arrived.
+        const total = rs.length;
         if (limitN !== null) rs = rs.slice(0, limitN);
-        return { data: rs, error: null };
+        if (rangeArgs) rs = rs.slice(rangeArgs[0], rangeArgs[1] + 1);
+        return { data: rs, error: null, count: total };
       }
       if (action.kind === 'insert') {
         const rows = (Array.isArray(action.payload) ? action.payload : [action.payload]) as Row[];
@@ -130,6 +136,7 @@ function makeFakeSb(
         orderBy = { col, asc: opts?.ascending !== false }; return builder;
       },
       limit: (n: number) => { limitN = n; return builder; },
+      range: (from: number, to: number) => { rangeArgs = [from, to]; return builder; },
       maybeSingle: async () => {
         const { data, error } = await exec();
         return { data: data[0] ?? null, error };

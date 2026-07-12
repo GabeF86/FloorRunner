@@ -26,6 +26,13 @@ function run(tables: Record<string, TableCfg>) {
   return { executors, sb: sb as never, calls };
 }
 
+// Canned config for PAGINATED reads (providers, provider_availability, and
+// who_is_on's unscoped reads use count:'exact' + .range and throw when the
+// count is missing — truncation must never understate as fact).
+function canned(rows: unknown[]): TableCfg {
+  return { data: rows, count: rows.length };
+}
+
 // ── Tool registry invariants ─────────────────────────────────────────────────
 
 describe('analysis tools — registry', () => {
@@ -125,15 +132,15 @@ describe('get_coverage_summary', () => {
 
 // Providers: p1 (fte 1, pool), p2 (fte "0.5" string + ARRAY embed, pool via
 // partial_call_taker), p3 (other home site → out of pool), p4 (no profile →
-// excluded entirely).
+// excluded entirely). All active — the inactive gate has its own fixture below.
 const FAIRNESS_PROVIDERS = [
-  { id: 'p1', last_name: 'Smith', short_display_name: 'Smith', provider_type: 'physician',
+  { id: 'p1', last_name: 'Smith', short_display_name: 'Smith', provider_type: 'physician', status: 'active',
     provider_employment_profiles: { fte_value: 1, home_site_id: 'site-1', call_taker: true, partial_call_taker: false } },
-  { id: 'p2', last_name: 'Jones', short_display_name: 'Jones', provider_type: 'physician',
+  { id: 'p2', last_name: 'Jones', short_display_name: 'Jones', provider_type: 'physician', status: 'active',
     provider_employment_profiles: [{ fte_value: '0.5', home_site_id: 'site-1', call_taker: false, partial_call_taker: true }] },
-  { id: 'p3', last_name: 'Wu', short_display_name: 'Wu', provider_type: 'physician',
+  { id: 'p3', last_name: 'Wu', short_display_name: 'Wu', provider_type: 'physician', status: 'active',
     provider_employment_profiles: { fte_value: 1, home_site_id: 'site-2', call_taker: true, partial_call_taker: false } },
-  { id: 'p4', last_name: 'NoProfile', short_display_name: 'NP', provider_type: 'physician',
+  { id: 'p4', last_name: 'NoProfile', short_display_name: 'NP', provider_type: 'physician', status: 'active',
     provider_employment_profiles: null },
 ];
 
@@ -166,17 +173,19 @@ interface FairnessRow {
   expected: number | null; delta: number | null;
 }
 
+interface FairnessResult {
+  total_call_assignments: number; pool_size: number; pool_fte: number;
+  stdev_calls_per_fte: number; providers: FairnessRow[];
+}
+
 describe('get_fairness_report', () => {
   async function report() {
     const { executors, sb } = run({
-      providers: { data: FAIRNESS_PROVIDERS },
+      providers: canned(FAIRNESS_PROVIDERS),
       schedule_slots: { data: FAIRNESS_SLOTS },
     });
     const out = await executors.get_fairness_report(sb, ctx, {});
-    return out.result as {
-      total_call_assignments: number; pool_size: number; pool_fte: number;
-      stdev_calls_per_fte: number; providers: FairnessRow[];
-    };
+    return out.result as FairnessResult;
   }
   const row = (r: { providers: FairnessRow[] }, id: string) =>
     r.providers.find(p => p.provider_id === id);
@@ -227,12 +236,78 @@ describe('get_fairness_report', () => {
 
   it('scopes the pool query when the schedule has a provider override', async () => {
     const { executors, sb, calls } = run({
-      providers: { data: FAIRNESS_PROVIDERS.slice(0, 1) },
+      providers: canned(FAIRNESS_PROVIDERS.slice(0, 1)),
       schedule_slots: { data: [] },
     });
     await executors.get_fairness_report(sb, { ...ctx, overrideProviderIds: ['p1'] }, {});
     const ins = callsFor(calls, 'providers', 'in');
     expect(ins.some(c => c.args[0] === 'id' && Array.isArray(c.args[1]) && (c.args[1] as string[]).includes('p1'))).toBe(true);
+  });
+
+  // Review IMPORTANT 1: genContext §3 gates the real pool on status='active'
+  // (providers query, genContext.ts). Without the same gate a departed
+  // provider with a lingering call_taker profile inflates pool_fte, deflates
+  // everyone's expected, and the prompt's "propose named fixes" step would
+  // steer the model toward recommending a departed provider.
+  it('excludes inactive providers from pool/expected/stdev but still names them on held calls', async () => {
+    const providers = [
+      { id: 'p1', last_name: 'Active', short_display_name: 'Act', provider_type: 'physician', status: 'active',
+        provider_employment_profiles: { fte_value: 1, home_site_id: 'site-1', call_taker: true, partial_call_taker: false } },
+      { id: 'p9', last_name: 'Departed', short_display_name: 'Gone', provider_type: 'physician', status: 'inactive',
+        provider_employment_profiles: { fte_value: 1, home_site_id: 'site-1', call_taker: true, partial_call_taker: false } },
+      { id: 'p10', last_name: 'DepartedIdle', short_display_name: 'GoneIdle', provider_type: 'physician', status: 'inactive',
+        provider_employment_profiles: { fte_value: 1, home_site_id: 'site-1', call_taker: true, partial_call_taker: false } },
+    ];
+    const slots = [
+      { id: 's1', slot_date: '2026-01-05', derived_day_type: 'weekday',
+        shift_types: { code: 'C1', category: 'call' },
+        assignments: [{ provider_id: 'p1', assignment_status: 'assigned' }] },
+      { id: 's2', slot_date: '2026-01-06', derived_day_type: 'weekday',
+        shift_types: { code: 'C1', category: 'call' },
+        assignments: [{ provider_id: 'p9', assignment_status: 'assigned' }] },
+    ];
+    const { executors, sb, calls } = run({
+      providers: canned(providers),
+      schedule_slots: { data: slots },
+    });
+    const out = await executors.get_fairness_report(sb, ctx, {});
+    const r = out.result as FairnessResult;
+
+    // The select must actually carry `status` (the JS gate reads it).
+    const sel = callsFor(calls, 'providers', 'select')[0];
+    expect(String(sel.args[0])).toMatch(/\bstatus\b/);
+
+    expect(r.pool_size).toBe(1);
+    expect(r.pool_fte).toBeCloseTo(1, 10);
+    expect(r.total_call_assignments).toBe(2);
+    const p1 = row(r, 'p1')!;
+    expect(p1.in_pool).toBe(true);
+    expect(p1.expected).toBeCloseTo(2, 10); // 2 calls × 1/1 pool FTE
+    expect(p1.delta).toBeCloseTo(-1, 10);
+    const p9 = row(r, 'p9')!;
+    expect(p9.in_pool).toBe(false);
+    expect(p9.calls_total).toBe(1);
+    expect(p9.name).toBe('Gone');           // still named on the call they hold
+    expect(p9.expected).toBeNull();
+    expect(r.stdev_calls_per_fte).toBeCloseTo(0, 10); // pool ratios: [1/1] only
+    expect(row(r, 'p10')).toBeUndefined();  // inactive AND idle → absent
+  });
+
+  // Review minor (b): a missing shift_types embed must not fabricate
+  // call-ness — the category falls back to a non-call sentinel.
+  it('does not count assignments with a missing shift_types embed as calls', async () => {
+    const { executors, sb } = run({
+      providers: canned(FAIRNESS_PROVIDERS.slice(0, 1)),
+      schedule_slots: {
+        data: [{ id: 'sx', slot_date: '2026-01-05', derived_day_type: 'weekday',
+          shift_types: null,
+          assignments: { provider_id: 'p1', assignment_status: 'assigned' } }],
+      },
+    });
+    const out = await executors.get_fairness_report(sb, ctx, {});
+    const r = out.result as FairnessResult;
+    expect(r.total_call_assignments).toBe(0);
+    expect(row(r, 'p1')!.calls_total).toBe(0);
   });
 
   it('throws on a failed providers read — never an empty report as fact', async () => {
@@ -245,7 +320,7 @@ describe('get_fairness_report', () => {
 
   it('throws on a failed slots read', async () => {
     const { executors, sb } = run({
-      providers: { data: FAIRNESS_PROVIDERS },
+      providers: canned(FAIRNESS_PROVIDERS),
       schedule_slots: { error: { message: 'slots down' } },
     });
     await expect(executors.get_fairness_report(sb, ctx, {})).rejects.toThrow(/slots down/);
@@ -255,7 +330,7 @@ describe('get_fairness_report', () => {
 // ── find_unfilled ────────────────────────────────────────────────────────────
 
 const POOL_PROVIDERS = ['p1', 'p2', 'p3', 'p4'].map((id, i) => ({
-  id, last_name: `L${id}`, short_display_name: `P${i + 1}`, provider_type: 'physician',
+  id, last_name: `L${id}`, short_display_name: `P${i + 1}`, provider_type: 'physician', status: 'active',
   provider_employment_profiles: { fte_value: 1, home_site_id: 'site-1', call_taker: true, partial_call_taker: false },
 }));
 
@@ -279,17 +354,15 @@ describe('find_unfilled', () => {
             assignments: [{ provider_id: 'p2', assignment_status: 'assigned' }] },
         ],
       },
-      providers: { data: POOL_PROVIDERS },
-      provider_availability: {
-        data: [
-          // PENDING PTO blocks (clinical invariant 2).
-          { provider_id: 'p3', availability_type: 'pto', start_date: '2026-01-05',
-            end_date: '2026-01-06', approval_status: 'pending' },
-          // Denied PTO is dismissed — must NOT count.
-          { provider_id: 'p4', availability_type: 'pto', start_date: '2026-01-05',
-            end_date: '2026-01-05', approval_status: 'denied' },
-        ],
-      },
+      providers: canned(POOL_PROVIDERS),
+      provider_availability: canned([
+        // PENDING PTO blocks (clinical invariant 2).
+        { provider_id: 'p3', availability_type: 'pto', start_date: '2026-01-05',
+          end_date: '2026-01-06', approval_status: 'pending' },
+        // Denied PTO is dismissed — must NOT count.
+        { provider_id: 'p4', availability_type: 'pto', start_date: '2026-01-05',
+          end_date: '2026-01-05', approval_status: 'denied' },
+      ]),
     });
     const out = await executors.find_unfilled(sb, ctx, {});
     const r = out.result as {
@@ -319,12 +392,35 @@ describe('find_unfilled', () => {
           shift_types: { code: 'C1', category: 'call', requires_post_call_rule: false },
           assignments: null }],
       },
-      providers: { data: POOL_PROVIDERS },
-      provider_availability: { data: [] },
+      providers: canned(POOL_PROVIDERS),
+      provider_availability: canned([]),
     });
     const out = await executors.find_unfilled(sb, ctx, {});
     const r = out.result as { slots: Array<{ hints: string[] }> };
     expect(r.slots[0].hints).toEqual([]);
+  });
+
+  // Review minor (a): with an empty pool the PTO hint must not read
+  // "N of 0 pool providers" — it drops the pool framing instead.
+  it('rephrases the PTO hint when the pool is empty', async () => {
+    const { executors, sb } = run({
+      schedule_slots: {
+        data: [{ id: 's-open', slot_date: '2026-01-05', derived_day_type: 'weekday',
+          shift_types: { code: 'C1', category: 'call', requires_post_call_rule: false },
+          assignments: null }],
+      },
+      providers: canned([]), // no pool at all
+      provider_availability: canned([
+        { provider_id: 'p9', availability_type: 'pto', start_date: '2026-01-05',
+          end_date: '2026-01-05', approval_status: 'approved' },
+      ]),
+    });
+    const out = await executors.find_unfilled(sb, ctx, {});
+    const r = out.result as { pool_size: number; slots: Array<{ hints: string[] }> };
+    expect(r.pool_size).toBe(0);
+    const all = r.slots[0].hints.join(' | ');
+    expect(all).toMatch(/blocked by PTO/i);
+    expect(all).not.toMatch(/of 0/);
   });
 
   it('reports zero open slots without touching availability', async () => {
@@ -334,7 +430,7 @@ describe('find_unfilled', () => {
           shift_types: { code: 'C1', category: 'call', requires_post_call_rule: false },
           assignments: { provider_id: 'p1', assignment_status: 'assigned' } }],
       },
-      providers: { data: POOL_PROVIDERS },
+      providers: canned(POOL_PROVIDERS),
     });
     const out = await executors.find_unfilled(sb, ctx, {});
     expect((out.result as { open_count: number }).open_count).toBe(0);
@@ -348,7 +444,7 @@ describe('find_unfilled', () => {
           shift_types: { code: 'C1', category: 'call', requires_post_call_rule: false },
           assignments: null }],
       },
-      providers: { data: POOL_PROVIDERS },
+      providers: canned(POOL_PROVIDERS),
       provider_availability: { error: { message: 'avail down' } },
     });
     await expect(executors.find_unfilled(sb, ctx, {})).rejects.toThrow(/avail down/);
@@ -376,36 +472,34 @@ describe('who_is_on', () => {
       .rejects.toBeInstanceOf(ToolInputError);
   });
 
-  it('provider mode: one joined query, cross-version + cross-site rows, flags the current schedule', async () => {
+  it('provider mode: one joined query, cross-version + cross-site rows, flags the current version', async () => {
     const { executors, sb, calls } = run({
-      assignments: {
-        data: [
-          { id: 'a1', provider_id: 'p1', assignment_status: 'assigned',
-            providers: { last_name: 'Smith', short_display_name: 'S. Smith' },   // object embed
-            schedule_slots: { id: 'sl1', slot_date: '2026-01-05', site_id: 'site-1',
-              derived_day_type: 'weekday', schedule_version_id: 'ver-1',
-              shift_types: { code: 'C1' }, sites: { name: 'Main', short_name: 'MAIN' } } },
-          { id: 'a2', provider_id: 'p1', assignment_status: 'assigned',
-            providers: [{ last_name: 'Smith', short_display_name: 'S. Smith' }], // array embed
-            schedule_slots: { id: 'sl2', slot_date: '2026-01-06', site_id: 'site-2',
-              derived_day_type: 'weekday', schedule_version_id: 'ver-9',
-              shift_types: { code: 'C2' }, sites: { name: 'North', short_name: 'NORTH' } } },
-        ],
-      },
+      assignments: canned([
+        { id: 'a1', provider_id: 'p1', assignment_status: 'assigned',
+          providers: { last_name: 'Smith', short_display_name: 'S. Smith' },   // object embed
+          schedule_slots: { id: 'sl1', slot_date: '2026-01-05', site_id: 'site-1',
+            derived_day_type: 'weekday', schedule_version_id: 'ver-1',
+            shift_types: { code: 'C1' }, sites: { name: 'Main', short_name: 'MAIN' } } },
+        { id: 'a2', provider_id: 'p1', assignment_status: 'assigned',
+          providers: [{ last_name: 'Smith', short_display_name: 'S. Smith' }], // array embed
+          schedule_slots: { id: 'sl2', slot_date: '2026-01-06', site_id: 'site-2',
+            derived_day_type: 'weekday', schedule_version_id: 'ver-9',
+            shift_types: { code: 'C2' }, sites: { name: 'North', short_name: 'NORTH' } } },
+      ]),
     });
     const out = await executors.who_is_on(sb, ctx, { provider_id: 'p1', date: '2026-01-05', window_days: 1 });
     const r = out.result as {
       rows: Array<{ date: string; code: string; site: string; provider: string;
-        schedule_version_id: string; in_this_schedule: boolean }>;
+        schedule_version_id: string; in_current_version: boolean }>;
     };
     expect(r.rows).toHaveLength(2);
     expect(r.rows[0]).toMatchObject({
       date: '2026-01-05', code: 'C1', site: 'MAIN', provider: 'S. Smith',
-      schedule_version_id: 'ver-1', in_this_schedule: true,
+      schedule_version_id: 'ver-1', in_current_version: true,
     });
     expect(r.rows[1]).toMatchObject({
       date: '2026-01-06', code: 'C2', site: 'NORTH',
-      schedule_version_id: 'ver-9', in_this_schedule: false,
+      schedule_version_id: 'ver-9', in_current_version: false,
     });
     // Filters: provider eq + date window on the joined slot date.
     expect(callsFor(calls, 'assignments', 'eq').some(c => c.args[0] === 'provider_id' && c.args[1] === 'p1')).toBe(true);
@@ -414,7 +508,7 @@ describe('who_is_on', () => {
   });
 
   it('provider mode without a date defaults the window to the schedule range', async () => {
-    const { executors, sb, calls } = run({ assignments: { data: [] } });
+    const { executors, sb, calls } = run({ assignments: canned([]) });
     await executors.who_is_on(sb, ctx, { provider_id: 'p1' });
     expect(callsFor(calls, 'assignments', 'gte')[0].args).toEqual(['schedule_slots.slot_date', '2026-01-01']);
     expect(callsFor(calls, 'assignments', 'lte')[0].args).toEqual(['schedule_slots.slot_date', '2026-01-31']);
@@ -428,7 +522,7 @@ describe('who_is_on', () => {
     }));
     // Function-config: serve one assigned row per recorded `.in` chunk.
     const { executors, sb, calls } = run({
-      schedule_slots: { data: manySlots },
+      schedule_slots: canned(manySlots),
       assignments: (filters) => {
         const inF = filters.find(f => f.method === 'in');
         const ids = (inF?.args[1] as string[]) ?? [];
@@ -450,6 +544,42 @@ describe('who_is_on', () => {
     const r = out.result as { rows: Array<{ provider: string }> };
     expect(r.rows).toHaveLength(2); // one per chunk from the fn-config
     expect(r.rows[0].provider).toBe('S. Smith');
+  });
+
+  // Review IMPORTANT 2: the date-mode slots read spans all versions/sites —
+  // PostgREST's ~1000-row default cap would silently understate. The read
+  // must page with count:'exact' + .range() until every row arrived
+  // (dashboard fetchRollupRows precedent).
+  it('date mode pages the unscoped slots read past the PostgREST row cap', async () => {
+    const ALL = Array.from({ length: 1050 }, (_, i) => ({
+      id: `sl${String(i).padStart(4, '0')}`, slot_date: '2026-01-05', site_id: 'site-1',
+      derived_day_type: 'weekday', schedule_version_id: 'ver-1',
+      shift_types: { code: 'C1' }, sites: { short_name: 'MAIN' },
+    }));
+    const { executors, sb, calls } = run({
+      // Serve pages off the recorded .range args, like a real capped API.
+      schedule_slots: (filters) => {
+        const rangeF = filters.find(f => f.method === 'range');
+        const from = (rangeF?.args[0] as number) ?? 0;
+        const to = (rangeF?.args[1] as number) ?? ALL.length - 1;
+        return { data: ALL.slice(from, to + 1), count: ALL.length };
+      },
+      assignments: canned([]),
+    });
+    await executors.who_is_on(sb, ctx, { date: '2026-01-05' });
+    const ranges = callsFor(calls, 'schedule_slots', 'range');
+    expect(ranges.length).toBe(2); // 1050 rows → full page + short page
+    // Every slot id flowed into the chunked assignment reads: 1050 → 6 chunks.
+    expect(callsFor(calls, 'assignments', 'in')).toHaveLength(6);
+  });
+
+  it('throws when the row count is unavailable — truncation must not read as fact', async () => {
+    const { executors, sb } = run({
+      // data but count:null (what a non-exact select would return).
+      schedule_slots: { data: [], count: null },
+    });
+    await expect(executors.who_is_on(sb, ctx, { date: '2026-01-05' }))
+      .rejects.toThrow(/count|truncat/i);
   });
 
   it('date mode throws on a failed slots read; provider mode throws on a failed assignments read', async () => {

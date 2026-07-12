@@ -242,14 +242,14 @@ export const assistantTools: AssistantToolDef[] = [
   {
     name: 'find_unfilled',
     description:
-      'READ-ONLY list of unfilled/open slots in this schedule version, each with up to 3 hints of cheap schedule-derived context: how many pool providers are blocked by PTO/unavailability that date, already assigned that date, or post-call from the previous day, plus any stored validation flags on the open row. Hints are CONTEXT, not a per-candidate eligibility analysis — regenerate_schedule returns engine-verified candidate rejections when you need those.',
+      'READ-ONLY list of unfilled/open slots in this schedule version, each with up to 3 hints of cheap schedule-derived context: how many pool providers are blocked by PTO/unavailability that date, already assigned that date, or post-call from the previous day, plus any stored validation flags on the open row. Hints are CONTEXT, not a per-candidate eligibility analysis — engine-verified candidate rejections appear only in generation results, when the scheduler wants generation re-run.',
     strict: true,
     input_schema: { type: 'object', additionalProperties: false, required: [], properties: {} },
   },
   {
     name: 'who_is_on',
     description:
-      'READ-ONLY assignment lookup across ALL schedules and versions (any site): rows of {date, code, site, provider}. Filter by provider_id (their assignments; date range defaults to this schedule\'s), by date (everyone working that date), or both. window_days (0-31) widens a date to ±N days. At least one of provider_id / date is REQUIRED. Use it to check whether a provider is free (no assignment at any site) before proposing them, or to answer "who is on / where is Dr. X".',
+      'READ-ONLY assignment lookup across ALL schedules and versions (any site): rows of {date, code, site, provider}, each flagged in_current_version when it belongs to this schedule\'s latest version (rows from other versions may be superseded). Filter by provider_id (their assignments; date range defaults to this schedule\'s), by date (everyone working that date), or both. window_days (0-31) widens a date to ±N days. At least one of provider_id / date is REQUIRED. Use it to check whether a provider is free (no assignment at any site) before proposing them, or to answer "who is on / where is Dr. X".',
     strict: true,
     input_schema: {
       type: 'object',
@@ -464,6 +464,37 @@ const MAX_GAPS = 60;
 const MAX_OPEN_SLOTS = 40;
 const MAX_WHO_ROWS = 300;
 
+// PostgREST caps un-ranged selects (~1000 rows by default), so a read that is
+// NOT version-scoped could silently truncate — understating coverage or
+// conflicts as fact. Such reads page with count:'exact' + .range() until every
+// row has arrived (dashboard fetchRollupRows precedent), throwing instead of
+// returning partial data. `buildQuery` must return a FRESH filtered builder on
+// each call, selecting with { count: 'exact' }; order/range are appended here.
+const PAGE_SIZE = 1000;
+const MAX_PAGES = 20;
+async function pagedSelect<T>(
+  label: string,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  buildQuery: () => any,
+): Promise<T[]> {
+  const rows: T[] = [];
+  for (let page = 0; page < MAX_PAGES; page++) {
+    const from = page * PAGE_SIZE;
+    const { data, error, count } = await buildQuery()
+      .order('id', { ascending: true }) // stable order — required for coherent pages
+      .range(from, from + PAGE_SIZE - 1);
+    if (error) throw new Error(`${label} read failed: ${error.message}`);
+    if (count == null) throw new Error(`${label} read failed: row count unavailable (possible truncation)`);
+    const batch = (data ?? []) as T[];
+    rows.push(...batch);
+    if (rows.length >= count) return rows;
+    if (batch.length === 0) {
+      throw new Error(`${label} read failed: pagination stalled at ${rows.length} of ${count} rows`);
+    }
+  }
+  throw new Error(`${label} read failed: exceeded the ${MAX_PAGES}-page budget (${rows.length} rows)`);
+}
+
 interface VersionSlotRow {
   id: string;
   slot_date: string;
@@ -507,7 +538,9 @@ async function loadVersionSlotRows(
       slot_date: r.slot_date as string,
       day_type: (r.derived_day_type as string | null) ?? 'weekday',
       code: st?.code ?? '?',
-      category: st?.category ?? 'call',
+      // A missing shift_types embed must NOT fabricate call-ness — fall back
+      // to a non-call sentinel so fairness math never counts a mystery slot.
+      category: st?.category ?? 'unknown',
       requiresPostCallRule: st?.requires_post_call_rule === true,
       assignedProviderId: assigned?.provider_id ?? null,
       openFlags: flagsRow ? (flagsRow.validation_flags as unknown[]) : null,
@@ -523,11 +556,15 @@ interface CallPoolProvider {
 }
 
 // Call-pool membership for read-only reports. KEEP IN SYNC with
-// loadGenerationContext §3 (genContext.ts): default pool = home-site providers
-// flagged call_taker or partial_call_taker; a schedule override pool is exactly
-// those UUIDs (that have an employment profile). Filtered in JS off the
-// providers → provider_employment_profiles embed — this is a report, not the
-// generation pipeline, so no GenerationContext is built.
+// loadGenerationContext §3 (genContext.ts): default pool = ACTIVE home-site
+// providers flagged call_taker or partial_call_taker; a schedule override pool
+// is exactly those UUIDs (that have an employment profile and are active —
+// genContext gates the providers query on status='active'). The status gate
+// runs in JS rather than the query so INACTIVE rows are still returned: a
+// departed provider holding historical assignments must be nameable in
+// reports, but must never enter the pool (their FTE would deflate everyone's
+// expected share and the prompt's "propose named fixes" flow could recommend
+// assigning someone who left).
 async function loadCallPool(
   sb: SchedulingClient,
   ctx: ScheduleCtx,
@@ -535,22 +572,23 @@ async function loadCallPool(
   const override = ctx.overrideProviderIds && ctx.overrideProviderIds.length > 0
     ? ctx.overrideProviderIds
     : null;
-  let q = sb
-    .from('providers')
-    .select('id, last_name, short_display_name, provider_type, provider_employment_profiles(fte_value, home_site_id, call_taker, partial_call_taker)');
-  if (override) q = q.in('id', override);
-  const { data, error } = await q;
-  if (error) throw new Error(`providers read failed: ${error.message}`);
+  const data = await pagedSelect<Record<string, unknown>>('providers', () => {
+    let q = sb
+      .from('providers')
+      .select('id, last_name, short_display_name, provider_type, status, provider_employment_profiles(fte_value, home_site_id, call_taker, partial_call_taker)', { count: 'exact' });
+    if (override) q = q.in('id', override);
+    return q;
+  });
 
   const providers: CallPoolProvider[] = [];
   const poolIds = new Set<string>();
   let poolFte = 0;
-  for (const row of (data ?? []) as Array<Record<string, unknown>>) {
+  for (const row of data) {
     const profile = embedArray(row.provider_employment_profiles as never)[0] as
       { home_site_id?: string; call_taker?: boolean; partial_call_taker?: boolean } | undefined;
     // fte defaults to 1 for profiled providers (genContext parity: `|| 1`).
     const fte = profile ? (parseEmbeddedFte(row.provider_employment_profiles) || 1) : null;
-    const inPool = !!profile && (override
+    const inPool = row.status === 'active' && !!profile && (override
       ? true
       : profile.home_site_id === ctx.siteId && (profile.call_taker === true || profile.partial_call_taker === true));
     const p: CallPoolProvider = {
@@ -852,18 +890,21 @@ export function createToolExecutors(deps?: Partial<ToolEngineDeps>): Record<stri
       const blockingByPid = new Map<string, Array<{ start_date: string; end_date: string }>>();
       if (openSlots.length > 0) {
         const openDates = openSlots.map(s => s.slot_date).sort();
-        let q = sb
-          .from('provider_availability')
-          .select('provider_id, availability_type, start_date, end_date, approval_status')
-          .lte('start_date', openDates[openDates.length - 1])
-          .gte('end_date', openDates[0]);
-        if (pool.poolIds.size > 0) q = q.in('provider_id', [...pool.poolIds]);
-        const { data, error } = await q;
-        if (error) throw new Error(`availability read failed: ${error.message}`);
-        for (const a of (data ?? []) as Array<{
+        // Not version-scoped → paged (a truncated read would undercount
+        // blocked providers and make an open slot look easier than it is).
+        const data = await pagedSelect<{
           provider_id: string; availability_type: string;
           start_date: string; end_date: string; approval_status: string;
-        }>) {
+        }>('availability', () => {
+          let q = sb
+            .from('provider_availability')
+            .select('id, provider_id, availability_type, start_date, end_date, approval_status', { count: 'exact' })
+            .lte('start_date', openDates[openDates.length - 1])
+            .gte('end_date', openDates[0]);
+          if (pool.poolIds.size > 0) q = q.in('provider_id', [...pool.poolIds]);
+          return q;
+        });
+        for (const a of data) {
           if (!isBlockingAvailability(a)) continue;
           const list = blockingByPid.get(a.provider_id) ?? [];
           list.push({ start_date: a.start_date, end_date: a.end_date });
@@ -884,7 +925,12 @@ export function createToolExecutors(deps?: Partial<ToolEngineDeps>): Record<stri
           if (ranges.some(r => datesOverlap(r.start_date, r.end_date, s.slot_date))) blocked.add(pid);
         }
         if (blocked.size > 0) {
-          hints.push(`${blocked.size} of ${pool.poolIds.size} pool providers blocked by PTO/unavailability on this date (${nameList(blocked, nameByPid)})`);
+          // With no pool the "N of P pool providers" framing is nonsense
+          // ("3 of 0") — fall back to a plain provider count.
+          const scope = pool.poolIds.size > 0
+            ? `${blocked.size} of ${pool.poolIds.size} pool providers`
+            : `${blocked.size} provider(s)`;
+          hints.push(`${scope} blocked by PTO/unavailability on this date (${nameList(blocked, nameByPid)})`);
         }
         const sameDay = assignedByDate.get(s.slot_date) ?? new Set<string>();
         if (sameDay.size > 0) {
@@ -914,7 +960,7 @@ export function createToolExecutors(deps?: Partial<ToolEngineDeps>): Record<stri
           pool_size: pool.poolIds.size,
           slots: slots.slice(0, MAX_OPEN_SLOTS),
           omitted_slots: Math.max(0, slots.length - MAX_OPEN_SLOTS),
-          hint_note: 'Hints are schedule-derived context, not a per-candidate eligibility analysis; regenerate_schedule returns engine-verified candidate rejections.',
+          hint_note: 'Hints are schedule-derived context, not a per-candidate eligibility analysis; engine-verified candidate rejections appear only in generation results (when the scheduler asks for generation to be re-run).',
         },
       };
     },
@@ -932,7 +978,7 @@ export function createToolExecutors(deps?: Partial<ToolEngineDeps>): Record<stri
       interface WhoRow {
         date: string; day_type: string; code: string; site: string;
         provider_id: string; provider: string;
-        schedule_version_id: string; in_this_schedule: boolean;
+        schedule_version_id: string; in_current_version: boolean;
       }
       type SlotEmbed = {
         id?: string; slot_date?: string; site_id?: string; derived_day_type?: string | null;
@@ -952,39 +998,38 @@ export function createToolExecutors(deps?: Partial<ToolEngineDeps>): Record<stri
         provider_id: providerId,
         provider: prov?.short_display_name || prov?.last_name || providerId,
         schedule_version_id: slot.schedule_version_id ?? '?',
-        in_this_schedule: slot.schedule_version_id === ctx.versionId,
+        in_current_version: slot.schedule_version_id === ctx.versionId,
       });
 
       const out: WhoRow[] = [];
       if (parsed.provider_id) {
-        // Provider mode: one joined query, cross-version and cross-site by
-        // construction (no version/site filter).
-        const { data, error } = await sb
+        // Provider mode: one joined (paged) query, cross-version and
+        // cross-site by construction (no version/site filter) — which also
+        // means it is NOT version-scoped, so it pages.
+        const data = await pagedSelect<Record<string, unknown>>('assignments', () => sb
           .from('assignments')
-          .select('id, provider_id, assignment_status, providers(last_name, short_display_name), schedule_slots!inner(id, slot_date, site_id, derived_day_type, schedule_version_id, shift_types(code), sites(name, short_name))')
+          .select('id, provider_id, assignment_status, providers(last_name, short_display_name), schedule_slots!inner(id, slot_date, site_id, derived_day_type, schedule_version_id, shift_types(code), sites(name, short_name))', { count: 'exact' })
           .eq('provider_id', parsed.provider_id)
           .eq('assignment_status', 'assigned')
           .gte('schedule_slots.slot_date', range.start)
-          .lte('schedule_slots.slot_date', range.end);
-        if (error) throw new Error(`assignments read failed: ${error.message}`);
-        for (const a of (data ?? []) as Array<Record<string, unknown>>) {
+          .lte('schedule_slots.slot_date', range.end));
+        for (const a of data) {
           const slot = embedArray(a.schedule_slots as never)[0] as SlotEmbed | undefined;
           if (!slot) continue;
           const prov = embedArray(a.providers as never)[0] as ProviderEmbed | undefined;
           out.push(mapRow(a.provider_id as string, prov, slot));
         }
       } else {
-        // Date mode: slots in the window across ALL versions/sites, then
-        // assignments chunked at READ_CHUNK over the slot ids.
-        const { data: slots, error } = await sb
+        // Date mode: slots in the window across ALL versions/sites (unscoped
+        // → paged), then assignments chunked at READ_CHUNK over the slot ids.
+        const slots = await pagedSelect<SlotEmbed & { id: string }>('schedule slots', () => sb
           .from('schedule_slots')
-          .select('id, slot_date, site_id, derived_day_type, schedule_version_id, shift_types(code), sites(name, short_name)')
+          .select('id, slot_date, site_id, derived_day_type, schedule_version_id, shift_types(code), sites(name, short_name)', { count: 'exact' })
           .gte('slot_date', range.start)
-          .lte('slot_date', range.end);
-        if (error) throw new Error(`schedule slots read failed: ${error.message}`);
-        const slotById = new Map(
-          ((slots ?? []) as Array<SlotEmbed & { id: string }>).map(s => [s.id, s]),
-        );
+          .lte('slot_date', range.end));
+        const slotById = new Map(slots.map(s => [s.id, s]));
+        // The per-chunk assignment reads need no paging: UNIQUE(schedule_slot_id)
+        // bounds each chunk at READ_CHUNK rows, well under the PostgREST cap.
         for (const ids of chunk([...slotById.keys()], READ_CHUNK)) {
           const { data, error: aErr } = await sb
             .from('assignments')
