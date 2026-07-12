@@ -48,6 +48,11 @@ export async function loadScheduleCtx(sb: SchedulingClient, scheduleId: string):
   if (schedErr) throw new Error(`schedule load failed: ${schedErr.message}`);
   if (!schedule) throw new Error(`schedule ${scheduleId} not found`);
 
+  // Version resolution: the assistant resolves the LATEST version as
+  // max(version_number) over schedule_versions, while the dashboard scopes by
+  // the denormalized schedules.current_version_number column
+  // (src/app/(scheduling)/dashboard/queries.ts fetchRollupRows). Both name the
+  // same version as long as that column is maintained on version creation.
   const { data: version, error: verErr } = await sb
     .from('schedule_versions')
     .select('id, version_number')
@@ -464,12 +469,14 @@ const MAX_GAPS = 60;
 const MAX_OPEN_SLOTS = 40;
 const MAX_WHO_ROWS = 300;
 
-// PostgREST caps un-ranged selects (~1000 rows by default), so a read that is
-// NOT version-scoped could silently truncate — understating coverage or
-// conflicts as fact. Such reads page with count:'exact' + .range() until every
-// row has arrived (dashboard fetchRollupRows precedent), throwing instead of
-// returning partial data. `buildQuery` must return a FRESH filtered builder on
-// each call, selecting with { count: 'exact' }; order/range are appended here.
+// PostgREST caps un-ranged selects (~1000 rows by default), so ANY multi-row
+// read here could silently truncate — understating coverage or conflicts as
+// fact. Version-scoped slot reads are NOT exempt: a single version can exceed
+// the cap (live repro: 2,201 slot rows across current versions). Every such
+// read pages with count:'exact' + .range() until every row has arrived
+// (dashboard fetchRollupRows precedent), throwing instead of returning
+// partial data. `buildQuery` must return a FRESH filtered builder on each
+// call, selecting with { count: 'exact' }; order/range are appended here.
 const PAGE_SIZE = 1000;
 const MAX_PAGES = 20;
 async function pagedSelect<T>(
@@ -511,21 +518,30 @@ interface VersionSlotRow {
 // get_schedule_context read, normalized through embedArray so both PostgREST
 // embed shapes (one-to-one object vs array) work. Errors THROW: a failed read
 // must never surface as zero coverage / zero calls (get_schedule_context's
-// hardened pattern).
+// hardened pattern). Paged: version-scoped is no exemption from the PostgREST
+// row cap.
+//
+// CROSS-LINK: the filled-predicate here and in get_grid (`provider_id &&
+// assignment_status === 'assigned'`) must stay in agreement with the
+// dashboard's fills() in src/app/(scheduling)/dashboard/queries.ts (provider_id
+// && status ∉ {canceled, declined}). They agree on all data the app writes
+// today ('assigned'/'open' only); if pending/external_fill or similar are ever
+// written, revisit both together.
 async function loadVersionSlotRows(
   sb: SchedulingClient,
   ctx: ScheduleCtx,
   range?: { start: string; end: string },
 ): Promise<VersionSlotRow[]> {
-  let q = sb
-    .from('schedule_slots')
-    .select('id, slot_date, derived_day_type, shift_types(code, category, requires_post_call_rule), assignments(provider_id, assignment_status, validation_flags)')
-    .eq('schedule_version_id', ctx.versionId);
-  if (range) q = q.gte('slot_date', range.start).lte('slot_date', range.end);
-  const { data, error } = await q.order('slot_date', { ascending: true });
-  if (error) throw new Error(`schedule slots read failed: ${error.message}`);
+  const data = await pagedSelect<Record<string, unknown>>('schedule slots', () => {
+    let q = sb
+      .from('schedule_slots')
+      .select('id, slot_date, derived_day_type, shift_types(code, category, requires_post_call_rule), assignments(provider_id, assignment_status, validation_flags)', { count: 'exact' })
+      .eq('schedule_version_id', ctx.versionId);
+    if (range) q = q.gte('slot_date', range.start).lte('slot_date', range.end);
+    return q;
+  });
 
-  return ((data ?? []) as Array<Record<string, unknown>>).map(r => {
+  const rows = (data as Array<Record<string, unknown>>).map(r => {
     const st = embedArray(r.shift_types as never)[0] as
       { code?: string; category?: string; requires_post_call_rule?: boolean } | undefined;
     const assignments = embedArray(r.assignments as never) as Array<{
@@ -546,6 +562,9 @@ async function loadVersionSlotRows(
       openFlags: flagsRow ? (flagsRow.validation_flags as unknown[]) : null,
     };
   });
+  // pagedSelect orders by id (paging coherence); consumers want date order.
+  rows.sort((a, b) => a.slot_date.localeCompare(b.slot_date) || a.code.localeCompare(b.code));
+  return rows;
 }
 
 interface CallPoolProvider {
@@ -638,7 +657,10 @@ export function createToolExecutors(deps?: Partial<ToolEngineDeps>): Record<stri
 
   return {
     async get_schedule_context(sb, ctx) {
-      const [siteRes, shiftTypesRes, patternRes, ruleSetsRes, providersRes, slotsRes] = await Promise.all([
+      // The slot-id read is paged (a version can exceed PostgREST's row cap —
+      // see pagedSelect); it throws directly, rejecting the Promise.all, which
+      // is the same honest-failure outcome as the collective readErr check.
+      const [siteRes, shiftTypesRes, patternRes, ruleSetsRes, providersRes, slotIdRows] = await Promise.all([
         sb.from('sites').select('id, name, short_name').eq('id', ctx.siteId).maybeSingle(),
         sb.from('shift_types')
           .select('id, code, name, category, call_rank, relief_rank, is_overlay, generation_engine, requires_post_call_rule, start_time, end_time')
@@ -650,12 +672,13 @@ export function createToolExecutors(deps?: Partial<ToolEngineDeps>): Record<stri
           .maybeSingle(),
         sb.from('rule_sets').select('id, name, status').eq('site_id', ctx.siteId).eq('status', 'active'),
         sb.from('providers').select('id, last_name, short_display_name, provider_type'),
-        sb.from('schedule_slots').select('id').eq('schedule_version_id', ctx.versionId),
+        pagedSelect<{ id: string }>('schedule slots', () =>
+          sb.from('schedule_slots').select('id', { count: 'exact' }).eq('schedule_version_id', ctx.versionId)),
       ]);
 
       // A failed read must surface as a tool error — presenting zeros/empties
       // as fact would have the model reason from fake-clean state.
-      const readErr = [siteRes, shiftTypesRes, patternRes, ruleSetsRes, providersRes, slotsRes]
+      const readErr = [siteRes, shiftTypesRes, patternRes, ruleSetsRes, providersRes]
         .map(r => (r as { error?: { message: string } | null }).error?.message)
         .find(Boolean);
       if (readErr) throw new Error(`schedule context read failed: ${readErr}`);
@@ -671,7 +694,7 @@ export function createToolExecutors(deps?: Partial<ToolEngineDeps>): Record<stri
         rules = data ?? [];
       }
 
-      const slotIds = ((slotsRes.data ?? []) as Array<{ id: string }>).map(s => s.id);
+      const slotIds = slotIdRows.map(s => s.id);
       let assignedCount = 0;
       for (const ids of chunk(slotIds, READ_CHUNK)) {
         const { data, error } = await sb
@@ -714,13 +737,6 @@ export function createToolExecutors(deps?: Partial<ToolEngineDeps>): Record<stri
     },
 
     async get_grid(sb, ctx) {
-      const { data, error } = await sb
-        .from('schedule_slots')
-        .select('id, slot_date, slot_index, derived_day_type, shift_types(code), assignments(provider_id, assignment_status, providers(last_name, short_display_name))')
-        .eq('schedule_version_id', ctx.versionId)
-        .order('slot_date', { ascending: true });
-      if (error) throw new Error(`grid load failed: ${error.message}`);
-
       type GridAssignment = {
         provider_id: string | null; assignment_status: string;
         providers: { last_name?: string; short_display_name?: string } | null;
@@ -732,7 +748,14 @@ export function createToolExecutors(deps?: Partial<ToolEngineDeps>): Record<stri
         // OBJECT (or null) against the live DB; dev fakes return arrays.
         assignments?: GridAssignment | GridAssignment[] | null;
       };
-      const rows = (data ?? []) as GridRow[];
+      // Paged: a version can exceed PostgREST's row cap (see pagedSelect) —
+      // a silently capped grid would render missing slots as nonexistent.
+      const rows = await pagedSelect<GridRow>('grid', () => sb
+        .from('schedule_slots')
+        .select('id, slot_date, slot_index, derived_day_type, shift_types(code), assignments(provider_id, assignment_status, providers(last_name, short_display_name))', { count: 'exact' })
+        .eq('schedule_version_id', ctx.versionId));
+      // pagedSelect orders by id (paging coherence); the grid reads by date.
+      rows.sort((a, b) => a.slot_date.localeCompare(b.slot_date));
       const lines = rows.map(r => {
         const code = r.shift_types?.code ?? '?';
         const a = embedArray(r.assignments)[0];

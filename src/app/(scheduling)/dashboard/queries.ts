@@ -116,6 +116,14 @@ export function summarizeSchedules(rows: Array<{ status: string }>): Record<stri
 
 // An assignment "fills" its slot only when it carries a provider and hasn't
 // been canceled/declined (mirrors the grid's OPEN-cell rendering).
+//
+// CROSS-LINK: the assistant's read tools use `provider_id && status ===
+// 'assigned'` as their filled-predicate (loadVersionSlotRows / get_grid in
+// src/lib/scheduleAssistant/tools.ts). The two agree on all data the app
+// writes today — assignment rows only ever carry 'assigned' or 'open' — but
+// they diverge on hypothetical statuses (e.g. pending, external_fill would be
+// "filled" here and "open" there). If any new status is ever written, revisit
+// BOTH predicates together.
 function fills(a: { provider_id: string | null; assignment_status: string }): boolean {
   return !!a.provider_id && a.assignment_status !== 'canceled' && a.assignment_status !== 'declined';
 }
@@ -280,6 +288,10 @@ async function fetchRollupRows(
   // Latest-version scoping: (schedule_id, current_version_number) pairs on
   // the embedded (inner-joined) schedule_versions. Only latest-version rows
   // survive attentionFor anyway; this keeps the transfer to what's rendered.
+  // NOTE: the assistant resolves the same "latest version" differently —
+  // max(version_number) in loadScheduleCtx (src/lib/scheduleAssistant/tools.ts)
+  // vs this denormalized column; identical as long as current_version_number
+  // is maintained on version creation.
   const scope = schedules
     .map(s => `and(schedule_id.eq.${s.id},version_number.eq.${s.current_version_number})`)
     .join(',');

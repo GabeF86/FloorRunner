@@ -26,11 +26,23 @@ function run(tables: Record<string, TableCfg>) {
   return { executors, sb: sb as never, calls };
 }
 
-// Canned config for PAGINATED reads (providers, provider_availability, and
-// who_is_on's unscoped reads use count:'exact' + .range and throw when the
-// count is missing — truncation must never understate as fact).
+// Canned config for PAGINATED reads. Every multi-row read in these tools —
+// version-scoped slot loads included (a single version can exceed PostgREST's
+// ~1000-row default cap; live repro: 2,201 slot rows) — selects with
+// count:'exact' + .range and throws when the count is missing: truncation
+// must never understate as fact.
 function canned(rows: unknown[]): TableCfg {
   return { data: rows, count: rows.length };
+}
+
+// Serve pages off the recorded .range args, like a real capped API.
+function pagedTable(all: unknown[]): TableCfg {
+  return (filters) => {
+    const rangeF = filters.find(f => f.method === 'range');
+    const from = (rangeF?.args[0] as number) ?? 0;
+    const to = (rangeF?.args[1] as number) ?? all.length - 1;
+    return { data: all.slice(from, to + 1), count: all.length };
+  };
 }
 
 // ── Tool registry invariants ─────────────────────────────────────────────────
@@ -62,15 +74,13 @@ describe('get_coverage_summary', () => {
 
   it('aggregates per-code filled/open + gaps list, handling both embed shapes', async () => {
     const { executors, sb } = run({
-      schedule_slots: {
-        data: [
+      schedule_slots: canned([
           coverageSlot('s1', '2026-01-05', 'weekday', 'C1', ASSIGNED),          // object embed
           coverageSlot('s2', '2026-01-06', 'weekday', 'C1', [ASSIGNED]),        // array embed
           coverageSlot('s3', '2026-01-07', 'weekday', 'C1', null),              // open (no row)
           coverageSlot('s4', '2026-01-10', 'saturday', 'C2',
             [{ provider_id: null, assignment_status: 'open' }]),                // open (open row)
-        ],
-      },
+        ]),
     });
     const out = await executors.get_coverage_summary(sb, ctx, {});
     const r = out.result as {
@@ -92,7 +102,7 @@ describe('get_coverage_summary', () => {
   });
 
   it('scopes the query to the version and applies the requested date range', async () => {
-    const { executors, sb, calls } = run({ schedule_slots: { data: [] } });
+    const { executors, sb, calls } = run({ schedule_slots: canned([]) });
     await executors.get_coverage_summary(sb, ctx, { date_start: '2026-01-10', date_end: '2026-01-20' });
     const eqs = callsFor(calls, 'schedule_slots', 'eq');
     expect(eqs.some(c => c.args[0] === 'schedule_version_id' && c.args[1] === 'ver-1')).toBe(true);
@@ -101,7 +111,7 @@ describe('get_coverage_summary', () => {
   });
 
   it('defaults the range to the schedule dates', async () => {
-    const { executors, sb, calls } = run({ schedule_slots: { data: [] } });
+    const { executors, sb, calls } = run({ schedule_slots: canned([]) });
     const out = await executors.get_coverage_summary(sb, ctx, {});
     expect(callsFor(calls, 'schedule_slots', 'gte')[0].args).toEqual(['slot_date', '2026-01-01']);
     expect(callsFor(calls, 'schedule_slots', 'lte')[0].args).toEqual(['slot_date', '2026-01-31']);
@@ -111,13 +121,13 @@ describe('get_coverage_summary', () => {
   });
 
   it('rejects a malformed date as ToolInputError (model self-corrects)', async () => {
-    const { executors, sb } = run({ schedule_slots: { data: [] } });
+    const { executors, sb } = run({ schedule_slots: canned([]) });
     await expect(executors.get_coverage_summary(sb, ctx, { date_start: 'Jan 5' }))
       .rejects.toBeInstanceOf(ToolInputError);
   });
 
   it('rejects an inverted range as ToolInputError', async () => {
-    const { executors, sb } = run({ schedule_slots: { data: [] } });
+    const { executors, sb } = run({ schedule_slots: canned([]) });
     await expect(executors.get_coverage_summary(sb, ctx, { date_start: '2026-01-20', date_end: '2026-01-10' }))
       .rejects.toBeInstanceOf(ToolInputError);
   });
@@ -125,6 +135,26 @@ describe('get_coverage_summary', () => {
   it('throws on a failed slots read — never zeros-as-fact', async () => {
     const { executors, sb } = run({ schedule_slots: { error: { message: 'boom' } } });
     await expect(executors.get_coverage_summary(sb, ctx, {})).rejects.toThrow(/boom/);
+  });
+
+  // Final-review fix: version-scoped slot reads share the PostgREST ~1000-row
+  // cap risk (live repro: 2,201 slot rows in current versions) — a silently
+  // capped read would report coverage/fairness numbers that are confidently
+  // wrong. loadVersionSlotRows must page and must refuse count-less results.
+  it('pages a >1000-slot version and counts every row', async () => {
+    const ALL = Array.from({ length: 1050 }, (_, i) =>
+      coverageSlot(`s${String(i).padStart(4, '0')}`, '2026-01-05', 'weekday', 'C1', ASSIGNED));
+    const { executors, sb, calls } = run({ schedule_slots: pagedTable(ALL) });
+    const out = await executors.get_coverage_summary(sb, ctx, {});
+    const r = out.result as { total_slots: number; filled: number };
+    expect(r.total_slots).toBe(1050);
+    expect(r.filled).toBe(1050);
+    expect(callsFor(calls, 'schedule_slots', 'range')).toHaveLength(2); // full + short page
+  });
+
+  it('throws when the slot row count is unavailable — truncation must not read as fact', async () => {
+    const { executors, sb } = run({ schedule_slots: { data: [], count: null } });
+    await expect(executors.get_coverage_summary(sb, ctx, {})).rejects.toThrow(/count|truncat/i);
   });
 });
 
@@ -182,7 +212,7 @@ describe('get_fairness_report', () => {
   async function report() {
     const { executors, sb } = run({
       providers: canned(FAIRNESS_PROVIDERS),
-      schedule_slots: { data: FAIRNESS_SLOTS },
+      schedule_slots: canned(FAIRNESS_SLOTS),
     });
     const out = await executors.get_fairness_report(sb, ctx, {});
     return out.result as FairnessResult;
@@ -237,7 +267,7 @@ describe('get_fairness_report', () => {
   it('scopes the pool query when the schedule has a provider override', async () => {
     const { executors, sb, calls } = run({
       providers: canned(FAIRNESS_PROVIDERS.slice(0, 1)),
-      schedule_slots: { data: [] },
+      schedule_slots: canned([]),
     });
     await executors.get_fairness_report(sb, { ...ctx, overrideProviderIds: ['p1'] }, {});
     const ins = callsFor(calls, 'providers', 'in');
@@ -268,7 +298,7 @@ describe('get_fairness_report', () => {
     ];
     const { executors, sb, calls } = run({
       providers: canned(providers),
-      schedule_slots: { data: slots },
+      schedule_slots: canned(slots),
     });
     const out = await executors.get_fairness_report(sb, ctx, {});
     const r = out.result as FairnessResult;
@@ -298,11 +328,9 @@ describe('get_fairness_report', () => {
   it('does not count assignments with a missing shift_types embed as calls', async () => {
     const { executors, sb } = run({
       providers: canned(FAIRNESS_PROVIDERS.slice(0, 1)),
-      schedule_slots: {
-        data: [{ id: 'sx', slot_date: '2026-01-05', derived_day_type: 'weekday',
+      schedule_slots: canned([{ id: 'sx', slot_date: '2026-01-05', derived_day_type: 'weekday',
           shift_types: null,
-          assignments: { provider_id: 'p1', assignment_status: 'assigned' } }],
-      },
+          assignments: { provider_id: 'p1', assignment_status: 'assigned' } }]),
     });
     const out = await executors.get_fairness_report(sb, ctx, {});
     const r = out.result as FairnessResult;
@@ -313,7 +341,7 @@ describe('get_fairness_report', () => {
   it('throws on a failed providers read — never an empty report as fact', async () => {
     const { executors, sb } = run({
       providers: { error: { message: 'providers down' } },
-      schedule_slots: { data: [] },
+      schedule_slots: canned([]),
     });
     await expect(executors.get_fairness_report(sb, ctx, {})).rejects.toThrow(/providers down/);
   });
@@ -337,8 +365,7 @@ const POOL_PROVIDERS = ['p1', 'p2', 'p3', 'p4'].map((id, i) => ({
 describe('find_unfilled', () => {
   it('lists open slots with ≤3 cheap context hints (PTO counts, same-day assigned, post-call, stored flags)', async () => {
     const { executors, sb } = run({
-      schedule_slots: {
-        data: [
+      schedule_slots: canned([
           // The open slot under scrutiny — its open row carries stored flags.
           { id: 's-open', slot_date: '2026-01-05', derived_day_type: 'weekday',
             shift_types: { code: 'C1', category: 'call', requires_post_call_rule: true },
@@ -352,8 +379,7 @@ describe('find_unfilled', () => {
           { id: 's-same', slot_date: '2026-01-05', derived_day_type: 'weekday',
             shift_types: { code: 'D1', category: 'regular', requires_post_call_rule: false },
             assignments: [{ provider_id: 'p2', assignment_status: 'assigned' }] },
-        ],
-      },
+        ]),
       providers: canned(POOL_PROVIDERS),
       provider_availability: canned([
         // PENDING PTO blocks (clinical invariant 2).
@@ -387,11 +413,9 @@ describe('find_unfilled', () => {
 
   it('emits NO hints when there is no derivable context — never fabricates blockers', async () => {
     const { executors, sb } = run({
-      schedule_slots: {
-        data: [{ id: 's-open', slot_date: '2026-01-05', derived_day_type: 'weekday',
+      schedule_slots: canned([{ id: 's-open', slot_date: '2026-01-05', derived_day_type: 'weekday',
           shift_types: { code: 'C1', category: 'call', requires_post_call_rule: false },
-          assignments: null }],
-      },
+          assignments: null }]),
       providers: canned(POOL_PROVIDERS),
       provider_availability: canned([]),
     });
@@ -404,11 +428,9 @@ describe('find_unfilled', () => {
   // "N of 0 pool providers" — it drops the pool framing instead.
   it('rephrases the PTO hint when the pool is empty', async () => {
     const { executors, sb } = run({
-      schedule_slots: {
-        data: [{ id: 's-open', slot_date: '2026-01-05', derived_day_type: 'weekday',
+      schedule_slots: canned([{ id: 's-open', slot_date: '2026-01-05', derived_day_type: 'weekday',
           shift_types: { code: 'C1', category: 'call', requires_post_call_rule: false },
-          assignments: null }],
-      },
+          assignments: null }]),
       providers: canned([]), // no pool at all
       provider_availability: canned([
         { provider_id: 'p9', availability_type: 'pto', start_date: '2026-01-05',
@@ -425,11 +447,9 @@ describe('find_unfilled', () => {
 
   it('reports zero open slots without touching availability', async () => {
     const { executors, sb, calls } = run({
-      schedule_slots: {
-        data: [{ id: 's1', slot_date: '2026-01-05', derived_day_type: 'weekday',
+      schedule_slots: canned([{ id: 's1', slot_date: '2026-01-05', derived_day_type: 'weekday',
           shift_types: { code: 'C1', category: 'call', requires_post_call_rule: false },
-          assignments: { provider_id: 'p1', assignment_status: 'assigned' } }],
-      },
+          assignments: { provider_id: 'p1', assignment_status: 'assigned' } }]),
       providers: canned(POOL_PROVIDERS),
     });
     const out = await executors.find_unfilled(sb, ctx, {});
@@ -439,11 +459,9 @@ describe('find_unfilled', () => {
 
   it('throws on a failed availability read — hints must not silently drop', async () => {
     const { executors, sb } = run({
-      schedule_slots: {
-        data: [{ id: 's-open', slot_date: '2026-01-05', derived_day_type: 'weekday',
+      schedule_slots: canned([{ id: 's-open', slot_date: '2026-01-05', derived_day_type: 'weekday',
           shift_types: { code: 'C1', category: 'call', requires_post_call_rule: false },
-          assignments: null }],
-      },
+          assignments: null }]),
       providers: canned(POOL_PROVIDERS),
       provider_availability: { error: { message: 'avail down' } },
     });
@@ -557,13 +575,7 @@ describe('who_is_on', () => {
       shift_types: { code: 'C1' }, sites: { short_name: 'MAIN' },
     }));
     const { executors, sb, calls } = run({
-      // Serve pages off the recorded .range args, like a real capped API.
-      schedule_slots: (filters) => {
-        const rangeF = filters.find(f => f.method === 'range');
-        const from = (rangeF?.args[0] as number) ?? 0;
-        const to = (rangeF?.args[1] as number) ?? ALL.length - 1;
-        return { data: ALL.slice(from, to + 1), count: ALL.length };
-      },
+      schedule_slots: pagedTable(ALL),
       assignments: canned([]),
     });
     await executors.who_is_on(sb, ctx, { date: '2026-01-05' });
