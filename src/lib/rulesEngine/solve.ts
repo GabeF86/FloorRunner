@@ -155,11 +155,19 @@ export function solve(ctx: GenerationContext, opts: SolveOptions = {}): Solution
     const links = blockChainsFor(doc, slot.derived_day_type).get(slot.shift_type_code);
     if (!links) return;
     for (const link of links) {
-      const target = ctx.slotIndex.get(addDays(slot.slot_date, link.offset))?.get(link.code);
-      if (!target) continue;
+      const date = addDays(slot.slot_date, link.offset);
+      const target = ctx.slotIndex.get(date)?.get(link.code);
+      // Invariant #4: a link whose target slot doesn't exist is recorded for
+      // BOTH call and non-call codes — with no slot there is no main loop to
+      // fall through to, so silence here would drop the obligation entirely.
+      if (!target) {
+        skippedDerived.push({ date, code: link.code, provider_id: chosen.id, reason: 'no-slot' });
+        continue;
+      }
       // IF-4: a suppressed NON-call chain fill must be recorded (invariant #4).
-      // Call targets stay unrecorded — they fall through to the main loop and are
-      // not dropped.
+      // EXISTING call targets stay unrecorded — they fall through to the main
+      // loop and are not dropped (that rationale only holds when a slot exists;
+      // missing targets are recorded above).
       if (state.handledSlotIds.has(target.slot_id)) {
         if (target.shift_type_category !== 'call') {
           skippedDerived.push({

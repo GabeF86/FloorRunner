@@ -167,16 +167,54 @@ describe('WEEKEND_V2_PATTERN — broken chains still fill (in-house first)', () 
     const sunC1 = plan.assignments.find(a => a.slot_id === 'sunC1');
     expect(sunC1).toBeDefined();
     expect(sunC1!.provider_id).not.toBe('p2');
+    // M-1: the fill must be a genuine main-loop fallthrough — if scoring
+    // changes ever hand satC2 to a Sunday-free provider, the scenario would
+    // silently collapse into an ordinary weekend-chain fill and stop proving
+    // anything. Fail loudly instead.
+    expect(sunC1!.source).toBe('main-loop');
   });
 
-  it('a blocked Fri D2 link is recorded, Sat C1 unaffected', () => {
+  it('missing Fri D2 targets are recorded by BOTH the day chain and the block chain, Sat C1 unaffected', () => {
+    // No D2 slot exists anywhere in this fixture, so two independent links dead-end:
+    //  - friday C1's day-chain Thursday D2 pre-fill (offset −1 from Fri 01-09)
+    //  - saturday C1's block-chain Fri D2 back-link (offset −1 from Sat 01-10)
+    // Both must surface as no-slot skips (invariant 4); the second is the
+    // block-chain recording fix — it was previously a silent `continue`.
     const ctx = buildCtx(mkSlots(), [prov('p1'), prov('p2'), prov('p3')], {
       callPattern: WEEKEND_V2_PATTERN, shiftTypes,
     });
     const plan = solve(ctx);
-    expect(plan.assignments.some(a => a.slot_id === 'satC1')).toBe(true);
-    // skippedDerived is optionally typed on SolutionPlan; solve() always
-    // initializes it, so the non-null assertion is safe (mirrors sunC1! above).
-    expect(plan.skippedDerived!.some(s => s.code === 'D2' && s.reason === 'no-slot')).toBe(true);
+    const satC1 = plan.assignments.find(a => a.slot_id === 'satC1');
+    expect(satC1).toBeDefined();
+    // Day-chain source: Thursday 2026-01-08 (friC1's D2 pre-fill target).
+    expect(plan.skippedDerived).toContainEqual(
+      expect.objectContaining({ date: '2026-01-08', code: 'D2', reason: 'no-slot' }));
+    // Block-chain source: Friday 2026-01-09, attributed to the satC1 holder.
+    expect(plan.skippedDerived).toContainEqual(
+      expect.objectContaining({
+        date: '2026-01-09', code: 'D2', provider_id: satC1!.provider_id, reason: 'no-slot',
+      }));
+  });
+
+  it('June-draft: Sat C3 with no Fri C3 slot — Sat fills, the missing Friday is recorded', () => {
+    // Block starts on a weekend, so the saturday C3 anchor's −1 back-link has
+    // no Friday slot to claim. The Sun C3 slot IS included so the +1 link fills
+    // normally — the test isolates exactly one dead link (the missing Friday).
+    const slots = [
+      callSlot('satC3', '2026-01-10', 'C3', 'saturday'),
+      callSlot('sunC3', '2026-01-11', 'C3', 'sunday'),
+    ];
+    const ctx = buildCtx(slots, [prov('p1'), prov('p2')], {
+      callPattern: WEEKEND_V2_PATTERN,
+      shiftTypes: new Map([['C3', shiftInfo('C3', { call_rank: 2 })]]),
+    });
+    const plan = solve(ctx);
+    const satC3 = plan.assignments.find(a => a.slot_id === 'satC3');
+    expect(satC3).toBeDefined();
+    expect(plan.assignments.find(a => a.slot_id === 'sunC3')?.provider_id).toBe(satC3!.provider_id);
+    expect(plan.skippedDerived).toContainEqual(
+      expect.objectContaining({
+        date: '2026-01-09', code: 'C3', provider_id: satC3!.provider_id, reason: 'no-slot',
+      }));
   });
 });

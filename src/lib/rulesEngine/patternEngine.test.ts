@@ -56,6 +56,22 @@ describe('patternEngine — IF-4 skippedDerived', () => {
     });
     expect(plan.assignments.some(a => a.slot_id === 'tueD1')).toBe(false);
   });
+
+  it('records a block-chain link whose target slot does not exist (call AND non-call)', () => {
+    // Classic saturday C2 anchor links to Sun C1 (+1) and Fri D2 (−1); neither
+    // slot exists in this fixture, so both dead links must be recorded. Unlike
+    // an existing-but-ineligible call target, a missing slot has no main loop
+    // to fall through to — silence would drop the obligation entirely.
+    const satC2 = callSlot('satC2', '2026-01-10', 'C2', 'saturday');
+    const plan = solve(buildCtx([satC2], [prov('p1')]));
+    expect(plan.assignments.some(a => a.slot_id === 'satC2')).toBe(true);
+    expect(plan.skippedDerived).toContainEqual({
+      date: '2026-01-11', code: 'C1', provider_id: 'p1', reason: 'no-slot',
+    });
+    expect(plan.skippedDerived).toContainEqual({
+      date: '2026-01-09', code: 'D2', provider_id: 'p1', reason: 'no-slot',
+    });
+  });
 });
 
 // ── 3. IF-2: relief pass fixes (D6+ reachability, per-code rescan) ───────────

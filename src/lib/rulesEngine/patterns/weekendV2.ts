@@ -7,6 +7,8 @@
 // before home-call within each date under pool pressure.
 import { CallPatternDocSchema, type CallPatternDoc } from '../callPattern';
 
+// The upcoming patch19 SQL seed embeds this constant (mirroring how the
+// patch18 seed embeds CLASSIC_PATTERN, callPattern.ts) — keep the two in sync.
 export const WEEKEND_V2_PATTERN: CallPatternDoc = CallPatternDocSchema.parse({
   version: 1,
   callFillOrder: 'call_rank',
