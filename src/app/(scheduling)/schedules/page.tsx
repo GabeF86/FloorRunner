@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import Link from 'next/link';
-import { PageHeader, Card, Badge, Button, Table, EmptyState, Banner, Modal, type BadgeTone } from '@/components/ui';
+import { PageHeader, Card, Badge, Button, Table, EmptyState, Banner, Modal, scheduleStatusTone, scheduleStatusLabel, SCHEDULE_STATUSES } from '@/components/ui';
 import AssistantPanel from './[id]/AssistantPanel';
 
 interface Schedule {
@@ -24,14 +24,6 @@ interface Site {
   name: string;
   short_name: string | null;
 }
-
-const STATUS_META: Record<string, { tone: BadgeTone; label: string }> = {
-  draft:     { tone: 'neutral', label: 'Draft' },
-  review:    { tone: 'warn',    label: 'Review' },
-  published: { tone: 'ok',      label: 'Published' },
-  revised:   { tone: 'warn',    label: 'Revised' },
-  archived:  { tone: 'neutral', label: 'Archived' },
-};
 
 const TYPE_COLORS: Record<string, { color: string; bg: string; label: string }> = {
   combined: { color: '#8b5cf6', bg: 'rgba(139,92,246,0.15)', label: 'Combined' },
@@ -174,8 +166,8 @@ export default function SchedulesPage() {
         </select>
         <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} style={selectStyle}>
           <option value="">All Statuses</option>
-          {Object.entries(STATUS_META).map(([s, c]) => (
-            <option key={s} value={s}>{c.label}</option>
+          {SCHEDULE_STATUSES.map((s) => (
+            <option key={s} value={s}>{scheduleStatusLabel(s)}</option>
           ))}
         </select>
       </div>
@@ -186,7 +178,6 @@ export default function SchedulesPage() {
           headers={TABLE_HEADERS}
           minWidth={760}
           rows={schedules.map((s) => {
-            const sc = STATUS_META[s.status] || STATUS_META.draft;
             const tc = TYPE_COLORS[s.schedule_type] || TYPE_COLORS.shifts;
             const groupLabel = GROUP_OPTIONS.find(g => g.value === s.provider_group)?.label || s.provider_group;
             return [
@@ -200,7 +191,7 @@ export default function SchedulesPage() {
               }}>{tc.label}</span>,
               <span key="group" style={{ textTransform: 'capitalize' }}>{groupLabel}</span>,
               `${formatDate(s.date_start)} — ${formatDate(s.date_end)}`,
-              <Badge key="status" tone={sc.tone}>{sc.label}</Badge>,
+              <Badge key="status" tone={scheduleStatusTone(s.status)}>{scheduleStatusLabel(s.status)}</Badge>,
               <div key="actions" style={{ display: 'flex', gap: 'var(--space-2)', alignItems: 'center' }}>
                 <Link href={`/schedules/${s.id}`} style={{ textDecoration: 'none' }}>
                   <Button variant="ghost" size="sm" style={{ color: 'var(--blue)' }}>Open</Button>

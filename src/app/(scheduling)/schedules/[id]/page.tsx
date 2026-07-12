@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback, useRef, useMemo, Fragment } from 'rea
 import Link from 'next/link';
 import { gridTokens, cellBackground } from './gridTheme';
 import AssistantPanel from './AssistantPanel';
-import { PageHeader, Badge, Button, Banner, type BadgeTone } from '@/components/ui';
+import { PageHeader, Badge, Button, Banner, scheduleStatusTone } from '@/components/ui';
 // Pure, client-safe helper shared with the grid API route — one bucket rule
 // (hard / soft / warning-never-soft) for both server and client counting.
 import { validationSummaryFor, type ValidationSummary } from '@/app/api/scheduling/schedules/[id]/grid/route.helpers';
@@ -156,13 +156,6 @@ interface ActiveCell {
 }
 
 /* ── Helpers ─────────────────────────────────────────────────────────────── */
-
-const STATUS_TONES: Record<string, BadgeTone> = {
-  draft:     'warn',
-  published: 'ok',
-  archived:  'neutral',
-  locked:    'danger',
-};
 
 const DAYS_SHORT = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
@@ -919,7 +912,7 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
         title={schedule.schedule_name}
         subtitle={
           <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-            <Badge tone={STATUS_TONES[schedule.status] ?? STATUS_TONES.draft}>{schedule.status}</Badge>
+            <Badge tone={scheduleStatusTone(schedule.status)}>{schedule.status}</Badge>
             <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>
               v{version.version_number} ({version.version_status})
             </span>

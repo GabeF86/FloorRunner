@@ -81,8 +81,8 @@ export default function AssistantPanel({
         {changes.map((c, j) => (
           <span key={j} style={{
             fontSize: 10.5, fontWeight: 700, padding: '2px 8px', borderRadius: 999,
-            background: 'rgba(16,185,129,0.12)', color: '#34d399',
-            border: '1px solid rgba(16,185,129,0.35)',
+            background: 'var(--ok-bg)', color: 'var(--ok)',
+            border: '1px solid color-mix(in srgb, var(--ok) 35%, transparent)',
             textDecoration: reverted ? 'line-through' : 'none',
           }}>{c}</span>
         ))}
@@ -92,9 +92,9 @@ export default function AssistantPanel({
             disabled={undoDisabled}
             style={{
               fontSize: 10.5, fontWeight: 800, padding: '2px 9px', borderRadius: 999,
-              background: 'rgba(248,113,113,0.10)',
-              color: undoDisabled ? 'var(--text-dim)' : '#f87171',
-              border: '1px solid rgba(248,113,113,0.35)',
+              background: 'var(--danger-bg)',
+              color: undoDisabled ? 'var(--text-dim)' : 'var(--danger)',
+              border: '1px solid color-mix(in srgb, var(--danger) 35%, transparent)',
               cursor: undoDisabled ? 'not-allowed' : 'pointer',
             }}
           >{undoingId === actionId ? 'Undoing…' : 'Undo'}</button>

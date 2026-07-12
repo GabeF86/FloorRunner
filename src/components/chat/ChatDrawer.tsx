@@ -123,7 +123,7 @@ export default function ChatDrawer({
             maxWidth: '92%',
             padding: '8px 11px', borderRadius: 10, fontSize: 12.5, lineHeight: 1.55,
             whiteSpace: 'pre-wrap', wordBreak: 'break-word',
-            background: m.role === 'user' ? 'rgba(56,189,248,0.14)' : 'var(--bg-deep)',
+            background: m.role === 'user' ? 'color-mix(in srgb, var(--blue) 14%, transparent)' : 'var(--bg-deep)',
             border: '1px solid var(--border)', color: 'var(--text)',
           }}>
             {m.imageName && (
@@ -142,7 +142,7 @@ export default function ChatDrawer({
       {error && (
         <div style={{
           margin: '0 16px 8px', padding: '6px 10px', borderRadius: 8, fontSize: 11.5,
-          background: 'rgba(248,113,113,0.12)', border: '1px solid rgba(248,113,113,0.3)', color: '#f87171',
+          background: 'var(--danger-bg)', border: '1px solid color-mix(in srgb, var(--danger) 30%, transparent)', color: 'var(--danger)',
         }}>{error}</div>
       )}
 
@@ -150,7 +150,7 @@ export default function ChatDrawer({
       {notice && (
         <div style={{
           margin: '0 16px 8px', padding: '6px 10px', borderRadius: 8, fontSize: 11.5,
-          background: 'rgba(245,158,11,0.10)', border: '1px solid rgba(245,158,11,0.3)', color: '#b45309',
+          background: 'var(--warn-bg)', border: '1px solid color-mix(in srgb, var(--warn) 30%, transparent)', color: 'var(--warn)',
           display: 'flex', justifyContent: 'space-between', gap: 8,
         }}>
           <span>{notice}</span>
@@ -200,9 +200,9 @@ export default function ChatDrawer({
             disabled={busy || input.trim().length === 0}
             style={{
               ...btnStyle,
-              background: busy || input.trim().length === 0 ? 'var(--bg-deep)' : 'rgba(99,102,241,0.16)',
-              color: busy || input.trim().length === 0 ? 'var(--text-dim)' : '#a5b4fc',
-              border: '1px solid rgba(99,102,241,0.35)',
+              background: busy || input.trim().length === 0 ? 'var(--bg-deep)' : 'color-mix(in srgb, var(--indigo) 16%, transparent)',
+              color: busy || input.trim().length === 0 ? 'var(--text-dim)' : 'var(--indigo)',
+              border: '1px solid color-mix(in srgb, var(--indigo) 35%, transparent)',
               cursor: busy || input.trim().length === 0 ? 'not-allowed' : 'pointer',
             }}
           >

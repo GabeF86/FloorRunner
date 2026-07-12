@@ -104,8 +104,8 @@ export default function AppShell({ fullBleed, children }: { fullBleed?: boolean;
                     padding: '8px var(--space-3)', borderRadius: 'var(--radius-sm)', marginBottom: 2,
                     textDecoration: 'none', fontSize: 13, fontWeight: 600,
                     color: active ? 'var(--blue)' : 'var(--text-muted)',
-                    background: active ? 'rgba(14,165,233,0.1)' : 'transparent',
-                    border: '1px solid ' + (active ? 'rgba(14,165,233,0.25)' : 'transparent'),
+                    background: active ? 'color-mix(in srgb, var(--blue) 10%, transparent)' : 'transparent',
+                    border: '1px solid ' + (active ? 'color-mix(in srgb, var(--blue) 25%, transparent)' : 'transparent'),
                     transition: 'all 0.15s',
                   }}>
                     <span style={{ fontSize: 16, width: 20, textAlign: 'center' }}>{item.icon}</span>

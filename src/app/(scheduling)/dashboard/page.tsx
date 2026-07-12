@@ -6,20 +6,12 @@
 import Link from 'next/link';
 import type { ReactNode } from 'react';
 import { sbSchedulingServer } from '@/lib/supabaseScheduling';
-import { PageHeader, Card, Badge, Table, EmptyState, Banner, Button, type BadgeTone } from '@/components/ui';
+import { PageHeader, Card, Badge, Table, EmptyState, Banner, Button, scheduleStatusTone } from '@/components/ui';
 import { loadDashboardData, type DashboardData, type Panel } from './queries';
 
 // Never prerender — this page hits Supabase at request time.
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
-
-const STATUS_TONE: Record<string, BadgeTone> = {
-  draft: 'neutral',
-  review: 'info',
-  published: 'ok',
-  revised: 'warn',
-  archived: 'neutral',
-};
 
 // Zero-count onboarding hints are links — the underline makes the affordance
 // visible (a plain muted line reads as static text).
@@ -108,7 +100,7 @@ function SchedulesStatCard({ panel }: { panel: DashboardData['schedules'] }) {
           ) : (
             <div style={{ marginTop: 'var(--space-2)', display: 'flex', flexWrap: 'wrap', gap: 'var(--space-1)' }}>
               {Object.entries(byStatus).map(([status, count]) => (
-                <Badge key={status} tone={STATUS_TONE[status] ?? 'neutral'}>
+                <Badge key={status} tone={scheduleStatusTone(status)}>
                   {count} {status}
                 </Badge>
               ))}
@@ -193,7 +185,7 @@ function AttentionPanel({ panel }: { panel: DashboardData['attention'] }) {
               <span style={{ fontSize: 'var(--fs-sm)', fontWeight: 700, color: 'var(--text-strong)', marginRight: 'auto' }}>
                 {s.schedule_name}
               </span>
-              <Badge tone={STATUS_TONE[s.status] ?? 'neutral'}>{s.status}</Badge>
+              <Badge tone={scheduleStatusTone(s.status)}>{s.status}</Badge>
               {s.assigned === 0 && s.unfilled === 0 ? (
                 <Badge tone="neutral">no slots yet</Badge>
               ) : (
@@ -231,6 +223,10 @@ export default async function DashboardPage() {
       subtitle="Coverage, requests, and schedule health at a glance."
       actions={
         <>
+          {/* The assistant's picker entry lives on the schedules list page. */}
+          <Link href="/schedules" style={{ textDecoration: 'none' }}>
+            <Button variant="secondary">Assistant ✨</Button>
+          </Link>
           <Link href="/requests" style={{ textDecoration: 'none' }}>
             <Button variant="secondary">Requests</Button>
           </Link>
