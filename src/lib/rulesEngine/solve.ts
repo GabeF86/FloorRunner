@@ -45,6 +45,20 @@ export function solve(ctx: GenerationContext, opts: SolveOptions = {}): Solution
     shiftInfo(code)?.call_rank ?? (code === 'C1' ? 0 : code === 'C2' ? 1 : 2); // legacy fallback (no shiftTypes in ctx)
   const reliefCodes = reliefCodesFor(ctx.shiftTypes);
 
+  // Opt-in in-house-first ordering (pattern doc callFillOrder: 'call_rank').
+  // Stable re-sort WITHIN each date only — comparator returns 0 across
+  // different dates, so the weekend-first day ordering from genContext is
+  // preserved exactly. Absent flag = untouched legacy order. Only the main
+  // fill loop below consumes this list; every other pass keys off dates.
+  let slotsToFill = ctx.slotsToFill;
+  if (doc.callFillOrder === 'call_rank') {
+    const rankOf = (code: string) => shiftInfo(code)?.call_rank ?? 99;
+    slotsToFill = [...ctx.slotsToFill].sort((a, b) =>
+      a.slot_date === b.slot_date
+        ? rankOf(a.shift_type_code) - rankOf(b.shift_type_code)
+        : 0);
+  }
+
   // Seed pre-existing assignments into state (shared with optimize's pre-gate).
   const state = seedSolveState(ctx, doc);
 
@@ -244,7 +258,7 @@ export function solve(ctx: GenerationContext, opts: SolveOptions = {}): Solution
   }
 
   // ── main construction loop (CALL slots only) ──
-  for (const slot of ctx.slotsToFill) {
+  for (const slot of slotsToFill) {
     if (state.handledSlotIds.has(slot.slot_id)) continue;
     if (slot.shift_type_category !== 'call') continue;
 

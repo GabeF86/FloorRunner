@@ -56,6 +56,11 @@ export const CallPatternDocSchema = z.object({
   placementPasses: z.array(PlacementPassSchema),
   reliefPass: z.object({ enabled: z.boolean(), dayTypes: z.array(DayTypeSchema).min(1) }).strict().nullable(),
   optimizerMovableDayTypes: z.array(DayTypeSchema),
+  // Opt-in within-date call fill order. 'call_rank' sorts each date's call
+  // slots by shift_types.call_rank ascending (C1=0 first) so in-house call
+  // never starves behind home-call under pool pressure. Absent = legacy
+  // order (C2, C3, C1) — classic docs are byte-identical in behavior.
+  callFillOrder: z.enum(['call_rank']).optional(),
 }).strict();
 
 export type CallPatternDoc = z.infer<typeof CallPatternDocSchema>;
