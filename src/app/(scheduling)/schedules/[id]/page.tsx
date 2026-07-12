@@ -2224,6 +2224,24 @@ function CallCountsModal({ grid, onClose }: { grid: GridData; onClose: () => voi
     return t;
   };
 
+  // Expected = FTE-weighted base target per (provider, bucket, code) —
+  // (block_total_in_bucket / call_par_level) × fte_value. Same formula that
+  // drives Extra Calls above, surfaced directly so the raw target is visible
+  // alongside actual counts, not just the over-par excess.
+  const expectedFor = (pid: string, bucket: string, code: string) =>
+    fteWeightedTarget(blockTotals[`${bucket}|${code}`] || 0, parLevel, fteByPid[pid] ?? 1);
+  const rowExpected = (pid: string) => {
+    let t = 0;
+    for (const b of BUCKETS) for (const c of CODES) t += expectedFor(pid, b.key, c);
+    return t;
+  };
+  const colExpected = (bucket: string, code: string) => {
+    let t = 0;
+    for (const p of providers) t += expectedFor(p.id, bucket, code);
+    return t;
+  };
+  const fmtFte = (fte: number) => fte.toFixed(2).replace(/\.?0+$/, '');
+
   const handlePrint = () => {
     // Native print dialog → Save as PDF gets you a file. Relies on the
     // .print-area / @media print styles below to isolate the table.
@@ -2340,16 +2358,29 @@ function CallCountsModal({ grid, onClose }: { grid: GridData; onClose: () => voi
               <tr key={p.id} style={{ borderBottom: '1px solid var(--border)' }}>
                 <td style={{ padding: '6px 10px', color: 'var(--text)', fontWeight: 500 }}>
                   {p.short_display_name}
+                  {fteByPid[p.id] != null && (
+                    <span style={{ color: 'var(--text-dim)', fontSize: 11, marginLeft: 5 }}>
+                      · {fmtFte(fteByPid[p.id])}
+                    </span>
+                  )}
                 </td>
                 {BUCKETS.map(b => CODES.map(c => {
                   const n = getCount(p.id, b.key, c);
+                  const exp = expectedFor(p.id, b.key, c);
                   return (
                     <td key={`${b.key}|${c}`} style={{
-                      padding: '6px 8px', textAlign: 'center',
+                      padding: '6px 8px', textAlign: 'center', whiteSpace: 'nowrap',
                       color: n === 0 ? 'var(--text-dim)' : 'var(--text)',
                       borderLeft: c === 'C1' ? '1px solid var(--border)' : 'none',
                       fontWeight: n > 0 ? 600 : 400,
-                    }}>{n || '—'}</td>
+                    }}>
+                      {n || '—'}
+                      {exp >= 0.05 && (
+                        <span style={{ fontSize: 10, color: 'var(--text-dim)', marginLeft: 3, fontWeight: 400 }}>
+                          ({exp.toFixed(1)})
+                        </span>
+                      )}
+                    </td>
                   );
                 }))}
                 {CODES.map(c => {
@@ -2401,6 +2432,28 @@ function CallCountsModal({ grid, onClose }: { grid: GridData; onClose: () => voi
                 borderLeft: '1px solid var(--border)', borderTop: '2px solid var(--border)',
                 color: '#fbbf24',
               }}>{providers.reduce((s, p) => s + ptoDaysForPid(p.id), 0) || '—'}</td>
+            </tr>
+            {/* Expected row — Σ of per-provider FTE-weighted targets. Below Total ⇒
+                roster FTE < par level; the gap is the extra-call burden. */}
+            <tr style={{ color: 'var(--text-dim)', fontWeight: 600 }}
+                title="Sum of each provider's FTE-weighted obligation: (column total ÷ call par level) × FTE. When this is below Total, the roster is under par and the difference must be absorbed as extra calls.">
+              <td style={{ padding: '6px 10px' }}>Expected</td>
+              {BUCKETS.map(b => CODES.map(c => (
+                <td key={`exp-${b.key}|${c}`} style={{
+                  padding: '6px 8px', textAlign: 'center',
+                  borderLeft: c === 'C1' ? '1px solid var(--border)' : 'none',
+                }}>{colExpected(b.key, c) >= 0.05 ? colExpected(b.key, c).toFixed(1) : '—'}</td>
+              )))}
+              {CODES.map(c => (
+                <td key={`exp-extra|${c}`} style={{
+                  padding: '6px 8px', textAlign: 'center',
+                  borderLeft: c === 'C1' ? '1px solid var(--border)' : 'none',
+                }}>—</td>
+              ))}
+              <td style={{ padding: '6px 10px', textAlign: 'center', borderLeft: '1px solid var(--border)' }}>
+                {providers.reduce((s, p) => s + rowExpected(p.id), 0).toFixed(1)}
+              </td>
+              <td style={{ padding: '6px 10px', textAlign: 'center', borderLeft: '1px solid var(--border)' }}>—</td>
             </tr>
           </tbody>
         </table>
