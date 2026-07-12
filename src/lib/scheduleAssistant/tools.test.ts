@@ -109,3 +109,41 @@ describe('version-scoped slot reads — completeness guards', () => {
     expect(callsFor(calls, 'assignments', 'in')).toHaveLength(6);
   });
 });
+
+// The Anthropic API compiles a grammar for strict:true tools and rejects the
+// whole request (400 invalid_request_error) when the strict tool set carries
+// too many OPTIONAL parameters — "limit: 24" by the API's own counting, which
+// ran ~3 higher than a local properties-minus-required count when this first
+// hit production (live repro 2026-07-12: 31 counted vs 28 local). Bound at 20
+// locally to keep margin for that skew. Tools that need wide optional
+// surfaces (the upserts) must drop strict and rely on their zod executors.
+describe('assistant tool schemas — strict grammar limit', () => {
+  it('keeps total optional params across strict tools under the API limit', async () => {
+    const { assistantTools } = await import('./tools');
+    let totalOptional = 0;
+    for (const t of assistantTools) {
+      if (!t.strict) continue;
+      const schema = t.input_schema as { properties?: Record<string, unknown>; required?: string[] };
+      const props = Object.keys(schema.properties ?? {});
+      const required = new Set(schema.required ?? []);
+      totalOptional += props.filter((p) => !required.has(p)).length;
+    }
+    expect(totalOptional).toBeLessThanOrEqual(20);
+  });
+
+  // Second grammar limit hit live the same day: "The compiled grammar is too
+  // large" — update_call_pattern's embedded CallPatternDoc schema (~2.8KB of
+  // nested unions) was the outlier; every intentionally-strict tool is ≤342
+  // bytes serialized. Cap gives 3× headroom without allowing another
+  // deep-nested document schema to sneak back in as strict.
+  it('keeps each strict tool schema small enough to grammar-compile', async () => {
+    const { assistantTools } = await import('./tools');
+    for (const t of assistantTools) {
+      if (!t.strict) continue;
+      expect(
+        JSON.stringify(t.input_schema).length,
+        `${t.name} strict schema too large — drop strict and validate in the executor`,
+      ).toBeLessThanOrEqual(1000);
+    }
+  });
+});

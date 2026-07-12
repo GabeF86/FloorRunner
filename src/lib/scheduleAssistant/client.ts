@@ -33,7 +33,10 @@ export interface AssistantMessageParam {
 export interface AssistantToolDef {
   name: string;
   description: string;
-  strict: true;
+  // Absent = non-strict. The API compiles a grammar for strict tools and caps
+  // total optional params across them (~24), so wide-optional-surface tools
+  // (the upserts) stay non-strict and lean on their zod executors instead.
+  strict?: true;
   input_schema: Record<string, unknown>;
 }
 
