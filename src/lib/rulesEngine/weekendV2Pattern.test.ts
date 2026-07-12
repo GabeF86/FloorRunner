@@ -74,11 +74,14 @@ describe('WEEKEND_V2_PATTERN — golden weekend shape (Doc A/B/C/E)', () => {
   // whole four-person shape depends on the Saturday + Sunday anchors firing
   // BEFORE the Friday slots, so the back-links (Sat C2 → Fri C2, Sun C2 → Fri C1
   // via the −2 link) claim those Fridays instead of the main loop filling them
-  // standalone. Production's genContext feeds slotsToFill day-bucket sorted
-  // (saturday → sunday → friday → weekday); the bare `buildCtx` fixture keeps
-  // input order verbatim, so we mirror the production order here. Feeding these
-  // Friday-first (chronological) makes the main loop claim Fri C1/C2 first and
-  // collapses Docs A + B — verified against actual plan output, not weakened.
+  // standalone. Feeding these chronologically (Fri first) collapses Doc B's
+  // Fri-C2 back-link and Doc C's Fri-C3 back-link — the main loop claims
+  // Friday slots standalone before the Sat/Sun anchors fire, and
+  // applyBlockChains no-ops on already-handled targets. Doc A happens to
+  // still line up in this fixture via id-tiebreak, not via the −2 chain
+  // firing. Weekend-first order matches production genContext's day-bucket
+  // sort (saturday → sunday → friday → weekday), which the pattern relies on;
+  // the bare `buildCtx` fixture keeps input order verbatim, so we mirror it.
   const slots = [
     callSlot('satC1', '2026-01-10', 'C1', 'saturday'),
     callSlot('satC2', '2026-01-10', 'C2', 'saturday'),
