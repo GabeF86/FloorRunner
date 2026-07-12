@@ -1184,8 +1184,8 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
       }}>
         <div style={{
           display: 'grid',
-          gridTemplateColumns: `84px repeat(${colCount}, minmax(74px, 1fr))`,
-          minWidth: colCount > 7 ? `${84 + colCount * 74}px` : undefined,
+          gridTemplateColumns: `84px repeat(${colCount}, minmax(${viewMode === 'month' ? 82 : 74}px, 1fr))`,
+          minWidth: colCount > 7 ? `${84 + colCount * (viewMode === 'month' ? 82 : 74)}px` : undefined,
         }}>
 
           {/* ── Row 0: Day-of-week header ─────────────────────────────────── */}
@@ -1366,7 +1366,11 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
                     }}
                   >
                     {!slot ? null : isAssigned ? (
-                      <span style={{ fontSize: 13, fontWeight: 800, color: gridTokens.name, whiteSpace: 'nowrap' }}>
+                      <span style={{
+                        fontSize: viewMode === 'month' ? 11 : 13, fontWeight: 800, color: gridTokens.name,
+                        whiteSpace: 'nowrap', maxWidth: '100%', overflow: 'hidden',
+                        textOverflow: 'ellipsis', display: 'inline-block', verticalAlign: 'bottom',
+                      }}>
                         {provider!.short_display_name}
                       </span>
                     ) : isOpenCall ? (
