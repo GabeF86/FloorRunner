@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import Link from 'next/link';
 import { PageHeader, Card, Badge, Button, Table, EmptyState, Banner, Modal, type BadgeTone } from '@/components/ui';
+import AssistantPanel from './[id]/AssistantPanel';
 
 interface Schedule {
   id: string;
@@ -56,6 +57,11 @@ export default function SchedulesPage() {
   const [groupFilter, setGroupFilter] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
   const [showCreate, setShowCreate] = useState(false);
+  // Assistant reach (ui-v1 Task 8): the backend contract targets ONE schedule
+  // per conversation, so the list page picks a schedule first, then mounts the
+  // same self-contained AssistantPanel the grid page uses.
+  const [showAssistantPicker, setShowAssistantPicker] = useState(false);
+  const [assistantScheduleId, setAssistantScheduleId] = useState<string | null>(null);
 
   // Load org
   useEffect(() => {
@@ -131,7 +137,19 @@ export default function SchedulesPage() {
       <PageHeader
         title="Schedules"
         subtitle={`${schedules.length} schedule${schedules.length !== 1 ? 's' : ''}`}
-        actions={<Button onClick={() => setShowCreate(true)}>+ Create Schedule</Button>}
+        actions={
+          <>
+            <Button
+              variant="secondary"
+              onClick={() => setShowAssistantPicker(true)}
+              disabled={schedules.length === 0}
+              title={schedules.length === 0 ? 'Create a schedule first' : 'Ask the assistant about a schedule'}
+            >
+              Assistant ✨
+            </Button>
+            <Button onClick={() => setShowCreate(true)}>+ Create Schedule</Button>
+          </>
+        }
       />
 
       {/* Filters */}
@@ -206,6 +224,20 @@ export default function SchedulesPage() {
       </Card>
 
       {showCreate && <CreateScheduleModal orgId={orgId} sites={sites} onClose={() => setShowCreate(false)} onCreated={() => { setShowCreate(false); loadSchedules(); }} />}
+      {showAssistantPicker && (
+        <AssistantSchedulePicker
+          schedules={schedules}
+          onClose={() => setShowAssistantPicker(false)}
+          onPick={(id) => { setShowAssistantPicker(false); setAssistantScheduleId(id); }}
+        />
+      )}
+      {assistantScheduleId && (
+        <AssistantPanel
+          scheduleId={assistantScheduleId}
+          onMutated={loadSchedules}
+          onClose={() => setAssistantScheduleId(null)}
+        />
+      )}
     </div>
   );
 }
@@ -214,6 +246,50 @@ const selectStyle: React.CSSProperties = {
   padding: '8px 12px', borderRadius: 8, border: '1px solid var(--border)',
   background: 'var(--bg-deep)', color: 'var(--text)', fontSize: 13, cursor: 'pointer',
 };
+
+// ── Assistant schedule picker ────────────────────────────────────────────────
+// The assistant backend targets one schedule per conversation, so the list
+// page asks which schedule to talk about before mounting AssistantPanel.
+function AssistantSchedulePicker({ schedules, onClose, onPick }: {
+  schedules: Schedule[];
+  onClose: () => void;
+  onPick: (scheduleId: string) => void;
+}) {
+  const [selected, setSelected] = useState(schedules[0]?.id ?? '');
+
+  return (
+    <Modal
+      open
+      onClose={onClose}
+      title="Assistant ✨"
+      width={440}
+      footer={
+        <>
+          <Button variant="secondary" onClick={onClose}>Cancel</Button>
+          <Button onClick={() => selected && onPick(selected)} disabled={!selected}>Open Assistant</Button>
+        </>
+      }
+    >
+      <p style={{ fontSize: 13, color: 'var(--text-muted)', marginBottom: 12, lineHeight: 1.5 }}>
+        The assistant works on one schedule at a time — pick which one to talk about.
+      </p>
+      <label style={{ fontSize: 11, color: 'var(--text-muted)', display: 'block', marginBottom: 5, fontWeight: 600, letterSpacing: 0.5 }}>
+        Schedule
+      </label>
+      <select
+        value={selected}
+        onChange={e => setSelected(e.target.value)}
+        style={{ ...selectStyle, width: '100%', padding: '10px 12px', fontSize: 14 }}
+      >
+        {schedules.map(s => (
+          <option key={s.id} value={s.id}>
+            {s.schedule_name} — {s.sites?.short_name || s.sites?.name || 'no site'} ({s.date_start} → {s.date_end})
+          </option>
+        ))}
+      </select>
+    </Modal>
+  );
+}
 
 // ── Create Schedule Modal ────────────────────────────────────────────────────
 function CreateScheduleModal({ orgId, sites, onClose, onCreated }: { orgId: string; sites: Site[]; onClose: () => void; onCreated: () => void }) {

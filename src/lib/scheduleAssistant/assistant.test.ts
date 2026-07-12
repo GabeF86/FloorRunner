@@ -299,6 +299,39 @@ describe('runAssistant — tool-use loop', () => {
     expect(out.changes).toHaveLength(0);
   });
 
+  it('takes NO snapshot on a read/analysis conversation using the Task-8 tools', async () => {
+    const sb = makeFakeSb(baseTables());
+    const { client, calls } = makeFakeClient([
+      toolTurn([toolUse('tu1', 'get_coverage_summary', {}),
+        toolUse('tu2', 'get_fairness_report', {})]),
+      toolTurn([toolUse('tu3', 'find_unfilled', {}),
+        toolUse('tu4', 'who_is_on', { date: '2026-07-04', window_days: 1 })]),
+      endTurn([text('Coverage looks like this…')]),
+    ]);
+
+    const out = await runAssistant({
+      sb, client, scheduleId: 'sched1',
+      messages: [{ role: 'user', content: 'how does the week look? anything unfilled?' }],
+    });
+
+    // Every analysis tool succeeded (a failing/unknown tool would come back
+    // is_error) — the loop never treated any of them as mutating.
+    for (const call of calls.slice(1)) {
+      const lastMsg = call.messages[call.messages.length - 1];
+      const results = (lastMsg.content as ContentBlock[])
+        .filter((b): b is Extract<ContentBlock, { type: 'tool_result' }> => b.type === 'tool_result');
+      expect(results.length).toBeGreaterThan(0);
+      for (const r of results) {
+        expect(r.is_error, String(r.content)).not.toBe(true);
+      }
+    }
+    // No snapshot, no action row, no change chips (assistant_actions never written).
+    expect(sb.__tables.assistant_actions ?? []).toHaveLength(0);
+    expect(sb.__ops.filter(o => o.table === 'assistant_actions')).toHaveLength(0);
+    expect(out.actionId).toBeNull();
+    expect(out.changes).toHaveLength(0);
+  });
+
   it('refuses assign_provider on a slot from another schedule version (is_error, no write)', async () => {
     const tables = baseTables();
     tables.schedule_slots = [
