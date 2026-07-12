@@ -103,6 +103,11 @@
   --shadow-modal:   0 12px 48px rgba(15,23,42,0.18);
   --shadow-popover: 0 8px 28px rgba(15,23,42,0.15);
 
+  /* Brand accents — deeper on light surfaces so small accent text meets AA
+     (the :root values sit at ~2.4:1 on white) */
+  --blue:   #0284c7;
+  --indigo: #4f46e5;
+
   /* Semantic status — deeper tones for light surfaces */
   --ok:     #059669; --ok-bg:     rgba(5,150,105,.10);
   --warn:   #b45309; --warn-bg:   rgba(180,83,9,.10);

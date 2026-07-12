@@ -78,7 +78,7 @@ export default function SiteCard(props: Props) {
         </div>
         <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
           <button draggable={false} onClick={(e) => { e.stopPropagation(); props.onAddRoom(); }} style={{ background: 'rgba(' + rgb + ',0.12)', border: '1px solid rgba(' + rgb + ',0.3)', color: site.color, borderRadius: 5, padding: '2px 9px', fontSize: 10, fontWeight: 700, cursor: 'pointer' }}>+ Room</button>
-          {hov && <button draggable={false} onClick={(e) => { e.stopPropagation(); props.onDeleteSite(); }} style={{ background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.25)', color: '#f87171', borderRadius: 5, padding: '2px 9px', fontSize: 10, fontWeight: 700, cursor: 'pointer' }}>Delete Site</button>}
+          {hov && <button draggable={false} onClick={(e) => { e.stopPropagation(); props.onDeleteSite(); }} style={{ background: 'color-mix(in srgb, var(--danger) 10%, transparent)', border: '1px solid color-mix(in srgb, var(--danger) 25%, transparent)', color: 'var(--danger)', borderRadius: 5, padding: '2px 9px', fontSize: 10, fontWeight: 700, cursor: 'pointer' }}>Delete Site</button>}
         </div>
       </div>
 
@@ -165,7 +165,7 @@ function RoomCell({ room, site, people, isOver, dragging, alertLevels, dailyShif
       style={{
         flexShrink: 0, width: 'auto', minWidth: 152, minHeight: 132,
         borderRadius: 12, border: '1px solid',
-        borderColor: isOver ? site.color : needsMd ? 'rgba(251,191,36,0.5)' : draggingRoom ? site.color : 'var(--border-faint)',
+        borderColor: isOver ? site.color : needsMd ? 'color-mix(in srgb, var(--warn) 50%, transparent)' : draggingRoom ? site.color : 'var(--border-faint)',
         background: isOver ? 'rgba(' + rgb + ',0.09)' : draggingRoom ? 'rgba(' + rgb + ',0.04)' : 'var(--bg-deep)',
         boxShadow: isOver ? '0 0 16px rgba(' + rgb + ',0.25)' : '0 1px 2px rgba(15,23,42,0.04)',
         transition: 'all 0.14s', cursor: draggingRoom ? 'grabbing' : 'default',
@@ -184,7 +184,7 @@ function RoomCell({ room, site, people, isOver, dragging, alertLevels, dailyShif
               </span>
             )}
           </span>
-          {needsMd && <span style={{ fontSize: 9, fontWeight: 700, color: '#fbbf24', background: 'rgba(251,191,36,0.12)', border: '1px solid rgba(251,191,36,0.3)', borderRadius: 3, padding: '0 4px', whiteSpace: 'nowrap' }}>⚠ No MD</span>}
+          {needsMd && <span style={{ fontSize: 9, fontWeight: 700, color: 'var(--warn)', background: 'var(--warn-bg)', border: '1px solid color-mix(in srgb, var(--warn) 30%, transparent)', borderRadius: 3, padding: '0 4px', whiteSpace: 'nowrap' }}>⚠ No MD</span>}
         </div>
       </div>
 
@@ -237,10 +237,10 @@ function PersonChip({ assignment, person, alertLevels, dailyShifts, onRemove }: 
 
   return (
     <div onClick={onRemove} title={person.name + ' — click to unassign'}
-      style={{ display: 'flex', alignItems: 'center', gap: 5, padding: '4px 7px', borderRadius: 6, cursor: 'pointer', background: m.bg, color: m.color, border: '1px solid ' + (alert === 'critical' ? 'rgba(239,68,68,0.7)' : alert === 'warning' ? 'rgba(251,191,36,0.6)' : m.border), fontSize: 12, fontWeight: 700, position: 'relative', transition: 'opacity 0.12s' }}
+      style={{ display: 'flex', alignItems: 'center', gap: 5, padding: '4px 7px', borderRadius: 6, cursor: 'pointer', background: m.bg, color: m.color, border: '1px solid ' + (alert === 'critical' ? 'color-mix(in srgb, var(--danger) 70%, transparent)' : alert === 'warning' ? 'color-mix(in srgb, var(--warn) 60%, transparent)' : m.border), fontSize: 12, fontWeight: 700, position: 'relative', transition: 'opacity 0.12s' }}
       onMouseEnter={(e) => (e.currentTarget.style.opacity = '0.7')}
       onMouseLeave={(e) => (e.currentTarget.style.opacity = '1')}>
-      {alert !== 'none' && <div style={{ position: 'absolute', inset: 0, borderRadius: 6, border: '1px solid ' + (alert === 'critical' ? 'rgba(239,68,68,0.7)' : 'rgba(251,191,36,0.6)'), animation: 'relief-flash ' + (alert === 'critical' ? '1s' : '2s') + ' ease-in-out infinite', pointerEvents: 'none' }} />}
+      {alert !== 'none' && <div style={{ position: 'absolute', inset: 0, borderRadius: 6, border: '1px solid ' + (alert === 'critical' ? 'color-mix(in srgb, var(--danger) 70%, transparent)' : 'color-mix(in srgb, var(--warn) 60%, transparent)'), animation: 'relief-flash ' + (alert === 'critical' ? '1s' : '2s') + ' ease-in-out infinite', pointerEvents: 'none' }} />}
       <span style={{ fontWeight: 800, fontSize: 11, fontFamily: 'var(--font-mono), ui-monospace, monospace' }}>{person.initials}</span>
       <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 90 }}>{person.name.split(' ').pop()}</span>
       {hours && <ShiftBadge hours={hours} role={person.role} />}

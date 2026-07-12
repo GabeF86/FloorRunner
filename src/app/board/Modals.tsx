@@ -3,70 +3,32 @@
 import { useState, useEffect, useRef } from 'react';
 import { Role, ROLE_META, HOUR_OPTIONS, ShiftHours, HOSPITALS } from '@/types';
 import { hexToRgb } from './BoardClient';
+import { Modal, Button } from '@/components/ui';
 
-// ── Shared modal wrapper ─────────────────────────────────────────────────────
-function Modal({ title, children, onClose, onConfirm, confirmLabel }: {
+// ── Shared dialog shell — thin wrapper over the shared Modal so the three
+// dialogs keep their (title, onClose, onConfirm, confirmLabel) call shape ────
+function BoardModal({ title, children, onClose, onConfirm, confirmLabel }: {
   title: string;
   children: React.ReactNode;
   onClose: () => void;
   onConfirm: () => void;
   confirmLabel: string;
 }) {
-  // Close on Escape key
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
-    window.addEventListener('keydown', handler);
-    return () => window.removeEventListener('keydown', handler);
-  }, [onClose]);
-
   return (
-    <div
-      style={{
-        position: 'fixed', inset: 0,
-        background: 'var(--bg-modal-backdrop)',
-        display: 'flex', alignItems: 'center', justifyContent: 'center',
-        zIndex: 200,
-      }}
-      onClick={onClose}
+    <Modal
+      open
+      title={title}
+      onClose={onClose}
+      width={400}
+      footer={
+        <>
+          <Button variant="secondary" onClick={onClose}>Cancel</Button>
+          <Button onClick={onConfirm}>{confirmLabel}</Button>
+        </>
+      }
     >
-      <div
-        className="modal-box"
-        style={{
-          background: 'var(--bg-surface)',
-          border: '1px solid var(--border)',
-          borderRadius: 16,
-          padding: 28,
-          width: 400,
-          boxShadow: 'var(--shadow-modal)',
-        }}
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div style={{ fontSize: 17, fontWeight: 800, color: 'var(--text-strong)', marginBottom: 22 }}>{title}</div>
-        {children}
-        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 12 }}>
-          <button
-            onClick={onClose}
-            style={{
-              padding: '9px 18px', borderRadius: 8, cursor: 'pointer',
-              background: 'transparent', color: 'var(--text-muted)',
-              border: '1px solid var(--border)', fontWeight: 600, fontSize: 13,
-            }}
-          >
-            Cancel
-          </button>
-          <button
-            onClick={onConfirm}
-            style={{
-              padding: '9px 20px', borderRadius: 8, cursor: 'pointer',
-              background: 'linear-gradient(135deg,#0ea5e9,#6366f1)',
-              color: '#fff', border: 'none', fontWeight: 700, fontSize: 13,
-            }}
-          >
-            {confirmLabel}
-          </button>
-        </div>
-      </div>
-    </div>
+      {children}
+    </Modal>
   );
 }
 
@@ -98,7 +60,7 @@ export function AddSiteModal({ onClose, onConfirm }: {
   const submit = () => { if (name.trim()) onConfirm(name.trim(), color, icon); };
 
   return (
-    <Modal title="Add New Site" onClose={onClose} onConfirm={submit} confirmLabel="Add Site">
+    <BoardModal title="Add New Site" onClose={onClose} onConfirm={submit} confirmLabel="Add Site">
       <input ref={ref} style={inputStyle} placeholder="Site name (e.g. Cardiac OR, PACU)"
         value={name} onChange={(e) => setName(e.target.value)}
         onKeyDown={(e) => e.key === 'Enter' && submit()} />
@@ -125,7 +87,7 @@ export function AddSiteModal({ onClose, onConfirm }: {
           style={{ width: 48, height: 38, border: 'none', borderRadius: 8, cursor: 'pointer', background: 'none' }} />
         <span style={{ fontSize: 12, color: 'var(--text-muted)', fontFamily: 'var(--font-mono), monospace' }}>{color}</span>
       </div>
-    </Modal>
+    </BoardModal>
   );
 }
 
@@ -141,11 +103,11 @@ export function AddRoomModal({ onClose, onConfirm }: {
   const submit = () => { if (name.trim()) onConfirm(name.trim()); };
 
   return (
-    <Modal title="Add Room" onClose={onClose} onConfirm={submit} confirmLabel="Add Room">
+    <BoardModal title="Add Room" onClose={onClose} onConfirm={submit} confirmLabel="Add Room">
       <input ref={ref} style={inputStyle} placeholder="Room name (e.g. OR 7, Suite 4, Cath Lab 1)"
         value={name} onChange={(e) => setName(e.target.value)}
         onKeyDown={(e) => e.key === 'Enter' && submit()} />
-    </Modal>
+    </BoardModal>
   );
 }
 
@@ -166,7 +128,7 @@ export function AddStaffModal({ onClose, onConfirm }: {
   const submit        = () => { if (name.trim()) onConfirm(name.trim(), role, hours, needsHospital && homeHospital ? homeHospital : null); };
 
   return (
-    <Modal title="Add Staff Member" onClose={onClose} onConfirm={submit} confirmLabel="Add Staff">
+    <BoardModal title="Add Staff Member" onClose={onClose} onConfirm={submit} confirmLabel="Add Staff">
       <input ref={ref} style={inputStyle} placeholder="Full name (e.g. Dr. Smith, Jane Doe CRNA)"
         value={name} onChange={(e) => setName(e.target.value)}
         onKeyDown={(e) => e.key === 'Enter' && submit()} />
@@ -239,6 +201,6 @@ export function AddStaffModal({ onClose, onConfirm }: {
           </div>
         </>
       )}
-    </Modal>
+    </BoardModal>
   );
 }

@@ -550,7 +550,7 @@ export default function BoardClient({ initialSites, initialStaff, initialAssignm
         </div>
 
         {hospital && HOSPITAL_BASELINES[hospital] && (
-          <button onClick={resetBoard} style={{ ...ghostButton, color: '#f87171', borderColor: 'rgba(239,68,68,0.35)' }} title="Reset board to baseline">↺ Reset</button>
+          <button onClick={resetBoard} style={{ ...ghostButton, color: 'var(--danger)', borderColor: 'color-mix(in srgb, var(--danger) 35%, transparent)' }} title="Reset board to baseline">↺ Reset</button>
         )}
 
         {/* Right cluster */}
@@ -559,7 +559,7 @@ export default function BoardClient({ initialSites, initialStaff, initialAssignm
           <span style={{ fontSize: 10, color: 'var(--text-muted)', fontFamily: 'var(--font-mono), ui-monospace, monospace' }}>
             {realAssignedIds.size}/{activeStaff.filter((p) => activeStaffIds.has(p.id)).length} working · {filteredSites.filter((s) => !s.is_float).reduce((n, s) => n + s.rooms.length, 0)} rooms
           </span>
-          {isToday && <Pill label="LIVE" color="#10b981" pulse />}
+          {isToday && <Pill label="LIVE" color="var(--ok)" pulse />}
           <BarDivider />
           <button onClick={() => setShowPrint(true)} style={ghostButton} title="Print sheet">🖨 Print</button>
         </div>
@@ -567,8 +567,8 @@ export default function BoardClient({ initialSites, initialStaff, initialAssignm
 
       {/* Inline planning banner */}
       {isPlanMode && (
-        <div style={{ background: 'rgba(251,191,36,0.08)', borderBottom: '0.5px solid rgba(251,191,36,0.25)', padding: '4px 12px', display: 'flex', alignItems: 'center', gap: 8, fontSize: 11, color: '#fbbf24', fontWeight: 600 }}>
-          <span>📅 Planning — editing <strong style={{ color: '#fde68a' }}>{dateLabel}</strong>. Won't affect today's live board.</span>
+        <div style={{ background: 'color-mix(in srgb, var(--warn) 8%, transparent)', borderBottom: '0.5px solid color-mix(in srgb, var(--warn) 25%, transparent)', padding: '4px 12px', display: 'flex', alignItems: 'center', gap: 8, fontSize: 11, color: 'var(--warn)', fontWeight: 600 }}>
+          <span>📅 Planning — editing <strong style={{ color: 'color-mix(in srgb, var(--warn) 60%, var(--text-strong))' }}>{dateLabel}</strong>. Won't affect today's live board.</span>
         </div>
       )}
 
@@ -606,7 +606,7 @@ export default function BoardClient({ initialSites, initialStaff, initialAssignm
         <div
           onMouseDown={onSidebarResizeMouseDown}
           style={{ width: 5, cursor: 'col-resize', background: 'transparent', flexShrink: 0, transition: 'background 0.15s', zIndex: 10 }}
-          onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(14,165,233,0.35)')}
+          onMouseEnter={(e) => (e.currentTarget.style.background = 'color-mix(in srgb, var(--blue) 35%, transparent)')}
           onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
         />
 
@@ -780,7 +780,7 @@ function FacilityPillV1({ label, active, onClick }: { label: string; active: boo
 }
 
 function ContingencyPill({ label, severity }: { label: string; severity: 'high' | 'medium' }) {
-  const dot = severity === 'high' ? '#E24B4A' : '#BA7517';
+  const dot = severity === 'high' ? 'var(--danger)' : 'var(--warn)';
   return (
     <button style={{
       display: 'inline-flex', alignItems: 'center', gap: 4,
@@ -806,7 +806,7 @@ function NavArrow({ dir, onClick }: { dir: 'left' | 'right'; onClick: () => void
   const [hov, setHov] = useState(false);
   return (
     <button onClick={onClick} onMouseEnter={() => setHov(true)} onMouseLeave={() => setHov(false)}
-      style={{ width: 30, height: 30, borderRadius: 8, background: hov ? 'rgba(14,165,233,0.15)' : 'transparent', border: '1px solid ' + (hov ? 'rgba(14,165,233,0.4)' : 'var(--border)'), color: hov ? '#0ea5e9' : 'var(--text-muted)', cursor: 'pointer', fontSize: 18, display: 'flex', alignItems: 'center', justifyContent: 'center', transition: 'all 0.15s' }}>
+      style={{ width: 30, height: 30, borderRadius: 8, background: hov ? 'color-mix(in srgb, var(--blue) 15%, transparent)' : 'transparent', border: '1px solid ' + (hov ? 'color-mix(in srgb, var(--blue) 40%, transparent)' : 'var(--border)'), color: hov ? 'var(--blue)' : 'var(--text-muted)', cursor: 'pointer', fontSize: 18, display: 'flex', alignItems: 'center', justifyContent: 'center', transition: 'all 0.15s' }}>
       {dir === 'left' ? '‹' : '›'}
     </button>
   );
@@ -820,13 +820,12 @@ function LiveClock() {
     const t = setInterval(() => setTime(fmt()), 1000);
     return () => clearInterval(t);
   }, []);
-  return <span style={{ fontSize: 11, fontWeight: 700, color: '#0ea5e9', fontFamily: 'var(--font-mono), ui-monospace, monospace', letterSpacing: 0.5 }}>{time}</span>;
+  return <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--blue)', fontFamily: 'var(--font-mono), ui-monospace, monospace', letterSpacing: 0.5 }}>{time}</span>;
 }
 
 function Pill({ label, color, pulse }: { label: string; color: string; pulse?: boolean }) {
-  const rgb = hexToRgb(color);
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 4, padding: '2px 9px', borderRadius: 999, background: 'rgba(' + rgb + ',0.12)', border: '1px solid rgba(' + rgb + ',0.3)', fontSize: 10, fontWeight: 700, color, fontFamily: 'var(--font-mono), ui-monospace, monospace' }}>
+    <div style={{ display: 'flex', alignItems: 'center', gap: 4, padding: '2px 9px', borderRadius: 999, background: 'color-mix(in srgb, ' + color + ' 12%, transparent)', border: '1px solid color-mix(in srgb, ' + color + ' 30%, transparent)', fontSize: 10, fontWeight: 700, color, fontFamily: 'var(--font-mono), ui-monospace, monospace' }}>
       {pulse && <span style={{ width: 6, height: 6, borderRadius: '50%', background: color, display: 'inline-block', animation: 'relief-flash 1.5s ease-in-out infinite' }} />}
       {label}
     </div>
@@ -837,8 +836,8 @@ function AddSiteTile({ onClick }: { onClick: () => void }) {
   const [hov, setHov] = useState(false);
   return (
     <div onClick={onClick} onMouseEnter={() => setHov(true)} onMouseLeave={() => setHov(false)}
-      style={{ borderRadius: 14, border: '1px dashed ' + (hov ? '#0ea5e9' : 'var(--border)'), minHeight: 70, display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', transition: 'all 0.2s', marginTop: 4 }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: hov ? '#0ea5e9' : 'var(--text-dim)', transition: 'color 0.2s' }}>
+      style={{ borderRadius: 14, border: '1px dashed ' + (hov ? 'var(--blue)' : 'var(--border)'), minHeight: 70, display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', transition: 'all 0.2s', marginTop: 4 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: hov ? 'var(--blue)' : 'var(--text-dim)', transition: 'color 0.2s' }}>
         <span style={{ fontSize: 22 }}>＋</span>
         <span style={{ fontSize: 13, fontWeight: 700, letterSpacing: 1, textTransform: 'uppercase' }}>Add Site</span>
       </div>

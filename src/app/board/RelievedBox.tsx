@@ -40,19 +40,19 @@ export default function RelievedBox({ reliefLog, today, dragging, onDropRelieved
 
   return (
     <div
-      style={{ flex: 1, background: 'var(--bg-surface)', border: '1px solid ' + (dragOver && canDrop ? 'rgba(16,185,129,0.5)' : 'var(--border)'), borderRadius: 12, overflow: 'hidden', boxShadow: dragOver && canDrop ? '0 0 20px rgba(16,185,129,0.15)' : 'none', transition: 'all 0.2s' }}
+      style={{ flex: 1, background: 'var(--bg-surface)', border: '1px solid ' + (dragOver && canDrop ? 'color-mix(in srgb, var(--ok) 50%, transparent)' : 'var(--border)'), borderRadius: 12, overflow: 'hidden', boxShadow: dragOver && canDrop ? '0 0 20px color-mix(in srgb, var(--ok) 15%, transparent)' : 'none', transition: 'all 0.2s' }}
       onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
       onDragLeave={() => setDragOver(false)}
       onDrop={(e) => { e.preventDefault(); setDragOver(false); if (dragging && canDrop) onDropRelieved(dragging); }}
     >
       {/* Header */}
-      <div style={{ padding: '9px 13px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: collapsed ? 'none' : '1px solid var(--border)', background: dragOver && canDrop ? 'rgba(16,185,129,0.08)' : 'rgba(16,185,129,0.04)' }}>
+      <div style={{ padding: '9px 13px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: collapsed ? 'none' : '1px solid var(--border)', background: dragOver && canDrop ? 'color-mix(in srgb, var(--ok) 8%, transparent)' : 'color-mix(in srgb, var(--ok) 4%, transparent)' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
           <span style={{ fontSize: 13 }}>{dragOver && canDrop ? '✅' : '🏁'}</span>
-          <span style={{ fontSize: 11, fontWeight: 800, letterSpacing: 1.5, textTransform: 'uppercase', color: '#10b981' }}>
+          <span style={{ fontSize: 11, fontWeight: 800, letterSpacing: 1.5, textTransform: 'uppercase', color: 'var(--ok)' }}>
             {dragOver && canDrop ? 'Release to Relieve' : 'Relieved'}
           </span>
-          <span style={{ fontSize: 10, color: 'var(--text-dim)', background: 'rgba(16,185,129,0.12)', border: '1px solid rgba(16,185,129,0.25)', borderRadius: 10, padding: '1px 6px', fontWeight: 700 }}>{reliefLog.length}</span>
+          <span style={{ fontSize: 10, color: 'var(--text-dim)', background: 'var(--ok-bg)', border: '1px solid color-mix(in srgb, var(--ok) 25%, transparent)', borderRadius: 10, padding: '1px 6px', fontWeight: 700 }}>{reliefLog.length}</span>
         </div>
         <button onClick={() => setCollapsed((v) => !v)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-dim)', fontSize: 12 }}>
           {collapsed ? '▲' : '▼'}
@@ -65,7 +65,7 @@ export default function RelievedBox({ reliefLog, today, dragging, onDropRelieved
           <div style={{ display: 'flex', borderBottom: '1px solid var(--border)' }}>
             {(['today', 'history'] as const).map((t) => (
               <button key={t} onClick={() => setTab(t)}
-                style={{ flex: 1, padding: '6px 0', fontSize: 10, fontWeight: 800, letterSpacing: 1, textTransform: 'uppercase', cursor: 'pointer', background: 'none', border: 'none', color: tab === t ? '#10b981' : 'var(--text-dim)', borderBottom: '2px solid ' + (tab === t ? '#10b981' : 'transparent'), transition: 'all 0.15s' }}>
+                style={{ flex: 1, padding: '6px 0', fontSize: 10, fontWeight: 800, letterSpacing: 1, textTransform: 'uppercase', cursor: 'pointer', background: 'none', border: 'none', color: tab === t ? 'var(--ok)' : 'var(--text-dim)', borderBottom: '2px solid ' + (tab === t ? 'var(--ok)' : 'transparent'), transition: 'all 0.15s' }}>
                 {t === 'today' ? "Today's Log" : 'View History'}
               </button>
             ))}
@@ -83,7 +83,7 @@ export default function RelievedBox({ reliefLog, today, dragging, onDropRelieved
                 <div style={{ fontSize: 11, color: 'var(--text-dim)', fontStyle: 'italic', textAlign: 'center', padding: '14px 0' }}>No reliefs logged yet</div>
               )}
               {reliefLog.map((entry) => (
-                <div key={entry.id} style={{ display: 'flex', alignItems: 'center', gap: 7, padding: '5px 6px', borderRadius: 7, marginBottom: 3, background: 'rgba(16,185,129,0.04)', border: '1px solid rgba(16,185,129,0.1)' }}>
+                <div key={entry.id} style={{ display: 'flex', alignItems: 'center', gap: 7, padding: '5px 6px', borderRadius: 7, marginBottom: 3, background: 'color-mix(in srgb, var(--ok) 4%, transparent)', border: '1px solid color-mix(in srgb, var(--ok) 10%, transparent)' }}>
                   <div style={{ width: 24, height: 24, borderRadius: 6, background: 'rgba(' + hexToRgb(roleColor(entry.staff_role)) + ',0.15)', color: roleColor(entry.staff_role), display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 9, fontWeight: 800, flexShrink: 0 }}>
                     {entry.staff_initials}
                   </div>
