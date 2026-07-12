@@ -24,7 +24,7 @@ import type {
   ShiftTypeInfo,
 } from './genTypes';
 
-import { CallPatternDocSchema, patternWarnings, type CallPatternDoc } from './callPattern';
+import { CallPatternDocSchema, patternWarnings, callFillOrderWarnings, type CallPatternDoc } from './callPattern';
 import { embedArray } from '@/lib/embed';
 
 const DEFAULT_PAR_LEVEL = 12; // fallback when site.call_par_level isn't set
@@ -227,6 +227,12 @@ export async function loadGenerationContext(
   if (callPattern && knownShiftCodes.size > 0) {
     warnings.push(...patternWarnings(callPattern, knownShiftCodes));
   }
+  // callFillOrder='call_rank' needs ranks on every call code — a null rank
+  // silently falls back to solve's legacy code literals (skipped in degraded
+  // mode: shiftTypes undefined means the legacy fallback is engaged anyway).
+  if (callPattern && shiftTypes) {
+    warnings.push(...callFillOrderWarnings(callPattern, shiftTypes.values()));
+  }
 
   // ── 2. Build slot index ───────────────────────────────────────────────────
   // slotsToFill = call-category slots that need assignment (main loop)
@@ -287,7 +293,9 @@ export async function loadGenerationContext(
   const allSlotDates = Array.from(slotIndex.keys()).sort();
 
   // Sort: weekends first (Sat then Sun), then friday, then weekday — by date.
-  // Within a date, backup (C2, C3) before primary (C1) so pairing rules pass.
+  // Within a date, backup (C2, C3) before primary (C1) so pairing rules pass
+  // (unless the active pattern sets callFillOrder='call_rank' — solve
+  // re-sorts within each date).
   //
   // IMPORTANT: this sort reads `derived_day_type` DIRECTLY — not through
   // dayTypeBucket(). The bucket collapses saturday/sunday into 'weekend',

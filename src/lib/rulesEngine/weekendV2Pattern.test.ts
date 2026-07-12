@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { CallPatternDocSchema } from './callPattern';
+import { CallPatternDocSchema, callFillOrderWarnings } from './callPattern';
 import { CLASSIC_PATTERN } from './callPattern';
 
 describe('callFillOrder schema field', () => {
@@ -43,5 +43,26 @@ describe('callFillOrder: call_rank — in-house C1 wins under scarcity', () => {
     const plan = solve(buildCtx([sunC2, sunC1], providers, { availByPid: p2pto, shiftTypes, callPattern: doc }));
     expect(plan.assignments.find(a => a.slot_id === 'sunC1')?.provider_id).toBe('p1');
     expect(plan.assignments.some(a => a.slot_id === 'sunC2')).toBe(false);
+  });
+});
+
+// Null call_rank on a call code sorts by solve's legacy code fallback, not
+// last — the load-time warning is the guard against silent mis-ordering.
+describe('callFillOrderWarnings — null call_rank on a call code', () => {
+  const ranked = shiftInfo('C1', { category: 'call', call_rank: 0 });
+  const unranked = shiftInfo('C4', { category: 'call' });   // call_rank: null
+  const nonCall = shiftInfo('D1');                          // regular, rank null — never warns
+
+  it('warns per null-ranked call code when callFillOrder=call_rank', () => {
+    const doc = { ...CLASSIC_PATTERN, callFillOrder: 'call_rank' as const };
+    const warnings = callFillOrderWarnings(doc, [ranked, unranked, nonCall]);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain('C4');
+    expect(warnings[0]).toContain("callFillOrder='call_rank'");
+    expect(warnings[0]).toContain('legacy fallback');
+  });
+
+  it('silent when the flag is absent', () => {
+    expect(callFillOrderWarnings(CLASSIC_PATTERN, [ranked, unranked, nonCall])).toEqual([]);
   });
 });

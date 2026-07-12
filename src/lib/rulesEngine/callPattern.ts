@@ -156,3 +156,22 @@ export function patternWarnings(doc: CallPatternDoc, knownCodes: ReadonlySet<str
     .filter(code => !knownCodes.has(code))
     .map(code => `Call pattern references shift code '${code}' which is not defined at this site`);
 }
+
+// Load-time sanity for callFillOrder='call_rank': every call-category shift
+// type should carry a call_rank, otherwise it sorts by solve's legacy code
+// fallback (C1=0, C2=1, else 2) — surface that instead of silently
+// mis-ordering. Structural param (not ShiftTypeInfo) to avoid a genTypes
+// import cycle; genContext passes ctx.shiftTypes.values().
+export function callFillOrderWarnings(
+  doc: CallPatternDoc,
+  shiftTypes: Iterable<{ code: string; category: string; call_rank: number | null }>,
+): string[] {
+  if (doc.callFillOrder !== 'call_rank') return [];
+  const out: string[] = [];
+  for (const st of shiftTypes) {
+    if (st.category === 'call' && st.call_rank == null) {
+      out.push(`callFillOrder='call_rank' but shift type ${st.code} has no call_rank — it will sort by the legacy fallback`);
+    }
+  }
+  return out;
+}
