@@ -64,21 +64,27 @@ function makeFakeSb(
     const filters: Array<(r: Row) => boolean> = [];
     let orderBy: { col: string; asc: boolean } | null = null;
     let limitN: number | null = null;
+    let rangeArgs: [number, number] | null = null;
     let action: { kind: Op['kind'] | 'select'; payload?: unknown; onConflict?: string } = { kind: 'select' };
 
     const matching = () => rowsOf().filter(r => filters.every(f => f(r)));
 
-    const exec = async (): Promise<{ data: Row[]; error: null | { message: string } }> => {
+    const exec = async (): Promise<{ data: Row[]; error: null | { message: string }; count?: number | null }> => {
       const forced = opts?.errorOn?.({ kind: action.kind, table });
-      if (forced) return { data: [], error: { message: forced } };
+      if (forced) return { data: [], error: { message: forced }, count: null };
       if (action.kind === 'select') {
         let rs = matching().map(r => ({ ...r }));
         if (orderBy) {
           const { col, asc } = orderBy;
           rs.sort((a, b) => ((a[col] as number) < (b[col] as number) ? -1 : 1) * (asc ? 1 : -1));
         }
+        // PostgREST count:'exact' semantics: total matching rows, computed
+        // before limit/range windowing — the analysis tools' paginated reads
+        // need it to know when all pages have arrived.
+        const total = rs.length;
         if (limitN !== null) rs = rs.slice(0, limitN);
-        return { data: rs, error: null };
+        if (rangeArgs) rs = rs.slice(rangeArgs[0], rangeArgs[1] + 1);
+        return { data: rs, error: null, count: total };
       }
       if (action.kind === 'insert') {
         const rows = (Array.isArray(action.payload) ? action.payload : [action.payload]) as Row[];
@@ -130,6 +136,7 @@ function makeFakeSb(
         orderBy = { col, asc: opts?.ascending !== false }; return builder;
       },
       limit: (n: number) => { limitN = n; return builder; },
+      range: (from: number, to: number) => { rangeArgs = [from, to]; return builder; },
       maybeSingle: async () => {
         const { data, error } = await exec();
         return { data: data[0] ?? null, error };
@@ -295,6 +302,39 @@ describe('runAssistant — tool-use loop', () => {
     });
 
     expect(sb.__tables.assistant_actions ?? []).toHaveLength(0);
+    expect(out.actionId).toBeNull();
+    expect(out.changes).toHaveLength(0);
+  });
+
+  it('takes NO snapshot on a read/analysis conversation using the Task-8 tools', async () => {
+    const sb = makeFakeSb(baseTables());
+    const { client, calls } = makeFakeClient([
+      toolTurn([toolUse('tu1', 'get_coverage_summary', {}),
+        toolUse('tu2', 'get_fairness_report', {})]),
+      toolTurn([toolUse('tu3', 'find_unfilled', {}),
+        toolUse('tu4', 'who_is_on', { date: '2026-07-04', window_days: 1 })]),
+      endTurn([text('Coverage looks like this…')]),
+    ]);
+
+    const out = await runAssistant({
+      sb, client, scheduleId: 'sched1',
+      messages: [{ role: 'user', content: 'how does the week look? anything unfilled?' }],
+    });
+
+    // Every analysis tool succeeded (a failing/unknown tool would come back
+    // is_error) — the loop never treated any of them as mutating.
+    for (const call of calls.slice(1)) {
+      const lastMsg = call.messages[call.messages.length - 1];
+      const results = (lastMsg.content as ContentBlock[])
+        .filter((b): b is Extract<ContentBlock, { type: 'tool_result' }> => b.type === 'tool_result');
+      expect(results.length).toBeGreaterThan(0);
+      for (const r of results) {
+        expect(r.is_error, String(r.content)).not.toBe(true);
+      }
+    }
+    // No snapshot, no action row, no change chips (assistant_actions never written).
+    expect(sb.__tables.assistant_actions ?? []).toHaveLength(0);
+    expect(sb.__ops.filter(o => o.table === 'assistant_actions')).toHaveLength(0);
     expect(out.actionId).toBeNull();
     expect(out.changes).toHaveLength(0);
   });

@@ -145,17 +145,17 @@ export default function Sidebar(props: Props) {
 
   return (
     <aside
-      style={{ flex: 1, minWidth: 0, height: '100%', background: 'var(--bg-sidebar)', display: 'flex', flexDirection: 'column', overflow: 'hidden', transition: 'box-shadow 0.2s', boxShadow: isDragTarget ? 'inset -3px 0 12px rgba(14,165,233,0.1)' : 'none' }}
+      style={{ flex: 1, minWidth: 0, height: '100%', background: 'var(--bg-sidebar)', display: 'flex', flexDirection: 'column', overflow: 'hidden', transition: 'box-shadow 0.2s', boxShadow: isDragTarget ? 'inset -3px 0 12px color-mix(in srgb, var(--blue) 10%, transparent)' : 'none' }}
       onDragOver={(e) => e.preventDefault()}
       onDrop={onDropSidebar}
     >
       {/* Header */}
-      <div style={{ padding: '8px 12px 6px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: '1px solid var(--border)', flexShrink: 0 }}>
+      <div style={{ padding: 'var(--space-2) var(--space-3) var(--space-1)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: '1px solid var(--border)', flexShrink: 0 }}>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 1, minWidth: 0 }}>
-          <span style={{ fontSize: 11, fontWeight: 800, letterSpacing: 1.2, color: 'var(--text-muted)', textTransform: 'uppercase' }}>
+          <span style={{ fontSize: 'var(--fs-xs)', fontWeight: 800, letterSpacing: 1.2, color: 'var(--text-muted)', textTransform: 'uppercase' }}>
             {currentHospital ? facilityShort(currentHospital) + ' Staff' : 'Staff Roster'}
           </span>
-          <span style={{ fontSize: 9, color: 'var(--text-dim)', fontFamily: 'var(--font-mono), ui-monospace, monospace', display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+          <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-dim)', fontFamily: 'var(--font-mono), ui-monospace, monospace', display: 'flex', alignItems: 'center', gap: 'var(--space-2)', flexWrap: 'wrap' }}>
             <span>{onCount}/{staff.length} on</span>
             <span>·</span>
             {visibleStaff.length > 0 && (
@@ -165,7 +165,7 @@ export default function Sidebar(props: Props) {
                   title={anyVisibleActive ? 'Deselect every visible staff member' : 'Mark every visible staff member as working today'}
                   style={{
                     background: 'transparent', border: 'none', padding: 0,
-                    color: '#0ea5e9', fontSize: 9, fontWeight: 700, cursor: 'pointer',
+                    color: 'var(--blue)', fontSize: 'var(--fs-xs)', fontWeight: 700, cursor: 'pointer',
                     fontFamily: 'inherit', textDecoration: 'underline', textUnderlineOffset: 2,
                   }}
                 >
@@ -177,30 +177,30 @@ export default function Sidebar(props: Props) {
             <span>search for full roster</span>
           </span>
         </div>
-        <button onClick={onAddStaff} style={{ background: 'rgba(14,165,233,0.12)', border: '1px solid rgba(14,165,233,0.3)', color: '#0ea5e9', borderRadius: 5, padding: '2px 9px', fontSize: 10, fontWeight: 700, cursor: 'pointer' }}>+ Add</button>
+        <button onClick={onAddStaff} style={{ background: 'color-mix(in srgb, var(--blue) 12%, transparent)', border: '1px solid color-mix(in srgb, var(--blue) 30%, transparent)', color: 'var(--blue)', borderRadius: 5, padding: '2px 9px', fontSize: 'var(--fs-xs)', fontWeight: 700, cursor: 'pointer' }}>+ Add</button>
       </div>
 
       {/* Search bar */}
-      <div style={{ padding: '5px 8px', borderBottom: '1px solid var(--border)', flexShrink: 0 }}>
+      <div style={{ padding: 'var(--space-1) var(--space-2)', borderBottom: '1px solid var(--border)', flexShrink: 0 }}>
         <input
           type="text"
           placeholder="Search full roster…"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          style={{ width: '100%', boxSizing: 'border-box', background: 'var(--tint-surface)', border: '1px solid var(--border-input)', borderRadius: 5, padding: '4px 8px', fontSize: 11, color: 'var(--text)', outline: 'none' }}
+          style={{ width: '100%', boxSizing: 'border-box', background: 'var(--tint-surface)', border: '1px solid var(--border-input)', borderRadius: 5, padding: 'var(--space-1) var(--space-2)', fontSize: 'var(--fs-xs)', color: 'var(--text)', outline: 'none' }}
         />
       </div>
 
       {isDragTarget && (
-        <div style={{ margin: '8px 10px 0', padding: '8px 10px', borderRadius: 8, border: '1px dashed rgba(14,165,233,0.4)', background: 'rgba(14,165,233,0.06)', fontSize: 12, color: '#0ea5e9', textAlign: 'center', fontWeight: 600, flexShrink: 0 }}>
+        <div style={{ margin: 'var(--space-2) var(--space-3) 0', padding: 'var(--space-2) var(--space-3)', borderRadius: 'var(--radius-sm)', border: '1px dashed color-mix(in srgb, var(--blue) 40%, transparent)', background: 'color-mix(in srgb, var(--blue) 6%, transparent)', fontSize: 'var(--fs-sm)', color: 'var(--blue)', textAlign: 'center', fontWeight: 600, flexShrink: 0 }}>
           ↩ Drop here to unassign
         </div>
       )}
 
       {searchResults ? (
-        <div style={{ overflowY: 'auto', flex: 1, padding: '8px 10px 20px' }}>
+        <div style={{ overflowY: 'auto', flex: 1, padding: 'var(--space-2) var(--space-3) var(--space-5)' }}>
           {searchResults.length === 0 && (
-            <div style={{ color: 'var(--text-dim)', fontSize: 12, fontStyle: 'italic', padding: '12px 4px' }}>No staff found</div>
+            <div style={{ color: 'var(--text-dim)', fontSize: 'var(--fs-sm)', fontStyle: 'italic', padding: 'var(--space-3) var(--space-1)' }}>No staff found</div>
           )}
           {searchResults.map((person) => (
             <StaffCard key={person.id} person={person} role={person.role as Role}
@@ -218,11 +218,11 @@ export default function Sidebar(props: Props) {
           {/* Movable divider */}
           <div
             onMouseDown={onDividerMouseDown}
-            style={{ flexShrink: 0, height: 8, cursor: 'ns-resize', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(14,165,233,0.07)', borderTop: '1px solid rgba(14,165,233,0.25)', borderBottom: '1px solid rgba(14,165,233,0.25)', transition: 'background 0.15s' }}
-            onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(14,165,233,0.2)')}
-            onMouseLeave={(e) => (e.currentTarget.style.background = 'rgba(14,165,233,0.07)')}
+            style={{ flexShrink: 0, height: 8, cursor: 'ns-resize', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'color-mix(in srgb, var(--blue) 7%, transparent)', borderTop: '1px solid color-mix(in srgb, var(--blue) 25%, transparent)', borderBottom: '1px solid color-mix(in srgb, var(--blue) 25%, transparent)', transition: 'background 0.15s' }}
+            onMouseEnter={(e) => (e.currentTarget.style.background = 'color-mix(in srgb, var(--blue) 20%, transparent)')}
+            onMouseLeave={(e) => (e.currentTarget.style.background = 'color-mix(in srgb, var(--blue) 7%, transparent)')}
           >
-            <div style={{ width: 28, height: 3, borderRadius: 2, background: 'rgba(14,165,233,0.5)' }} />
+            <div style={{ width: 28, height: 3, borderRadius: 2, background: 'color-mix(in srgb, var(--blue) 50%, transparent)' }} />
           </div>
 
           {/* CRNAs + SRNAs + Residents / Surgeons split pane */}
@@ -234,11 +234,11 @@ export default function Sidebar(props: Props) {
             {/* Divider between SRNA/Resident and Surgeon */}
             <div
               onMouseDown={onBottomDividerMouseDown}
-              style={{ flexShrink: 0, height: 8, cursor: 'ns-resize', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(14,165,233,0.07)', borderTop: '1px solid rgba(14,165,233,0.25)', borderBottom: '1px solid rgba(14,165,233,0.25)', transition: 'background 0.15s' }}
-              onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(14,165,233,0.2)')}
-              onMouseLeave={(e) => (e.currentTarget.style.background = 'rgba(14,165,233,0.07)')}
+              style={{ flexShrink: 0, height: 8, cursor: 'ns-resize', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'color-mix(in srgb, var(--blue) 7%, transparent)', borderTop: '1px solid color-mix(in srgb, var(--blue) 25%, transparent)', borderBottom: '1px solid color-mix(in srgb, var(--blue) 25%, transparent)', transition: 'background 0.15s' }}
+              onMouseEnter={(e) => (e.currentTarget.style.background = 'color-mix(in srgb, var(--blue) 20%, transparent)')}
+              onMouseLeave={(e) => (e.currentTarget.style.background = 'color-mix(in srgb, var(--blue) 7%, transparent)')}
             >
-              <div style={{ width: 28, height: 3, borderRadius: 2, background: 'rgba(14,165,233,0.5)' }} />
+              <div style={{ width: 28, height: 3, borderRadius: 2, background: 'color-mix(in srgb, var(--blue) 50%, transparent)' }} />
             </div>
 
             <div style={{ flex: 1, overflowY: 'auto', minHeight: 0, padding: '8px 10px 20px' }}>
@@ -272,17 +272,17 @@ function StaffCard({ person, role, assignedStaffIds, currentHospital, supervisio
 
   const borderColor =
     !isActive            ? 'var(--border-muted)' :
-    alert === 'critical' ? 'rgba(239,68,68,0.7)' :
-    alert === 'warning'  ? 'rgba(251,191,36,0.6)' :
-    isOver               ? 'rgba(248,113,113,0.5)' :
-    isAtLimit            ? 'rgba(251,191,36,0.4)' :
+    alert === 'critical' ? 'color-mix(in srgb, var(--danger) 70%, transparent)' :
+    alert === 'warning'  ? 'color-mix(in srgb, var(--warn) 60%, transparent)' :
+    isOver               ? 'color-mix(in srgb, var(--danger) 50%, transparent)' :
+    isAtLimit            ? 'color-mix(in srgb, var(--warn) 40%, transparent)' :
     hov || assigned      ? meta.border : 'transparent';
 
   const bgColor =
     !isActive            ? 'transparent' :
-    alert === 'critical' ? 'rgba(239,68,68,0.1)' :
-    alert === 'warning'  ? 'rgba(251,191,36,0.07)' :
-    isOver               ? 'rgba(248,113,113,0.08)' :
+    alert === 'critical' ? 'color-mix(in srgb, var(--danger) 10%, transparent)' :
+    alert === 'warning'  ? 'color-mix(in srgb, var(--warn) 7%, transparent)' :
+    isOver               ? 'color-mix(in srgb, var(--danger) 8%, transparent)' :
     assigned             ? meta.bg :
     hov                  ? 'rgba(' + hexToRgb(meta.color) + ',0.06)' : 'transparent';
 
@@ -298,8 +298,8 @@ function StaffCard({ person, role, assignedStaffIds, currentHospital, supervisio
       style={{ borderRadius: 6, marginBottom: 3, border: '1px solid ' + borderColor, background: bgColor, opacity: isActive ? 1 : 0.72, transition: 'all 0.14s', position: 'relative', userSelect: 'none', cursor: canDrag ? 'grab' : 'default' }}
     >
       {/* Alert flash */}
-      {isActive && alert === 'critical' && <div style={{ position: 'absolute', inset: 0, borderRadius: 6, border: '2px solid rgba(239,68,68,0.6)', animation: 'relief-flash 1s ease-in-out infinite', pointerEvents: 'none' }} />}
-      {isActive && alert === 'warning'  && <div style={{ position: 'absolute', inset: 0, borderRadius: 6, border: '2px solid rgba(251,191,36,0.5)', animation: 'relief-flash 2s ease-in-out infinite', pointerEvents: 'none' }} />}
+      {isActive && alert === 'critical' && <div style={{ position: 'absolute', inset: 0, borderRadius: 6, border: '2px solid color-mix(in srgb, var(--danger) 60%, transparent)', animation: 'relief-flash 1s ease-in-out infinite', pointerEvents: 'none' }} />}
+      {isActive && alert === 'warning'  && <div style={{ position: 'absolute', inset: 0, borderRadius: 6, border: '2px solid color-mix(in srgb, var(--warn) 50%, transparent)', animation: 'relief-flash 2s ease-in-out infinite', pointerEvents: 'none' }} />}
 
       <div style={{ display: 'flex', alignItems: 'flex-start', gap: 6, padding: '5px 7px' }}>
         {/* Working today checkbox */}
@@ -324,7 +324,7 @@ function StaffCard({ person, role, assignedStaffIds, currentHospital, supervisio
             {person.name}
           </div>
           {isVisiting && (
-            <div style={{ fontSize: 8, color: '#fb923c', fontWeight: 700, marginTop: 0 }}>
+            <div style={{ fontSize: 8, color: 'var(--warn)', fontWeight: 700, marginTop: 0 }}>
               visiting from {person.hospital}
             </div>
           )}
@@ -434,14 +434,14 @@ function DesignationBadge({ designation }: { designation: MDDesignation }) {
 }
 
 function SupervisionBadge({ load }: { load: SupervisionLoad }) {
-  const cc = load.overCrna ? '#f87171' : load.atCrna ? '#fbbf24' : '#34d399';
-  const rc = load.overResident ? '#f87171' : load.atResident ? '#fbbf24' : '#34d399';
+  const cc = load.overCrna ? 'var(--danger)' : load.atCrna ? 'var(--warn)' : 'var(--ok)';
+  const rc = load.overResident ? 'var(--danger)' : load.atResident ? 'var(--warn)' : 'var(--ok)';
   return (
     <div style={{ display: 'flex', gap: 2 }}>
-      <span style={{ fontSize: 9, fontWeight: 800, padding: '1px 4px', borderRadius: 3, background: 'rgba(' + hexToRgb(cc) + ',0.15)', color: cc, border: '1px solid rgba(' + hexToRgb(cc) + ',0.3)', fontFamily: 'var(--font-mono), ui-monospace, monospace' }}>
+      <span style={{ fontSize: 9, fontWeight: 800, padding: '1px 4px', borderRadius: 3, background: 'color-mix(in srgb, ' + cc + ' 15%, transparent)', color: cc, border: '1px solid color-mix(in srgb, ' + cc + ' 30%, transparent)', fontFamily: 'var(--font-mono), ui-monospace, monospace' }}>
         {load.crnaCount}/{SUPERVISION_LIMITS.crna}c
       </span>
-      <span style={{ fontSize: 9, fontWeight: 800, padding: '1px 4px', borderRadius: 3, background: 'rgba(' + hexToRgb(rc) + ',0.15)', color: rc, border: '1px solid rgba(' + hexToRgb(rc) + ',0.3)', fontFamily: 'var(--font-mono), ui-monospace, monospace' }}>
+      <span style={{ fontSize: 9, fontWeight: 800, padding: '1px 4px', borderRadius: 3, background: 'color-mix(in srgb, ' + rc + ' 15%, transparent)', color: rc, border: '1px solid color-mix(in srgb, ' + rc + ' 30%, transparent)', fontFamily: 'var(--font-mono), ui-monospace, monospace' }}>
         {load.residentCount}/{SUPERVISION_LIMITS.resident}r
       </span>
     </div>
@@ -452,8 +452,8 @@ function BreakCheckbox({ type, done, onChange }: { type: BreakType; done: boolea
   const labels: Record<BreakType, string> = { morning: 'AM', lunch: 'Lunch', afternoon: 'PM' };
   return (
     <label style={{ display: 'flex', alignItems: 'center', gap: 3, cursor: 'pointer', userSelect: 'none' }} onClick={(e) => e.stopPropagation()}>
-      <input type="checkbox" checked={done} onChange={(e) => onChange(e.target.checked)} style={{ width: 11, height: 11, accentColor: '#10b981', cursor: 'pointer' }} />
-      <span style={{ fontSize: 9, color: done ? '#10b981' : 'var(--text-dim)', fontWeight: 700, textDecoration: done ? 'line-through' : 'none' }}>
+      <input type="checkbox" checked={done} onChange={(e) => onChange(e.target.checked)} style={{ width: 11, height: 11, accentColor: 'var(--ok)', cursor: 'pointer' }} />
+      <span style={{ fontSize: 9, color: done ? 'var(--ok)' : 'var(--text-dim)', fontWeight: 700, textDecoration: done ? 'line-through' : 'none' }}>
         {labels[type]}
       </span>
     </label>

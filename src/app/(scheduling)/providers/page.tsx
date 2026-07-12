@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import Link from 'next/link';
 import { isValidEmail } from '@/lib/validation/providers';
+import { PageHeader, Card, Badge, Button, Table, EmptyState, Banner, Modal, type BadgeTone } from '@/components/ui';
 
 interface Provider {
   id: string;
@@ -51,11 +52,13 @@ const EMPLOYMENT_OPTIONS = [
   { value: 'contract', label: 'Contract' },
 ];
 
-const STATUS_COLORS: Record<string, string> = {
-  active: '#10b981',
-  inactive: '#64748b',
-  on_leave: '#fbbf24',
+const STATUS_TONES: Record<string, BadgeTone> = {
+  active: 'ok',
+  inactive: 'neutral',
+  on_leave: 'warn',
 };
+
+const TABLE_HEADERS = ['Name', 'Type', 'Status', 'Employment', 'FTE', 'Home Site', 'Call Taker', 'Fellowship', ''];
 
 export default function ProvidersPage() {
   const [providers, setProviders] = useState<Provider[]>([]);
@@ -139,25 +142,28 @@ export default function ProvidersPage() {
     });
   }, [providers, roleFilter]);
 
-  if (loading) return <div style={{ padding: 40, color: 'var(--text-muted)' }}>Loading...</div>;
+  if (loading) {
+    return (
+      <div>
+        <PageHeader title="Providers" />
+        <Card pad={false}>
+          <Table headers={TABLE_HEADERS} rows={undefined} minWidth={900} />
+        </Card>
+      </div>
+    );
+  }
 
   if (!orgId) {
     return <NoOrgSetup onCreated={(id) => setOrgId(id)} />;
   }
 
   return (
-    <div style={{ padding: '24px 32px' }}>
-      {/* Header */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24 }}>
-        <div>
-          <h1 style={{ fontSize: 22, fontWeight: 800, color: 'var(--text)' }}>Providers</h1>
-          <p style={{ fontSize: 13, color: 'var(--text-muted)', marginTop: 2 }}>{filteredProviders.length} provider{filteredProviders.length !== 1 ? 's' : ''}{roleFilter && providers.length !== filteredProviders.length ? ` of ${providers.length}` : ''}</p>
-        </div>
-        <button onClick={() => setShowAdd(true)} style={{
-          padding: '10px 20px', borderRadius: 8, cursor: 'pointer', fontWeight: 700, fontSize: 13,
-          background: 'linear-gradient(135deg,#0ea5e9,#6366f1)', color: '#fff', border: 'none',
-        }}>+ Add Provider</button>
-      </div>
+    <div>
+      <PageHeader
+        title="Providers"
+        subtitle={`${filteredProviders.length} provider${filteredProviders.length !== 1 ? 's' : ''}${roleFilter && providers.length !== filteredProviders.length ? ` of ${providers.length}` : ''}`}
+        actions={<Button onClick={() => setShowAdd(true)}>+ Add Provider</Button>}
+      />
 
       {/* Filters */}
       <div style={{ display: 'flex', gap: 10, marginBottom: 20, flexWrap: 'wrap' }}>
@@ -203,91 +209,64 @@ export default function ProvidersPage() {
       </div>
 
       {/* Table */}
-      <div style={{ background: 'var(--bg-surface)', border: '1px solid var(--border)', borderRadius: 12, overflow: 'hidden' }}>
-        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
-          <thead>
-            <tr style={{ borderBottom: '1px solid var(--border)', background: 'rgba(14,165,233,0.04)' }}>
-              {['Name', 'Type', 'Status', 'Employment', 'FTE', 'Home Site', 'Call Taker', 'Fellowship', 'Actions'].map(h => (
-                <th key={h} style={{ padding: '10px 14px', textAlign: 'left', fontSize: 10, fontWeight: 800, color: 'var(--text-dim)', letterSpacing: 1, textTransform: 'uppercase' }}>{h === 'Actions' ? '' : h}</th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {filteredProviders.map((p) => {
-              const prof = profile(p);
-              const tc = TYPE_COLORS[p.provider_type] || TYPE_COLORS.other;
-              return (
-                <tr key={p.id} style={{ borderBottom: '1px solid rgba(30,58,95,0.4)', cursor: 'pointer' }}>
-                  <td style={{ padding: '10px 14px' }}>
-                    <Link href={`/providers/${p.id}`} style={{ display: 'flex', alignItems: 'center', gap: 10, textDecoration: 'none', color: 'var(--text)' }}>
-                      <div style={{
-                        width: 32, height: 32, borderRadius: 8, display: 'flex', alignItems: 'center', justifyContent: 'center',
-                        fontSize: 11, fontWeight: 800, background: tc.bg, color: tc.color, flexShrink: 0,
-                      }}>{p.initials}</div>
-                      <div>
-                        <div style={{ fontWeight: 700 }}>{p.first_name} {p.last_name}</div>
-                        {p.email && <div style={{ fontSize: 11, color: 'var(--text-dim)' }}>{p.email}</div>}
-                      </div>
-                    </Link>
-                  </td>
-                  <td style={{ padding: '10px 14px' }}>
-                    <span style={{
-                      fontSize: 11, fontWeight: 700, padding: '3px 8px', borderRadius: 6,
-                      background: tc.bg, color: tc.color,
-                    }}>{tc.label}</span>
-                  </td>
-                  <td style={{ padding: '10px 14px' }}>
-                    <span style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
-                      <span style={{ width: 7, height: 7, borderRadius: '50%', background: STATUS_COLORS[p.status] || '#64748b' }} />
-                      <span style={{ fontSize: 12, color: 'var(--text-muted)', textTransform: 'capitalize' }}>{p.status.replace('_', ' ')}</span>
-                    </span>
-                  </td>
-                  <td style={{ padding: '10px 14px', fontSize: 12, color: 'var(--text-muted)' }}>
-                    {EMPLOYMENT_OPTIONS.find(o => o.value === prof?.employment_status)?.label || prof?.employment_status?.replace(/_/g, ' ') || '—'}
-                  </td>
-                  <td style={{ padding: '10px 14px', fontSize: 12, color: 'var(--text-muted)' }}>
-                    {prof?.fte_value != null ? Number(prof.fte_value).toFixed(2) : '—'}
-                  </td>
-                  <td style={{ padding: '10px 14px', fontSize: 12, color: 'var(--text-muted)' }}>
-                    {siteName(prof?.home_site_id ?? null)}
-                  </td>
-                  <td style={{ padding: '10px 14px' }}>
-                    {prof?.call_taker ? (
-                      <span style={{ fontSize: 11, fontWeight: 700, color: '#10b981' }}>Yes</span>
-                    ) : prof?.partial_call_taker ? (
-                      <span style={{ fontSize: 11, fontWeight: 700, color: '#fbbf24' }}>Partial</span>
-                    ) : (
-                      <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>No</span>
-                    )}
-                  </td>
-                  <td style={{ padding: '10px 14px', fontSize: 12, color: 'var(--text-muted)' }}>
-                    {prof?.fellowship_primary || '—'}
-                  </td>
-                  <td style={{ padding: '10px 14px', textAlign: 'right' }}>
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handleDelete(p.id, `${p.first_name} ${p.last_name}`);
-                      }}
-                      title="Delete provider"
-                      style={{
-                        fontSize: 11, fontWeight: 600, color: '#f87171', background: 'none',
-                        border: '1px solid rgba(248,113,113,0.3)', borderRadius: 6,
-                        padding: '4px 10px', cursor: 'pointer',
-                      }}
-                    >
-                      Delete
-                    </button>
-                  </td>
-                </tr>
-              );
-            })}
-            {filteredProviders.length === 0 && (
-              <tr><td colSpan={9} style={{ padding: '40px 14px', textAlign: 'center', color: 'var(--text-dim)', fontStyle: 'italic' }}>No providers found</td></tr>
-            )}
-          </tbody>
-        </table>
-      </div>
+      <Card pad={false}>
+        <Table
+          headers={TABLE_HEADERS}
+          minWidth={900}
+          rows={filteredProviders.map((p) => {
+            const prof = profile(p);
+            const tc = TYPE_COLORS[p.provider_type] || TYPE_COLORS.other;
+            return [
+              <Link key="name" href={`/providers/${p.id}`} style={{ display: 'flex', alignItems: 'center', gap: 10, textDecoration: 'none', color: 'var(--text)' }}>
+                <div style={{
+                  width: 32, height: 32, borderRadius: 8, display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  fontSize: 11, fontWeight: 800, background: tc.bg, color: tc.color, flexShrink: 0,
+                }}>{p.initials}</div>
+                <div>
+                  <div style={{ fontWeight: 700 }}>{p.first_name} {p.last_name}</div>
+                  {p.email && <div style={{ fontSize: 11, color: 'var(--text-dim)' }}>{p.email}</div>}
+                </div>
+              </Link>,
+              <span key="type" style={{
+                fontSize: 11, fontWeight: 700, padding: '3px 8px', borderRadius: 6,
+                background: tc.bg, color: tc.color, whiteSpace: 'nowrap',
+              }}>{tc.label}</span>,
+              <Badge key="status" tone={STATUS_TONES[p.status] || 'neutral'}>{p.status.replace('_', ' ')}</Badge>,
+              EMPLOYMENT_OPTIONS.find(o => o.value === prof?.employment_status)?.label || prof?.employment_status?.replace(/_/g, ' ') || '—',
+              prof?.fte_value != null ? Number(prof.fte_value).toFixed(2) : '—',
+              siteName(prof?.home_site_id ?? null),
+              prof?.call_taker ? (
+                <Badge key="ct" tone="ok">Yes</Badge>
+              ) : prof?.partial_call_taker ? (
+                <Badge key="ct" tone="warn">Partial</Badge>
+              ) : (
+                <Badge key="ct" tone="neutral">No</Badge>
+              ),
+              prof?.fellowship_primary || '—',
+              <div key="actions" style={{ textAlign: 'right' }}>
+                <Button
+                  variant="danger"
+                  size="sm"
+                  title="Delete provider"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleDelete(p.id, `${p.first_name} ${p.last_name}`);
+                  }}
+                >
+                  Delete
+                </Button>
+              </div>,
+            ];
+          })}
+          empty={
+            <EmptyState
+              icon="◆"
+              title="No providers found"
+              hint="Add your first provider, or loosen the search and filters to see more of the roster."
+            />
+          }
+        />
+      </Card>
 
       {showAdd && <AddProviderModal orgId={orgId} sites={sites} onClose={() => setShowAdd(false)} onAdded={() => { setShowAdd(false); loadProviders(); }} />}
     </div>
@@ -316,19 +295,18 @@ function NoOrgSetup({ onCreated }: { onCreated: (id: string) => void }) {
   };
 
   return (
-    <div style={{ padding: 40, maxWidth: 460 }}>
-      <h1 style={{ fontSize: 22, fontWeight: 800, color: 'var(--text)', marginBottom: 8 }}>Welcome to FloorRunner</h1>
-      <p style={{ fontSize: 14, color: 'var(--text-muted)', marginBottom: 24 }}>Create your organization to get started.</p>
+    <div style={{ maxWidth: 460 }}>
+      <PageHeader
+        title="Welcome to FloorRunner"
+        subtitle="Create your organization to get started."
+      />
       <input
         placeholder="Organization name (e.g. Main Line Anesthesia)"
         value={name} onChange={(e) => setName(e.target.value)}
         onKeyDown={(e) => e.key === 'Enter' && create()}
         style={{ width: '100%', padding: '12px 16px', borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg-deep)', color: 'var(--text)', fontSize: 14, marginBottom: 12 }}
       />
-      <button onClick={create} disabled={creating} style={{
-        padding: '10px 24px', borderRadius: 8, cursor: 'pointer', fontWeight: 700, fontSize: 13,
-        background: 'linear-gradient(135deg,#0ea5e9,#6366f1)', color: '#fff', border: 'none', opacity: creating ? 0.5 : 1,
-      }}>{creating ? 'Creating...' : 'Create Organization'}</button>
+      <Button onClick={create} disabled={creating}>{creating ? 'Creating...' : 'Create Organization'}</Button>
     </div>
   );
 }
@@ -404,146 +382,152 @@ function AddProviderModal({ orgId, sites, onClose, onAdded }: { orgId: string; s
     color: 'var(--text)', fontSize: 14, marginBottom: 12,
   };
   const labelStyle: React.CSSProperties = { fontSize: 11, color: 'var(--text-muted)', display: 'block', marginBottom: 5, fontWeight: 600, letterSpacing: 0.5 };
-  const errorStyle: React.CSSProperties = { fontSize: 10, color: '#f87171', marginBottom: 8, marginTop: 2 };
+  const errorStyle: React.CSSProperties = { fontSize: 10, color: 'var(--danger)', marginBottom: 8, marginTop: 2 };
 
   return (
-    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.75)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 200 }} onClick={onClose}>
-      <div className="modal-box" style={{ background: 'var(--bg-surface)', border: '1px solid var(--border)', borderRadius: 16, padding: 28, width: 520, maxHeight: '85vh', overflowY: 'auto' }} onClick={e => e.stopPropagation()}>
-        <div style={{ fontSize: 17, fontWeight: 800, color: '#f1f5f9', marginBottom: 22 }}>Add Provider</div>
-
-        {error && (
-          <div style={{
-            background: 'rgba(248,113,113,0.1)', border: '1px solid rgba(248,113,113,0.3)',
-            color: '#f87171', padding: '10px 14px', borderRadius: 8, marginBottom: 14, fontSize: 13,
-          }}>{error}</div>
-        )}
-
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 12 }}>
-          <div>
-            <label style={labelStyle}>First Name *</label>
-            <input
-              style={{ ...inputStyle, border: `1px solid ${errors.firstName ? 'rgba(248,113,113,0.6)' : 'var(--border)'}`, marginBottom: errors.firstName ? 2 : 12 }}
-              placeholder="Jane" value={firstName} onChange={e => setFirstName(e.target.value)}
-            />
-            {errors.firstName && <div style={errorStyle}>{errors.firstName}</div>}
-          </div>
-          <div>
-            <label style={labelStyle}>Last Name *</label>
-            <input
-              style={{ ...inputStyle, border: `1px solid ${errors.lastName ? 'rgba(248,113,113,0.6)' : 'var(--border)'}`, marginBottom: errors.lastName ? 2 : 12 }}
-              placeholder="Smith" value={lastName} onChange={e => setLastName(e.target.value)}
-            />
-            {errors.lastName && <div style={errorStyle}>{errors.lastName}</div>}
-          </div>
+    <Modal
+      open
+      onClose={onClose}
+      title="Add Provider"
+      width={520}
+      footer={
+        <>
+          <Button variant="secondary" onClick={onClose}>Cancel</Button>
+          <Button onClick={submit} disabled={!canSubmit}>{saving ? 'Adding...' : 'Add Provider'}</Button>
+        </>
+      }
+    >
+      {error && (
+        <div style={{ marginBottom: 14 }}>
+          <Banner tone="error">{error}</Banner>
         </div>
+      )}
 
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-          <div>
-            <label style={labelStyle}>Email</label>
-            <input
-              style={{ ...inputStyle, border: `1px solid ${errors.email ? 'rgba(248,113,113,0.6)' : 'var(--border)'}`, marginBottom: errors.email ? 2 : 12 }}
-              placeholder="jane.smith@hospital.org" value={email} onChange={e => setEmail(e.target.value)}
-            />
-            {errors.email && <div style={errorStyle}>{errors.email}</div>}
-          </div>
-          <div>
-            <label style={labelStyle}>Phone</label>
-            <input style={inputStyle} placeholder="(555) 123-4567" value={phone} onChange={e => setPhone(e.target.value)} />
-          </div>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 12 }}>
+        <div>
+          <label style={labelStyle}>First Name *</label>
+          <input
+            style={{ ...inputStyle, border: `1px solid ${errors.firstName ? 'var(--danger)' : 'var(--border)'}`, marginBottom: errors.firstName ? 2 : 12 }}
+            placeholder="Jane" value={firstName} onChange={e => setFirstName(e.target.value)}
+          />
+          {errors.firstName && <div style={errorStyle}>{errors.firstName}</div>}
         </div>
-
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-          <div>
-            <label style={labelStyle}>NPI</label>
-            <input style={inputStyle} placeholder="1234567890" value={npi} onChange={e => setNpi(e.target.value)} />
-          </div>
-          <div>
-            <label style={labelStyle}>Employee ID</label>
-            <input style={inputStyle} placeholder="E12345" value={employeeId} onChange={e => setEmployeeId(e.target.value)} />
-          </div>
+        <div>
+          <label style={labelStyle}>Last Name *</label>
+          <input
+            style={{ ...inputStyle, border: `1px solid ${errors.lastName ? 'var(--danger)' : 'var(--border)'}`, marginBottom: errors.lastName ? 2 : 12 }}
+            placeholder="Smith" value={lastName} onChange={e => setLastName(e.target.value)}
+          />
+          {errors.lastName && <div style={errorStyle}>{errors.lastName}</div>}
         </div>
+      </div>
 
-        <label style={labelStyle}>Provider Type</label>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 6, marginBottom: 14 }}>
-          {Object.entries(TYPE_COLORS).map(([t, c]) => (
-            <button key={t} onClick={() => setProviderType(t)} style={{
-              padding: '7px 10px', borderRadius: 8, cursor: 'pointer', fontSize: 11, fontWeight: 700,
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+        <div>
+          <label style={labelStyle}>Email</label>
+          <input
+            style={{ ...inputStyle, border: `1px solid ${errors.email ? 'var(--danger)' : 'var(--border)'}`, marginBottom: errors.email ? 2 : 12 }}
+            placeholder="jane.smith@hospital.org" value={email} onChange={e => setEmail(e.target.value)}
+          />
+          {errors.email && <div style={errorStyle}>{errors.email}</div>}
+        </div>
+        <div>
+          <label style={labelStyle}>Phone</label>
+          <input style={inputStyle} placeholder="(555) 123-4567" value={phone} onChange={e => setPhone(e.target.value)} />
+        </div>
+      </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+        <div>
+          <label style={labelStyle}>NPI</label>
+          <input style={inputStyle} placeholder="1234567890" value={npi} onChange={e => setNpi(e.target.value)} />
+        </div>
+        <div>
+          <label style={labelStyle}>Employee ID</label>
+          <input style={inputStyle} placeholder="E12345" value={employeeId} onChange={e => setEmployeeId(e.target.value)} />
+        </div>
+      </div>
+
+      <label style={labelStyle}>Provider Type</label>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 6, marginBottom: 14 }}>
+        {Object.entries(TYPE_COLORS).map(([t, c]) => (
+          <Button
+            key={t}
+            variant="secondary"
+            size="sm"
+            onClick={() => setProviderType(t)}
+            style={{
               border: `1px solid ${providerType === t ? c.color : 'var(--border)'}`,
               background: providerType === t ? c.bg : 'transparent',
               color: providerType === t ? c.color : 'var(--text-muted)',
-            }}>{c.label}</button>
-          ))}
+              fontWeight: 700,
+            }}
+          >
+            {c.label}
+          </Button>
+        ))}
+      </div>
+
+      <label style={labelStyle}>Employment Status</label>
+      <select value={employmentStatus} onChange={e => setEmploymentStatus(e.target.value)} style={{ ...inputStyle, cursor: 'pointer' }}>
+        {EMPLOYMENT_OPTIONS.map(o => (
+          <option key={o.value} value={o.value}>{o.label}</option>
+        ))}
+      </select>
+
+      <label style={labelStyle}>Home Address</label>
+      <input style={inputStyle} placeholder="123 Main St, City, State" value={homeAddress} onChange={e => setHomeAddress(e.target.value)} />
+
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 12 }}>
+        <div>
+          <label style={labelStyle}>Home Hospital / Surgery Center</label>
+          <select value={homeSiteId} onChange={e => setHomeSiteId(e.target.value)} style={{ ...inputStyle, cursor: 'pointer' }}>
+            <option value="">— None —</option>
+            {sites.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+          </select>
         </div>
-
-        <label style={labelStyle}>Employment Status</label>
-        <select value={employmentStatus} onChange={e => setEmploymentStatus(e.target.value)} style={{ ...inputStyle, cursor: 'pointer' }}>
-          {EMPLOYMENT_OPTIONS.map(o => (
-            <option key={o.value} value={o.value}>{o.label}</option>
-          ))}
-        </select>
-
-        <label style={labelStyle}>Home Address</label>
-        <input style={inputStyle} placeholder="123 Main St, City, State" value={homeAddress} onChange={e => setHomeAddress(e.target.value)} />
-
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 12 }}>
-          <div>
-            <label style={labelStyle}>Home Hospital / Surgery Center</label>
-            <select value={homeSiteId} onChange={e => setHomeSiteId(e.target.value)} style={{ ...inputStyle, cursor: 'pointer' }}>
-              <option value="">— None —</option>
-              {sites.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
-            </select>
-          </div>
-          <div>
-            <label style={labelStyle}>Start Date with Company</label>
-            <input type="date" style={inputStyle} value={startDate} onChange={e => setStartDate(e.target.value)} />
-          </div>
-        </div>
-
-        <div style={{ display: 'flex', gap: 16, marginBottom: 14, flexWrap: 'wrap' }}>
-          <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, color: 'var(--text-muted)', cursor: 'pointer' }}>
-            <input
-              type="checkbox"
-              checked={callTaker}
-              onChange={e => {
-                const v = e.target.checked;
-                setCallTaker(v);
-                if (v) setIsDayDoc(false);
-              }}
-              style={{ accentColor: '#0ea5e9' }}
-            />
-            Call Taker
-          </label>
-          <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, color: 'var(--text-muted)', cursor: 'pointer' }}>
-            <input
-              type="checkbox"
-              checked={isDayDoc}
-              onChange={e => {
-                const v = e.target.checked;
-                setIsDayDoc(v);
-                if (v) setCallTaker(false);
-              }}
-              style={{ accentColor: '#8b5cf6' }}
-            />
-            Day Doc
-          </label>
-          <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, color: 'var(--text-muted)', cursor: 'pointer' }}>
-            <input type="checkbox" checked={isPartner} onChange={e => { setIsPartner(e.target.checked); if (e.target.checked) setIsPartnerTrack(false); }} style={{ accentColor: '#10b981' }} />
-            Partner
-          </label>
-          <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, color: 'var(--text-muted)', cursor: 'pointer' }}>
-            <input type="checkbox" checked={isPartnerTrack} onChange={e => { setIsPartnerTrack(e.target.checked); if (e.target.checked) setIsPartner(false); }} style={{ accentColor: '#fbbf24' }} />
-            Partner Track
-          </label>
-        </div>
-
-        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 12 }}>
-          <button onClick={onClose} style={{ padding: '9px 18px', borderRadius: 8, cursor: 'pointer', background: 'transparent', color: 'var(--text-muted)', border: '1px solid var(--border)', fontWeight: 600, fontSize: 13 }}>Cancel</button>
-          <button onClick={submit} disabled={!canSubmit} style={{
-            padding: '9px 20px', borderRadius: 8, cursor: canSubmit ? 'pointer' : 'not-allowed', fontWeight: 700, fontSize: 13,
-            background: 'linear-gradient(135deg,#0ea5e9,#6366f1)', color: '#fff', border: 'none', opacity: canSubmit ? 1 : 0.5,
-          }}>{saving ? 'Adding...' : 'Add Provider'}</button>
+        <div>
+          <label style={labelStyle}>Start Date with Company</label>
+          <input type="date" style={inputStyle} value={startDate} onChange={e => setStartDate(e.target.value)} />
         </div>
       </div>
-    </div>
+
+      <div style={{ display: 'flex', gap: 16, marginBottom: 14, flexWrap: 'wrap' }}>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, color: 'var(--text-muted)', cursor: 'pointer' }}>
+          <input
+            type="checkbox"
+            checked={callTaker}
+            onChange={e => {
+              const v = e.target.checked;
+              setCallTaker(v);
+              if (v) setIsDayDoc(false);
+            }}
+            style={{ accentColor: '#0ea5e9' }}
+          />
+          Call Taker
+        </label>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, color: 'var(--text-muted)', cursor: 'pointer' }}>
+          <input
+            type="checkbox"
+            checked={isDayDoc}
+            onChange={e => {
+              const v = e.target.checked;
+              setIsDayDoc(v);
+              if (v) setCallTaker(false);
+            }}
+            style={{ accentColor: '#8b5cf6' }}
+          />
+          Day Doc
+        </label>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, color: 'var(--text-muted)', cursor: 'pointer' }}>
+          <input type="checkbox" checked={isPartner} onChange={e => { setIsPartner(e.target.checked); if (e.target.checked) setIsPartnerTrack(false); }} style={{ accentColor: '#10b981' }} />
+          Partner
+        </label>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, color: 'var(--text-muted)', cursor: 'pointer' }}>
+          <input type="checkbox" checked={isPartnerTrack} onChange={e => { setIsPartnerTrack(e.target.checked); if (e.target.checked) setIsPartner(false); }} style={{ accentColor: '#fbbf24' }} />
+          Partner Track
+        </label>
+      </div>
+    </Modal>
   );
 }

@@ -54,8 +54,8 @@ export default function OutListPanel({ staff, designations }: Props) {
             if (!person) return null;
             const isC2 = desg === 'C2';
             return (
-              <div key={desg} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '5px 6px', borderRadius: 7, marginBottom: 3, background: i === 0 ? 'rgba(16,185,129,0.07)' : 'transparent', border: i === 0 ? '1px solid rgba(16,185,129,0.2)' : '1px solid transparent' }}>
-                <span style={{ fontSize: 10, fontWeight: 800, color: i === 0 ? '#10b981' : 'var(--text-dim)', width: 16, textAlign: 'center' }}>{i + 1}</span>
+              <div key={desg} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '5px 6px', borderRadius: 7, marginBottom: 3, background: i === 0 ? 'color-mix(in srgb, var(--ok) 7%, transparent)' : 'transparent', border: i === 0 ? '1px solid color-mix(in srgb, var(--ok) 20%, transparent)' : '1px solid transparent' }}>
+                <span style={{ fontSize: 10, fontWeight: 800, color: i === 0 ? 'var(--ok)' : 'var(--text-dim)', width: 16, textAlign: 'center' }}>{i + 1}</span>
                 <div style={{ width: 24, height: 24, borderRadius: 6, background: 'rgba(245,158,11,0.15)', color: '#f59e0b', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 10, fontWeight: 800 }}>
                   {person.initials}
                 </div>

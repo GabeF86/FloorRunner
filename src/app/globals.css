@@ -49,6 +49,20 @@
   /* Brand accents (constant in both themes) */
   --blue:    #0ea5e9;
   --indigo:  #6366f1;
+  --on-accent: #ffffff; /* text placed on a solid accent fill */
+
+  /* ── Design scales (theme-invariant) ── */
+  --space-1: 4px;  --space-2: 8px;  --space-3: 12px; --space-4: 16px;
+  --space-5: 20px; --space-6: 24px; --space-7: 32px; --space-8: 48px;
+  --radius-sm: 6px; --radius-md: 10px; --radius-lg: 14px;
+  --fs-xs: 11px; --fs-sm: 12.5px; --fs-md: 14px; --fs-lg: 17px; --fs-xl: 22px;
+  --focus-ring: 0 0 0 2px var(--bg-base), 0 0 0 4px var(--blue);
+
+  /* Semantic status (soft -bg tints pair with solid tone text) */
+  --ok:     #34d399; --ok-bg:     rgba(52,211,153,.12);
+  --warn:   #fbbf24; --warn-bg:   rgba(251,191,36,.12);
+  --danger: #f87171; --danger-bg: rgba(248,113,113,.12);
+  --info:   #60a5fa; --info-bg:   rgba(96,165,250,.12);
 }
 
 /* ── Light theme ─────────────────────────────────────────────────────────── */
@@ -88,6 +102,17 @@
   --shadow-card:    0 1px 3px rgba(15,23,42,0.06), 0 4px 14px rgba(15,23,42,0.07);
   --shadow-modal:   0 12px 48px rgba(15,23,42,0.18);
   --shadow-popover: 0 8px 28px rgba(15,23,42,0.15);
+
+  /* Brand accents — deeper on light surfaces so small accent text meets AA
+     (the :root values sit at ~2.4:1 on white) */
+  --blue:   #0284c7;
+  --indigo: #4f46e5;
+
+  /* Semantic status — deeper tones for light surfaces */
+  --ok:     #059669; --ok-bg:     rgba(5,150,105,.10);
+  --warn:   #b45309; --warn-bg:   rgba(180,83,9,.10);
+  --danger: #dc2626; --danger-bg: rgba(220,38,38,.10);
+  --info:   #2563eb; --info-bg:   rgba(37,99,235,.10);
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -132,4 +157,26 @@ body {
 @keyframes relief-flash {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.2; }
+}
+
+/* ── Shared component helpers (src/components/ui) ────────────────────────── */
+
+/* Keyboard focus ring for interactive elements */
+.fr-focus:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+
+/* Quiet row hover for Table body rows */
+.fr-row:hover { background: var(--tint-surface-faint); }
+
+/* Skeleton shimmer */
+@keyframes skeleton-pulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.4; }
+}
+.fr-skeleton { animation: skeleton-pulse 1.4s ease-in-out infinite; }
+
+/* Spinner rotation */
+@keyframes fr-spin { to { transform: rotate(360deg); } }
+
+@media (prefers-reduced-motion: reduce) {
+  .fr-skeleton, .modal-box, .site-card { animation: none; }
 }

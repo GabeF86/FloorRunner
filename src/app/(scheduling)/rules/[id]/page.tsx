@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
+import { Card, Badge, Button, Modal, Banner, EmptyState } from '@/components/ui';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -90,12 +91,6 @@ CATEGORIES.forEach(c => { CAT_COLOR_MAP[c.value] = c.color; });
 
 const DAY_TYPES = ['weekday', 'friday', 'saturday', 'sunday', 'federal_holiday', 'major_holiday'];
 
-const STATUS_COLORS: Record<string, { color: string; bg: string }> = {
-  draft:    { color: '#64748b', bg: 'rgba(100,116,139,0.15)' },
-  active:   { color: '#10b981', bg: 'rgba(16,185,129,0.15)' },
-  archived: { color: '#334155', bg: 'rgba(51,65,85,0.15)' },
-};
-
 // ── Shared Styles ─────────────────────────────────────────────────────────────
 
 const inputStyle: React.CSSProperties = {
@@ -149,44 +144,37 @@ function ActivitySummary({ activity, ruleSetStatus }: {
 }) {
   if (!activity) {
     return (
-      <div style={{
-        background: 'var(--bg-surface)', border: '1px solid var(--border)', borderRadius: 12,
-        padding: '14px 18px', marginBottom: 24, fontSize: 12, color: 'var(--text-dim)',
-      }}>
-        Loading activity…
-      </div>
+      <Card style={{ marginBottom: 24 }}>
+        <span style={{ fontSize: 12, color: 'var(--text-dim)' }}>Loading activity…</span>
+      </Card>
     );
   }
   const isInactive = ruleSetStatus !== 'active';
   const hasFires = activity.total_violations > 0;
 
   return (
-    <div style={{
-      background: 'var(--bg-surface)', border: '1px solid var(--border)', borderRadius: 12,
-      padding: '14px 18px', marginBottom: 24,
-    }}>
-      <div style={{ display: 'flex', alignItems: 'baseline', gap: 12, marginBottom: isInactive || activity.assignments_checked === 0 ? 8 : 12 }}>
-        <span style={{ fontSize: 14, fontWeight: 700, color: 'var(--text)' }}>Rule activity</span>
+    <Card
+      title="Rule activity"
+      actions={
         <span style={{ fontSize: 11, color: 'var(--text-dim)', fontFamily: 'var(--font-mono), ui-monospace, monospace' }}>
           across all schedules at this site
         </span>
-      </div>
-
+      }
+      style={{ marginBottom: 24 }}
+    >
       {isInactive && (
-        <div style={{
-          padding: '6px 10px', borderRadius: 6, marginBottom: 8,
-          background: 'rgba(245,158,11,0.10)', border: '0.5px solid rgba(245,158,11,0.30)',
-          color: '#b45309', fontSize: 11, fontWeight: 600,
-        }}>
-          ⚠ This rule set is <strong>{ruleSetStatus}</strong> — the algorithm is not consulting these rules. Activate the set to start enforcing.
+        <div style={{ marginBottom: 8 }}>
+          <Banner tone="warn">
+            This rule set is <strong>{ruleSetStatus}</strong> — the algorithm is not consulting these rules. Activate the set to start enforcing.
+          </Banner>
         </div>
       )}
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: hasFires ? 12 : 0 }}>
         <Stat label="Assignments checked" value={activity.assignments_checked} fontMono />
-        <Stat label="Clean" value={activity.assignments_checked - activity.assignments_with_violations} color="#16a34a" fontMono />
-        <Stat label="Hard violations" value={activity.hard_count} color={activity.hard_count > 0 ? '#dc2626' : 'var(--text-dim)'} fontMono />
-        <Stat label="Soft violations" value={activity.soft_count} color={activity.soft_count > 0 ? '#b45309' : 'var(--text-dim)'} fontMono />
+        <Stat label="Clean" value={activity.assignments_checked - activity.assignments_with_violations} color="var(--ok)" fontMono />
+        <Stat label="Hard violations" value={activity.hard_count} color={activity.hard_count > 0 ? 'var(--danger)' : 'var(--text-dim)'} fontMono />
+        <Stat label="Soft violations" value={activity.soft_count} color={activity.soft_count > 0 ? 'var(--warn)' : 'var(--text-dim)'} fontMono />
       </div>
 
       {!isInactive && activity.assignments_checked === 0 && (
@@ -194,7 +182,7 @@ function ActivitySummary({ activity, ruleSetStatus }: {
           No assignments at this site have been validated yet. Run auto-generate on a schedule for this site to populate the counts.
         </div>
       )}
-    </div>
+    </Card>
   );
 }
 
@@ -346,18 +334,14 @@ export default function RuleSetDetailPage({ params }: { params: { id: string } }
     groupedRules[r.rule_category].push(r);
   });
 
-  const sc = STATUS_COLORS[ruleSet.status] || STATUS_COLORS.draft;
-
   return (
     <div style={{ padding: '24px 32px', maxWidth: 1100 }}>
       {/* Back link */}
-      <button onClick={() => router.push('/rules')} style={{
-        background: 'none', border: 'none', color: 'var(--text-dim)', cursor: 'pointer',
-        fontSize: 13, fontWeight: 600, marginBottom: 16, padding: 0,
-        display: 'flex', alignItems: 'center', gap: 6,
-      }}>
-        <span style={{ fontSize: 16 }}>&larr;</span> Back to Rules
-      </button>
+      <div style={{ marginBottom: 16 }}>
+        <Button variant="ghost" size="sm" onClick={() => router.push('/rules')}>
+          <span style={{ fontSize: 16 }}>&larr;</span> Back to Rules
+        </Button>
+      </div>
 
       {/* Header */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 28, flexWrap: 'wrap', gap: 12 }}>
@@ -371,7 +355,7 @@ export default function RuleSetDetailPage({ params }: { params: { id: string } }
                 onKeyDown={e => { if (e.key === 'Enter') saveName(); if (e.key === 'Escape') { setEditingName(false); setNameValue(ruleSet.name); } }}
                 style={{ ...inputStyle, fontSize: 20, fontWeight: 800, marginBottom: 0, flex: 1 }}
               />
-              <button onClick={saveName} style={{ padding: '8px 14px', borderRadius: 8, background: 'linear-gradient(135deg,#0ea5e9,#6366f1)', color: '#fff', border: 'none', fontWeight: 700, fontSize: 12, cursor: 'pointer' }}>Save</button>
+              <Button size="sm" onClick={saveName}>Save</Button>
             </div>
           ) : (
             <h1
@@ -381,14 +365,8 @@ export default function RuleSetDetailPage({ params }: { params: { id: string } }
             >{ruleSet.name}</h1>
           )}
           <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-            <span style={{
-              fontSize: 11, fontWeight: 700, padding: '3px 10px', borderRadius: 6,
-              background: 'rgba(14,165,233,0.12)', color: '#0ea5e9',
-            }}>{ruleSet.sites?.name || 'Unknown Site'}</span>
-            <span style={{
-              fontSize: 11, fontWeight: 700, padding: '3px 10px', borderRadius: 6,
-              background: sc.bg, color: sc.color, textTransform: 'capitalize',
-            }}>{ruleSet.status}</span>
+            <Badge tone="info">{ruleSet.sites?.name || 'Unknown Site'}</Badge>
+            <Badge tone={ruleSet.status === 'active' ? 'ok' : 'neutral'}>{ruleSet.status}</Badge>
             <span style={{ fontSize: 12, color: 'var(--text-dim)' }}>{rules.length} rule{rules.length !== 1 ? 's' : ''}</span>
           </div>
         </div>
@@ -396,42 +374,32 @@ export default function RuleSetDetailPage({ params }: { params: { id: string } }
         {/* Status actions */}
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
           {ruleSet.status === 'draft' && (
-            <button onClick={() => updateStatus('active')} style={{
-              padding: '9px 18px', borderRadius: 8, cursor: 'pointer', fontWeight: 700, fontSize: 13,
-              background: 'rgba(16,185,129,0.15)', color: '#10b981', border: '1px solid rgba(16,185,129,0.3)',
-            }}>Activate</button>
+            <Button onClick={() => updateStatus('active')}>Activate</Button>
           )}
           {ruleSet.status === 'active' && (
-            <button onClick={() => updateStatus('draft')} style={{
-              padding: '9px 18px', borderRadius: 8, cursor: 'pointer', fontWeight: 700, fontSize: 13,
-              background: 'rgba(100,116,139,0.15)', color: '#64748b', border: '1px solid rgba(100,116,139,0.3)',
-            }}>Deactivate</button>
+            <Button variant="secondary" onClick={() => updateStatus('draft')}>Deactivate</Button>
           )}
           {ruleSet.status !== 'archived' && (
-            <button onClick={archiveSet} style={{
-              padding: '9px 18px', borderRadius: 8, cursor: 'pointer', fontWeight: 700, fontSize: 13,
-              background: 'transparent', color: 'var(--text-dim)', border: '1px solid var(--border)',
-            }}>Archive</button>
+            <Button variant="ghost" onClick={archiveSet}>Archive</Button>
           )}
         </div>
       </div>
 
       {/* Plain text rules input */}
-      <div style={{
-        background: 'var(--bg-surface)', border: '1px solid var(--border)', borderRadius: 12,
-        padding: 20, marginBottom: 28,
-      }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-          <div style={{ display: 'flex', alignItems: 'center' }}>
-            <span style={{ fontSize: 14, fontWeight: 700, color: 'var(--text)' }}>Plain-Language Rules</span>
+      <Card
+        title={
+          <span style={{ display: 'inline-flex', alignItems: 'center' }}>
+            Plain-Language Rules
             <InfoTip text="Paste your scheduling rules in plain language here. In the future, AI will parse these into structured rules automatically." />
-          </div>
-          <button onClick={savePlainText} disabled={savingText} style={{
-            padding: '6px 14px', borderRadius: 6, cursor: 'pointer', fontWeight: 600, fontSize: 12,
-            background: savingText ? 'var(--border)' : 'linear-gradient(135deg,#0ea5e9,#6366f1)',
-            color: '#fff', border: 'none', opacity: savingText ? 0.5 : 1,
-          }}>{savingText ? 'Saving...' : 'Save Text'}</button>
-        </div>
+          </span>
+        }
+        actions={
+          <Button size="sm" onClick={savePlainText} disabled={savingText}>
+            {savingText ? 'Saving...' : 'Save Text'}
+          </Button>
+        }
+        style={{ marginBottom: 28 }}
+      >
         <textarea
           value={plainText}
           onChange={e => setPlainText(e.target.value)}
@@ -441,7 +409,7 @@ export default function RuleSetDetailPage({ params }: { params: { id: string } }
             fontFamily: 'inherit', lineHeight: 1.6,
           }}
         />
-      </div>
+      </Card>
 
       {/* Activity summary across all schedules at this site */}
       <ActivitySummary activity={activity} ruleSetStatus={ruleSet.status} />
@@ -450,20 +418,19 @@ export default function RuleSetDetailPage({ params }: { params: { id: string } }
       {/* Add Rule button */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
         <span style={{ fontSize: 16, fontWeight: 800, color: 'var(--text)' }}>Rule Definitions</span>
-        <button onClick={() => { setEditingRule(null); setShowAddRule(true); }} style={{
-          padding: '9px 18px', borderRadius: 8, cursor: 'pointer', fontWeight: 700, fontSize: 13,
-          background: 'linear-gradient(135deg,#0ea5e9,#6366f1)', color: '#fff', border: 'none',
-        }}>+ Add Rule</button>
+        <Button onClick={() => { setEditingRule(null); setShowAddRule(true); }}>+ Add Rule</Button>
       </div>
 
       {/* Rules grouped by category */}
       {rules.length === 0 && (
-        <div style={{
-          background: 'var(--bg-surface)', border: '1px solid var(--border)', borderRadius: 12,
-          padding: 48, textAlign: 'center', color: 'var(--text-dim)', fontStyle: 'italic',
-        }}>
-          No rules defined yet. Click &quot;Add Rule&quot; to create your first scheduling rule.
-        </div>
+        <Card>
+          <EmptyState
+            icon="§"
+            title="No rules defined yet"
+            hint='Click "Add Rule" to create your first scheduling rule.'
+            action={<Button size="sm" onClick={() => { setEditingRule(null); setShowAddRule(true); }}>+ Add Rule</Button>}
+          />
+        </Card>
       )}
 
       {CATEGORIES.filter(c => groupedRules[c.value]).map(cat => {
@@ -506,16 +473,9 @@ export default function RuleSetDetailPage({ params }: { params: { id: string } }
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4, flexWrap: 'wrap' }}>
                         <span style={{ fontSize: 14, fontWeight: 700, color: rule.is_active ? 'var(--text)' : 'var(--text-dim)' }}>{rule.rule_name}</span>
-                        <span style={{
-                          fontSize: 10, fontWeight: 700, padding: '2px 7px', borderRadius: 4,
-                          background: rule.hard_constraint ? 'rgba(239,68,68,0.12)' : 'rgba(245,158,11,0.12)',
-                          color: rule.hard_constraint ? '#ef4444' : '#f59e0b',
-                        }}>{rule.hard_constraint ? 'Hard' : 'Soft'}</span>
+                        <Badge tone={rule.hard_constraint ? 'danger' : 'warn'}>{rule.hard_constraint ? 'Hard' : 'Soft'}</Badge>
                         <span style={{ fontSize: 10, color: 'var(--text-dim)', fontWeight: 600 }}>Priority: {rule.priority_rank}</span>
-                        <span style={{
-                          fontSize: 10, fontWeight: 600, padding: '2px 7px', borderRadius: 4,
-                          background: 'rgba(99,102,241,0.1)', color: '#818cf8',
-                        }}>{rule.applies_to_provider_group}</span>
+                        <Badge tone="info">{rule.applies_to_provider_group}</Badge>
                         <RuleActivityBadge activity={activity} ruleId={rule.id} isActive={rule.is_active} />
                       </div>
                       {rule.explanation_text && (
@@ -555,14 +515,8 @@ export default function RuleSetDetailPage({ params }: { params: { id: string } }
                           left: rule.is_active ? 18 : 2,
                         }} />
                       </button>
-                      <button onClick={() => { setEditingRule(rule); setShowAddRule(true); }} style={{
-                        padding: '5px 10px', borderRadius: 6, cursor: 'pointer', fontWeight: 600, fontSize: 11,
-                        background: 'transparent', color: '#0ea5e9', border: '1px solid rgba(14,165,233,0.3)',
-                      }}>Edit</button>
-                      <button onClick={() => deleteRule(rule.id)} style={{
-                        padding: '5px 10px', borderRadius: 6, cursor: 'pointer', fontWeight: 600, fontSize: 11,
-                        background: 'transparent', color: '#ef4444', border: '1px solid rgba(239,68,68,0.3)',
-                      }}>Del</button>
+                      <Button variant="secondary" size="sm" onClick={() => { setEditingRule(rule); setShowAddRule(true); }}>Edit</Button>
+                      <Button variant="danger" size="sm" onClick={() => deleteRule(rule.id)}>Del</Button>
                     </div>
                   </div>
                 ))}
@@ -726,15 +680,20 @@ function RuleBuilderModal({ ruleSetId, shiftTypes, existing, onClose, onSaved }:
   const shiftOptions = shiftTypes.map(st => ({ value: st.code, label: `${st.code} - ${st.name}` }));
 
   return (
-    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.75)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 200 }} onClick={onClose}>
-      <div className="modal-box" style={{
-        background: 'var(--bg-surface)', border: '1px solid var(--border)', borderRadius: 16,
-        padding: 28, width: 620, maxHeight: '90vh', overflowY: 'auto',
-      }} onClick={e => e.stopPropagation()}>
-        <div style={{ fontSize: 17, fontWeight: 800, color: '#f1f5f9', marginBottom: 22 }}>
-          {isEdit ? 'Edit Rule' : 'Add Rule'}
-        </div>
-
+    <Modal
+      open
+      onClose={onClose}
+      title={isEdit ? 'Edit Rule' : 'Add Rule'}
+      width={620}
+      footer={
+        <>
+          <Button variant="secondary" onClick={onClose}>Cancel</Button>
+          <Button onClick={submit} disabled={saving || !ruleName.trim()}>
+            {saving ? 'Saving...' : (isEdit ? 'Update Rule' : 'Add Rule')}
+          </Button>
+        </>
+      }
+    >
         {/* Rule Name */}
         <label style={labelStyle}>Rule Name *</label>
         <input style={inputStyle} placeholder="e.g. C1 Post-Call Day Off" value={ruleName} onChange={e => setRuleName(e.target.value)} />
@@ -1026,17 +985,6 @@ function RuleBuilderModal({ ruleSetId, shiftTypes, existing, onClose, onSaved }:
             })}
           </div>
         </div>
-
-        {/* Actions */}
-        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 16 }}>
-          <button onClick={onClose} style={{ padding: '9px 18px', borderRadius: 8, cursor: 'pointer', background: 'transparent', color: 'var(--text-muted)', border: '1px solid var(--border)', fontWeight: 600, fontSize: 13 }}>Cancel</button>
-          <button onClick={submit} disabled={saving || !ruleName.trim()} style={{
-            padding: '9px 20px', borderRadius: 8, cursor: 'pointer', fontWeight: 700, fontSize: 13,
-            background: 'linear-gradient(135deg,#0ea5e9,#6366f1)', color: '#fff', border: 'none',
-            opacity: (saving || !ruleName.trim()) ? 0.5 : 1,
-          }}>{saving ? 'Saving...' : (isEdit ? 'Update Rule' : 'Add Rule')}</button>
-        </div>
-      </div>
-    </div>
+    </Modal>
   );
 }

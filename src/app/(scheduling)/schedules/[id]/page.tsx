@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback, useRef, useMemo, Fragment } from 'rea
 import Link from 'next/link';
 import { gridTokens, cellBackground } from './gridTheme';
 import AssistantPanel from './AssistantPanel';
+import { PageHeader, Badge, Button, Banner, scheduleStatusTone } from '@/components/ui';
 // Pure, client-safe helper shared with the grid API route — one bucket rule
 // (hard / soft / warning-never-soft) for both server and client counting.
 import { validationSummaryFor, type ValidationSummary } from '@/app/api/scheduling/schedules/[id]/grid/route.helpers';
@@ -155,13 +156,6 @@ interface ActiveCell {
 }
 
 /* ── Helpers ─────────────────────────────────────────────────────────────── */
-
-const STATUS_COLORS: Record<string, { color: string; bg: string }> = {
-  draft:     { color: '#fbbf24', bg: 'rgba(251,191,36,0.15)' },
-  published: { color: '#34d399', bg: 'rgba(52,211,153,0.15)' },
-  archived:  { color: '#64748b', bg: 'rgba(100,116,139,0.15)' },
-  locked:    { color: '#f87171', bg: 'rgba(248,113,113,0.15)' },
-};
 
 const DAYS_SHORT = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
@@ -894,7 +888,6 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
   if (!grid) return <div style={{ padding: 40, color: 'var(--text-muted)' }}>Loading schedule...</div>;
 
   const { schedule, version } = grid;
-  const sc = STATUS_COLORS[schedule.status] || STATUS_COLORS.draft;
   const colCount = visibleDates.length;
 
   return (
@@ -909,37 +902,27 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
       `}</style>
       {/* Breadcrumb */}
       <div style={{ fontSize: 12, color: 'var(--text-dim)', marginBottom: 12 }}>
-        <Link href="/schedules" style={{ color: '#0ea5e9', textDecoration: 'none' }}>Schedules</Link>
+        <Link href="/schedules" style={{ color: 'var(--blue)', textDecoration: 'none' }}>Schedules</Link>
         <span style={{ margin: '0 6px' }}>/</span>
         <span style={{ color: 'var(--text-muted)' }}>{schedule.schedule_name}</span>
       </div>
 
       {/* Top Bar — identity row */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', marginBottom: 14 }}>
-        <h1 style={{ fontSize: 21, fontWeight: 800, color: 'var(--text)', margin: 0, letterSpacing: '-0.01em' }}>{schedule.schedule_name}</h1>
-
-        {/* Status badge */}
-        <span style={{
-          fontSize: 10.5, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.05em',
-          padding: '3px 9px', borderRadius: 999,
-          color: sc.color, background: sc.bg,
-        }}>
-          {schedule.status}
-        </span>
-
-        {/* Version chip */}
-        <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>
-          v{version.version_number} ({version.version_status})
-        </span>
-
-        {/* Date range */}
-        <span style={{ fontSize: 12.5, color: 'var(--text-muted)' }}>
-          {formatDateRange(schedule.date_start, schedule.date_end)}
-        </span>
-
-        <div style={{ flex: 1 }} />
-
-        {/* Rules summary — verify the algorithm is enforcing your rules */}
+      <PageHeader
+        title={schedule.schedule_name}
+        subtitle={
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+            <Badge tone={scheduleStatusTone(schedule.status)}>{schedule.status}</Badge>
+            <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>
+              v{version.version_number} ({version.version_status})
+            </span>
+            <span style={{ fontSize: 12.5, color: 'var(--text-muted)' }}>
+              {formatDateRange(schedule.date_start, schedule.date_end)}
+            </span>
+          </div>
+        }
+        actions={
+        /* Rules summary — verify the algorithm is enforcing your rules */
         <div style={{ position: 'relative' }}>
           <button
             onClick={() => setShowRulesSummary(v => !v)}
@@ -1034,7 +1017,8 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
             </div>
           )}
         </div>
-      </div>
+        }
+      />
 
       {/* Top Bar — toolbar row */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 20, paddingTop: 14, borderTop: '1px solid var(--border)' }}>
@@ -1063,53 +1047,44 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
         {/* Week navigation */}
         {viewMode === 'week' && (
           <div style={{ display: 'flex', gap: 4 }}>
-            <button
+            <Button
+              variant="secondary"
+              size="sm"
               onClick={() => setWeekOffset(o => Math.max(0, o - 1))}
-              style={{
-                width: 30, height: 30, borderRadius: 8, border: '1px solid var(--border)',
-                background: 'transparent', color: 'var(--text-muted)', cursor: 'pointer',
-                fontSize: 14, display: 'flex', alignItems: 'center', justifyContent: 'center',
-              }}
+              style={{ width: 30, height: 30, padding: 0, fontSize: 14 }}
             >
               &#8592;
-            </button>
-            <button
+            </Button>
+            <Button
+              variant="secondary"
+              size="sm"
               onClick={() => {
                 const maxWeeks = Math.ceil(allDates.length / 7);
                 setWeekOffset(o => Math.min(maxWeeks - 1, o + 1));
               }}
-              style={{
-                width: 30, height: 30, borderRadius: 8, border: '1px solid var(--border)',
-                background: 'transparent', color: 'var(--text-muted)', cursor: 'pointer',
-                fontSize: 14, display: 'flex', alignItems: 'center', justifyContent: 'center',
-              }}
+              style={{ width: 30, height: 30, padding: 0, fontSize: 14 }}
             >
               &#8594;
-            </button>
+            </Button>
           </div>
         )}
 
         <div style={{ flex: 1 }} />
 
         {/* Call Counts button */}
-        <button
-          onClick={() => setShowCounts(true)}
-          style={{
-            padding: '7px 15px', fontSize: 12.5, fontWeight: 700, borderRadius: 8,
-            background: 'transparent', border: '1px solid var(--border)', color: 'var(--text-muted)',
-            cursor: 'pointer',
-          }}
-        >
+        <Button variant="secondary" onClick={() => setShowCounts(true)}>
           Call Counts
-        </button>
+        </Button>
 
-        <button
+        <Button
+          variant="secondary"
           onClick={() => setShowAssistant(v => !v)}
-          style={{ padding: '7px 15px', fontSize: 12.5, fontWeight: 700, borderRadius: 8, cursor: 'pointer',
-            background: showAssistant ? 'rgba(99,102,241,0.16)' : 'transparent',
-            color: showAssistant ? '#a5b4fc' : 'var(--text-muted)',
-            border: showAssistant ? '1px solid rgba(99,102,241,0.4)' : '1px solid var(--border)' }}
-        >Assistant ✨</button>
+          style={showAssistant ? {
+            background: 'color-mix(in srgb, var(--indigo) 16%, transparent)',
+            color: 'var(--indigo)',
+            border: '1px solid color-mix(in srgb, var(--indigo) 40%, transparent)',
+          } : undefined}
+        >Assistant ✨</Button>
 
         {/* Pool selector + Auto-Generate.
             A custom pool replaces the default rule-based pool entirely. When
@@ -1117,67 +1092,56 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
             use the home-site call-takers. */}
         {schedule.status === 'draft' && (
           <>
-            <button
+            <Button
+              variant="secondary"
               onClick={() => setShowPoolModal(true)}
               title="Override the default auto-gen candidate pool"
-              style={{
-                padding: '7px 15px', fontSize: 12.5, fontWeight: 700, borderRadius: 8,
-                background: (schedule.included_provider_ids && schedule.included_provider_ids.length > 0)
-                  ? 'rgba(14,165,233,0.15)'
-                  : 'rgba(99,102,241,0.14)',
-                color: (schedule.included_provider_ids && schedule.included_provider_ids.length > 0)
-                  ? '#0ea5e9'
-                  : '#a5b4fc',
-                border: (schedule.included_provider_ids && schedule.included_provider_ids.length > 0)
-                  ? '1px solid rgba(14,165,233,0.4)'
-                  : '1px solid rgba(99,102,241,0.35)',
-                cursor: 'pointer',
-              }}
+              style={(schedule.included_provider_ids && schedule.included_provider_ids.length > 0)
+                ? {
+                    background: 'color-mix(in srgb, var(--blue) 15%, transparent)',
+                    color: 'var(--blue)',
+                    border: '1px solid color-mix(in srgb, var(--blue) 40%, transparent)',
+                  }
+                : {
+                    background: 'color-mix(in srgb, var(--indigo) 14%, transparent)',
+                    color: 'var(--indigo)',
+                    border: '1px solid color-mix(in srgb, var(--indigo) 35%, transparent)',
+                  }}
             >
               {(schedule.included_provider_ids && schedule.included_provider_ids.length > 0)
                 ? `Custom Pool (${schedule.included_provider_ids.length})`
                 : 'Select Pool'}
-            </button>
-            <button
+            </Button>
+            <Button
+              variant="secondary"
               onClick={autoGenerateSchedule}
               disabled={generating}
               style={{
-                padding: '7px 16px', fontSize: 12.5, fontWeight: 700, borderRadius: 8,
-                background: generating ? 'var(--bg-deep)' : 'rgba(16,185,129,0.16)',
-                color: generating ? 'var(--text-dim)' : '#34d399',
-                border: '1px solid rgba(16,185,129,0.4)', cursor: generating ? 'not-allowed' : 'pointer',
+                background: 'var(--ok-bg)',
+                color: 'var(--ok)',
+                border: '1px solid color-mix(in srgb, var(--ok) 40%, transparent)',
               }}
             >
               {generating ? 'Generating...' : 'Auto-Generate'}
-            </button>
+            </Button>
           </>
         )}
 
         {/* Publish button */}
         {schedule.status === 'draft' && (
-          <button
-            onClick={publishSchedule}
-            style={{
-              padding: '7px 16px', fontSize: 12.5, fontWeight: 700, border: 'none', borderRadius: 8,
-              background: 'linear-gradient(135deg,#0ea5e9,#6366f1)', color: '#fff', cursor: 'pointer',
-              boxShadow: '0 4px 14px rgba(56,130,246,0.35)',
-            }}
-          >
+          <Button onClick={publishSchedule}>
             Publish
-          </button>
+          </Button>
         )}
       </div>
 
       {/* Generation result toast */}
       {genResult && (
-        <div style={{
-          padding: '10px 16px', marginBottom: 12, borderRadius: 8, fontSize: 12,
-          background: genResult.errors.length > 0 ? 'rgba(248,113,113,0.1)' : 'rgba(16,185,129,0.1)',
-          border: `1px solid ${genResult.errors.length > 0 ? 'rgba(248,113,113,0.3)' : 'rgba(16,185,129,0.3)'}`,
-          color: 'var(--text)',
-          display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-        }}>
-          <div>
+        <div style={{ marginBottom: 12 }}>
+          <Banner
+            tone={genResult.errors.length > 0 ? 'error' : 'success'}
+            onDismiss={() => setGenResult(null)}
+          >
             <span>
               Filled {genResult.filled} slot{genResult.filled !== 1 ? 's' : ''}.
               {genResult.skipped > 0 && ` ${genResult.skipped} could not be filled.`}
@@ -1199,21 +1163,14 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
                 ) — left unassigned, see unfilled/derived report.
               </div>
             )}
-          </div>
-          <button onClick={() => setGenResult(null)} style={{
-            background: 'none', border: 'none', color: 'var(--text-dim)', cursor: 'pointer', fontSize: 14,
-          }}>x</button>
+          </Banner>
         </div>
       )}
 
       {/* Action error toast */}
       {actionError && (
-        <div style={{
-          position: 'fixed', top: 20, right: 20, padding: '10px 20px', borderRadius: 8,
-          background: 'rgba(248,113,113,0.15)', border: '1px solid rgba(248,113,113,0.3)',
-          color: '#f87171', fontSize: 13, fontWeight: 600, zIndex: 600,
-        }}>
-          {actionError}
+        <div style={{ position: 'fixed', top: 20, right: 20, zIndex: 600, maxWidth: 420 }}>
+          <Banner tone="error">{actionError}</Banner>
         </div>
       )}
 
@@ -1992,7 +1949,7 @@ function PoolSelectorModal({
       >
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
           <div>
-            <div style={{ fontSize: 16, fontWeight: 800, color: '#f1f5f9' }}>Select Pool of Physicians</div>
+            <div style={{ fontSize: 16, fontWeight: 800, color: 'var(--text-strong)' }}>Select Pool of Physicians</div>
             <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>
               Auto-Generate will consider only the checked providers.
               Eligibility filters (credentials, availability, weekday) still apply.

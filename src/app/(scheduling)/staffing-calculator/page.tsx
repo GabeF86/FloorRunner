@@ -13,8 +13,11 @@ import {
   SiteCatalogEntry,
 } from '@/lib/staffingCalculator';
 import { buildBreakAnalysis } from '@/lib/staffingCalculator/shared';
+import { Card } from '@/components/ui';
 
 /* ── Shared style tokens ─────────────────────────────────────────────────── */
+// All values resolve to the global var(--*) tokens so both themes render
+// correctly. Tinted variants use color-mix so no hex ever lives here.
 
 const tok = {
   card: 'var(--bg-surface)',
@@ -25,25 +28,24 @@ const tok = {
   textMuted: 'var(--text-muted)',
   textDim: 'var(--text-dim)',
   mono: 'var(--font-mono), ui-monospace, monospace',
-  md: { fg: '#4338CA', bg: '#EEF1FE', bd: '#CBD2F7' },
-  crna: { fg: '#0A6CB4', bg: '#E7F2FB', bd: '#B2D8F1' },
-  accent: '#0284c7',
-  warning: '#E8C854',
-  crossSite: '#F97316',
-  radius: 14,
-  radiusSm: 9,
+  md: {
+    fg: 'var(--indigo)',
+    bg: 'color-mix(in srgb, var(--indigo) 12%, transparent)',
+    bd: 'color-mix(in srgb, var(--indigo) 35%, transparent)',
+  },
+  crna: {
+    fg: 'var(--blue)',
+    bg: 'color-mix(in srgb, var(--blue) 12%, transparent)',
+    bd: 'color-mix(in srgb, var(--blue) 35%, transparent)',
+  },
+  accent: 'var(--blue)',
+  warning: 'var(--warn)',
+  // Orange lane accent derived from the status tokens (no dedicated orange var).
+  crossSite: 'color-mix(in srgb, var(--warn) 55%, var(--danger))',
+  radius: 'var(--radius-lg)',
+  radiusSm: 'var(--radius-md)',
   // Soft, layered elevation — a single source of truth for card depth.
-  shadow: '0 1px 2px rgba(15,23,42,0.05), 0 10px 28px -16px rgba(15,23,42,0.18)',
-};
-
-// One premium card surface used by every panel — generous padding, soft
-// elevation, larger radius. Spread it and override per-panel where needed.
-const cardStyle: React.CSSProperties = {
-  background: tok.card,
-  border: '1px solid var(--border)',
-  borderRadius: tok.radius,
-  boxShadow: tok.shadow,
-  padding: '14px 16px',
+  shadow: 'var(--shadow-card)',
 };
 
 // A user-defined site, local to the current facility's calculator state. Lives
@@ -188,11 +190,8 @@ export default function StaffingCalculatorPage() {
       </div>
 
       {/* Header */}
-      <div style={{
-        display: 'flex', alignItems: 'center', gap: 14,
-        padding: '14px 16px', marginBottom: 12,
-        ...cardStyle,
-      }}>
+      <Card style={{ marginBottom: 12 }}>
+       <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
         <div>
           <h1 style={{ fontSize: 22, fontWeight: 750, color: tok.text, letterSpacing: -0.6, lineHeight: 1.1 }}>
             Staffing Calculator
@@ -230,7 +229,8 @@ export default function StaffingCalculatorPage() {
             background: 'transparent', color: tok.textMuted, border: tok.hairline, cursor: 'pointer',
           }}>↺ reset</button>
         </div>
-      </div>
+       </div>
+      </Card>
 
       {isPlaceholder && (
         <div style={{
@@ -326,7 +326,7 @@ function ConfigPanel({ schema, cfg, onChange, customSites, onAddSiteClick, onCha
   const rowLabel: React.CSSProperties = { fontSize: 12, color: tok.text, fontWeight: 500, lineHeight: 1.2 };
 
   return (
-    <div style={cardStyle}>
+    <Card>
       <SectionTitle>📋 Site configuration</SectionTitle>
       {Object.entries(grouped).map(([section, fields]) => (
         <div key={section} style={{ marginTop: 10 }}>
@@ -444,7 +444,7 @@ function ConfigPanel({ schema, cfg, onChange, customSites, onAddSiteClick, onCha
           fontSize: 11, fontWeight: 750, fontFamily: tok.mono, letterSpacing: 0.2,
         }}
       >+ Add site</button>
-    </div>
+    </Card>
   );
 }
 
@@ -479,7 +479,7 @@ function modalBtnStyle(kind: 'neutral' | 'confirm'): React.CSSProperties {
     padding: '5px 9px',
     borderRadius: 6,
     background: kind === 'confirm' ? `color-mix(in srgb, ${tok.accent} 12%, transparent)` : 'var(--bg-deep)',
-    border: `1px solid ${kind === 'neutral' ? tok.border : color + '66'}`,
+    border: `1px solid ${kind === 'neutral' ? tok.border : `color-mix(in srgb, ${color} 40%, transparent)`}`,
     color,
     cursor: 'pointer',
     fontSize: 10,
@@ -514,7 +514,7 @@ function AddSiteModal({ onAdd, onCancel }: {
         onClick={(e) => e.stopPropagation()}
         style={{
           width: 360, borderRadius: 12, background: tok.card,
-          border: `1px solid ${tok.accent}55`,
+          border: `1px solid color-mix(in srgb, ${tok.accent} 33%, transparent)`,
           boxShadow: '0 18px 50px -28px rgba(15,23,42,0.55), 0 0 0 1px rgba(255,255,255,0.8) inset',
           padding: 16,
         }}
@@ -587,7 +587,7 @@ function AvailableStaffPanel({ avail, setAvail, disabled }: {
   disabled?: boolean;
 }) {
   return (
-    <div style={{ ...cardStyle, opacity: disabled ? 0.5 : 1 }}>
+    <Card style={{ opacity: disabled ? 0.5 : 1 }}>
       <SectionTitle>👥 Available staff</SectionTitle>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '3px 2px', marginTop: 2 }}>
         <span style={{ fontSize: 12, color: tok.text, fontWeight: 500 }}>MDs available</span>
@@ -597,7 +597,7 @@ function AvailableStaffPanel({ avail, setAvail, disabled }: {
         <span style={{ fontSize: 12, color: tok.text, fontWeight: 500 }}>CRNAs available</span>
         <Stepper value={avail.crnas} onChange={(v) => setAvail({ ...avail, crnas: v })} min={0} max={30} color={tok.crna.fg} />
       </div>
-    </div>
+    </Card>
   );
 }
 
@@ -659,14 +659,14 @@ function TotalsPanel({ out, avail }: { out: CalculatorOutput; avail: AvailableSt
   const mdGap = out.totalMDs - avail.mds;
   const crnaGap = out.totalCRNAs - avail.crnas;
   return (
-    <div style={cardStyle}>
+    <Card>
       <SectionTitle>🎯 Staffing needs</SectionTitle>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8, marginTop: 6 }}>
-        <BigStat label="MDs needed" value={out.totalMDs} fg={tok.md.fg} bg={tok.md.bg} bd={tok.md.bd} subtitle={gapLine(mdGap)} subtitleColor={mdGap > 0 ? '#dc2626' : '#16a34a'} />
-        <BigStat label="CRNAs needed" value={out.totalCRNAs} fg={tok.crna.fg} bg={tok.crna.bg} bd={tok.crna.bd} subtitle={gapLine(crnaGap)} subtitleColor={crnaGap > 0 ? '#dc2626' : '#16a34a'} />
+        <BigStat label="MDs needed" value={out.totalMDs} fg={tok.md.fg} bg={tok.md.bg} bd={tok.md.bd} subtitle={gapLine(mdGap)} subtitleColor={mdGap > 0 ? 'var(--danger)' : 'var(--ok)'} />
+        <BigStat label="CRNAs needed" value={out.totalCRNAs} fg={tok.crna.fg} bg={tok.crna.bg} bd={tok.crna.bd} subtitle={gapLine(crnaGap)} subtitleColor={crnaGap > 0 ? 'var(--danger)' : 'var(--ok)'} />
         <BigStat label="Total staff" value={out.totalStaff} fg="var(--text)" bg="var(--bg-deep)" bd="var(--border)" subtitle={`avail ${avail.mds + avail.crnas}`} subtitleColor={tok.textDim} />
       </div>
-    </div>
+    </Card>
   );
 }
 
@@ -920,7 +920,7 @@ function StaffingDiagram({ result, setResult, siteCatalog }: {
   const onDragLeave = () => setDropTarget(null);
 
   return (
-    <div style={cardStyle}>
+    <Card>
       <SectionTitle>
         <span>🏥 By site — supervision map</span>
         <div style={{ marginLeft: 'auto', display: 'inline-flex', alignItems: 'center', gap: 5 }}>
@@ -1127,7 +1127,7 @@ function StaffingDiagram({ result, setResult, siteCatalog }: {
           💡 click CRNA → click MD · drag CRNA onto MD · drag MD to lane · <kbd style={kbdStyle}>shift</kbd>+drop = cross-site
         </span>
       </div>
-    </div>
+    </Card>
   );
 }
 
@@ -1190,13 +1190,13 @@ function RemoteCoverageRow({ crnas, mds, siteCatalog }: {
   siteCatalog: SiteCatalogEntry[];
 }) {
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', padding: '5px 0', borderTop: `1px dashed ${tok.crossSite}55`, marginTop: 4 }}>
+    <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', padding: '5px 0', borderTop: `1px dashed color-mix(in srgb, ${tok.crossSite} 33%, transparent)`, marginTop: 4 }}>
       <span style={{
         display: 'inline-flex', alignItems: 'center', gap: 3,
         fontSize: 9.5, color: tok.crossSite, fontFamily: tok.mono, fontWeight: 900,
         letterSpacing: 0.5, textTransform: 'uppercase',
         background: `color-mix(in srgb, ${tok.crossSite} 13%, transparent)`,
-        border: `1px solid ${tok.crossSite}66`, borderRadius: 4, padding: '1px 6px',
+        border: `1px solid color-mix(in srgb, ${tok.crossSite} 40%, transparent)`, borderRadius: 4, padding: '1px 6px',
       }}>
         <span style={{ fontSize: 11 }}>⇄</span> Cross-site
       </span>
@@ -1357,7 +1357,7 @@ function MDBlock({ md, crnas, selectedCRNA, dropTarget, onMDClick, onCRNAClick, 
                 <span key={'xtag-' + laneKey} title={`Cross-covers ${ls?.label ?? laneKey}`} style={{
                   display: 'inline-flex', alignItems: 'center', gap: 2,
                   fontSize: 8, fontFamily: tok.mono, fontWeight: 850, color: tok.crossSite,
-                  border: `1px solid ${tok.crossSite}66`, borderRadius: 3, padding: '0 3px',
+                  border: `1px solid color-mix(in srgb, ${tok.crossSite} 40%, transparent)`, borderRadius: 3, padding: '0 3px',
                 }}>⇄ {ls ? shortLabel(ls) : laneKey}</span>
               );
             })}
@@ -1425,7 +1425,7 @@ function SecondaryMDCard({ md, crnas, homeSite, selectedCRNA, onMDClick, onCRNAC
       }}>
         <div style={{
           width: 22, height: 22, borderRadius: 5,
-          background: tone + '20', border: `1.5px solid ${tone}`,
+          background: `color-mix(in srgb, ${tone} 12%, transparent)`, border: `1.5px solid ${tone}`,
           display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
         }}>
           <span style={{ color: tone, fontSize: 8, fontWeight: 800, fontFamily: tok.mono }}>MD</span>
@@ -1550,7 +1550,7 @@ function CRNAChip({ crna, selected, onClick, onDragStart, onDelete, crossSite }:
         display: 'inline-flex', alignItems: 'center', gap: 4,
         padding: '3px 8px', borderRadius: 999,
         background: selected ? 'rgba(14,165,233,0.18)' : tok.crna.bg,
-        border: `1.5px ${addOn ? 'dashed' : 'solid'} ${selected ? tok.accent : addOn ? tok.warning + '80' : crossSite ? crossSite.color + '80' : tok.crna.bd}`,
+        border: `1.5px ${addOn ? 'dashed' : 'solid'} ${selected ? tok.accent : addOn ? `color-mix(in srgb, ${tok.warning} 50%, transparent)` : crossSite ? crossSite.color + '80' : tok.crna.bd}`,
         cursor: 'grab', transition: 'all 0.12s', whiteSpace: 'nowrap', flexShrink: 0,
         position: 'relative',
       }}
@@ -1605,7 +1605,7 @@ function ContingencyCoverage({ contingencies, assignments }: {
   assignments: StaffAssignment[];
 }) {
   return (
-    <div style={cardStyle}>
+    <Card>
       <SectionTitle>🚨 Contingency coverage</SectionTitle>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gap: 8, marginTop: 8 }}>
         {contingencies.map((cg, i) => {
@@ -1648,7 +1648,7 @@ function ContingencyCoverage({ contingencies, assignments }: {
           );
         })}
       </div>
-    </div>
+    </Card>
   );
 }
 
@@ -1670,7 +1670,7 @@ function contingencyType(type: string): { col: string; bg: string; icon: string 
 
 function NotesPanel({ notes }: { notes: string[] }) {
   return (
-    <div style={cardStyle}>
+    <Card>
       <SectionTitle>📝 Notes &amp; warnings</SectionTitle>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginTop: 6 }}>
         {notes.map((n, i) => (
@@ -1686,7 +1686,7 @@ function NotesPanel({ notes }: { notes: string[] }) {
           </div>
         ))}
       </div>
-    </div>
+    </Card>
   );
 }
 
@@ -1700,7 +1700,7 @@ function BreakAnalysisPanel({ breakAnalysis }: { breakAnalysis: CalculatorOutput
   } as const;
   const c = colorMap[sev];
   return (
-    <div style={cardStyle}>
+    <Card>
       <SectionTitle>☕ Break coverage</SectionTitle>
       <div style={{
         marginTop: 8, padding: '8px 12px', borderRadius: 5,
@@ -1731,7 +1731,7 @@ function BreakAnalysisPanel({ breakAnalysis }: { breakAnalysis: CalculatorOutput
           </div>
         ))}
       </div>
-    </div>
+    </Card>
   );
 }
 
