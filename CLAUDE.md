@@ -29,4 +29,4 @@ Anesthesia department management: scheduling engine + staffing calculators + OR 
 
 ## Migrations
 Root-level `supabase_scheduling_patchN_*.sql` files, applied to the live Supabase project manually/via MCP after review. RLS exists but the app uses the service-role key (auth deferred, internal-only).
-**patch18 is PENDING manual application** (no connected MCP server matches the `.env.local` project — see the header in `supabase_scheduling_patch18_call_patterns.sql`). The engine falls back gracefully without it ('apply patch18' warnings); the assistant and call-pattern features require it.
+patch18 was applied manually 2026-07-12 (see its header for the spot-check record). NOTE: no connected Supabase MCP server matches the `.env.local` project ref — future patches must be applied via the dashboard SQL editor (or after reconnecting an MCP server to the right project); always verify the ref before applying.

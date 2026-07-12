@@ -1,25 +1,16 @@
 -- ╔══════════════════════════════════════════════════════════════════════════╗
--- ║ STATUS: NOT APPLIED as of 2026-07-10.                                     ║
+-- ║ STATUS: APPLIED 2026-07-12 to project qhwdbtixhzdsgwwtcfrm (manually,     ║
+-- ║ via the dashboard SQL editor — no connected MCP server matched the ref).  ║
+-- ║ Post-apply spot checks passed: 11 sites = 11 active seeded patterns;      ║
+-- ║ shift_types backfill sane (C1/C2/C3 ranks 0/1/2, D4-D9 relief 1-6,        ║
+-- ║ D-codes engine=call, day codes engine=day_pool);                          ║
+-- ║ historical_call_counts RPC returns rows; assistant_actions reachable;     ║
+-- ║ GET /api/scheduling/call-patterns serves the seeded classic pattern.      ║
 -- ║                                                                           ║
--- ║ Target project: qhwdbtixhzdsgwwtcfrm (the ref in .env.local's             ║
--- ║ SUPABASE_URL). Neither connected Supabase MCP server matches that ref     ║
--- ║ (nxseoevbwporxeawacmg, wfbccpshdbndlwvwghyy), so per the scheduling-v2    ║
--- ║ plan's guard this patch was NOT applied automatically. Apply it MANUALLY  ║
--- ║ — paste into the target project's SQL editor, or run apply_migration via  ║
--- ║ an MCP server connected to qhwdbtixhzdsgwwtcfrm.                          ║
--- ║                                                                           ║
--- ║ Safety: the DO block at the bottom ASSERTS that the unique index          ║
--- ║ assignments_schedule_slot_id_key (UNIQUE(schedule_slot_id), from          ║
--- ║ migration 20260524000000_add_assignment_unique_constraints.sql) exists    ║
--- ║ and raises if it doesn't — resolve that first if it fires.                ║
--- ║                                                                           ║
--- ║ Until applied: the engine runs DEGRADED BUT SAFE — genContext falls back  ║
--- ║ to legacy code paths and pushes 'apply patch18' warnings ("shift_types    ║
--- ║ engine columns missing", "call_patterns table missing",                   ║
--- ║ "historical_call_counts RPC unavailable — using legacy scan").            ║
--- ║ The schedule assistant (assistant_actions snapshots/undo) and the         ║
--- ║ call-pattern features (call_patterns CRUD, per-site patterns) REQUIRE     ║
--- ║ this patch and will not work without it.                                  ║
+-- ║ Safety note (kept for reruns): the DO block at the bottom ASSERTS that    ║
+-- ║ the unique index assignments_schedule_slot_id_key (from migration         ║
+-- ║ 20260524000000_add_assignment_unique_constraints.sql) exists and raises   ║
+-- ║ if it doesn't.                                                            ║
 -- ╚══════════════════════════════════════════════════════════════════════════╝
 --
 -- Patch 18: call patterns (data-driven call structures), shift_type engine
