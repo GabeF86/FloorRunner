@@ -2241,6 +2241,8 @@ function CallCountsModal({ grid, onClose }: { grid: GridData; onClose: () => voi
     return t;
   };
   const fmtFte = (fte: number) => fte.toFixed(2).replace(/\.?0+$/, '');
+  // Hide sub-noise expectations — anything under this rounds to 0.0 anyway.
+  const EXPECTED_DISPLAY_MIN = 0.05;
 
   const handlePrint = () => {
     // Native print dialog → Save as PDF gets you a file. Relies on the
@@ -2359,7 +2361,7 @@ function CallCountsModal({ grid, onClose }: { grid: GridData; onClose: () => voi
                 <td style={{ padding: '6px 10px', color: 'var(--text)', fontWeight: 500 }}>
                   {p.short_display_name}
                   {fteByPid[p.id] != null && (
-                    <span style={{ color: 'var(--text-dim)', fontSize: 11, marginLeft: 5 }}>
+                    <span style={{ opacity: 0.7, fontSize: 11, marginLeft: 5 }}>
                       · {fmtFte(fteByPid[p.id])}
                     </span>
                   )}
@@ -2375,8 +2377,8 @@ function CallCountsModal({ grid, onClose }: { grid: GridData; onClose: () => voi
                       fontWeight: n > 0 ? 600 : 400,
                     }}>
                       {n || '—'}
-                      {exp >= 0.05 && (
-                        <span style={{ fontSize: 10, color: 'var(--text-dim)', marginLeft: 3, fontWeight: 400 }}>
+                      {exp >= EXPECTED_DISPLAY_MIN && (
+                        <span style={{ fontSize: 10, opacity: 0.7, marginLeft: 3, fontWeight: 400 }}>
                           ({exp.toFixed(1)})
                         </span>
                       )}
@@ -2433,17 +2435,20 @@ function CallCountsModal({ grid, onClose }: { grid: GridData; onClose: () => voi
                 color: '#fbbf24',
               }}>{providers.reduce((s, p) => s + ptoDaysForPid(p.id), 0) || '—'}</td>
             </tr>
-            {/* Expected row — Σ of per-provider FTE-weighted targets. Below Total ⇒
-                roster FTE < par level; the gap is the extra-call burden. */}
+            {/* Expected row — Σ of per-provider FTE-weighted targets (from slot counts).
+                A gap vs Total means roster FTE < par level OR unfilled slots in that column. */}
             <tr style={{ color: 'var(--text-dim)', fontWeight: 600 }}
-                title="Sum of each provider's FTE-weighted obligation: (column total ÷ call par level) × FTE. When this is below Total, the roster is under par and the difference must be absorbed as extra calls.">
+                title="Sum of each provider's FTE-weighted obligation: (bucket slot count ÷ call par level) × FTE. A gap versus Total means the roster's summed FTE is below the par level, or slots in that column are unfilled — check the grid for open slots before concluding under-staffing.">
               <td style={{ padding: '6px 10px' }}>Expected</td>
-              {BUCKETS.map(b => CODES.map(c => (
-                <td key={`exp-${b.key}|${c}`} style={{
-                  padding: '6px 8px', textAlign: 'center',
-                  borderLeft: c === 'C1' ? '1px solid var(--border)' : 'none',
-                }}>{colExpected(b.key, c) >= 0.05 ? colExpected(b.key, c).toFixed(1) : '—'}</td>
-              )))}
+              {BUCKETS.map(b => CODES.map(c => {
+                const exp = colExpected(b.key, c);
+                return (
+                  <td key={`exp-${b.key}|${c}`} style={{
+                    padding: '6px 8px', textAlign: 'center',
+                    borderLeft: c === 'C1' ? '1px solid var(--border)' : 'none',
+                  }}>{exp >= EXPECTED_DISPLAY_MIN ? exp.toFixed(1) : '—'}</td>
+                );
+              }))}
               {CODES.map(c => (
                 <td key={`exp-extra|${c}`} style={{
                   padding: '6px 8px', textAlign: 'center',
