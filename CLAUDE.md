@@ -29,4 +29,7 @@ Anesthesia department management: scheduling engine + staffing calculators + OR 
 
 ## Migrations
 Root-level `supabase_scheduling_patchN_*.sql` files, applied to the live Supabase project manually/via MCP after review. RLS exists but the app uses the service-role key (auth deferred, internal-only).
-patch18 was applied manually 2026-07-12 (see its header for the spot-check record). NOTE: no connected Supabase MCP server matches the `.env.local` project ref — future patches must be applied via the dashboard SQL editor (or after reconnecting an MCP server to the right project); always verify the ref before applying.
+patch18 was applied manually 2026-07-12 (see its header for the spot-check record). The live project is Supabase "Floor Runner", ref `qhwdbtixhzdsgwwtcfrm` (matches `.env.local`); the project-scoped `supabase-floorrunner` MCP server points at it and is the right channel for future patches — always verify the ref before applying. The `supabase` (atlas-staging) and `supabase-chiefos` (ChiefOS) MCP servers and the Railway "chiefos" project belong to OTHER apps — never run FloorRunner DDL or ops through them.
+
+## Deployment
+Production is https://floor-runner.vercel.app — Vercel auto-deploys on push to `origin/main` (GitHub `GabeF86/FloorRunner`, public repo: never commit secrets). After a DB patch is applied, push `main` promptly so deployed code matches the live schema.
