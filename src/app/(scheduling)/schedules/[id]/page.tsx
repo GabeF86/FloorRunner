@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback, useRef, useMemo, Fragment } from 'react';
 import Link from 'next/link';
 import { gridTokens, cellBackground } from './gridTheme';
+import { fteWeightedTarget } from './fteTarget';
 import AssistantPanel from './AssistantPanel';
 import { PageHeader, Badge, Button, Banner, scheduleStatusTone } from '@/components/ui';
 // Pure, client-safe helper shared with the grid API route — one bucket rule
@@ -547,7 +548,7 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
       for (const a of slot.assignments) {
         if (!a.provider_id) continue;
         const fte = fteByPid.get(a.provider_id) ?? 1;
-        const target = (blockTotal / parLevel) * fte;
+        const target = fteWeightedTarget(blockTotal, parLevel, fte);
         const count = providerCounts.get(`${a.provider_id}|${slot.shift_types.code}|${bucket}`) || 0;
         // Strict comparison: count > target. A 0.5 FTE with target 2.5
         // reads red on their 3rd C1; a 1.0 FTE with target 5.0 reads red
@@ -1183,8 +1184,8 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
       }}>
         <div style={{
           display: 'grid',
-          gridTemplateColumns: `84px repeat(${colCount}, minmax(74px, 1fr))`,
-          minWidth: colCount > 7 ? `${84 + colCount * 74}px` : undefined,
+          gridTemplateColumns: `84px repeat(${colCount}, minmax(${viewMode === 'month' ? 82 : 74}px, 1fr))`,
+          minWidth: colCount > 7 ? `${84 + colCount * (viewMode === 'month' ? 82 : 74)}px` : undefined,
         }}>
 
           {/* ── Row 0: Day-of-week header ─────────────────────────────────── */}
@@ -1365,7 +1366,11 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
                     }}
                   >
                     {!slot ? null : isAssigned ? (
-                      <span style={{ fontSize: 13, fontWeight: 800, color: gridTokens.name, whiteSpace: 'nowrap' }}>
+                      <span style={{
+                        fontSize: viewMode === 'month' ? 11 : 13, fontWeight: 800, color: gridTokens.name,
+                        whiteSpace: 'nowrap', maxWidth: '100%', overflow: 'hidden',
+                        textOverflow: 'ellipsis', display: 'inline-block', verticalAlign: 'bottom',
+                      }}>
                         {provider!.short_display_name}
                       </span>
                     ) : isOpenCall ? (
@@ -2211,7 +2216,7 @@ function CallCountsModal({ grid, onClose }: { grid: GridData; onClose: () => voi
     let total = 0;
     for (const b of BUCKETS) {
       const blockTotal = blockTotals[`${b.key}|${code}`] || 0;
-      const target = (blockTotal / parLevel) * fte;
+      const target = fteWeightedTarget(blockTotal, parLevel, fte);
       const count = getCount(pid, b.key, code);
       total += Math.max(0, count - Math.floor(target));
     }
@@ -2222,6 +2227,26 @@ function CallCountsModal({ grid, onClose }: { grid: GridData; onClose: () => voi
     for (const pid of providers.map(p => p.id)) t += getExtra(pid, code);
     return t;
   };
+
+  // Expected = FTE-weighted base target per (provider, bucket, code) —
+  // (block_total_in_bucket / call_par_level) × fte_value. Same formula that
+  // drives Extra Calls above, surfaced directly so the raw target is visible
+  // alongside actual counts, not just the over-par excess.
+  const expectedFor = (pid: string, bucket: string, code: string) =>
+    fteWeightedTarget(blockTotals[`${bucket}|${code}`] || 0, parLevel, fteByPid[pid] ?? 1);
+  const rowExpected = (pid: string) => {
+    let t = 0;
+    for (const b of BUCKETS) for (const c of CODES) t += expectedFor(pid, b.key, c);
+    return t;
+  };
+  const colExpected = (bucket: string, code: string) => {
+    let t = 0;
+    for (const p of providers) t += expectedFor(p.id, bucket, code);
+    return t;
+  };
+  const fmtFte = (fte: number) => fte.toFixed(2).replace(/\.?0+$/, '');
+  // Hide sub-noise expectations — anything under this rounds to 0.0 anyway.
+  const EXPECTED_DISPLAY_MIN = 0.05;
 
   const handlePrint = () => {
     // Native print dialog → Save as PDF gets you a file. Relies on the
@@ -2339,16 +2364,29 @@ function CallCountsModal({ grid, onClose }: { grid: GridData; onClose: () => voi
               <tr key={p.id} style={{ borderBottom: '1px solid var(--border)' }}>
                 <td style={{ padding: '6px 10px', color: 'var(--text)', fontWeight: 500 }}>
                   {p.short_display_name}
+                  {fteByPid[p.id] != null && (
+                    <span style={{ opacity: 0.7, fontSize: 11, marginLeft: 5 }}>
+                      · {fmtFte(fteByPid[p.id])}
+                    </span>
+                  )}
                 </td>
                 {BUCKETS.map(b => CODES.map(c => {
                   const n = getCount(p.id, b.key, c);
+                  const exp = expectedFor(p.id, b.key, c);
                   return (
                     <td key={`${b.key}|${c}`} style={{
-                      padding: '6px 8px', textAlign: 'center',
+                      padding: '6px 8px', textAlign: 'center', whiteSpace: 'nowrap',
                       color: n === 0 ? 'var(--text-dim)' : 'var(--text)',
                       borderLeft: c === 'C1' ? '1px solid var(--border)' : 'none',
                       fontWeight: n > 0 ? 600 : 400,
-                    }}>{n || '—'}</td>
+                    }}>
+                      {n || '—'}
+                      {exp >= EXPECTED_DISPLAY_MIN && (
+                        <span style={{ fontSize: 10, opacity: 0.7, marginLeft: 3, fontWeight: 400 }}>
+                          ({exp.toFixed(1)})
+                        </span>
+                      )}
+                    </td>
                   );
                 }))}
                 {CODES.map(c => {
@@ -2400,6 +2438,31 @@ function CallCountsModal({ grid, onClose }: { grid: GridData; onClose: () => voi
                 borderLeft: '1px solid var(--border)', borderTop: '2px solid var(--border)',
                 color: '#fbbf24',
               }}>{providers.reduce((s, p) => s + ptoDaysForPid(p.id), 0) || '—'}</td>
+            </tr>
+            {/* Expected row — Σ of per-provider FTE-weighted targets (from slot counts).
+                A gap vs Total means roster FTE < par level OR unfilled slots in that column. */}
+            <tr style={{ color: 'var(--text-dim)', fontWeight: 600 }}
+                title="Sum of each provider's FTE-weighted obligation: (bucket slot count ÷ call par level) × FTE. A gap versus Total means the roster's summed FTE is below the par level, or slots in that column are unfilled — check the grid for open slots before concluding under-staffing.">
+              <td style={{ padding: '6px 10px' }}>Expected</td>
+              {BUCKETS.map(b => CODES.map(c => {
+                const exp = colExpected(b.key, c);
+                return (
+                  <td key={`exp-${b.key}|${c}`} style={{
+                    padding: '6px 8px', textAlign: 'center',
+                    borderLeft: c === 'C1' ? '1px solid var(--border)' : 'none',
+                  }}>{exp >= EXPECTED_DISPLAY_MIN ? exp.toFixed(1) : '—'}</td>
+                );
+              }))}
+              {CODES.map(c => (
+                <td key={`exp-extra|${c}`} style={{
+                  padding: '6px 8px', textAlign: 'center',
+                  borderLeft: c === 'C1' ? '1px solid var(--border)' : 'none',
+                }}>—</td>
+              ))}
+              <td style={{ padding: '6px 10px', textAlign: 'center', borderLeft: '1px solid var(--border)' }}>
+                {providers.reduce((s, p) => s + rowExpected(p.id), 0).toFixed(1)}
+              </td>
+              <td style={{ padding: '6px 10px', textAlign: 'center', borderLeft: '1px solid var(--border)' }}>—</td>
             </tr>
           </tbody>
         </table>

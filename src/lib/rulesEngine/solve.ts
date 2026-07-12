@@ -45,6 +45,23 @@ export function solve(ctx: GenerationContext, opts: SolveOptions = {}): Solution
     shiftInfo(code)?.call_rank ?? (code === 'C1' ? 0 : code === 'C2' ? 1 : 2); // legacy fallback (no shiftTypes in ctx)
   const reliefCodes = reliefCodesFor(ctx.shiftTypes);
 
+  // Opt-in in-house-first ordering (pattern doc callFillOrder: 'call_rank').
+  // Consistent total order: the date-sequence key preserves the incoming
+  // (weekend-first) date order from genContext, and callRank — with its
+  // legacy C1/C2 fallback for null-ranked codes — breaks ties within each
+  // date so in-house call fills first. Absent flag = untouched legacy order.
+  // Only the main fill loop below consumes this list; every other pass keys
+  // off dates.
+  let slotsToFill = ctx.slotsToFill;
+  if (doc.callFillOrder === 'call_rank') {
+    const dateSeq = new Map<string, number>();
+    for (const s of ctx.slotsToFill)
+      if (!dateSeq.has(s.slot_date)) dateSeq.set(s.slot_date, dateSeq.size);
+    slotsToFill = [...ctx.slotsToFill].sort((a, b) =>
+      (dateSeq.get(a.slot_date)! - dateSeq.get(b.slot_date)!)
+      || (callRank(a.shift_type_code) - callRank(b.shift_type_code)));
+  }
+
   // Seed pre-existing assignments into state (shared with optimize's pre-gate).
   const state = seedSolveState(ctx, doc);
 
@@ -138,11 +155,19 @@ export function solve(ctx: GenerationContext, opts: SolveOptions = {}): Solution
     const links = blockChainsFor(doc, slot.derived_day_type).get(slot.shift_type_code);
     if (!links) return;
     for (const link of links) {
-      const target = ctx.slotIndex.get(addDays(slot.slot_date, link.offset))?.get(link.code);
-      if (!target) continue;
+      const date = addDays(slot.slot_date, link.offset);
+      const target = ctx.slotIndex.get(date)?.get(link.code);
+      // Invariant #4: a link whose target slot doesn't exist is recorded for
+      // BOTH call and non-call codes — with no slot there is no main loop to
+      // fall through to, so silence here would drop the obligation entirely.
+      if (!target) {
+        skippedDerived.push({ date, code: link.code, provider_id: chosen.id, reason: 'no-slot' });
+        continue;
+      }
       // IF-4: a suppressed NON-call chain fill must be recorded (invariant #4).
-      // Call targets stay unrecorded — they fall through to the main loop and are
-      // not dropped.
+      // EXISTING call targets stay unrecorded — they fall through to the main
+      // loop and are not dropped (that rationale only holds when a slot exists;
+      // missing targets are recorded above).
       if (state.handledSlotIds.has(target.slot_id)) {
         if (target.shift_type_category !== 'call') {
           skippedDerived.push({
@@ -244,7 +269,7 @@ export function solve(ctx: GenerationContext, opts: SolveOptions = {}): Solution
   }
 
   // ── main construction loop (CALL slots only) ──
-  for (const slot of ctx.slotsToFill) {
+  for (const slot of slotsToFill) {
     if (state.handledSlotIds.has(slot.slot_id)) continue;
     if (slot.shift_type_category !== 'call') continue;
 

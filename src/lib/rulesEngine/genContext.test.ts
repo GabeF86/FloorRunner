@@ -324,6 +324,21 @@ describe('loadGenerationContext — call pattern (requirement 2 + 3)', () => {
     expect(res.ctx!.callPattern).toBeUndefined();
     expect(res.ctx!.warnings).toContain('call_patterns table missing — apply patch18');
   });
+
+  it("callFillOrder='call_rank' + a null-ranked call code → load-time warning (wiring)", async () => {
+    const doc = { ...CLASSIC_PATTERN, callFillOrder: 'call_rank' as const };
+    const { res } = await run({
+      call_patterns: { data: { definition: doc }, error: null },
+      shift_types: { data: [...BASE_SHIFT_TYPES,
+        { code: 'C9', category: 'call', call_rank: null, relief_rank: null, is_overlay: false,
+          generation_engine: 'call', requires_post_call_rule: true, call_coverage_type: null },
+      ], error: null },
+    });
+    const warnings = res.ctx!.warnings ?? [];
+    expect(warnings.some(w => w.includes('C9') && w.includes("callFillOrder='call_rank'"))).toBe(true);
+    // Ranked call codes and rank-less non-call codes stay quiet.
+    expect(warnings.some(w => w.includes('callFillOrder') && !w.includes('C9'))).toBe(false);
+  });
 });
 
 describe('loadGenerationContext — historical fairness RPC (requirement 4)', () => {

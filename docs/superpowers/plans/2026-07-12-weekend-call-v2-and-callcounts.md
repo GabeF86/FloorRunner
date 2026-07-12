@@ -19,7 +19,7 @@
 **Files:**
 - Modify: `docs/superpowers/specs/2026-07-12-weekend-call-v2-and-callcounts-design.md`
 
-- [ ] **Step 0.1:** In spec §2 JSON, replace the friday-anchored block
+- [x] **Step 0.1:** In spec §2 JSON, replace the friday-anchored block
 
 ```json
 { "anchorDayType": "friday", "chains": [
@@ -37,7 +37,7 @@ with
 
 and add `"callFillOrder": "call_rank"` as a top-level doc field. Update the delta table row "new Friday-anchored block" → "new Sunday-anchored block (`C2 → −2 C1` = Doc A: Sun C2 person carries Fri C1)". In §3, change the priority-lever sentence to state it **is** implemented as the opt-in `callFillOrder` field. In Risks, mark risk 2 resolved by the sunday anchor.
 
-- [ ] **Step 0.2:** Commit.
+- [x] **Step 0.2:** Commit.
 
 ```bash
 git add docs/superpowers/specs/2026-07-12-weekend-call-v2-and-callcounts-design.md
@@ -53,7 +53,7 @@ git commit -m "spec: weekend-v2 — sunday-anchored Doc A chain + opt-in callFil
 - Test: `src/app/(scheduling)/schedules/[id]/fteTarget.test.ts`
 - Modify: `src/app/(scheduling)/schedules/[id]/page.tsx:550` (grid over-par) and `page.tsx:2214` (modal `getExtra`)
 
-- [ ] **Step 1.1: Write the failing test**
+- [x] **Step 1.1: Write the failing test**
 
 ```ts
 // fteTarget.test.ts
@@ -74,9 +74,9 @@ describe('fteWeightedTarget', () => {
 });
 ```
 
-- [ ] **Step 1.2:** Run `npx vitest run "src/app/(scheduling)/schedules/[id]/fteTarget.test.ts"` — expect FAIL (module not found).
+- [x] **Step 1.2:** Run `npx vitest run "src/app/(scheduling)/schedules/[id]/fteTarget.test.ts"` — expect FAIL (module not found).
 
-- [ ] **Step 1.3: Implement**
+- [x] **Step 1.3: Implement**
 
 ```ts
 // fteTarget.ts
@@ -91,9 +91,9 @@ export function fteWeightedTarget(bucketTotal: number, parLevel: number, fte: nu
 }
 ```
 
-- [ ] **Step 1.4:** Run the test again — expect PASS.
+- [x] **Step 1.4:** Run the test again — expect PASS.
 
-- [ ] **Step 1.5: Refactor the two existing call sites.** In `page.tsx` add `import { fteWeightedTarget } from './fteTarget';`. At ~line 550 (grid over-par useMemo):
+- [x] **Step 1.5: Refactor the two existing call sites.** In `page.tsx` add `import { fteWeightedTarget } from './fteTarget';`. At ~line 550 (grid over-par useMemo):
 
 ```ts
 // before
@@ -111,9 +111,9 @@ const target = (blockTotal / parLevel) * fte;
 const target = fteWeightedTarget(blockTotal, parLevel, fte);
 ```
 
-- [ ] **Step 1.6:** `npx tsc --noEmit && npm test` — expect clean types; suite green except the 10 documented gridCalculator tsx-runner file errors.
+- [x] **Step 1.6:** `npx tsc --noEmit && npm test` — expect clean types; suite green except the 10 documented gridCalculator tsx-runner file errors.
 
-- [ ] **Step 1.7: Commit**
+- [x] **Step 1.7: Commit**
 
 ```bash
 git add "src/app/(scheduling)/schedules/[id]/fteTarget.ts" "src/app/(scheduling)/schedules/[id]/fteTarget.test.ts" "src/app/(scheduling)/schedules/[id]/page.tsx"
@@ -129,7 +129,7 @@ git commit -m "feat: shared fteWeightedTarget helper — one formula for red cel
 
 No component test harness exists in this repo; correctness rides on Task 1's tested helper. Verification = tsc + build + manual.
 
-- [ ] **Step 2.1: Add expectation helpers** inside `CallCountsModal`, directly under the existing `getExtra` definition (which already computes `fteByPid` and `parLevel` above it):
+- [x] **Step 2.1: Add expectation helpers** inside `CallCountsModal`, directly under the existing `getExtra` definition (which already computes `fteByPid` and `parLevel` above it):
 
 ```ts
 const expectedFor = (pid: string, bucket: string, code: string) =>
@@ -147,7 +147,7 @@ const colExpected = (bucket: string, code: string) => {
 const fmtFte = (fte: number) => fte.toFixed(2).replace(/\.?0+$/, '');
 ```
 
-- [ ] **Step 2.2: FTE next to the provider name.** Replace the provider `<td>` (~line 2340):
+- [x] **Step 2.2: FTE next to the provider name.** Replace the provider `<td>` (~line 2340):
 
 ```tsx
 <td style={{ padding: '6px 10px', color: 'var(--text)', fontWeight: 500 }}>
@@ -160,7 +160,7 @@ const fmtFte = (fte: number) => fte.toFixed(2).replace(/\.?0+$/, '');
 </td>
 ```
 
-- [ ] **Step 2.3: Expected in parentheses in each bucket×code cell.** Replace the count-cell body (~line 2343–2352):
+- [x] **Step 2.3: Expected in parentheses in each bucket×code cell.** Replace the count-cell body (~line 2343–2352):
 
 ```tsx
 {BUCKETS.map(b => CODES.map(c => {
@@ -184,7 +184,7 @@ const fmtFte = (fte: number) => fte.toFixed(2).replace(/\.?0+$/, '');
 }))}
 ```
 
-- [ ] **Step 2.4: Expected row under the Total row.** Insert directly after the Totals `</tr>` (~line 2403):
+- [x] **Step 2.4: Expected row under the Total row.** Insert directly after the Totals `</tr>` (~line 2403):
 
 ```tsx
 {/* Expected row — Σ of per-provider FTE-weighted targets. Below Total ⇒
@@ -211,9 +211,9 @@ const fmtFte = (fte: number) => fte.toFixed(2).replace(/\.?0+$/, '');
 </tr>
 ```
 
-- [ ] **Step 2.5:** `npx tsc --noEmit` clean, then `npm run dev` → open the June schedule → Call Counts: names show `· 0.75`-style FTE, cells show `3 (2.6)`, Expected row present with the tooltip. Print preview still isolates the table.
+- [x] **Step 2.5:** `npx tsc --noEmit` clean, then `npm run dev` → open the June schedule → Call Counts: names show `· 0.75`-style FTE, cells show `3 (2.6)`, Expected row present with the tooltip. Print preview still isolates the table.
 
-- [ ] **Step 2.6: Commit**
+- [x] **Step 2.6: Commit**
 
 ```bash
 git add "src/app/(scheduling)/schedules/[id]/page.tsx"
@@ -229,7 +229,7 @@ git commit -m "feat: Call Counts modal — FTE labels, expected-per-cell, Expect
 
 `viewMode` is component state (line 221) in the same scope as both edit sites (verify: it's used at lines 644 and 1028 in the same function).
 
-- [ ] **Step 3.1: View-dependent column floor.** Replace lines 1186–1187:
+- [x] **Step 3.1: View-dependent column floor.** Replace lines 1186–1187:
 
 ```ts
 // before
@@ -240,7 +240,7 @@ gridTemplateColumns: `84px repeat(${colCount}, minmax(${viewMode === 'month' ? 8
 minWidth: colCount > 7 ? `${84 + colCount * (viewMode === 'month' ? 82 : 74)}px` : undefined,
 ```
 
-- [ ] **Step 3.2: Smaller month-view name font + ellipsis safety net.** Replace the assigned-name span (~line 1368):
+- [x] **Step 3.2: Smaller month-view name font + ellipsis safety net.** Replace the assigned-name span (~line 1368):
 
 ```tsx
 <span style={{
@@ -252,9 +252,9 @@ minWidth: colCount > 7 ? `${84 + colCount * (viewMode === 'month' ? 82 : 74)}px`
 </span>
 ```
 
-- [ ] **Step 3.3:** `npx tsc --noEmit`, then visually check Month view (longest roster names fit; Week view unchanged at 13px).
+- [x] **Step 3.3:** `npx tsc --noEmit`, then visually check Month view (longest roster names fit; Week view unchanged at 13px).
 
-- [ ] **Step 3.4: Commit**
+- [x] **Step 3.4: Commit**
 
 ```bash
 git add "src/app/(scheduling)/schedules/[id]/page.tsx"
@@ -270,7 +270,7 @@ git commit -m "fix: month view — 82px column floor + 11px names with ellipsis 
 - Modify: `src/lib/rulesEngine/solve.ts` (entry sort)
 - Test: `src/lib/rulesEngine/weekendV2Pattern.test.ts` (created here, extended in Task 5)
 
-- [ ] **Step 4.1: Failing schema test.** Create `src/lib/rulesEngine/weekendV2Pattern.test.ts`:
+- [x] **Step 4.1: Failing schema test.** Create `src/lib/rulesEngine/weekendV2Pattern.test.ts`:
 
 ```ts
 import { describe, it, expect } from 'vitest';
@@ -291,9 +291,9 @@ describe('callFillOrder schema field', () => {
 
 (If `CLASSIC_PATTERN` is exported under a different name in `callPattern.ts`, use that export — it's the seeded classic doc constant visible at the bottom of the file.)
 
-- [ ] **Step 4.2:** Run `npx vitest run src/lib/rulesEngine/weekendV2Pattern.test.ts` — expect FAIL (`callFillOrder` stripped/rejected by `.strict()`).
+- [x] **Step 4.2:** Run `npx vitest run src/lib/rulesEngine/weekendV2Pattern.test.ts` — expect FAIL (`callFillOrder` stripped/rejected by `.strict()`).
 
-- [ ] **Step 4.3: Extend the schema.** In `CallPatternDocSchema` (callPattern.ts:48) add alongside the existing top-level fields:
+- [x] **Step 4.3: Extend the schema.** In `CallPatternDocSchema` (callPattern.ts:48) add alongside the existing top-level fields:
 
 ```ts
 // Opt-in within-date call fill order. 'call_rank' sorts each date's call
@@ -305,9 +305,9 @@ callFillOrder: z.enum(['call_rank']).optional(),
 
 Add `callFillOrder?: 'call_rank';` to the exported `CallPatternDoc` type if it is hand-written rather than inferred.
 
-- [ ] **Step 4.4:** Re-run the test — schema cases PASS.
+- [x] **Step 4.4:** Re-run the test — schema cases PASS.
 
-- [ ] **Step 4.5: Failing behavior probe.** Append to the same test file (uses the micro-fixture helpers exactly like `patternEngine.test.ts`; `2026-01-11` is a Sunday):
+- [x] **Step 4.5: Failing behavior probe.** Append to the same test file (uses the micro-fixture helpers exactly like `patternEngine.test.ts`; `2026-01-11` is a Sunday):
 
 ```ts
 import { solve } from './solve';
@@ -346,9 +346,9 @@ describe('callFillOrder: call_rank — in-house C1 wins under scarcity', () => {
 
 Adjust two things to the codebase's actual shapes (check `genTypes.ts` / `buildContext.ts` before running): the `shiftTypes` context field name (grep `ShiftTypeInfo` in `genTypes.ts` — genContext loads full shift types since scheduling-v2) and the `shiftInfo(code, over)` helper signature. Keep the assertions identical.
 
-- [ ] **Step 4.6:** Run — the `call_rank order` case must FAIL (sort not implemented). The characterization case documents current behavior; if it fails, read the actual plan output and fix the *test's* expectation to match observed legacy behavior (it exists to prove the delta, not to pin a wish).
+- [x] **Step 4.6:** Run — the `call_rank order` case must FAIL (sort not implemented). The characterization case documents current behavior; if it fails, read the actual plan output and fix the *test's* expectation to match observed legacy behavior (it exists to prove the delta, not to pin a wish).
 
-- [ ] **Step 4.7: Implement the sort** at the top of `solve()` in `solve.ts`, where the slot list is first read from ctx:
+- [x] **Step 4.7: Implement the sort** at the top of `solve()` in `solve.ts`, where the slot list is first read from ctx:
 
 ```ts
 // Opt-in in-house-first ordering (pattern doc callFillOrder: 'call_rank').
@@ -367,9 +367,9 @@ if (ctx.callPattern?.callFillOrder === 'call_rank') {
 
 …and use `slotsToFill` wherever the function previously iterated `ctx.slotsToFill`. (Adapt the `ctx.shiftTypes` accessor to the real field per Step 4.5's check; `call_rank` may be `null` → the `?? 99` keeps null-ranked codes last.)
 
-- [ ] **Step 4.8:** `npx vitest run src/lib/rulesEngine/weekendV2Pattern.test.ts` — all green. Then the full engine gate: `npx vitest run src/lib/rulesEngine` — **`goldenParity.test.ts` must be green with zero new enumerated divergences** (classic docs don't set the flag, so any parity change means the sort leaked into the legacy path — fix before proceeding).
+- [x] **Step 4.8:** `npx vitest run src/lib/rulesEngine/weekendV2Pattern.test.ts` — all green. Then the full engine gate: `npx vitest run src/lib/rulesEngine` — **`goldenParity.test.ts` must be green with zero new enumerated divergences** (classic docs don't set the flag, so any parity change means the sort leaked into the legacy path — fix before proceeding).
 
-- [ ] **Step 4.9: Commit**
+- [x] **Step 4.9: Commit**
 
 ```bash
 git add src/lib/rulesEngine/callPattern.ts src/lib/rulesEngine/solve.ts src/lib/rulesEngine/weekendV2Pattern.test.ts
@@ -384,7 +384,7 @@ git commit -m "feat: opt-in callFillOrder='call_rank' — in-house C1 fills befo
 - Create: `src/lib/rulesEngine/patterns/weekendV2.ts`
 - Modify: `src/lib/rulesEngine/weekendV2Pattern.test.ts` (extend)
 
-- [ ] **Step 5.1: The pattern constant** (single source of truth for tests + patch19):
+- [x] **Step 5.1: The pattern constant** (single source of truth for tests + patch19):
 
 ```ts
 // patterns/weekendV2.ts
@@ -425,7 +425,7 @@ export const WEEKEND_V2_PATTERN: CallPatternDoc = CallPatternDocSchema.parse({
 });
 ```
 
-- [ ] **Step 5.2: Golden-shape test.** Append to `weekendV2Pattern.test.ts` (Fri 2026-01-09 … Mon 2026-01-12; `dSlot` for D-codes; six 1.0-FTE providers so every chain can staff):
+- [x] **Step 5.2: Golden-shape test.** Append to `weekendV2Pattern.test.ts` (Fri 2026-01-09 … Mon 2026-01-12; `dSlot` for D-codes; six 1.0-FTE providers so every chain can staff):
 
 ```ts
 import { WEEKEND_V2_PATTERN } from './patterns/weekendV2';
@@ -480,9 +480,9 @@ describe('WEEKEND_V2_PATTERN — golden weekend shape (Doc A/B/C/E)', () => {
 });
 ```
 
-- [ ] **Step 5.3:** Run it. If the Doc-A assertions fail because a link-filled Fri C1 does not apply its friday day-chain block (Sat off), apply the spec's authorized fallback: keep the sunday-anchored chain and *also* assert/observe actual behavior, then decide with the plan-reviewer whether to add `{ offset: -1 }`-style explicit handling — do NOT silently weaken assertions. Record the outcome in the test comments.
+- [x] **Step 5.3:** Run it. If the Doc-A assertions fail because a link-filled Fri C1 does not apply its friday day-chain block (Sat off), apply the spec's authorized fallback: keep the sunday-anchored chain and *also* assert/observe actual behavior, then decide with the plan-reviewer whether to add `{ offset: -1 }`-style explicit handling — do NOT silently weaken assertions. Record the outcome in the test comments.
 
-- [ ] **Step 5.4: Chain-break probes.** Append:
+- [x] **Step 5.4: Chain-break probes.** Append:
 
 ```ts
 describe('WEEKEND_V2_PATTERN — broken chains still fill (in-house first)', () => {
@@ -543,9 +543,9 @@ describe('WEEKEND_V2_PATTERN — broken chains still fill (in-house first)', () 
 
 (As in Task 4: verify the exact `skippedDerived` reason vocabulary against `genTypes.ts` — ALGORITHM.md lists `pto | cross-site | occupied | no-slot | ineligible | already-handled`.)
 
-- [ ] **Step 5.5:** `npx vitest run src/lib/rulesEngine` — everything green, golden parity untouched.
+- [x] **Step 5.5:** `npx vitest run src/lib/rulesEngine` — everything green, golden parity untouched.
 
-- [ ] **Step 5.6: Commit**
+- [x] **Step 5.6: Commit**
 
 ```bash
 git add src/lib/rulesEngine/patterns/weekendV2.ts src/lib/rulesEngine/weekendV2Pattern.test.ts
@@ -560,7 +560,7 @@ git commit -m "feat: WEEKEND_V2_PATTERN + golden-shape and chain-break proof sui
 - Create: `scripts/emitWeekendV2Patch.ts`
 - Create: `supabase_scheduling_patch19_weekend_v2_pattern.sql`
 
-- [ ] **Step 6.1: Emit script** (guarantees the SQL's embedded JSON is byte-identical to the tested constant):
+- [x] **Step 6.1: Emit script** (guarantees the SQL's embedded JSON is byte-identical to the tested constant):
 
 ```ts
 // scripts/emitWeekendV2Patch.ts — run: npx tsx scripts/emitWeekendV2Patch.ts
@@ -616,16 +616,16 @@ COMMIT;
 `);
 ```
 
-- [ ] **Step 6.2:** `npx tsx scripts/emitWeekendV2Patch.ts > supabase_scheduling_patch19_weekend_v2_pattern.sql` and read the output file end-to-end (JSON present, site id correct, guard present).
+- [x] **Step 6.2:** `npx tsx scripts/emitWeekendV2Patch.ts > supabase_scheduling_patch19_weekend_v2_pattern.sql` and read the output file end-to-end (JSON present, site id correct, guard present).
 
-- [ ] **Step 6.3: Commit** (file only — NOT applied yet):
+- [x] **Step 6.3: Commit** (file only — NOT applied yet):
 
 ```bash
 git add scripts/emitWeekendV2Patch.ts supabase_scheduling_patch19_weekend_v2_pattern.sql
 git commit -m "feat: patch19 — weekend v2 pattern + Friday C3 template (emit script keeps SQL in sync with tested constant)"
 ```
 
-- [ ] **Step 6.4: GATE — confirm with Gabriel, then apply via the `supabase-floorrunner` MCP** (`apply_migration` / `execute_sql`), after verifying the MCP's project ref is `qhwdbtixhzdsgwwtcfrm` (CLAUDE.md rule). Run both verification queries from the file's footer and paste results into the session.
+- [x] **Step 6.4: GATE — confirm with Gabriel, then apply via the `supabase-floorrunner` MCP** (`apply_migration` / `execute_sql`), after verifying the MCP's project ref is `qhwdbtixhzdsgwwtcfrm` (CLAUDE.md rule). Run both verification queries from the file's footer and paste results into the session.
 
 ---
 
@@ -633,7 +633,7 @@ git commit -m "feat: patch19 — weekend v2 pattern + Friday C3 template (emit s
 
 No files. Uses the running dev server against the live DB (org `3d4621c3-340f-4a16-b3fc-8529a2ccb42e`, site `2ddd2427-22fb-4290-9c4c-03a957e5af4e`).
 
-- [ ] **Step 7.1:** Create a far-future throwaway schedule (dates chosen to avoid overlapping real drafts):
+- [x] **Step 7.1:** Create a far-future throwaway schedule (dates chosen to avoid overlapping real drafts):
 
 ```bash
 curl -s -X POST http://localhost:3000/api/scheduling/schedules -H 'content-type: application/json' -d '{
@@ -646,20 +646,20 @@ curl -s -X POST http://localhost:3000/api/scheduling/schedules -H 'content-type:
 
 Capture `id` and `version_id`. Confirm the response's slot creation includes Friday C3 (query the grid and look for a `C3` slot on a Friday date).
 
-- [ ] **Step 7.2:** Generate: `curl -s -X POST http://localhost:3000/api/scheduling/schedules/<id>/generate -H 'content-type: application/json' -d '{"version_id":"<version_id>"}'` (check the route's expected body first — `generate/route.ts`). Inspect the response's warnings/unfilled/skippedDerived.
+- [x] **Step 7.2:** Generate: `curl -s -X POST http://localhost:3000/api/scheduling/schedules/<id>/generate -H 'content-type: application/json' -d '{"version_id":"<version_id>"}'` (check the route's expected body first — `generate/route.ts`). Inspect the response's warnings/unfilled/skippedDerived.
 
-- [ ] **Step 7.3:** Fetch the grid and verify one weekend by hand against the Doc A/B/C/E shape (same five relationships as the Task 5 golden test).
+- [x] **Step 7.3:** Fetch the grid and verify one weekend by hand against the Doc A/B/C/E shape (same five relationships as the Task 5 golden test).
 
-- [ ] **Step 7.4:** Delete the throwaway schedule (`DELETE /api/scheduling/schedules/<id>` — confirm the route exists in `schedules/[id]/route.ts`; otherwise delete via the MCP with cascading slot/assignment cleanup, verifying row counts before/after).
+- [x] **Step 7.4:** Delete the throwaway schedule (`DELETE /api/scheduling/schedules/<id>` — confirm the route exists in `schedules/[id]/route.ts`; otherwise delete via the MCP with cascading slot/assignment cleanup, verifying row counts before/after).
 
 ---
 
 ### Task 8: Close-out
 
-- [ ] **Step 8.1:** `npx tsc --noEmit && npm test && npx next build` — all green (10 gridCalculator file errors remain documented noise).
-- [ ] **Step 8.2:** Check every box in this plan; note any deviations inline.
-- [ ] **Step 8.3:** `git push origin main` (auto-deploys to Vercel production; UI changes go live).
-- [ ] **Step 8.4:** Update memory (`scheduling_v2_progress.md` or a new note): weekend v2 pattern active at Paoli since patch19, `callFillOrder` field exists, June draft intentionally left on old structure.
+- [x] **Step 8.1:** `npx tsc --noEmit && npm test && npx next build` — all green (10 gridCalculator file errors remain documented noise).
+- [x] **Step 8.2:** Check every box in this plan; note any deviations inline.
+- [x] **Step 8.3:** `git push origin main` (auto-deploys to Vercel production; UI changes go live).
+- [x] **Step 8.4:** Update memory (`scheduling_v2_progress.md` or a new note): weekend v2 pattern active at Paoli since patch19, `callFillOrder` field exists, June draft intentionally left on old structure.
 
 ---
 
@@ -668,3 +668,14 @@ Capture `id` and `version_id`. Confirm the response's slot creation includes Fri
 - **Spec coverage:** §1→Task 3, §2→Tasks 0/5/6, §3→Tasks 4/5 (+7 live), §4→Tasks 1/2. Rollout+verification→6/7.
 - **Known adaptation points (flagged in-task, not placeholders):** the `ctx.shiftTypes` field name and `shiftInfo`/`skippedDerived` exact shapes must be read from `genTypes.ts`/`buildContext.ts` before writing test code (Steps 4.5, 5.4); the generate-route body shape (Step 7.2); `CLASSIC_PATTERN` export name (Step 4.1).
 - **Type consistency:** `fteWeightedTarget(bucketTotal, parLevel, fte)` used identically in Tasks 1–2; `WEEKEND_V2_PATTERN` imported from `patterns/weekendV2` in Tasks 5–6; `callFillOrder: 'call_rank'` literal everywhere.
+
+---
+
+## Close-out (2026-07-12)
+
+All 8 tasks executed via subagent-driven development (fresh implementer + spec review + quality review per task; schedule-engine-reviewer for engine tasks). Deviations from the written plan, all reviewed:
+
+- **Task 4 review round:** comparator rewritten to a consistent total order (dateSeq first-appearance + callRank tiebreak — the planned comparator was implementation-defined per ECMA-262); `rankOf`/`?? 99` replaced by the shared `callRank` helper; added `callFillOrderWarnings` (callPattern.ts) wired into genContext load warnings for null-ranked call codes.
+- **Task 5 review round:** golden-shape fixture feeds slots weekend-first (buildCtx preserves input order; production genContext sorts saturday→sunday→friday→weekday). NEW ENGINE FIX beyond plan scope, reviewer-specified: `applyBlockChains` now records `no-slot` skips for missing link targets (invariant 4 — previously a silent `continue`); pinned in patternEngine.test.ts + June-draft scenario test.
+- **Task 7 findings:** patch19 applied + verified (Classic archived, Weekend v2 active, Fri/Sat/Sun C3 templates). Live control experiment (same data, in-memory solve): Classic leaves 17 C1s unfilled on a 4-week window; Weekend v2 as deployed leaves 9 (priority lever working). Residual gaps are roster-vs-par starvation (pool Σ FTE 8.82 vs call_par_level 12) — pre-existing, now visible via generation warnings and the modal's Expected row. RECOMMENDATION: revisit call_par_level or roster/quota settings.
+- Final suite at close: 582 tests passing, tsc clean, next build clean, golden parity 8/8 with zero new divergences.
