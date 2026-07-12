@@ -47,8 +47,8 @@ New active `CallPatternDoc` (replaces "Classic (ported from engine)", which is a
       { "trigger": "C1", "links": [{ "offset": -1, "code": "D2" }] },
       { "trigger": "C2", "links": [{ "offset": -1, "code": "C2" }, { "offset": 1, "code": "C1" }] }
     ]},
-    { "anchorDayType": "friday", "chains": [
-      { "trigger": "C1", "links": [{ "offset": 2, "code": "C2" }] }
+    { "anchorDayType": "sunday", "chains": [
+      { "trigger": "C2", "links": [{ "offset": -2, "code": "C1" }] }
     ]}
   ],
   "dayChains": [
@@ -64,11 +64,12 @@ New active `CallPatternDoc` (replaces "Classic (ported from engine)", which is a
   "placementPasses": [
     { "kind": "pre_pto", "relativeDay": "thursday_prior_week", "codes": ["C1", "C2"], "maxProviders": 2, "enabled": true }
   ],
-  "optimizerMovableDayTypes": ["weekday", "friday"]
+  "optimizerMovableDayTypes": ["weekday", "friday"],
+  "callFillOrder": "call_rank"
 }
 ```
 
-Deltas vs Classic: Sat C1 chain loses `±1 C2`, gains `-1 D2`; Sat C2 chain swaps `-1 D2` for `-1 C2`; Sat C3 gains `-1 C3`; **new Friday-anchored block** (`C1 → +2 C2` = Doc A's Sun C2); **new saturday day-chain** (`C1 → block +1` = Doc E's Sun off). Everything else (weekday chains, D1>D3 precedence, relief, pre-PTO pass, Mon-D1-after-Sun-C2, Mon-off-after-Sun-C1) carries over unchanged.
+Deltas vs Classic: Sat C1 chain loses `±1 C2`, gains `-1 D2`; Sat C2 chain swaps `-1 D2` for `-1 C2`; Sat C3 gains `-1 C3`; **new Sunday-anchored block** (`C2 → −2 C1` = Doc A: Sun C2 person carries Fri C1); **new saturday day-chain** (`C1 → block +1` = Doc E's Sun off). Everything else (weekday chains, D1>D3 precedence, relief, pre-PTO pass, Mon-D1-after-Sun-C2, Mon-off-after-Sun-C1) carries over unchanged.
 
 Mechanics that make this work without engine edits (per ALGORITHM.md §8–9): chain call-links are gated with the full call gate and **fall through to the main loop when blocked**; a link-filled Sun C2 still fires its own sunday day chain (that is how Mon D1 works in Classic today); non-call links (`D2`) record `skippedDerived` when blocked. The Fri C2 link's day-chain interaction (D1/D3 suppression around adjacent calls) is identical to Classic's Fri-C2-as-link behavior — tests pin it.
 
@@ -84,7 +85,7 @@ Design = *prove the existing engine already guarantees this, add a lever only if
 
 - **Golden-shape test:** generate a weekend from a pure fixture context under the new doc with an unconstrained pool → assert the exact A/B/C/E shape of §2, including Sat/Sun post-call offs and Mon D1.
 - **Chain-break probes:** (a) Sat-C2 anchor's best candidate has Sunday PTO → Sun C1 must still be **filled** (standalone via main-loop fall-through, different provider), skip recorded; (b) Fri-C1 anchor blocked for Sun C2 → Sun C2 filled standalone, Mon D1 follows the *actual* Sun C2 assignee; (c) Fri D2 link blocked → recorded in `skippedDerived`, Sat C1 unaffected.
-- **Priority verification:** confirm `shift_types.call_rank` ranks C1 first and that within-day fill order cannot starve a C1 behind C2/C3 under pool pressure (probe with a minimal pool). If starvation is demonstrated, add rank-ordered call-slot processing in `solve()` as a scoped change with its own tests and a golden-parity check (expected: no parity impact because Classic fills whole chains from the anchor; any divergence must be enumerated in `goldenParity.test.ts` or the change is rejected).
+- **Priority verification:** confirm `shift_types.call_rank` ranks C1 first and that within-day fill order cannot starve a C1 behind C2/C3 under pool pressure (probe with a minimal pool). The lever IS implemented: an opt-in `callFillOrder: 'call_rank'` pattern-schema field that makes `solve()` process same-day call slots in `call_rank` order when a doc sets it; absent, legacy fill order applies, so Classic and every other existing pattern carry zero golden-parity risk. Any divergence introduced when the field is set on the new weekend-v2 doc must be enumerated in `goldenParity.test.ts` or the change is rejected.
 
 Invariants 1–6 all continue to apply; nothing in this item weakens PTO/pending-PTO blocking, cross-site checks, or skip recording.
 
@@ -110,5 +111,5 @@ Interpretation aid (documented in a row tooltip): when the Expected row is below
 ## Risks
 
 - **Day-chain cascade off a link:** §2 relies on link-filled slots firing their own day chains (true in Classic for Sun C2 → Mon D1). The golden-shape test pins it; if it fails for the Friday-anchored block specifically, the fallback is adding `{offset 3, code "D1"}` to the Friday chain — same outcome, no engine change.
-- **Anchor order between Friday and Saturday blocks:** Fri C1 is placed by the main loop before Saturday anchors (date order), so its +2 link claims Sun C2 before Saturday chains run — consistent with the target shape. Probe (b) covers the failure mode.
+- **Anchor order between Friday and Saturday blocks — RESOLVED** by the sunday-anchored expression: the engine fills saturday → sunday → friday → weekday, so a `-2` back-link from the Sunday C2 anchor fires before Friday is processed, meaning it reliably claims Fri C1 regardless of block ordering — no dependency on Friday being placed by the main loop first. Probe (b) covers the failure mode.
 - **June draft manual regenerate** rebuilds under the new pattern (accepted, documented above).
