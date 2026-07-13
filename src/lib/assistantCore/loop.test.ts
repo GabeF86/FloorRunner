@@ -18,7 +18,7 @@ import type {
   AssistantFinalMessage,
   AssistantStreamParams,
   ContentBlock,
-} from '@/lib/scheduleAssistant/client';
+} from './client';
 
 // ─── Fake Anthropic client (same shape as assistant.test.ts's) ───────────────
 

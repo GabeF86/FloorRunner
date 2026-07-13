@@ -24,7 +24,7 @@ import {
   type AssistantToolDef,
   type AssistantUsage,
   type ContentBlock,
-} from '@/lib/scheduleAssistant/client';
+} from './client';
 
 export const MAX_ITERATIONS = 16;
 // Tool results are model input — cap runaway payloads (a month grid is fine; a
