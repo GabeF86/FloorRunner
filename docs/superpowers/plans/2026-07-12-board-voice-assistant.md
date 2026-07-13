@@ -23,7 +23,7 @@
 - Create: `src/lib/boardLogic.ts`, `src/lib/boardLogic.test.ts`
 - Modify: `src/app/board/BoardClient.tsx` (remove `computeSupervisionLoads`, import instead), plus any other importer of `computeSupervisionLoads` (grep: currently only BoardClient defines/uses it internally).
 
-- [ ] **Step 1.1: Characterization tests FIRST**, importing from the CURRENT location (`import { computeSupervisionLoads } from '@/app/board/BoardClient'`):
+- [x] **Step 1.1: Characterization tests FIRST**, importing from the CURRENT location (`import { computeSupervisionLoads } from '@/app/board/BoardClient'`):
 
 ```ts
 // boardLogic.test.ts — written against the pre-move export to pin behavior,
@@ -75,11 +75,11 @@ describe('computeSupervisionLoads', () => {
 
 Adjust the `Assignment` cast to the real type in `src/types/index.ts` (read it first). Run: tests pass against the current implementation (green — these pin behavior).
 
-- [ ] **Step 1.2: Create `src/lib/boardLogic.ts`** — move `computeSupervisionLoads` and its `SUPERVISION_LIMITS` (locate the constant; if it lives in `src/types/index.ts` leave it there and import) VERBATIM from `BoardClient.tsx`. Pure module, no `'use client'`, imports only from `@/types`.
+- [x] **Step 1.2: Create `src/lib/boardLogic.ts`** — move `computeSupervisionLoads` and its `SUPERVISION_LIMITS` (locate the constant; if it lives in `src/types/index.ts` leave it there and import) VERBATIM from `BoardClient.tsx`. Pure module, no `'use client'`, imports only from `@/types`.
 
-- [ ] **Step 1.3:** `BoardClient.tsx` imports `computeSupervisionLoads` from `@/lib/boardLogic` (delete the local definition; keep the re-export if anything else imported it from BoardClient — grep first). Flip the test import to `./boardLogic`. Run tests + `npx tsc --noEmit` + `npm test` (suite baseline: 582 passing + your new tests; 10 documented gridCalculator file errors).
+- [x] **Step 1.3:** `BoardClient.tsx` imports `computeSupervisionLoads` from `@/lib/boardLogic` (delete the local definition; keep the re-export if anything else imported it from BoardClient — grep first). Flip the test import to `./boardLogic`. Run tests + `npx tsc --noEmit` + `npm test` (suite baseline: 582 passing + your new tests; 10 documented gridCalculator file errors).
 
-- [ ] **Step 1.4: Commit** `feat: boardLogic — supervision/out-order logic shared between board UI and (upcoming) assistant`.
+- [x] **Step 1.4: Commit** `feat: boardLogic — supervision/out-order logic shared between board UI and (upcoming) assistant`.
 
 ---
 
@@ -89,7 +89,7 @@ Adjust the `Assignment` cast to the real type in `src/types/index.ts` (read it f
 - Create: `src/lib/assistantCore/loop.ts`, `src/lib/assistantCore/loop.test.ts`
 - Modify: `src/lib/scheduleAssistant/assistant.ts` (becomes an adapter)
 
-- [ ] **Step 2.1:** Read `src/lib/scheduleAssistant/assistant.ts` fully. The loop to extract is `runAssistant`'s core: build request → `client.stream` → `finalMessage` → accumulate usage → execute tool_use blocks (snapshot before FIRST mutating tool; refuse mutations if snapshot failed; zod errors → `is_error` tool_result; cap tool-result chars) → push results → repeat ≤16 → `done` event. Design the extraction as:
+- [x] **Step 2.1:** Read `src/lib/scheduleAssistant/assistant.ts` fully. The loop to extract is `runAssistant`'s core: build request → `client.stream` → `finalMessage` → accumulate usage → execute tool_use blocks (snapshot before FIRST mutating tool; refuse mutations if snapshot failed; zod errors → `is_error` tool_result; cap tool-result chars) → push results → repeat ≤16 → `done` event. Design the extraction as:
 
 ```ts
 // assistantCore/loop.ts — domain-generic streaming tool loop. The schedule
@@ -117,13 +117,13 @@ export async function runAssistantLoop(deps: AssistantLoopDeps): Promise<Assista
 
 Note the executor signature here is `(input) => ...` — the schedule adapter closes over `(sb, ctx)` when building its executor map; the board adapter closes over `(sb, boardCtx)`. Types (`AssistantEvent`, `AssistantUsage`, `AssistantToolDef`, `AssistantMessageParam`) stay exported from their current homes (`client.ts` / `assistant.ts`) and are re-exported by `assistantCore` if that avoids churn — implementer's call, but **no import breaks** for existing consumers.
 
-- [ ] **Step 2.2 (TDD for the new seam):** Write `loop.test.ts` BEFORE the extraction — fake client (mirror the fixtures style in `scheduleAssistant/assistant.test.ts`), asserting: (a) snapshot is taken exactly once, before the first mutating tool, and its id lands in `done.actionId`; (b) when `takeSnapshot` resolves null, a mutating tool returns is_error and executes nothing, while read tools still run; (c) executor throw → is_error tool_result, loop continues; (d) tool results longer than `maxToolResultChars` are truncated; (e) `stop_reason 'max_tokens'` appends the truncation notice event. Run — fails (module absent).
+- [x] **Step 2.2 (TDD for the new seam):** Write `loop.test.ts` BEFORE the extraction — fake client (mirror the fixtures style in `scheduleAssistant/assistant.test.ts`), asserting: (a) snapshot is taken exactly once, before the first mutating tool, and its id lands in `done.actionId`; (b) when `takeSnapshot` resolves null, a mutating tool returns is_error and executes nothing, while read tools still run; (c) executor throw → is_error tool_result, loop continues; (d) tool results longer than `maxToolResultChars` are truncated; (e) `stop_reason 'max_tokens'` appends the truncation notice event. Run — fails (module absent).
 
-- [ ] **Step 2.3:** Move the loop body into `runAssistantLoop`; rewrite `scheduleAssistant/assistant.ts`'s `runAssistant` as an adapter that builds the deps (its existing snapshot wiring, executor map bound to `(sb, scheduleCtx)`, prompt via `loadSystemPrompt()`) and delegates. **Do not change `runAssistant`'s exported signature or events.**
+- [x] **Step 2.3:** Move the loop body into `runAssistantLoop`; rewrite `scheduleAssistant/assistant.ts`'s `runAssistant` as an adapter that builds the deps (its existing snapshot wiring, executor map bound to `(sb, scheduleCtx)`, prompt via `loadSystemPrompt()`) and delegates. **Do not change `runAssistant`'s exported signature or events.**
 
-- [ ] **Step 2.4:** Gates: `npx vitest run src/lib/assistantCore src/lib/scheduleAssistant` — new loop tests green AND the scheduleAssistant suite green **with zero test-file modifications** (`git diff --stat` must show no `scheduleAssistant/*.test.ts` changes). Then full `npm test` + `npx tsc --noEmit`.
+- [x] **Step 2.4:** Gates: `npx vitest run src/lib/assistantCore src/lib/scheduleAssistant` — new loop tests green AND the scheduleAssistant suite green **with zero test-file modifications** (`git diff --stat` must show no `scheduleAssistant/*.test.ts` changes). Then full `npm test` + `npx tsc --noEmit`.
 
-- [ ] **Step 2.5: Commit** `refactor: extract domain-generic assistant tool loop to assistantCore (schedule suite pinned, unmodified)`.
+- [x] **Step 2.5: Commit** `refactor: extract domain-generic assistant tool loop to assistantCore (schedule suite pinned, unmodified)`.
 
 ---
 
@@ -132,9 +132,9 @@ Note the executor signature here is `(input) => ...` — the schedule adapter cl
 **Files:**
 - Create: `src/lib/supabaseBoard.ts`, `scripts/emitBoardAssistantPatch.ts`, `supabase_scheduling_patch20_board_assistant.sql`
 
-- [ ] **Step 3.1:** `src/lib/supabaseBoard.ts` — mirror `src/lib/supabaseScheduling.ts` exactly (read it first), but `db: { schema: 'public' }` and exported as `sbBoardServer()`. Same env vars.
+- [x] **Step 3.1:** `src/lib/supabaseBoard.ts` — mirror `src/lib/supabaseScheduling.ts` exactly (read it first), but `db: { schema: 'public' }` and exported as `sbBoardServer()`. Same env vars.
 
-- [ ] **Step 3.2:** Emit script (pattern: `scripts/emitWeekendV2Patch.ts`) printing patch20:
+- [x] **Step 3.2:** Emit script (pattern: `scripts/emitWeekendV2Patch.ts`) printing patch20:
 
 ```sql
 -- supabase_scheduling_patch20_board_assistant.sql (public schema — the BOARD tables)
@@ -169,7 +169,7 @@ COMMIT;
 
 First READ the actual constraint name + current value list from the live DB (read-only query via Management API) and the TS `MDDesignation` union in `src/types/index.ts:15-25` — the CHECK list above must equal the TS union exactly; correct the SQL if the union differs. Emit, read the output end-to-end, commit files. **Do not apply.**
 
-- [ ] **Step 3.3: Commit** `feat: patch20 files — board_assistant_actions + designation constraint alignment (not applied)`.
+- [x] **Step 3.3: Commit** `feat: patch20 files — board_assistant_actions + designation constraint alignment (not applied)`.
 
 ---
 
@@ -178,12 +178,12 @@ First READ the actual constraint name + current value list from the live DB (rea
 **Files:**
 - Create: `src/lib/boardAssistant/tools.ts`, `src/lib/boardAssistant/tools.test.ts`
 
-- [ ] **Step 4.1:** Define the module skeleton: `BoardCtx { boardDate: string; hospital: string | null }`, `boardTools: AssistantToolDef[]`, `MUTATING_BOARD_TOOLS: Set<string>`, `createBoardExecutors(sb, ctx)` returning `Record<name, (input) => Promise<{result, summary}>>` (matching the Task 2 loop signature). Reuse `AssistantToolDef` from the schedule assistant's `client.ts`.
+- [x] **Step 4.1:** Define the module skeleton: `BoardCtx { boardDate: string; hospital: string | null }`, `boardTools: AssistantToolDef[]`, `MUTATING_BOARD_TOOLS: Set<string>`, `createBoardExecutors(sb, ctx)` returning `Record<name, (input) => Promise<{result, summary}>>` (matching the Task 2 loop signature). Reuse `AssistantToolDef` from the schedule assistant's `client.ts`.
 
-- [ ] **Step 4.2 (TDD):** Tests first, using the fake-supabase fixture (`src/lib/rulesEngine/__fixtures__/fakeSupabase.ts` — same injection style as `scheduleAssistant/tools.test.ts`; if the fake needs `public`-table shapes, seed them in the test):
+- [x] **Step 4.2 (TDD):** Tests first, using the fake-supabase fixture (`src/lib/rulesEngine/__fixtures__/fakeSupabase.ts` — same injection style as `scheduleAssistant/tools.test.ts`; if the fake needs `public`-table shapes, seed them in the test):
   - `get_board` returns: staff with `working` flags (join of `staff` + `daily_active` for the date, hospital-filtered), sites+rooms, assignments (with staff names), designations, shifts, breaks, relief log for the date, `supervisionLoads` (via `computeSupervisionLoads` from `@/lib/boardLogic`), and `outOrder` (designated MDs sorted by `DESIGNATION_OUT_ORDER`, then undesignated).
   - `find_staff` with query "nina" returns Nina-like candidates ranked; with two "Simon"-ish rows returns both (the tool NEVER picks silently — that rule lives in the system prompt, but the tool result must expose all candidates + roles + working flags).
-- [ ] **Step 4.3:** Implement both executors + their tool schemas:
+- [x] **Step 4.3:** Implement both executors + their tool schemas:
 
 ```ts
 { name: 'get_board',
@@ -199,7 +199,7 @@ First READ the actual constraint name + current value list from the live DB (rea
 
 `find_staff` matching: case-insensitive substring on name + initials, then a loose subsequence fallback; rank exact-prefix > substring > subsequence. Keep it dependency-free (~20 lines, unit-tested with misspellings like "kalawadia"/"kala"/"nina k").
 
-- [ ] **Step 4.4:** Green + `tsc` clean. **Commit** `feat: board assistant read tools — get_board + find_staff (fake-supabase tested)`.
+- [x] **Step 4.4:** Green + `tsc` clean. **Commit** `feat: board assistant read tools — get_board + find_staff (fake-supabase tested)`.
 
 ---
 
@@ -207,7 +207,7 @@ First READ the actual constraint name + current value list from the live DB (rea
 
 **Files:** extend `src/lib/boardAssistant/tools.ts` + tests.
 
-- [ ] **Step 5.1 (TDD, one describe per tool):** Behaviors to pin (each mirrors the existing REST routes' semantics — read `src/app/api/{assignments,daily-active,designations,daily-shifts,breaks,relief}/route.ts` first and mirror exactly):
+- [x] **Step 5.1 (TDD, one describe per tool):** Behaviors to pin (each mirrors the existing REST routes' semantics — read `src/app/api/{assignments,daily-active,designations,daily-shifts,breaks,relief}/route.ts` first and mirror exactly):
   - `set_working` batch upserts/deletes `daily_active`; marking someone NOT working also deletes their assignments for the date (UI checkbox parity).
   - `assign_to_room` resolves the room by name within the hospital's sites (case-insensitive; ambiguity or no match → throw `ToolInputError`-style so the loop returns is_error text listing the room names); non-physicians get prior same-date assignments deleted first; physicians stack; assigns to `daily_active` if missing and reports it in the summary.
   - `send_to_float` targets the `is_float` site's first room-equivalent (read how the UI's `handleDropFloat` writes it — mirror).
@@ -215,8 +215,8 @@ First READ the actual constraint name + current value list from the live DB (rea
   - `set_designation` upserts `daily_designations` (validate against the `MD_DESIGNATIONS` list); `set_shift_hours` upserts `daily_shifts` (validate against `HOUR_OPTIONS`).
   - `mark_break` upserts `breaks` with `taken_at` stamping (mirror the route).
   - `mark_relieved` deletes assignments + inserts `relief_log` with the denormalized name/role/initials/designation/shift fields (read the UI's `handleDropRelieved` payload and mirror).
-- [ ] **Step 5.2:** Implement executors + schemas. Schema budget: `set_working` takes `{ entries: [{staff_id, working}] }` (array, required both) — strict; `assign_to_room` `{staff_id, room}` strict; designations/shifts use enum values from the TS constants. Extend the existing strict-grammar bounds test (`weekendV2Pattern.test.ts` pattern) with a board-tools case: total optional params across strict board tools ≤ 20 and each strict schema ≤ 1000 bytes serialized.
-- [ ] **Step 5.3:** All green + tsc. **Commit** `feat: board assistant mutation tools (route-parity semantics, grammar-bounded schemas)`.
+- [x] **Step 5.2:** Implement executors + schemas. Schema budget: `set_working` takes `{ entries: [{staff_id, working}] }` (array, required both) — strict; `assign_to_room` `{staff_id, room}` strict; designations/shifts use enum values from the TS constants. Extend the existing strict-grammar bounds test (`weekendV2Pattern.test.ts` pattern) with a board-tools case: total optional params across strict board tools ≤ 20 and each strict schema ≤ 1000 bytes serialized.
+- [x] **Step 5.3:** All green + tsc. **Commit** `feat: board assistant mutation tools (route-parity semantics, grammar-bounded schemas)`.
 
 ---
 
@@ -239,11 +239,11 @@ First READ the actual constraint name + current value list from the live DB (rea
 - Create: `src/lib/boardAssistant/prompts/board.md`, `src/lib/boardAssistant/prompt.ts` (loader, copy the `loadSystemPrompt` __dirname+cwd pattern), `src/app/api/board/assistant/route.ts`, `route.test.ts`
 - Modify: `next.config.mjs` (add `'./src/lib/boardAssistant/prompts/**/*'` to the existing `outputFileTracingIncludes` array)
 
-- [ ] **Step 7.1:** Write `board.md`. Required content: role ("You are the floor-runner's board copilot at {hospital} for {boardDate}"); the data model in floor language (working list, rooms, float, designations D1..out-order..C1 overnight, shifts, breaks, relief); THE RULES — never create staff; on 0 or ≥2 name matches ASK (list the candidates); resolve rooms by name and ask on ambiguity; apply changes immediately and end with one line per change; for advice call `get_board` first and reason with supervision limits and out-order; keep replies terse (the user is standing in a hallway).
-- [ ] **Step 7.2 (TDD):** route tests with injected fake client (mirror `api/scheduling/assistant/route.test.ts` — read it first): 400 on bad body (zod `{boardDate: date-string, hospital: string|null, messages: […], model?}`), 500-style error event when ANTHROPIC_API_KEY missing (same pre-parse check as the scheduling route), happy-path streams `done` with usage, `maxDuration = 60`.
-- [ ] **Step 7.3:** Implement the route: build `BoardCtx`, `createBoardExecutors(sbBoardServer(), ctx)`, snapshot fn bound to ctx, call `runAssistantLoop`, stream events as SSE (copy the scheduling route's stream/controller scaffolding including the disconnected-client guard).
-- [ ] **Step 7.4:** `next.config.mjs` tracing include + verify via `npx next build` then grep the route's `.nft.json` for `board.md` (the patch18-era verification pattern).
-- [ ] **Step 7.5: Commit** `feat: board assistant SSE route + system prompt (traced into serverless bundle)`.
+- [x] **Step 7.1:** Write `board.md`. Required content: role ("You are the floor-runner's board copilot at {hospital} for {boardDate}"); the data model in floor language (working list, rooms, float, designations D1..out-order..C1 overnight, shifts, breaks, relief); THE RULES — never create staff; on 0 or ≥2 name matches ASK (list the candidates); resolve rooms by name and ask on ambiguity; apply changes immediately and end with one line per change; for advice call `get_board` first and reason with supervision limits and out-order; keep replies terse (the user is standing in a hallway).
+- [x] **Step 7.2 (TDD):** route tests with injected fake client (mirror `api/scheduling/assistant/route.test.ts` — read it first): 400 on bad body (zod `{boardDate: date-string, hospital: string|null, messages: […], model?}`), 500-style error event when ANTHROPIC_API_KEY missing (same pre-parse check as the scheduling route), happy-path streams `done` with usage, `maxDuration = 60`.
+- [x] **Step 7.3:** Implement the route: build `BoardCtx`, `createBoardExecutors(sbBoardServer(), ctx)`, snapshot fn bound to ctx, call `runAssistantLoop`, stream events as SSE (copy the scheduling route's stream/controller scaffolding including the disconnected-client guard).
+- [x] **Step 7.4:** `next.config.mjs` tracing include + verify via `npx next build` then grep the route's `.nft.json` for `board.md` (the patch18-era verification pattern).
+- [x] **Step 7.5: Commit** `feat: board assistant SSE route + system prompt (traced into serverless bundle)`.
 
 ---
 
@@ -253,7 +253,7 @@ First READ the actual constraint name + current value list from the live DB (rea
 - Create: `src/components/chat/useSpeechInput.ts`
 - Modify: `src/components/chat/ChatDrawer.tsx`
 
-- [ ] **Step 8.1:** The hook (no unit tests — browser API; keep ALL logic trivial):
+- [x] **Step 8.1:** The hook (no unit tests — browser API; keep ALL logic trivial):
 
 ```ts
 'use client';
@@ -312,8 +312,8 @@ export function useSpeechInput(onFinal: (text: string) => void): SpeechInput {
 
 Add the missing DOM lib types via a small `declare global` block if `SpeechRecognition` isn't in the TS lib (it isn't in `dom` for all TS versions — check `tsc` output and add minimal declarations in the hook file).
 
-- [ ] **Step 8.2:** `ChatDrawer` gains `voice?: boolean`. When set and `supported`: a 🎤 button next to the 🖼 button; tap → `start()`, button pulses (CSS animation via inline style + `@keyframes` in a `<style>` tag like the print block) and shows live `transcript` in the textarea (read-only mirror while listening: `value={listening ? transcript : input}`); tap again → `stop()`. `onFinal` → `chat.send(text)` directly (auto-send), UNLESS the user focused the textarea during listening — track a `editIntentRef` set by textarea `onFocus` while `listening`; then `onFinal` populates `setInput(text)` instead of sending. While `busy`, mic is disabled.
-- [ ] **Step 8.3:** `npx tsc --noEmit` clean; existing chat consumers unaffected (prop optional). Manual check deferred to Task 10. **Commit** `feat: mic input — useSpeechInput hook + ChatDrawer voice prop (auto-send, tap-to-edit escape)`.
+- [x] **Step 8.2:** `ChatDrawer` gains `voice?: boolean`. When set and `supported`: a 🎤 button next to the 🖼 button; tap → `start()`, button pulses (CSS animation via inline style + `@keyframes` in a `<style>` tag like the print block) and shows live `transcript` in the textarea (read-only mirror while listening: `value={listening ? transcript : input}`); tap again → `stop()`. `onFinal` → `chat.send(text)` directly (auto-send), UNLESS the user focused the textarea during listening — track a `editIntentRef` set by textarea `onFocus` while `listening`; then `onFinal` populates `setInput(text)` instead of sending. While `busy`, mic is disabled.
+- [x] **Step 8.3:** `npx tsc --noEmit` clean; existing chat consumers unaffected (prop optional). Manual check deferred to Task 10. **Commit** `feat: mic input — useSpeechInput hook + ChatDrawer voice prop (auto-send, tap-to-edit escape)`.
 
 ---
 
@@ -323,18 +323,18 @@ Add the missing DOM lib types via a small `declare global` block if `SpeechRecog
 - Create: `src/app/board/BoardAssistantPanel.tsx`
 - Modify: `src/app/board/BoardClient.tsx` (header button + panel mount)
 
-- [ ] **Step 9.1:** Panel = sibling of the scheduling `AssistantPanel` (read it; same structure): `useSSEChat` with `endpoint: '/api/board/assistant'`, `buildBody: ({text, history}) => ({ boardDate: viewDate, hospital, messages: [...history, {role:'user', content:text}] })`; `renderExtras` renders change chips + Undo button hitting `/api/board/assistant/actions/${actionId}/revert` (copy the undo wiring incl. one-in-flight lock and reverted strikethrough); `<ChatDrawer voice title="Board Assistant ✨" subtitle="speak or type · every change undoable" …/>`; `emptyHint` includes two example utterances (one roster+assign command, one advice question). When `viewDate !== today`, show the notice line: "Viewing a non-today date — the board won't live-update until reload."
-- [ ] **Step 9.2:** Mount in `BoardClient`: an "Assistant ✨" `Button` in the header near the view toggles; `onMutated` → the board's existing refetch paths already fire via realtime for today; for non-today dates call `loadDailyData(viewDate)` after `done` (read how `loadDailyData` is invoked and reuse).
-- [ ] **Step 9.3:** `tsc` + `npm test` + `npx next build` all green. **Commit** `feat: board assistant panel — voice chat drawer wired to /api/board/assistant with undo`.
+- [x] **Step 9.1:** Panel = sibling of the scheduling `AssistantPanel` (read it; same structure): `useSSEChat` with `endpoint: '/api/board/assistant'`, `buildBody: ({text, history}) => ({ boardDate: viewDate, hospital, messages: [...history, {role:'user', content:text}] })`; `renderExtras` renders change chips + Undo button hitting `/api/board/assistant/actions/${actionId}/revert` (copy the undo wiring incl. one-in-flight lock and reverted strikethrough); `<ChatDrawer voice title="Board Assistant ✨" subtitle="speak or type · every change undoable" …/>`; `emptyHint` includes two example utterances (one roster+assign command, one advice question). When `viewDate !== today`, show the notice line: "Viewing a non-today date — the board won't live-update until reload."
+- [x] **Step 9.2:** Mount in `BoardClient`: an "Assistant ✨" `Button` in the header near the view toggles; `onMutated` → the board's existing refetch paths already fire via realtime for today; for non-today dates call `loadDailyData(viewDate)` after `done` (read how `loadDailyData` is invoked and reuse).
+- [x] **Step 9.3:** `tsc` + `npm test` + `npx next build` all green. **Commit** `feat: board assistant panel — voice chat drawer wired to /api/board/assistant with undo`.
 
 ---
 
 ### Task 10: gates, patch20 apply (USER GATE), live e2e, close-out
 
-- [ ] **Step 10.1:** Full gates on the branch: `npx tsc --noEmit`, `npm test` (582 + all new tests, 10 documented file errors), `npx next build`, and the `.nft.json` grep for `board.md`.
-- [ ] **Step 10.2: GATE — present patch20 to Gabriel and apply only on his confirmation** (Management API, ref `qhwdbtixhzdsgwwtcfrm` verified). Run the two verification queries from the SQL footer.
-- [ ] **Step 10.3: Live e2e WITH Gabriel (voice is physically his):** on localhost, open /board → Assistant: (1) speak a roster command ("Working today: …" 3+ people) — verify daily_active + sidebar checkboxes update live; (2) speak assignments ("Farkas supervising rooms one and two, Nina in room three") — verify rooms fill; (3) an ambiguous name — verify it asks instead of acting; (4) "undo that" / Undo chip — verify day restored; (5) an advice question ("who goes home first?") — verify it reads the board and reasons about out-order. Fix-forward anything found.
-- [ ] **Step 10.4:** Plan close-out note (deviations + e2e findings), merge `board-assistant` → main (--no-ff), push (deploys), verify prod deployment green + `/api/board/assistant` responds 400-on-empty-body (key check), memory update (board assistant shipped; voice = Chrome SpeechRecognition; public-schema assistant infra now exists).
+- [x] **Step 10.1:** Full gates on the branch: `npx tsc --noEmit`, `npm test` (582 + all new tests, 10 documented file errors), `npx next build`, and the `.nft.json` grep for `board.md`.
+- [x] **Step 10.2: GATE — present patch20 to Gabriel and apply only on his confirmation** (Management API, ref `qhwdbtixhzdsgwwtcfrm` verified). Run the two verification queries from the SQL footer.
+- [x] **Step 10.3: Live e2e WITH Gabriel (voice is physically his):** on localhost, open /board → Assistant: (1) speak a roster command ("Working today: …" 3+ people) — verify daily_active + sidebar checkboxes update live; (2) speak assignments ("Farkas supervising rooms one and two, Nina in room three") — verify rooms fill; (3) an ambiguous name — verify it asks instead of acting; (4) "undo that" / Undo chip — verify day restored; (5) an advice question ("who goes home first?") — verify it reads the board and reasons about out-order. Fix-forward anything found.
+- [x] **Step 10.4:** Plan close-out note (deviations + e2e findings), merge `board-assistant` → main (--no-ff), push (deploys), verify prod deployment green + `/api/board/assistant` responds 400-on-empty-body (key check), memory update (board assistant shipped; voice = Chrome SpeechRecognition; public-schema assistant infra now exists).
 
 ---
 
@@ -343,3 +343,17 @@ Add the missing DOM lib types via a small `declare global` block if `SpeechRecog
 - Spec coverage: §1→T2, §2→T1/T4/T5(+T7 prompt), §3→T3/T6(+10.2), §4→T7/T8/T9, §5 testing woven per-task + T10.
 - Known adaptation points (in-task, deliberate): exact `Assignment` type shape (T1), current snapshot-id wiring pattern (T6.2), scheduling route scaffolding + route test conventions (T7), `SUPERVISION_LIMITS` location (T1.2), live designation constraint name/values (T3.2).
 - Type consistency: `BoardCtx`, `createBoardExecutors(sb, ctx)`, executor signature `(input) => Promise<{result, summary}>` per T2's loop seam, used identically in T4–T7.
+
+---
+
+## Close-out (2026-07-13)
+
+All 10 tasks executed via subagent-driven development (implementer + spec review + quality review per task). 675 tests passing, tsc/build clean, scheduleAssistant suite pinned and unmodified throughout. patch20 applied + verified (board_assistant_actions live; designation constraint carries all 17 values).
+
+**Review-round fixes beyond the plan text (all shipped):** get_board outOrder relieved-exclusion + assignments scoping; fellow in find_staff's role enum; consistent-total-order comparator + shared callRank in the loop... (T4); statefulBoard text-safe key, revert empty-scope honesty, latest-action ordering guard with monotonic created_at, partial-failure retry proof, relief deletion after clean restore (T6); voice-hardened prompt rules + number-word room normalization with prefix-token gate (T7); mic abort-on-close/locked with transcript discard (T8); ambient-notice multi-writer policy (T9).
+
+**Live e2e findings (fix-forward commits):**
+- `7f0d72f` — SpeechRecognition errors were swallowed; mic died silently on permission denial. Now surfaced with a permission walkthrough.
+- `a117ce8` — PRE-EXISTING board bug: supabase-js reuses channel instances by topic, so StrictMode's dev double-mount left the tab with no live realtime subscription — masked for months by optimistic drag-drop updates; exposed by the assistant as first external writer. Unique topic per mount fixes it.
+
+**Voice quality decision:** Chrome's built-in recognizer is weak on clinical names; Gabriel uses an external dictation app (Wispr Flow) typing into the chat input (option A). The designed v2 upgrade path (recorded audio → server STT with staff-roster vocabulary prompting) remains open in useSpeechInput's isolation seam.
