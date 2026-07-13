@@ -12,13 +12,16 @@ declare global {
     readonly resultIndex: number;
     readonly results: SpeechRecognitionResultList;
   }
+  interface SpeechRecognitionErrorEvent extends Event {
+    readonly error: string; // 'not-allowed' | 'audio-capture' | 'no-speech' | 'network' | ...
+  }
   interface SpeechRecognition extends EventTarget {
     lang: string;
     continuous: boolean;
     interimResults: boolean;
     onresult: ((event: SpeechRecognitionEvent) => void) | null;
     onend: (() => void) | null;
-    onerror: ((event: Event) => void) | null;
+    onerror: ((event: SpeechRecognitionErrorEvent) => void) | null;
     start(): void;
     stop(): void;
     abort(): void;
@@ -34,6 +37,8 @@ export interface SpeechInput {
   listening: boolean;
   /** Live transcript (interim + final so far) while listening. */
   transcript: string;
+  /** Last recognition error code ('not-allowed', 'audio-capture', …); cleared on start(). 'no-speech' is not reported (normal silence timeout). */
+  error: string | null;
   start: () => void;
   stop: () => void;   // manual stop — final transcript still fires onFinal
   /** Hard cancel — discards the transcript; onFinal never fires. */
@@ -43,6 +48,7 @@ export interface SpeechInput {
 export function useSpeechInput(onFinal: (text: string) => void): SpeechInput {
   const [listening, setListening] = useState(false);
   const [transcript, setTranscript] = useState('');
+  const [error, setError] = useState<string | null>(null);
   const recRef = useRef<SpeechRecognition | null>(null);
   const finalRef = useRef('');
   // rec.abort() suppresses further results, but onend still fires — and
@@ -55,7 +61,7 @@ export function useSpeechInput(onFinal: (text: string) => void): SpeechInput {
 
   useEffect(() => () => { discardRef.current = true; recRef.current?.abort(); }, []);
   if (!Ctor) {
-    return { supported: false, listening: false, transcript: '', start: () => {}, stop: () => {}, abort: () => {} };
+    return { supported: false, listening: false, transcript: '', error: null, start: () => {}, stop: () => {}, abort: () => {} };
   }
 
   const start = () => {
@@ -64,6 +70,7 @@ export function useSpeechInput(onFinal: (text: string) => void): SpeechInput {
     rec.lang = 'en-US'; rec.continuous = true; rec.interimResults = true;
     finalRef.current = '';
     discardRef.current = false;
+    setError(null);
     rec.onresult = (e: SpeechRecognitionEvent) => {
       let interim = '';
       for (let i = e.resultIndex; i < e.results.length; i++) {
@@ -80,7 +87,14 @@ export function useSpeechInput(onFinal: (text: string) => void): SpeechInput {
       if (discardRef.current) { discardRef.current = false; return; }
       if (text) onFinal(text);
     };
-    rec.onerror = () => { setListening(false); setTranscript(''); };
+    rec.onerror = (e: SpeechRecognitionErrorEvent) => {
+      // 'no-speech' is Chrome's normal silence timeout, not a fault — end
+      // quietly. Everything else (not-allowed, audio-capture, network, …)
+      // surfaces so the UI can tell the user WHY the mic stopped.
+      if (e.error && e.error !== 'no-speech') setError(e.error);
+      discardRef.current = true; // never auto-send a partial transcript after an error
+      setListening(false); setTranscript('');
+    };
     recRef.current = rec; setListening(true); rec.start();
   };
   const stop = () => recRef.current?.stop();
@@ -92,5 +106,5 @@ export function useSpeechInput(onFinal: (text: string) => void): SpeechInput {
     setListening(false);
     setTranscript('');
   };
-  return { supported: true, listening, transcript, start, stop, abort };
+  return { supported: true, listening, transcript, error, start, stop, abort };
 }

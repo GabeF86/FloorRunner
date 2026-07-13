@@ -81,6 +81,22 @@ export default function ChatDrawer({
     if ((!open || locked) && speech.listening) speech.abort();
   }, [open, locked, speech]);
 
+  // Surface recognition failures — a silently-dying mic is indistinguishable
+  // from a broken one. 'not-allowed' is by far the most common (browser or
+  // OS-level permission), so its message is a walkthrough, not a shrug.
+  useEffect(() => {
+    if (!speech.error) return;
+    const friendly: Record<string, string> = {
+      'not-allowed':
+        'Microphone access is blocked. Click the mic/camera icon at the right of the address bar and allow the microphone — and if there is no prompt, check System Settings → Privacy & Security → Microphone and enable your browser, then reload this page.',
+      'audio-capture': 'No microphone was found. Check that a mic is connected and selected in your system sound settings.',
+      'network': "Speech recognition couldn't reach the browser's transcription service — check your connection and try again.",
+      'aborted': '', // deliberate cancel — not an error worth showing
+    };
+    const msg = friendly[speech.error] ?? `Speech recognition stopped (${speech.error}). Try again.`;
+    if (msg) setError(msg);
+  }, [speech.error, setError]);
+
   if (!open) return null;
 
   const attachFile = (file: File) => {
