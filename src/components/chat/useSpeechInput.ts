@@ -36,6 +36,8 @@ export interface SpeechInput {
   transcript: string;
   start: () => void;
   stop: () => void;   // manual stop — final transcript still fires onFinal
+  /** Hard cancel — discards the transcript; onFinal never fires. */
+  abort: () => void;
 }
 
 export function useSpeechInput(onFinal: (text: string) => void): SpeechInput {
@@ -43,18 +45,25 @@ export function useSpeechInput(onFinal: (text: string) => void): SpeechInput {
   const [transcript, setTranscript] = useState('');
   const recRef = useRef<SpeechRecognition | null>(null);
   const finalRef = useRef('');
+  // rec.abort() suppresses further results, but onend still fires — and
+  // finalRef may already hold finalized text from earlier in the utterance.
+  // This flag makes abort's discard deterministic regardless of engine timing.
+  const discardRef = useRef(false);
   const Ctor = typeof window !== 'undefined'
     ? (window.SpeechRecognition ?? window.webkitSpeechRecognition)
     : undefined;
 
-  useEffect(() => () => { recRef.current?.abort(); }, []);
-  if (!Ctor) return { supported: false, listening: false, transcript: '', start: () => {}, stop: () => {} };
+  useEffect(() => () => { discardRef.current = true; recRef.current?.abort(); }, []);
+  if (!Ctor) {
+    return { supported: false, listening: false, transcript: '', start: () => {}, stop: () => {}, abort: () => {} };
+  }
 
   const start = () => {
     if (listening) return;
     const rec = new Ctor();
     rec.lang = 'en-US'; rec.continuous = true; rec.interimResults = true;
     finalRef.current = '';
+    discardRef.current = false;
     rec.onresult = (e: SpeechRecognitionEvent) => {
       let interim = '';
       for (let i = e.resultIndex; i < e.results.length; i++) {
@@ -68,11 +77,20 @@ export function useSpeechInput(onFinal: (text: string) => void): SpeechInput {
       setListening(false);
       const text = finalRef.current.trim();
       setTranscript('');
+      if (discardRef.current) { discardRef.current = false; return; }
       if (text) onFinal(text);
     };
     rec.onerror = () => { setListening(false); setTranscript(''); };
     recRef.current = rec; setListening(true); rec.start();
   };
   const stop = () => recRef.current?.stop();
-  return { supported: true, listening, transcript, start, stop };
+  const abort = () => {
+    if (!recRef.current) return;
+    discardRef.current = true;
+    recRef.current.abort();
+    // Clear UI state immediately — engines may delay onend after abort.
+    setListening(false);
+    setTranscript('');
+  };
+  return { supported: true, listening, transcript, start, stop, abort };
 }

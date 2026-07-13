@@ -72,6 +72,15 @@ export default function ChatDrawer({
     listRef.current?.scrollTo({ top: listRef.current.scrollHeight });
   }, [messages, status]);
 
+  // Kill the mic whenever the drawer is dismissed (× button or parent-driven
+  // close) or an undo locks the panel mid-listen. The drawer renders null on
+  // !open but stays MOUNTED, so without this the recognition session would
+  // keep the microphone open invisibly. abort (not stop) so a half-spoken
+  // command is discarded — never auto-sent, never left in the input.
+  useEffect(() => {
+    if ((!open || locked) && speech.listening) speech.abort();
+  }, [open, locked, speech]);
+
   if (!open) return null;
 
   const attachFile = (file: File) => {
