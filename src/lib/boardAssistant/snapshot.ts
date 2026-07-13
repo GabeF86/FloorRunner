@@ -14,9 +14,12 @@
 //   reverted_at is stamped only on a fully clean restore, so a partial failure
 //   stays visibly un-reverted and the Undo can be retried.
 //
-// The loop guarantees takeBoardSnapshot runs before the first mutating tool, so
-// by the time mark_relieved fires the action id is already known to the adapter
-// (it stashes it into the shared BoardActionRef the executors close over).
+// actionId visibility (a NEW pattern, no scheduling-side counterpart —
+// scheduling executors never need the action id): runAssistantLoop
+// (assistantCore/loop.ts) awaits takeSnapshot BEFORE any mutating executor of
+// the run executes, so the adapter's takeSnapshot closure can stash the id into
+// the shared BoardActionRef (tools.ts) and mark_relieved reliably reads it when
+// calling recordReliefInsert.
 import { scopeAllHospitals, staffInScope, type BoardCtx } from './tools';
 import type { StaffMember } from '@/types';
 
@@ -164,7 +167,20 @@ export async function revertBoardAction(sb: BoardClient, id: string): Promise<Bo
     // restored, but reverted_at stays unstamped (below) so the Undo is
     // retryable and re-runs the whole restore — same property as the schedule
     // assistant revert.
-    if (scopedIds.length === 0) continue; // no in-scope staff → nothing to clear (and snapshot rows are empty too)
+    const rows = (snapshot[table] ?? []) as Row[];
+    if (scopedIds.length === 0) {
+      // Scope is computed from the CURRENT staff table, so it can be empty at
+      // revert time even though the snapshot holds rows (e.g. the staff rows
+      // were deleted since the snapshot). Silently skipping would "succeed" a
+      // revert that restored nothing and stamp reverted_at — record an error
+      // instead, so the route reports the failure and the Undo stays retryable.
+      if (rows.length > 0) {
+        errors.push(
+          `${table} restore skipped: no in-scope staff at revert time but the snapshot holds ${rows.length} row(s)`,
+        );
+      }
+      continue; // empty snapshot table + empty scope → genuinely nothing to do
+    }
     const { error: delErr } = await sb
       .from(table)
       .delete()
@@ -174,7 +190,6 @@ export async function revertBoardAction(sb: BoardClient, id: string): Promise<Bo
       errors.push(`${table} clear failed: ${delErr.message}`);
       continue;
     }
-    const rows = (snapshot[table] ?? []) as Row[];
     if (rows.length > 0) {
       const { error: insErr } = await sb.from(table).insert(rows);
       if (insErr) {

@@ -176,4 +176,24 @@ describe('revertBoardAction', () => {
     expect(res.ok).toBe(false);
     expect(res.notFound).toBe(true);
   });
+
+  it('does NOT silently succeed when the staff scope is empty at revert time but the snapshot holds rows', async () => {
+    const { sb, dump, tables } = makeStatefulSupabase(seed());
+    const id = await takeBoardSnapshot(sb as never, PAOLI, 's'); // snapshot holds rows
+    // All in-scope staff rows vanish before the revert (only the out-of-scope
+    // BMH physician remains) → scopedStaffIds resolves empty for the action's scope.
+    tables.staff = tables.staff.filter((r) => r.id === 'md-bmh');
+
+    const res = await revertBoardAction(sb as never, id);
+    expect(res.ok).toBe(false);
+    expect(res.errors.join(' ')).toMatch(/no in-scope staff at revert time/);
+    // Every snapshot table that held rows reports the skip; breaks was empty →
+    // genuinely nothing to do, no error for it.
+    expect(res.errors.length).toBe(4);
+    expect(res.restored).toEqual({
+      daily_active: 0, assignments: 0, daily_designations: 0, daily_shifts: 0, breaks: 0,
+    });
+    // reverted_at stays unstamped → the Undo remains retryable.
+    expect(dump('board_assistant_actions').find((r) => r.id === id)!.reverted_at).toBeUndefined();
+  });
 });

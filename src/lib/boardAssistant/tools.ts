@@ -42,12 +42,15 @@ export interface BoardCtx {
   hospital: string | null;
 }
 
-// Shared handle for the turn's open snapshot id. The loop (assistantCore/loop.ts)
-// keeps actionId private and never passes it to executors; instead the adapter's
-// takeSnapshot closure stashes the id here after the pre-mutation snapshot, and
-// executors that need it (mark_relieved, to record the relief_log row it creates)
-// read actionRef.actionId at execution time. The loop's snapshot-before-first-
-// mutation ordering guarantees it is populated before any mutating tool runs.
+// Shared handle for the turn's open snapshot id. This is a NEW pattern with no
+// scheduling-side counterpart (the schedule executors never need the action id —
+// their revert restores the whole version): runAssistantLoop keeps actionId
+// private and never passes it to executors, so the board adapter's takeSnapshot
+// closure stashes the id here and executors that need it (mark_relieved, to
+// record the relief_log row it creates) read actionRef.actionId at execution
+// time. Sound because runAssistantLoop awaits takeSnapshot BEFORE any mutating
+// executor of the run executes (assistantCore/loop.ts), so the ref is populated
+// first.
 export interface BoardActionRef {
   actionId: string | null;
 }
