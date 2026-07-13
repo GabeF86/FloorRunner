@@ -3,8 +3,9 @@
 import { useState, useRef } from 'react';
 import { Site, Room, Assignment, ROLE_META, DraggedPerson, SUPERVISED_ROLES, ShiftHours } from '@/types';
 import { hexToRgb } from './BoardClient';
-import { ShiftBadge } from './Sidebar';
+import { ShiftBadge } from './ShiftBadge';
 import PersonChip from './PersonChip';
+import { BT } from './boardTheme';
 
 interface Props {
   site:               Site;
@@ -69,22 +70,22 @@ export default function SiteCard(props: Props) {
     <div
       onMouseEnter={() => setHov(true)}
       onMouseLeave={() => setHov(false)}
-      style={{ background: 'var(--bg-surface)', borderRadius: 14, border: '1px solid var(--border)', overflow: 'visible', marginBottom: 14 }}
+      style={{ background: 'var(--bg-surface)', borderRadius: BT.siteHeader.radius, border: '1px solid var(--border)', overflow: 'visible', marginBottom: 14 }}
     >
-      {/* Site header — full width */}
-      <div style={{ padding: '10px 16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: 'linear-gradient(135deg,rgba(' + rgb + ',0.28) 0%,rgba(' + rgb + ',0.14) 100%)', borderBottom: '1px solid rgba(' + rgb + ',0.32)', borderRadius: '14px 14px 0 0' }}>
+      {/* Site header — full width, solid bar (spec §3) */}
+      <div style={{ padding: BT.siteHeader.pad, display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: site.color, borderRadius: `${BT.siteHeader.radius}px ${BT.siteHeader.radius}px 0 0` }}>
         <div style={{ display: 'flex', alignItems: 'baseline', gap: 9 }}>
-          <span style={{ fontSize: 15, fontWeight: 750, color: site.color, letterSpacing: -0.3 }}>{site.name}</span>
-          <span style={{ fontSize: 11, color: 'var(--text-muted)', fontFamily: 'var(--font-mono), ui-monospace, monospace' }}>· {site.rooms.length} rooms</span>
+          <span style={{ fontSize: BT.siteHeader.nameSize, fontWeight: 750, color: '#fff', letterSpacing: -0.3 }}>{site.name}</span>
+          <span style={{ fontSize: BT.siteHeader.countSize, color: 'rgba(255,255,255,.65)', fontFamily: 'var(--font-mono), ui-monospace, monospace' }}>· {site.rooms.length} rooms</span>
         </div>
         <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-          <button draggable={false} onClick={(e) => { e.stopPropagation(); props.onAddRoom(); }} style={{ background: 'rgba(' + rgb + ',0.12)', border: '1px solid rgba(' + rgb + ',0.3)', color: site.color, borderRadius: 5, padding: '2px 9px', fontSize: 10, fontWeight: 700, cursor: 'pointer' }}>+ Room</button>
-          {hov && <button draggable={false} onClick={(e) => { e.stopPropagation(); props.onDeleteSite(); }} style={{ background: 'color-mix(in srgb, var(--danger) 10%, transparent)', border: '1px solid color-mix(in srgb, var(--danger) 25%, transparent)', color: 'var(--danger)', borderRadius: 5, padding: '2px 9px', fontSize: 10, fontWeight: 700, cursor: 'pointer' }}>Delete Site</button>}
+          <button draggable={false} onClick={(e) => { e.stopPropagation(); props.onAddRoom(); }} style={{ background: 'rgba(255,255,255,.14)', border: '1px solid rgba(255,255,255,.3)', color: '#fff', borderRadius: 5, padding: '2px 9px', fontSize: 10, fontWeight: 700, cursor: 'pointer' }}>+ Room</button>
+          {hov && <button draggable={false} onClick={(e) => { e.stopPropagation(); props.onDeleteSite(); }} style={{ background: 'rgba(255,255,255,.12)', border: '1px solid rgba(254,202,202,.4)', color: '#fecaca', borderRadius: 5, padding: '2px 9px', fontSize: 10, fontWeight: 700, cursor: 'pointer' }}>Delete Site</button>}
         </div>
       </div>
 
       {/* Rooms — wrapping */}
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, padding: '12px 14px', overflowX: 'hidden', overflowY: 'auto', alignContent: 'flex-start', minHeight: 110, maxHeight: roomsHeight ?? undefined }}>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: BT.roomsArea.gap, padding: BT.roomsArea.pad, overflowX: 'hidden', overflowY: 'auto', alignContent: 'flex-start', minHeight: 72, maxHeight: roomsHeight ?? undefined }}>
         {site.rooms.map((room) => (
           <RoomCell
             key={room.id}
@@ -112,7 +113,7 @@ export default function SiteCard(props: Props) {
       {/* Resize handle */}
       <div
         onMouseDown={onResizeMouseDown}
-        style={{ height: 6, cursor: 'ns-resize', display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: '0 0 14px 14px', background: hov ? `rgba(${rgb},0.08)` : 'transparent', transition: 'background 0.15s' }}
+        style={{ height: 6, cursor: 'ns-resize', display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: `0 0 ${BT.siteHeader.radius}px ${BT.siteHeader.radius}px`, background: hov ? `rgba(${rgb},0.08)` : 'transparent', transition: 'background 0.15s' }}
       >
         <div style={{ width: 32, height: 3, borderRadius: 2, background: hov ? `rgba(${rgb},0.4)` : 'var(--tint-surface-strong)', transition: 'background 0.15s' }} />
       </div>
@@ -164,8 +165,8 @@ function RoomCell({ room, site, people, isOver, dragging, alertLevels, dailyShif
       onMouseEnter={() => setHov(true)}
       onMouseLeave={() => setHov(false)}
       style={{
-        flexShrink: 0, width: 'auto', minWidth: 152, minHeight: 132,
-        borderRadius: 12, border: '1px solid',
+        flexShrink: 0, width: 'auto', minWidth: BT.room.minWidth, minHeight: BT.room.minHeight,
+        borderRadius: BT.room.radius, border: '1px solid',
         borderColor: isOver ? site.color : needsMd ? 'color-mix(in srgb, var(--warn) 50%, transparent)' : draggingRoom ? site.color : 'var(--border-faint)',
         background: isOver ? 'rgba(' + rgb + ',0.09)' : draggingRoom ? 'rgba(' + rgb + ',0.04)' : 'var(--bg-deep)',
         boxShadow: isOver ? '0 0 16px rgba(' + rgb + ',0.25)' : '0 1px 2px rgba(15,23,42,0.04)',
@@ -175,13 +176,13 @@ function RoomCell({ room, site, people, isOver, dragging, alertLevels, dailyShif
       }}
     >
       {/* Room header */}
-      <div style={{ padding: '7px 10px 6px', borderBottom: '1px solid var(--border-muted)' }}>
+      <div style={{ padding: BT.room.headerPad, borderBottom: '1px solid var(--border-muted)' }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 4 }}>
-          <span style={{ fontSize: 12.5, fontWeight: 750, color: 'var(--text)', letterSpacing: 0.2, fontFamily: 'var(--font-mono), ui-monospace, monospace' }}>
+          <span style={{ fontSize: BT.font.roomName, fontWeight: 750, color: 'var(--text)', letterSpacing: 0.2, fontFamily: 'var(--font-mono), ui-monospace, monospace' }}>
             {room.name}
             {surgeon?.staff && (
-              <span style={{ fontSize: 11, color: ROLE_META.surgeon.color, fontWeight: 600, marginLeft: 5, fontFamily: 'var(--font-sans)' }}>
-                — {surgeon.staff.name}
+              <span title={surgeon.staff.name} style={{ fontSize: 9.5, color: ROLE_META.surgeon.color, fontWeight: 600, marginLeft: 5, fontFamily: 'var(--font-sans)' }}>
+                — {surgeon.staff.name.split(' ').pop()}
               </span>
             )}
           </span>
@@ -190,7 +191,7 @@ function RoomCell({ room, site, people, isOver, dragging, alertLevels, dailyShif
       </div>
 
       {/* Stacked: MD on top, CRNA below */}
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 3, padding: '6px 6px 6px' }}>
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: BT.room.gap, padding: BT.room.bodyPad }}>
         {/* MD / Resident */}
         {mdPeople.map((a) => a.staff ? <PersonChip key={a.id} assignment={a} person={a.staff} alertLevels={alertLevels} dailyShifts={dailyShifts} onRemove={() => onRemoveAssignment(a.id)} /> : null)}
 

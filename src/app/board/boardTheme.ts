@@ -1,6 +1,8 @@
 // boardTheme.ts — single source of truth for the board's compact-mode scale
-// and dark site palette (spec 2026-07-13). All values sit on a 4px grid.
-// Components import from here; no dimensional literals in components.
+// and dark site palette (spec 2026-07-13). Components import from here; no
+// dimensional literals in components. values sit on a 4px grid (radii and
+// hairline gaps excepted).
+// Short name by design — consumed pervasively in JSX styles.
 export const BT = {
   // room cards (compact — spec §1, mockup option B)
   room: { minWidth: 112, minHeight: 88, radius: 8, headerPad: '4px 8px', bodyPad: 4, gap: 2 },
@@ -9,10 +11,12 @@ export const BT = {
   siteHeader: { pad: '4px 12px', nameSize: 13, countSize: 10, radius: 10 },
   // type scale: exactly two content sizes + the header (spec §7)
   font: { roomName: 11, chip: 10 },
-  chip: { radius: 4, pad: '2px 6px', minHeight: 20 },
+  // chip.minHeight is 32 (not 20) — spec risk #1: 20px fails the ≥32px
+  // pointer-target floor once padding is border-box'd (see Task 2 report).
+  chip: { radius: 4, pad: '2px 6px', minHeight: 32 },
   // drag feedback (spec §8) — hover-over only, reduced-motion aware
   drag: { transition: 'transform 120ms ease, box-shadow 120ms ease, border-color 120ms ease', hoverScale: 'scale(1.01)' },
-  rows: { rowMinHeight: 26, rowPad: '3px 8px', colPad: '0 8px', divider: '1px solid var(--border-muted)' },
+  rows: { rowMinHeight: 26, rowPad: '4px 8px', colPad: '0 8px', divider: '1px solid var(--border-muted)' },
   railWidth: 44,
 } as const;
 
