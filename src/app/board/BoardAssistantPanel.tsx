@@ -65,11 +65,20 @@ export default function BoardAssistantPanel({
     },
   });
 
-  // Show the non-today notice whenever the viewed date changes (including on
-  // open, since this effect also runs on mount); clear it when the date
-  // transitions back to today — but ONLY when the current notice is still ours
-  // (identity check against NON_TODAY_NOTICE), so an unrelated notice (e.g.
-  // the undo 409 "undo that turn first" message) is never clobbered.
+  // The notice slot has multiple writers; the policy is single-slot with
+  // NON_TODAY_NOTICE as the AMBIENT DEFAULT and specific notices (e.g. the
+  // undo 409 blocker) WINNING the slot:
+  //   - On a date change to non-today, ambient is asserted only when the slot
+  //     is free (null) or already ambient — a more specific notice (an
+  //     unresolved 409 blocker) survives stepping between non-today dates.
+  //     Acceptable consequence: once that specific notice is dismissed (or a
+  //     date change lands while the slot is null), ambient re-asserts on the
+  //     NEXT date change.
+  //   - On returning to today, only ambient is cleared (identity check) — a
+  //     specific notice is never clobbered.
+  //   - undo() clears only non-ambient notices at its start (below), and its
+  //     409 path may deliberately REPLACE ambient with the more specific
+  //     blocker message.
   //
   // Deps are deliberately [boardDate, today] WITHOUT chat.notice: this effect
   // must fire only on date transitions. Including chat.notice would re-fire it
@@ -80,7 +89,9 @@ export default function BoardAssistantPanel({
   // notice state.
   useEffect(() => {
     if (!isToday) {
-      chat.setNotice(NON_TODAY_NOTICE);
+      if (chat.notice === null || chat.notice === NON_TODAY_NOTICE) {
+        chat.setNotice(NON_TODAY_NOTICE);
+      }
     } else if (chat.notice === NON_TODAY_NOTICE) {
       chat.setNotice(null);
     }
@@ -90,7 +101,10 @@ export default function BoardAssistantPanel({
   const undo = async (actionId: string, msgIndex: number) => {
     if (chat.busy || undoingId) return; // one in-flight mutation at a time
     chat.setError(null);
-    chat.setNotice(null);
+    // Clear only a stale SPECIFIC notice (e.g. a previous 409 blocker) — the
+    // ambient non-today banner must survive ordinary undos, since nothing
+    // re-asserts it until the next date change (single-slot policy above).
+    if (chat.notice !== NON_TODAY_NOTICE) chat.setNotice(null);
     setUndoingId(actionId);
     try {
       const res = await fetch(`/api/board/assistant/actions/${actionId}/revert`, { method: 'POST' });
