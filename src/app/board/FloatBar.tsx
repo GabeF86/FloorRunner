@@ -102,19 +102,19 @@ export default function FloatBar({ staff, floatIds, assignedIds, activeStaffIds,
                       onMouseEnter={(e) => (e.currentTarget.style.opacity = '0.75')}
                       onMouseLeave={(e) => (e.currentTarget.style.opacity = '1')}
                     >
-                      <span style={{ fontWeight: 800, fontSize: 9, fontFamily: 'var(--font-mono), ui-monospace, monospace' }}>{person.initials}</span>
+                      <span style={{ fontWeight: 800, fontSize: BT.font.chipSub, fontFamily: 'var(--font-mono), ui-monospace, monospace' }}>{person.initials}</span>
                       <span>{person.name.split(' ').pop()}</span>
-                      {isFloat && <span style={{ fontSize: 9, opacity: 0.7 }}>🔄</span>}
+                      {isFloat && <span style={{ fontSize: BT.font.chipSub, opacity: 0.7 }}>🔄</span>}
                       {desg && (
                         <span style={{
-                          fontSize: 9, fontWeight: 800, padding: '0 4px', borderRadius: 3,
+                          fontSize: BT.font.chipSub, fontWeight: 800, padding: '0 4px', borderRadius: 3,
                           background: 'rgba(' + hexToRgb(meta.color) + ',0.15)',
                           border: '0.5px solid rgba(' + hexToRgb(meta.color) + ',0.3)',
                           fontFamily: 'var(--font-mono), ui-monospace, monospace',
                         }}>{desg}</span>
                       )}
                       {hours && (
-                        <span style={{ fontSize: 9, opacity: 0.7, fontFamily: 'var(--font-mono), ui-monospace, monospace' }}>{hours.replace('hr', 'h')}</span>
+                        <span style={{ fontSize: BT.font.chipSub, opacity: 0.7, fontFamily: 'var(--font-mono), ui-monospace, monospace' }}>{hours.replace('hr', 'h')}</span>
                       )}
                     </div>
                   );

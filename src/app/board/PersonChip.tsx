@@ -24,10 +24,10 @@ export default function PersonChip({ assignment, person, alertLevels, dailyShift
       onMouseEnter={(e) => (e.currentTarget.style.opacity = '0.7')}
       onMouseLeave={(e) => (e.currentTarget.style.opacity = '1')}>
       {alert !== 'none' && <div style={{ position: 'absolute', inset: 0, borderRadius: BT.chip.radius, border: '1px solid ' + (alert === 'critical' ? 'color-mix(in srgb, var(--danger) 70%, transparent)' : 'color-mix(in srgb, var(--warn) 60%, transparent)'), animation: 'relief-flash ' + (alert === 'critical' ? '1s' : '2s') + ' ease-in-out infinite', pointerEvents: 'none' }} />}
-      <span style={{ fontWeight: 800, fontSize: 9, fontFamily: 'var(--font-mono), ui-monospace, monospace' }}>{person.initials}</span>
+      <span style={{ fontWeight: 800, fontSize: BT.font.chipSub, fontFamily: 'var(--font-mono), ui-monospace, monospace' }}>{person.initials}</span>
       <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 90 }}>{person.name.split(' ').pop()}</span>
       {hours && <ShiftBadge hours={hours} role={person.role} />}
-      <span style={{ opacity: 0.4 }}>×</span>
+      <span style={{ opacity: 0.4, fontSize: BT.font.chipSub }}>×</span>
     </div>
   );
 }

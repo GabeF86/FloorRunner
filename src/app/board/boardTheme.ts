@@ -9,8 +9,10 @@ export const BT = {
   roomsArea: { gap: 8, pad: '8px 12px' },
   // site header (solid bar — spec §3)
   siteHeader: { pad: '4px 12px', nameSize: 13, countSize: 10, radius: 10 },
-  // type scale: exactly two content sizes + the header (spec §7)
-  font: { roomName: 11, chip: 10 },
+  // type scale: exactly two content sizes + the header (spec §7).
+  // chipSub: sub-elements inside a chip — initials, badges, remove ×; must
+  // stay below font.chip so the chip's name dominates.
+  font: { roomName: 11, chip: 10, chipSub: 9 },
   // chip.minHeight is 32 (not 20) — spec risk #1: 20px fails the ≥32px
   // pointer-target floor once padding is border-box'd (see Task 2 report).
   chip: { radius: 4, pad: '2px 6px', minHeight: 32 },

@@ -72,7 +72,12 @@ export default function SiteCard(props: Props) {
       onMouseLeave={() => setHov(false)}
       style={{ background: 'var(--bg-surface)', borderRadius: BT.siteHeader.radius, border: '1px solid var(--border)', overflow: 'visible', marginBottom: 14 }}
     >
-      {/* Site header — full width, solid bar (spec §3) */}
+      {/* Site header — full width, solid bar (spec §3).
+          White text is tuned for the dark palette (applied as data at the
+          Task 9 gate). On the current light DB colors this header is
+          intentionally washed out in the interim (worst offenders: EP Lab
+          #f59e0b at 2.15:1, Endoscopy #10b981 at 2.54:1 vs white) — do not
+          add per-color conditionals. */}
       <div style={{ padding: BT.siteHeader.pad, display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: site.color, borderRadius: `${BT.siteHeader.radius}px ${BT.siteHeader.radius}px 0 0` }}>
         <div style={{ display: 'flex', alignItems: 'baseline', gap: 9 }}>
           <span style={{ fontSize: BT.siteHeader.nameSize, fontWeight: 750, color: '#fff', letterSpacing: -0.3 }}>{site.name}</span>
