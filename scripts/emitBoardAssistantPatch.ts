@@ -17,12 +17,12 @@ DO $$ BEGIN
 END $$;
 
 CREATE TABLE public.board_assistant_actions (
-  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  board_date date NOT NULL,
-  hospital text,
-  summary text,
-  snapshot jsonb NOT NULL,
-  created_at timestamptz NOT NULL DEFAULT now(),
+  id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  board_date  date NOT NULL,
+  hospital    text,
+  summary     text,
+  snapshot    jsonb NOT NULL,
+  created_at  timestamptz NOT NULL DEFAULT now(),
   reverted_at timestamptz
 );
 CREATE INDEX board_assistant_actions_date_idx ON public.board_assistant_actions (board_date, created_at DESC);
@@ -35,6 +35,10 @@ ALTER TABLE public.daily_designations DROP CONSTRAINT IF EXISTS daily_designatio
 ALTER TABLE public.daily_designations ADD CONSTRAINT daily_designations_designation_check
   CHECK (designation IN (${checkList}));
 COMMIT;
--- Verify: SELECT count(*) FROM public.board_assistant_actions;   -- 0
--- Verify: INSERT a 'D9' designation row in a transaction and ROLLBACK — must not error.
+
+-- Verification (run after):
+--   SELECT count(*) FROM public.board_assistant_actions;
+--   -- expect: 0
+--   INSERT a 'D9' designation row in a transaction, then ROLLBACK;
+--   -- expect: no constraint error
 `);
