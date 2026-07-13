@@ -185,18 +185,44 @@ export function createBoardExecutors(
       const breaks = (breakRes.data ?? []) as Break[];
       const relief = (reliefRes.data ?? []) as ReliefEntry[];
 
-      // Supervision loads over ALL date assignments (BoardClient parity — it
-      // computes over the whole assignments array, not a hospital slice).
+      // Supervision loads over the FULL unscoped assignments array — deliberate
+      // asymmetry with the hospital-scoped assignments facet below. This is
+      // exactly what BoardClient does (BoardClient.tsx:445: it feeds the whole
+      // date's assignments to computeSupervisionLoads before any hospital
+      // slicing), so screen and assistant report identical loads.
       const roomAssignments: Record<string, Assignment[]> = {};
       for (const a of assignments) (roomAssignments[a.room_id] ??= []).push(a);
       const supervisionLoads = computeSupervisionLoads(assignments, roomAssignments);
 
-      // Out-order: designated MDs by DESIGNATION_OUT_ORDER (D1…D9, 3pm/5pm/7pm,
-      // C2), then undesignated MDs who are working today. Mirrors OutListPanel;
-      // C1/C3 (overnight) and 8hr/10hr designations don't appear in the day
-      // out-order. MD = role 'physician'.
+      // Assignments facet: scoped to rooms of in-scope sites so the model never
+      // sees rows referencing rooms absent from `sites` (dangling context).
+      // Float assignments store the SITE id as room_id (BoardClient
+      // handleDropFloat posts room_id: siteId; floatAssignments filters on it),
+      // so float site ids count as in-scope "rooms" too.
+      const scopedRoomIds = new Set<string>();
+      for (const s of sitesScoped) {
+        if (s.is_float) scopedRoomIds.add(s.id);
+        for (const rm of s.rooms ?? []) scopedRoomIds.add(rm.id);
+      }
+      const assignmentsScoped = assignments.filter((a) => scopedRoomIds.has(a.room_id));
+
+      // Out-order — mirrors the EFFECTIVE UI pipeline, not OutListPanel in
+      // isolation. BoardClient composes the panel's staff prop at
+      // BoardClient.tsx:431-433 (mounted at :682):
+      //   relievedIds  ← the date's reliefLog                    (:431)
+      //   hospitalStaff ← hospital match OR null-hospital        (:432)
+      //   activeStaff  ← hospitalStaff MINUS relieved            (:433)
+      // — there is NO daily_active/working filter in that pipeline. The panel
+      // then lists designated physicians by DESIGNATION_OUT_ORDER (D1…D9,
+      // 3pm/5pm/7pm, C2; C1/C3 overnight and 8hr/10hr never enter the day
+      // out-order) followed by ALL undesignated physicians it received. The
+      // `working` flag is carried per row so the model can weigh it, but it
+      // never filters membership (UI parity).
+      const relievedIds = new Set(relief.map((r) => r.staff_id));
       const desgByStaff = new Map(designations.map((d) => [d.staff_id, d.designation]));
-      const physicians = staffScoped.filter((s) => s.role === 'physician');
+      const physicians = staffScoped.filter(
+        (s) => s.role === 'physician' && !relievedIds.has(s.id),
+      );
       const outOrder: Array<{
         staff_id: string; name: string; initials: string;
         designation: string | null; working: boolean;
@@ -206,8 +232,8 @@ export function createBoardExecutors(
         if (p) outOrder.push({ staff_id: p.id, name: p.name, initials: p.initials, designation: d, working: workingIds.has(p.id) });
       }
       for (const p of physicians) {
-        if (!desgByStaff.has(p.id) && workingIds.has(p.id)) {
-          outOrder.push({ staff_id: p.id, name: p.name, initials: p.initials, designation: null, working: true });
+        if (!desgByStaff.has(p.id)) {
+          outOrder.push({ staff_id: p.id, name: p.name, initials: p.initials, designation: null, working: workingIds.has(p.id) });
         }
       }
 
@@ -224,7 +250,7 @@ export function createBoardExecutors(
             id: s.id, name: s.name, is_float: !!s.is_float, hospital: s.hospital ?? null,
             rooms: (s.rooms ?? []).map((rm) => ({ id: rm.id, name: rm.name, position: rm.position })),
           })),
-          assignments: assignments.map((a) => ({
+          assignments: assignmentsScoped.map((a) => ({
             id: a.id, room_id: a.room_id, staff_id: a.staff_id,
             staff_name: a.staff?.name ?? null, staff_role: a.staff?.role ?? null,
             staff_initials: a.staff?.initials ?? null,

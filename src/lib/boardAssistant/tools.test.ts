@@ -17,6 +17,7 @@ const STAFF = [
   { id: 'md-nina',   name: 'Nina Kalawadia', initials: 'NK', role: 'physician', hours: '8hr',  hospital: 'Paoli Hospital' },
   { id: 'md-owen',   name: 'Owen Diaz',      initials: 'OD', role: 'physician', hours: '8hr',  hospital: 'Paoli Hospital' },
   { id: 'md-zed',    name: 'Zed Gray',       initials: 'ZG', role: 'physician', hours: '8hr',  hospital: 'Paoli Hospital' },
+  { id: 'md-rita',   name: 'Rita Vaughn',    initials: 'RV', role: 'physician', hours: '8hr',  hospital: 'Paoli Hospital' },
   { id: 'crna-simon-a', name: 'Simon Bell',  initials: 'SB', role: 'crna', hours: '10hr', hospital: 'Paoli Hospital' },
   { id: 'crna-simon-b', name: 'Simone Ford', initials: 'SF', role: 'crna', hours: '10hr', hospital: 'Paoli Hospital' },
   { id: 'crna-null', name: 'Nina Torres',    initials: 'NT', role: 'crna', hours: '8hr',  hospital: null },
@@ -34,7 +35,10 @@ const SITES = [
   { id: 'site-orphan', name: 'Orphan Suite', is_float: false, hospital: null, position: 3, rooms: [] },
 ];
 
-// Farkas (MD) supervises OR 1 alongside a CRNA → one CRNA room; Nina (MD) alone in OR 2.
+// Farkas (MD) supervises OR 1 alongside a CRNA → one CRNA room; Nina (MD) alone
+// in OR 2. a4/a5 live in the BMH room r9 (out of Paoli scope); a6 is a float
+// assignment — float rows store the SITE id as room_id (BoardClient
+// handleDropFloat / floatAssignments).
 const ASSIGNMENTS = [
   { id: 'a1', room_id: 'r1', staff_id: 'md-farkas', board_date: DATE,
     staff: { id: 'md-farkas', name: 'Gabriel Farkas', initials: 'GF', role: 'physician', hours: '8hr' } },
@@ -42,6 +46,12 @@ const ASSIGNMENTS = [
     staff: { id: 'crna-simon-a', name: 'Simon Bell', initials: 'SB', role: 'crna', hours: '10hr' } },
   { id: 'a3', room_id: 'r2', staff_id: 'md-nina', board_date: DATE,
     staff: { id: 'md-nina', name: 'Nina Kalawadia', initials: 'NK', role: 'physician', hours: '8hr' } },
+  { id: 'a4', room_id: 'r9', staff_id: 'md-bmh', board_date: DATE,
+    staff: { id: 'md-bmh', name: 'Bruce Hale', initials: 'BH', role: 'physician', hours: '8hr' } },
+  { id: 'a5', room_id: 'r9', staff_id: 'res-bmh', board_date: DATE,
+    staff: { id: 'res-bmh', name: 'Omar Reyes', initials: 'OR', role: 'resident', hours: '12hr' } },
+  { id: 'a6', room_id: 'site-float', staff_id: 'crna-null', board_date: DATE,
+    staff: { id: 'crna-null', name: 'Nina Torres', initials: 'NT', role: 'crna', hours: '8hr' } },
 ];
 
 const DAILY_ACTIVE = [
@@ -55,12 +65,19 @@ const DAILY_ACTIVE = [
 const DESIGNATIONS = [
   { id: 'd1', staff_id: 'md-farkas', board_date: DATE, designation: 'D1' },
   { id: 'd2', staff_id: 'md-nina',   board_date: DATE, designation: 'D3' },
+  // Rita is designated D2 but appears in the relief log below → she must NOT
+  // surface in the out-order (she already went home).
+  { id: 'd3', staff_id: 'md-rita',   board_date: DATE, designation: 'D2' },
 ];
 
 const SHIFTS = [{ id: 's1', staff_id: 'crna-simon-a', board_date: DATE, hours: '12hr' }];
 const BREAKS = [{ id: 'b1', staff_id: 'crna-simon-a', board_date: DATE, break_type: 'lunch', taken: true, taken_at: '2026-07-12T12:00:00Z' }];
-const RELIEF = [{ id: 'rl1', staff_id: 'crna-x', staff_name: 'Rae X', staff_role: 'crna', staff_initials: 'RX',
-                 board_date: DATE, relieved_at: '2026-07-12T15:00:00Z', designation: null, shift_hours: '8hr' }];
+const RELIEF = [
+  { id: 'rl1', staff_id: 'crna-x', staff_name: 'Rae X', staff_role: 'crna', staff_initials: 'RX',
+    board_date: DATE, relieved_at: '2026-07-12T15:00:00Z', designation: null, shift_hours: '8hr' },
+  { id: 'rl2', staff_id: 'md-rita', staff_name: 'Rita Vaughn', staff_role: 'physician', staff_initials: 'RV',
+    board_date: DATE, relieved_at: '2026-07-12T14:00:00Z', designation: 'D2', shift_hours: '8hr' },
+];
 
 function boardFake() {
   return makeFakeSupabase({
@@ -164,14 +181,40 @@ describe('get_board (hospital-scoped)', () => {
     expect(r.supervisionLoads['md-farkas']).toMatchObject({ crnaCount: 1, overCrna: false });
   });
 
-  it('builds out-order: designated MDs by DESIGNATION_OUT_ORDER, then undesignated working MDs', async () => {
+  // outOrder mirrors the EFFECTIVE UI pipeline, not OutListPanel in isolation:
+  // BoardClient builds the panel's staff prop as hospital-scoped staff MINUS
+  // relieved (BoardClient.tsx:431-433: relievedIds ← reliefLog, hospitalStaff,
+  // activeStaff) and mounts it at :682 — there is NO daily_active/working
+  // filter anywhere in that pipeline. The panel then splits physicians into
+  // DESIGNATION_OUT_ORDER hits and an undesignated remainder.
+  it('builds out-order: designated MDs by DESIGNATION_OUT_ORDER, then ALL undesignated non-relieved MDs', async () => {
     const r = await runGetBoard(ctx);
-    expect(r.outOrder.map((o) => o.staff_id)).toEqual(['md-farkas', 'md-nina', 'md-owen']);
+    // Rita (D2) is relieved → skipped; D1 farkas, D3 nina, then undesignated
+    // owen (working) and zed (not working — still listed, UI parity).
+    expect(r.outOrder.map((o) => o.staff_id)).toEqual(['md-farkas', 'md-nina', 'md-owen', 'md-zed']);
     expect(r.outOrder[0]).toMatchObject({ designation: 'D1' });
     expect(r.outOrder[1]).toMatchObject({ designation: 'D3' });
-    expect(r.outOrder[2]).toMatchObject({ designation: null, working: true }); // owen, undesignated but working
-    // Zed is undesignated AND not working → not in the out-order.
-    expect(r.outOrder.some((o) => o.staff_id === 'md-zed')).toBe(false);
+    expect(r.outOrder[2]).toMatchObject({ designation: null, working: true });
+    expect(r.outOrder[3]).toMatchObject({ designation: null, working: false });
+  });
+
+  it('excludes a relieved-but-designated physician from the out-order (she already went home)', async () => {
+    const r = await runGetBoard(ctx);
+    expect(r.outOrder.some((o) => o.staff_id === 'md-rita')).toBe(false);
+    // …but she still appears in the relief log and staff facets.
+    expect(r.reliefLog.some((e) => e.staff_id === 'md-rita')).toBe(true);
+    expect(r.staff.some((s) => s.id === 'md-rita')).toBe(true);
+  });
+
+  it('scopes the assignments facet to in-scope rooms (incl. float), keeping supervision loads global', async () => {
+    const r = await runGetBoard(ctx);
+    const ids = r.assignments.map((a) => a.id).sort();
+    // a4/a5 sit in BMH's r9 — their site is out of Paoli scope, so returning
+    // them would hand the model rows pointing at rooms absent from `sites`.
+    expect(ids).toEqual(['a1', 'a2', 'a3', 'a6']); // a6 = float (site id as room_id)
+    // supervisionLoads stay computed over the FULL unscoped array
+    // (BoardClient.tsx:445 parity) — the out-of-scope BMH MD still has a load.
+    expect(r.supervisionLoads['md-bmh']).toMatchObject({ residentCount: 1 });
   });
 
   it('passes through designations, shifts, breaks and relief log for the date', async () => {
@@ -189,6 +232,8 @@ describe('get_board (hospital null = All)', () => {
     expect(r.staff.some((s) => s.id === 'res-bmh')).toBe(true);
     expect(r.sites.some((s) => s.id === 'site-bmh')).toBe(true);
     expect(r.sites.some((s) => s.id === 'site-orphan')).toBe(true); // null-hospital site shows under All
+    // BMH-room assignments come back when unscoped.
+    expect(r.assignments.map((a) => a.id).sort()).toEqual(['a1', 'a2', 'a3', 'a4', 'a5', 'a6']);
   });
 });
 
