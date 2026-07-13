@@ -11,9 +11,14 @@ import { z } from 'zod';
 import { computeSupervisionLoads } from '@/lib/boardLogic';
 import {
   DESIGNATION_OUT_ORDER,
+  MD_DESIGNATIONS,
+  HOUR_OPTIONS,
   type Assignment,
   type StaffMember,
   type Site,
+  type Role,
+  type MDDesignation,
+  type ShiftHours,
   type DailyDesignation,
   type DailyShift,
   type Break,
@@ -69,11 +74,130 @@ export const boardTools: AssistantToolDef[] = [
       },
     },
   },
+  {
+    name: 'set_working',
+    description:
+      "Set today's working roster in one batch: for each entry mark the staff member working (true) or off (false). Marking someone off also clears their room assignments for the date (same as unchecking their sidebar box). Resolve every id with find_staff first.",
+    strict: true,
+    input_schema: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['entries'],
+      properties: {
+        entries: {
+          type: 'array',
+          description: 'Roster changes to apply.',
+          items: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['staff_id', 'working'],
+            properties: { staff_id: { type: 'string' }, working: { type: 'boolean' } },
+          },
+        },
+      },
+    },
+  },
+  {
+    name: 'assign_to_room',
+    description:
+      "Assign a staff member to an operating room, resolved by the room's spoken name within the current hospital. Non-physicians move room-to-room (their prior room is cleared); physicians stack (they can supervise several rooms). Auto-adds the person to today's working roster if missing. If the room name is ambiguous or unknown, you get the candidate/available names back — ask the user, don't guess.",
+    strict: true,
+    input_schema: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['staff_id', 'room'],
+      properties: { staff_id: { type: 'string' }, room: { type: 'string' } },
+    },
+  },
+  {
+    name: 'send_to_float',
+    description:
+      "Assign a staff member to the float location (the day's floating/holding pool). Non-physicians' prior room is cleared; physicians stack.",
+    strict: true,
+    input_schema: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['staff_id'],
+      properties: { staff_id: { type: 'string' } },
+    },
+  },
+  {
+    name: 'unassign',
+    description: "Clear all of a staff member's room assignments for the date (send them back to the roster).",
+    strict: true,
+    input_schema: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['staff_id'],
+      properties: { staff_id: { type: 'string' } },
+    },
+  },
+  {
+    name: 'set_designation',
+    description:
+      "Set a PHYSICIAN's daily designation (D1–D9 day order, C1–C3 call, 3pm/5pm/7pm early-out, 8hr/10hr per-diem). Only physicians take designations — use set_shift_hours for CRNA/SRNA/resident/fellow hours.",
+    strict: true,
+    input_schema: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['staff_id', 'designation'],
+      properties: { staff_id: { type: 'string' }, designation: { type: 'string', enum: [...MD_DESIGNATIONS] } },
+    },
+  },
+  {
+    name: 'set_shift_hours',
+    description:
+      "Set today's shift length for a CRNA, SRNA, resident, or fellow. Physicians use set_designation instead; surgeons have no shift hours.",
+    strict: true,
+    input_schema: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['staff_id', 'hours'],
+      properties: { staff_id: { type: 'string' }, hours: { type: 'string', enum: [...HOUR_OPTIONS] } },
+    },
+  },
+  {
+    name: 'mark_break',
+    description: "Mark a staff member's break (morning/lunch/afternoon) as taken (true) or not-yet-taken (false).",
+    strict: true,
+    input_schema: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['staff_id', 'break_type', 'taken'],
+      properties: {
+        staff_id: { type: 'string' },
+        break_type: { type: 'string', enum: ['morning', 'lunch', 'afternoon'] },
+        taken: { type: 'boolean' },
+      },
+    },
+  },
+  {
+    name: 'mark_relieved',
+    description:
+      "Relieve a staff member — record that they went home. Clears their room assignments and logs the relief (with their designation and shift at time of relief). Removes them from the out-order.",
+    strict: true,
+    input_schema: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['staff_id'],
+      properties: { staff_id: { type: 'string' } },
+    },
+  },
 ];
 
-// No board mutations yet (Task 5 adds them). The loop only snapshots/records
-// changes for names in this set, so an empty set = every board tool is read-only.
-export const MUTATING_BOARD_TOOLS: ReadonlySet<string> = new Set<string>();
+// The loop snapshots the day (Task 6) before the FIRST tool in this set runs and
+// collects each one's summary as a change chip. Read tools (get_board,
+// find_staff) stay OUT so a pure advice turn never triggers a snapshot.
+export const MUTATING_BOARD_TOOLS: ReadonlySet<string> = new Set<string>([
+  'set_working',
+  'assign_to_room',
+  'send_to_float',
+  'unassign',
+  'set_designation',
+  'set_shift_hours',
+  'mark_break',
+  'mark_relieved',
+]);
 
 // ── Hospital scoping (mirrors BoardClient's filters exactly) ──────────────────
 // Staff (looser): hospital match OR null-hospital — unassigned staff show in
@@ -153,6 +277,139 @@ const FindStaffInput = z
     role: z.enum(['physician', 'fellow', 'crna', 'srna', 'resident', 'surgeon']).optional(),
   })
   .strict();
+
+// ── Mutation input schemas (strict, small — respect the API grammar budget) ────
+const SetWorkingInput = z
+  .object({
+    entries: z
+      .array(z.object({ staff_id: z.string().min(1), working: z.boolean() }).strict())
+      .min(1, 'entries must contain at least one {staff_id, working}'),
+  })
+  .strict();
+const AssignRoomInput = z
+  .object({ staff_id: z.string().min(1), room: z.string().min(1, 'room name is required') })
+  .strict();
+const StaffIdInput = z.object({ staff_id: z.string().min(1) }).strict();
+const SetDesignationInput = z
+  .object({ staff_id: z.string().min(1), designation: z.enum(MD_DESIGNATIONS as [MDDesignation, ...MDDesignation[]]) })
+  .strict();
+const SetShiftHoursInput = z
+  .object({ staff_id: z.string().min(1), hours: z.enum(HOUR_OPTIONS as unknown as [ShiftHours, ...ShiftHours[]]) })
+  .strict();
+const MarkBreakInput = z
+  .object({ staff_id: z.string().min(1), break_type: z.enum(['morning', 'lunch', 'afternoon']), taken: z.boolean() })
+  .strict();
+
+function parseInput<T>(schema: z.ZodType<T>, input: unknown, tool: string): T {
+  const parsed = schema.safeParse(input);
+  if (!parsed.success) {
+    throw new ToolInputError(
+      `Invalid ${tool} input — ${parsed.error.issues.map((i) => `${i.path.join('.') || '(root)'}: ${i.message}`).join('; ')}`,
+    );
+  }
+  return parsed.data;
+}
+
+// Which roles the Sidebar offers each picker to (mirrored EXACTLY from
+// Sidebar.tsx: the designation dropdown opens only for `isPhys`, the shift
+// dropdown for `!isPhys && !isSurgeon`). Fellows therefore take a shift, NOT a
+// designation — enforced here so the assistant can't write a state the UI can't.
+const DESIGNATION_ROLES: ReadonlySet<Role> = new Set<Role>(['physician']);
+const SHIFT_HOURS_ROLES: ReadonlySet<Role> = new Set<Role>(['fellow', 'crna', 'srna', 'resident']);
+
+// ── Mutation helpers ──────────────────────────────────────────────────────────
+
+// Read the whole (small) staff table; in production the id filter narrows it,
+// in the fake it returns everything and we find in-memory — either way robust.
+async function fetchStaffById(sb: BoardClient, staffId: string): Promise<StaffMember> {
+  const { data, error } = await sb.from('staff').select('*').eq('id', staffId);
+  if (error) throw new Error(`staff read failed: ${error.message}`);
+  const row = ((data ?? []) as StaffMember[]).find((s) => s.id === staffId);
+  if (!row) {
+    throw new ToolInputError(
+      `No staff member with id "${staffId}" — resolve the person with find_staff first; never invent ids.`,
+    );
+  }
+  return row;
+}
+
+function displayName(s: StaffMember): string {
+  return s.name;
+}
+
+// Assignment placement shared by assign_to_room and send_to_float — the exact
+// POST /api/assignments code path: non-physicians clear prior same-date rows
+// first (they move), physicians stack; then upsert on (staff_id,room_id,
+// board_date). For float, roomId is the SITE id (BoardClient.handleDropFloat).
+async function placeAssignment(sb: BoardClient, ctx: BoardCtx, staff: StaffMember, roomId: string): Promise<void> {
+  if (staff.role !== 'physician') {
+    const { error: delErr } = await sb
+      .from('assignments')
+      .delete()
+      .eq('staff_id', staff.id)
+      .eq('board_date', ctx.boardDate);
+    if (delErr) throw new Error(`assignment clear failed: ${delErr.message}`);
+  }
+  const { error } = await sb
+    .from('assignments')
+    .upsert(
+      { room_id: roomId, staff_id: staff.id, board_date: ctx.boardDate },
+      { onConflict: 'staff_id,room_id,board_date' },
+    )
+    .select('*, staff(*)')
+    .single();
+  if (error) throw new Error(`assignment write failed: ${error.message}`);
+}
+
+// Resolve a spoken room name to a room id within the current hospital's sites.
+// 0 matches → list the available room names; ≥2 → list the ambiguous candidates
+// with their site names. Both are ToolInputErrors so the model asks the user.
+function resolveRoom(sites: Site[], roomName: string): { roomId: string; roomName: string } {
+  const q = norm(roomName);
+  const matches: Array<{ roomId: string; roomName: string; siteName: string }> = [];
+  for (const s of sites) {
+    for (const rm of s.rooms ?? []) {
+      if (norm(rm.name) === q) matches.push({ roomId: rm.id, roomName: rm.name, siteName: s.name });
+    }
+  }
+  if (matches.length === 0) {
+    const avail = sites.flatMap((s) => (s.rooms ?? []).map((rm) => rm.name));
+    throw new ToolInputError(
+      `No room named "${roomName}" in this hospital. Available rooms: ${avail.join(', ') || '(none in scope)'}. Ask the user which room.`,
+    );
+  }
+  if (matches.length > 1) {
+    throw new ToolInputError(
+      `Room "${roomName}" is ambiguous — it matches ${matches
+        .map((m) => `${m.roomName} in ${m.siteName}`)
+        .join('; ')}. Ask the user which one.`,
+    );
+  }
+  return { roomId: matches[0].roomId, roomName: matches[0].roomName };
+}
+
+async function loadScopedSites(sb: BoardClient, ctx: BoardCtx): Promise<Site[]> {
+  const { data, error } = await sb.from('sites').select('*, rooms(*)').order('position');
+  if (error) throw new Error(`sites read failed: ${error.message}`);
+  return ((data ?? []) as Site[]).filter((s) => siteInScope(ctx, s));
+}
+
+// Upsert the person into daily_active if they aren't already working today.
+// Returns whether a row was added (so the summary can say so). Mirrors the
+// daily_active POST upsert shape.
+async function ensureWorking(sb: BoardClient, ctx: BoardCtx, staffId: string): Promise<boolean> {
+  const { data, error } = await sb.from('daily_active').select('*').eq('board_date', ctx.boardDate);
+  if (error) throw new Error(`daily_active read failed: ${error.message}`);
+  const working = ((data ?? []) as Array<{ staff_id: string }>).some((r) => r.staff_id === staffId);
+  if (working) return false;
+  const { error: upErr } = await sb
+    .from('daily_active')
+    .upsert({ staff_id: staffId, board_date: ctx.boardDate }, { onConflict: 'staff_id,board_date' })
+    .select()
+    .single();
+  if (upErr) throw new Error(`daily_active write failed: ${upErr.message}`);
+  return true;
+}
 
 export function createBoardExecutors(
   sb: BoardClient,
@@ -305,6 +562,193 @@ export function createBoardExecutors(
       return {
         result: { query, role: role ?? null, count: candidates.length, candidates },
       };
+    },
+
+    // ── Mutations ─────────────────────────────────────────────────────────────
+
+    // daily_active batch. Validate EVERY id before any write (all-or-nothing) so
+    // a bad id never leaves a half-applied roster. working=false also clears the
+    // person's assignments for the date — toggleActive uncheck parity.
+    async set_working(input: unknown): Promise<LoopToolOutcome> {
+      const { entries } = parseInput(SetWorkingInput, input, 'set_working');
+      const staffList = ((await sb.from('staff').select('*')).data ?? []) as StaffMember[];
+      const byId = new Map(staffList.map((s) => [s.id, s]));
+      for (const e of entries) {
+        if (!byId.has(e.staff_id)) {
+          throw new ToolInputError(
+            `No staff member with id "${e.staff_id}" — resolve everyone with find_staff first; nothing was changed.`,
+          );
+        }
+      }
+      const on: string[] = [];
+      const off: string[] = [];
+      for (const e of entries) {
+        const person = byId.get(e.staff_id)!;
+        if (e.working) {
+          const { error } = await sb
+            .from('daily_active')
+            .upsert({ staff_id: e.staff_id, board_date: ctx.boardDate }, { onConflict: 'staff_id,board_date' })
+            .select()
+            .single();
+          if (error) throw new Error(`daily_active write failed: ${error.message}`);
+          on.push(displayName(person));
+        } else {
+          const { error: delActive } = await sb
+            .from('daily_active')
+            .delete()
+            .eq('staff_id', e.staff_id)
+            .eq('board_date', ctx.boardDate);
+          if (delActive) throw new Error(`daily_active delete failed: ${delActive.message}`);
+          const { error: delAssign } = await sb
+            .from('assignments')
+            .delete()
+            .eq('staff_id', e.staff_id)
+            .eq('board_date', ctx.boardDate);
+          if (delAssign) throw new Error(`assignment clear failed: ${delAssign.message}`);
+          off.push(displayName(person));
+        }
+      }
+      const summary =
+        `Working: ${on.join(', ') || '—'}` + (off.length ? ` · Off: ${off.join(', ')}` : '');
+      return { result: { working_on: on, working_off: off }, summary };
+    },
+
+    async assign_to_room(input: unknown): Promise<LoopToolOutcome> {
+      const { staff_id, room } = parseInput(AssignRoomInput, input, 'assign_to_room');
+      const staff = await fetchStaffById(sb, staff_id);
+      const sites = await loadScopedSites(sb, ctx);
+      const { roomId, roomName } = resolveRoom(sites, room);
+      await placeAssignment(sb, ctx, staff, roomId);
+      const added = await ensureWorking(sb, ctx, staff_id);
+      const summary = `Assigned ${displayName(staff)} to ${roomName}` + (added ? ' (added to working list)' : '');
+      return { result: { staff_id, room_id: roomId, room: roomName, added_to_working: added }, summary };
+    },
+
+    async send_to_float(input: unknown): Promise<LoopToolOutcome> {
+      const { staff_id } = parseInput(StaffIdInput, input, 'send_to_float');
+      const staff = await fetchStaffById(sb, staff_id);
+      const sites = await loadScopedSites(sb, ctx);
+      const floatSite = sites.find((s) => s.is_float);
+      if (!floatSite) {
+        throw new ToolInputError('No float location is configured for this hospital.');
+      }
+      // Float assignments store the SITE id in room_id (BoardClient.handleDropFloat).
+      await placeAssignment(sb, ctx, staff, floatSite.id);
+      const summary = `Sent ${displayName(staff)} to ${floatSite.name}`;
+      return { result: { staff_id, room_id: floatSite.id, float_site: floatSite.name }, summary };
+    },
+
+    async unassign(input: unknown): Promise<LoopToolOutcome> {
+      const { staff_id } = parseInput(StaffIdInput, input, 'unassign');
+      const staff = await fetchStaffById(sb, staff_id);
+      const { error } = await sb
+        .from('assignments')
+        .delete()
+        .eq('staff_id', staff_id)
+        .eq('board_date', ctx.boardDate);
+      if (error) throw new Error(`assignment clear failed: ${error.message}`);
+      return { result: { staff_id }, summary: `Unassigned ${displayName(staff)}` };
+    },
+
+    async set_designation(input: unknown): Promise<LoopToolOutcome> {
+      const { staff_id, designation } = parseInput(SetDesignationInput, input, 'set_designation');
+      const staff = await fetchStaffById(sb, staff_id);
+      if (!DESIGNATION_ROLES.has(staff.role)) {
+        throw new ToolInputError(
+          `${displayName(staff)} is a ${staff.role} — only physicians take a designation. Use set_shift_hours for non-physician hours.`,
+        );
+      }
+      const { error } = await sb
+        .from('daily_designations')
+        .upsert(
+          { staff_id, board_date: ctx.boardDate, designation },
+          { onConflict: 'staff_id,board_date' },
+        )
+        .select()
+        .single();
+      if (error) throw new Error(`designation write failed: ${error.message}`);
+      return { result: { staff_id, designation }, summary: `Set ${displayName(staff)} → ${designation}` };
+    },
+
+    async set_shift_hours(input: unknown): Promise<LoopToolOutcome> {
+      const { staff_id, hours } = parseInput(SetShiftHoursInput, input, 'set_shift_hours');
+      const staff = await fetchStaffById(sb, staff_id);
+      if (!SHIFT_HOURS_ROLES.has(staff.role)) {
+        throw new ToolInputError(
+          `${displayName(staff)} is a ${staff.role} — shift hours apply to CRNA/SRNA/resident/fellow only${
+            staff.role === 'physician' ? ' (physicians take a designation)' : ''
+          }.`,
+        );
+      }
+      const { error } = await sb
+        .from('daily_shifts')
+        .upsert({ staff_id, board_date: ctx.boardDate, hours }, { onConflict: 'staff_id,board_date' })
+        .select()
+        .single();
+      if (error) throw new Error(`shift write failed: ${error.message}`);
+      return { result: { staff_id, hours }, summary: `Set ${displayName(staff)}'s shift → ${hours}` };
+    },
+
+    async mark_break(input: unknown): Promise<LoopToolOutcome> {
+      const { staff_id, break_type, taken } = parseInput(MarkBreakInput, input, 'mark_break');
+      const staff = await fetchStaffById(sb, staff_id);
+      // taken_at stamped now when taken, else null — breaks route parity.
+      const taken_at = taken ? new Date().toISOString() : null;
+      const { error } = await sb
+        .from('breaks')
+        .upsert(
+          { staff_id, board_date: ctx.boardDate, break_type, taken, taken_at },
+          { onConflict: 'staff_id,board_date,break_type' },
+        )
+        .select()
+        .single();
+      if (error) throw new Error(`break write failed: ${error.message}`);
+      const summary = `${displayName(staff)}: ${break_type} break ${taken ? 'taken' : 'cleared'}`;
+      return { result: { staff_id, break_type, taken }, summary };
+    },
+
+    async mark_relieved(input: unknown): Promise<LoopToolOutcome> {
+      const { staff_id } = parseInput(StaffIdInput, input, 'mark_relieved');
+      const staff = await fetchStaffById(sb, staff_id);
+      // Denormalize the person's CURRENT designation + shift at time of relief,
+      // exactly like BoardClient.handleDropRelieved (dailyShifts override → base
+      // hours; designations map, may be absent).
+      const [shiftRes, desgRes] = await Promise.all([
+        sb.from('daily_shifts').select('*').eq('board_date', ctx.boardDate),
+        sb.from('daily_designations').select('*').eq('board_date', ctx.boardDate),
+      ]);
+      if (shiftRes.error) throw new Error(`daily_shifts read failed: ${shiftRes.error.message}`);
+      if (desgRes.error) throw new Error(`daily_designations read failed: ${desgRes.error.message}`);
+      const shiftRow = ((shiftRes.data ?? []) as DailyShift[]).find((s) => s.staff_id === staff_id);
+      const desgRow = ((desgRes.data ?? []) as DailyDesignation[]).find((d) => d.staff_id === staff_id);
+      const shift_hours: string = shiftRow?.hours ?? staff.hours;
+      const designation: string | null = desgRow?.designation ?? null;
+
+      // Unassign first (drag-to-relieved deletes the rooms), then log the relief.
+      const { error: delErr } = await sb
+        .from('assignments')
+        .delete()
+        .eq('staff_id', staff_id)
+        .eq('board_date', ctx.boardDate);
+      if (delErr) throw new Error(`assignment clear failed: ${delErr.message}`);
+
+      const { error: insErr } = await sb
+        .from('relief_log')
+        .insert({
+          staff_id,
+          staff_name: staff.name,
+          staff_role: staff.role,
+          staff_initials: staff.initials,
+          board_date: ctx.boardDate,
+          relieved_at: new Date().toISOString(),
+          designation,
+          shift_hours,
+        })
+        .select()
+        .single();
+      if (insErr) throw new Error(`relief write failed: ${insErr.message}`);
+      const summary = `Relieved ${displayName(staff)} — went home`;
+      return { result: { staff_id, designation, shift_hours }, summary };
     },
   };
 }

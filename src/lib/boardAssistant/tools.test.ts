@@ -5,7 +5,7 @@
 // covered by the existing fake; no fake extension was needed.
 import { describe, it, expect } from 'vitest';
 import { createBoardExecutors, boardTools, MUTATING_BOARD_TOOLS, type BoardCtx } from './tools';
-import { makeFakeSupabase } from '@/lib/rulesEngine/__fixtures__/fakeSupabase';
+import { makeFakeSupabase, callsFor, type RecordedCall } from '@/lib/rulesEngine/__fixtures__/fakeSupabase';
 
 const DATE = '2026-07-12';
 
@@ -118,13 +118,29 @@ async function runGetBoard(ctx: BoardCtx): Promise<BoardResult> {
 }
 
 describe('boardTools schemas', () => {
-  it('exposes exactly the two read tools, both strict', () => {
-    expect(boardTools.map((t) => t.name).sort()).toEqual(['find_staff', 'get_board']);
+  it('exposes the two read tools + eight mutations, every one strict', () => {
+    expect(boardTools.map((t) => t.name).sort()).toEqual(
+      [
+        'get_board', 'find_staff',
+        'set_working', 'assign_to_room', 'send_to_float', 'unassign',
+        'set_designation', 'set_shift_hours', 'mark_break', 'mark_relieved',
+      ].sort(),
+    );
     for (const t of boardTools) expect(t.strict).toBe(true);
   });
 
-  it('has no mutating tools yet', () => {
-    expect(MUTATING_BOARD_TOOLS.size).toBe(0);
+  it('registers the eight mutating tools, each a defined tool', () => {
+    expect([...MUTATING_BOARD_TOOLS].sort()).toEqual(
+      [
+        'set_working', 'assign_to_room', 'send_to_float', 'unassign',
+        'set_designation', 'set_shift_hours', 'mark_break', 'mark_relieved',
+      ].sort(),
+    );
+    const names = new Set(boardTools.map((t) => t.name));
+    for (const m of MUTATING_BOARD_TOOLS) expect(names.has(m)).toBe(true);
+    // Read tools stay OUT of the mutating set (loop only snapshots for these).
+    expect(MUTATING_BOARD_TOOLS.has('get_board')).toBe(false);
+    expect(MUTATING_BOARD_TOOLS.has('find_staff')).toBe(false);
   });
 
   // Same API grammar bounds the schedule suite guards (weekendV2Pattern pattern):
@@ -320,5 +336,316 @@ describe('find_staff (fuzzy, hospital-scoped)', () => {
     const { sb } = boardFake();
     await expect(createBoardExecutors(sb as never, paoli).find_staff({ query: '' }))
       .rejects.toMatchObject({ name: 'ToolInputError' });
+  });
+});
+
+// ── Mutations (Task 5) ─────────────────────────────────────────────────────────
+// Every executor mirrors the write shape of the matching REST route (POST/DELETE
+// under src/app/api/{assignments,daily-active,designations,daily-shifts,breaks,
+// relief}) or a BoardClient drag handler. The chainable fake RECORDS writes but
+// does not apply them, so these tests assert on the recorded `calls` log (upsert
+// payloads, delete filters, onConflict keys) — the same idiom scheduleAssistant's
+// mutation tests use. Reads (staff existence, room resolution, working check)
+// resolve against the kitchen-sink fixture's canned data.
+const PAOLI: BoardCtx = { boardDate: DATE, hospital: 'Paoli Hospital' };
+
+function boardExecs(ctx: BoardCtx = PAOLI) {
+  const { sb, calls } = boardFake();
+  return { execs: createBoardExecutors(sb as never, ctx), calls };
+}
+const hasEq = (calls: RecordedCall[], table: string, col: string, val: unknown) =>
+  calls.some((c) => c.table === table && c.method === 'eq' && c.args[0] === col && c.args[1] === val);
+const upserts = (calls: RecordedCall[], table: string) =>
+  callsFor(calls, table, 'upsert').map((c) => c.args[0] as Record<string, unknown>);
+
+describe('set_working (daily_active batch, UI checkbox parity)', () => {
+  it('upserts working=true and deletes daily_active + assignments for working=false', async () => {
+    const { execs, calls } = boardExecs();
+    const out = await execs.set_working({
+      entries: [
+        { staff_id: 'md-zed', working: true },     // was NOT working → activate
+        { staff_id: 'md-farkas', working: false },  // was working → deactivate + clear rooms
+      ],
+    });
+    // working=true → daily_active upsert (onConflict staff_id,board_date), route parity.
+    const up = upserts(calls, 'daily_active');
+    expect(up).toContainEqual({ staff_id: 'md-zed', board_date: DATE });
+    const upsertCall = callsFor(calls, 'daily_active', 'upsert')[0];
+    expect(upsertCall.args[1]).toMatchObject({ onConflict: 'staff_id,board_date' });
+    // working=false → daily_active delete filtered by staff_id + board_date…
+    expect(callsFor(calls, 'daily_active', 'delete').length).toBe(1);
+    expect(hasEq(calls, 'daily_active', 'staff_id', 'md-farkas')).toBe(true);
+    // …AND their assignments cleared for the date (toggleActive uncheck parity).
+    expect(callsFor(calls, 'assignments', 'delete').length).toBe(1);
+    expect(hasEq(calls, 'assignments', 'staff_id', 'md-farkas')).toBe(true);
+    expect(hasEq(calls, 'assignments', 'board_date', DATE)).toBe(true);
+    expect(out.summary).toMatch(/Farkas/);
+  });
+
+  it('validates every staff id BEFORE any write (unknown id → ToolInputError, nothing written)', async () => {
+    const { execs, calls } = boardExecs();
+    await expect(
+      execs.set_working({ entries: [{ staff_id: 'md-zed', working: true }, { staff_id: 'ghost', working: true }] }),
+    ).rejects.toMatchObject({ name: 'ToolInputError' });
+    expect(callsFor(calls, 'daily_active', 'upsert').length).toBe(0);
+    expect(callsFor(calls, 'daily_active', 'delete').length).toBe(0);
+  });
+
+  it('rejects an empty entries array', async () => {
+    const { execs } = boardExecs();
+    await expect(execs.set_working({ entries: [] })).rejects.toMatchObject({ name: 'ToolInputError' });
+  });
+});
+
+describe('assign_to_room (POST /api/assignments parity + room-name resolution)', () => {
+  it('physician stacks (no prior delete), upserts by resolved room id, auto-adds to daily_active', async () => {
+    const { execs, calls } = boardExecs();
+    const out = await execs.assign_to_room({ staff_id: 'md-zed', room: 'OR 2' }); // md-zed NOT working
+    // physician → NO prior assignment delete
+    expect(callsFor(calls, 'assignments', 'delete').length).toBe(0);
+    // upsert with the resolved room id (r2) + route's onConflict key
+    const a = upserts(calls, 'assignments')[0];
+    expect(a).toEqual({ room_id: 'r2', staff_id: 'md-zed', board_date: DATE });
+    expect(callsFor(calls, 'assignments', 'upsert')[0].args[1]).toMatchObject({ onConflict: 'staff_id,room_id,board_date' });
+    // auto-add to daily_active (md-zed was not working) + reported in the summary
+    expect(upserts(calls, 'daily_active')).toContainEqual({ staff_id: 'md-zed', board_date: DATE });
+    expect(out.summary).toMatch(/OR 2/);
+    expect(out.summary).toMatch(/working/i);
+  });
+
+  it('non-physician moves room-to-room (prior assignments cleared first), no auto-add when already working', async () => {
+    const { execs, calls } = boardExecs();
+    const out = await execs.assign_to_room({ staff_id: 'crna-simon-a', room: 'OR 1' }); // already working
+    expect(callsFor(calls, 'assignments', 'delete').length).toBe(1); // prior cleared
+    expect(hasEq(calls, 'assignments', 'staff_id', 'crna-simon-a')).toBe(true);
+    expect(upserts(calls, 'assignments')[0]).toEqual({ room_id: 'r1', staff_id: 'crna-simon-a', board_date: DATE });
+    // already in daily_active → no auto-add
+    expect(callsFor(calls, 'daily_active', 'upsert').length).toBe(0);
+    expect(out.summary).not.toMatch(/working/i);
+  });
+
+  it('unknown room → ToolInputError listing available room names, nothing written', async () => {
+    const { execs, calls } = boardExecs();
+    const err = await execs.assign_to_room({ staff_id: 'md-zed', room: 'OR 99' }).catch((e) => e);
+    expect(err).toMatchObject({ name: 'ToolInputError' });
+    expect(err.message).toMatch(/OR 1/);
+    expect(err.message).toMatch(/OR 2/);
+    expect(callsFor(calls, 'assignments', 'upsert').length).toBe(0);
+  });
+
+  it('a room out of hospital scope does not resolve (BMH OR 1 under Paoli)', async () => {
+    const { execs } = boardExecs();
+    await expect(execs.assign_to_room({ staff_id: 'md-zed', room: 'BMH OR 1' }))
+      .rejects.toMatchObject({ name: 'ToolInputError' });
+  });
+
+  it('ambiguous room name → ToolInputError listing the candidate sites, nothing written', async () => {
+    // Scoped fixture: two in-scope Paoli sites each own a room named "OR 5".
+    const { sb, calls } = makeFakeSupabase({
+      tables: {
+        staff: { data: STAFF },
+        daily_active: { data: DAILY_ACTIVE },
+        assignments: { data: [] },
+        sites: {
+          data: [
+            { id: 'st-tower', name: 'Tower', is_float: false, hospital: 'Paoli Hospital', position: 1, rooms: [{ id: 't5', name: 'OR 5', position: 1 }] },
+            { id: 'st-annex', name: 'Annex', is_float: false, hospital: 'Paoli Hospital', position: 2, rooms: [{ id: 'x5', name: 'OR 5', position: 1 }] },
+          ],
+        },
+      },
+    });
+    const err = await createBoardExecutors(sb as never, PAOLI).assign_to_room({ staff_id: 'md-zed', room: 'OR 5' }).catch((e) => e);
+    expect(err).toMatchObject({ name: 'ToolInputError' });
+    expect(err.message).toMatch(/Tower/);
+    expect(err.message).toMatch(/Annex/);
+    expect(callsFor(calls, 'assignments', 'upsert').length).toBe(0);
+  });
+
+  it('unknown staff → ToolInputError before touching rooms', async () => {
+    const { execs } = boardExecs();
+    await expect(execs.assign_to_room({ staff_id: 'ghost', room: 'OR 1' }))
+      .rejects.toMatchObject({ name: 'ToolInputError' });
+  });
+});
+
+describe('send_to_float (BoardClient.handleDropFloat — SITE id written as room_id)', () => {
+  it('writes the float SITE id into room_id; non-physician clears priors first', async () => {
+    const { execs, calls } = boardExecs();
+    const out = await execs.send_to_float({ staff_id: 'crna-simon-a' });
+    expect(callsFor(calls, 'assignments', 'delete').length).toBe(1); // non-physician move
+    expect(upserts(calls, 'assignments')[0]).toEqual({ room_id: 'site-float', staff_id: 'crna-simon-a', board_date: DATE });
+    expect(out.summary).toMatch(/[Ff]loat/);
+  });
+
+  it('physician stacks onto float (no prior delete)', async () => {
+    const { execs, calls } = boardExecs();
+    await execs.send_to_float({ staff_id: 'md-farkas' });
+    expect(callsFor(calls, 'assignments', 'delete').length).toBe(0);
+    expect(upserts(calls, 'assignments')[0]).toMatchObject({ room_id: 'site-float' });
+  });
+
+  it('no float site in scope → ToolInputError', async () => {
+    const { sb } = makeFakeSupabase({
+      tables: {
+        staff: { data: STAFF },
+        daily_active: { data: DAILY_ACTIVE },
+        assignments: { data: [] },
+        sites: { data: [{ id: 'st-main', name: 'Main', is_float: false, hospital: 'Paoli Hospital', position: 1, rooms: [] }] },
+      },
+    });
+    await expect(createBoardExecutors(sb as never, PAOLI).send_to_float({ staff_id: 'md-farkas' }))
+      .rejects.toMatchObject({ name: 'ToolInputError' });
+  });
+});
+
+describe('unassign (clear a person\'s rooms for the date)', () => {
+  it('deletes assignments filtered by staff_id + board_date', async () => {
+    const { execs, calls } = boardExecs();
+    const out = await execs.unassign({ staff_id: 'crna-simon-a' });
+    expect(callsFor(calls, 'assignments', 'delete').length).toBe(1);
+    expect(hasEq(calls, 'assignments', 'staff_id', 'crna-simon-a')).toBe(true);
+    expect(hasEq(calls, 'assignments', 'board_date', DATE)).toBe(true);
+    expect(out.summary).toMatch(/Simon/);
+  });
+
+  it('unknown staff → ToolInputError', async () => {
+    const { execs } = boardExecs();
+    await expect(execs.unassign({ staff_id: 'ghost' })).rejects.toMatchObject({ name: 'ToolInputError' });
+  });
+});
+
+describe('set_designation (POST /api/designations — physician-only per Sidebar gating)', () => {
+  it('upserts daily_designations for a physician (onConflict staff_id,board_date)', async () => {
+    const { execs, calls } = boardExecs();
+    const out = await execs.set_designation({ staff_id: 'md-zed', designation: 'D5' });
+    expect(upserts(calls, 'daily_designations')[0]).toEqual({ staff_id: 'md-zed', board_date: DATE, designation: 'D5' });
+    expect(callsFor(calls, 'daily_designations', 'upsert')[0].args[1]).toMatchObject({ onConflict: 'staff_id,board_date' });
+    expect(out.summary).toMatch(/D5/);
+  });
+
+  it('refuses a fellow (the Sidebar shows fellows the SHIFT picker, not a designation)', async () => {
+    const { execs, calls } = boardExecs();
+    await expect(execs.set_designation({ staff_id: 'fel-grace', designation: 'D1' }))
+      .rejects.toMatchObject({ name: 'ToolInputError' });
+    expect(callsFor(calls, 'daily_designations', 'upsert').length).toBe(0);
+  });
+
+  it('refuses a CRNA', async () => {
+    const { execs } = boardExecs();
+    await expect(execs.set_designation({ staff_id: 'crna-simon-a', designation: 'D1' }))
+      .rejects.toMatchObject({ name: 'ToolInputError' });
+  });
+
+  it('rejects a designation outside MD_DESIGNATIONS', async () => {
+    const { execs } = boardExecs();
+    await expect(execs.set_designation({ staff_id: 'md-zed', designation: 'Z9' }))
+      .rejects.toMatchObject({ name: 'ToolInputError' });
+  });
+
+  it('unknown staff → ToolInputError', async () => {
+    const { execs } = boardExecs();
+    await expect(execs.set_designation({ staff_id: 'ghost', designation: 'D1' }))
+      .rejects.toMatchObject({ name: 'ToolInputError' });
+  });
+});
+
+describe('set_shift_hours (POST /api/daily-shifts — fellow/crna/srna/resident per Sidebar gating)', () => {
+  it('upserts daily_shifts for a CRNA (onConflict staff_id,board_date)', async () => {
+    const { execs, calls } = boardExecs();
+    const out = await execs.set_shift_hours({ staff_id: 'crna-simon-a', hours: '12hr' });
+    expect(upserts(calls, 'daily_shifts')[0]).toEqual({ staff_id: 'crna-simon-a', board_date: DATE, hours: '12hr' });
+    expect(callsFor(calls, 'daily_shifts', 'upsert')[0].args[1]).toMatchObject({ onConflict: 'staff_id,board_date' });
+    expect(out.summary).toMatch(/12hr/);
+  });
+
+  it('allows a fellow (the Sidebar shows fellows the shift picker)', async () => {
+    const { execs, calls } = boardExecs();
+    await execs.set_shift_hours({ staff_id: 'fel-grace', hours: '10hr' });
+    expect(upserts(calls, 'daily_shifts')[0]).toMatchObject({ staff_id: 'fel-grace', hours: '10hr' });
+  });
+
+  it('refuses a physician (physicians get a designation, not shift hours)', async () => {
+    const { execs, calls } = boardExecs();
+    await expect(execs.set_shift_hours({ staff_id: 'md-zed', hours: '10hr' }))
+      .rejects.toMatchObject({ name: 'ToolInputError' });
+    expect(callsFor(calls, 'daily_shifts', 'upsert').length).toBe(0);
+  });
+
+  it('refuses a surgeon (no shift picker at all in the Sidebar)', async () => {
+    const { sb } = makeFakeSupabase({
+      tables: {
+        staff: { data: [{ id: 'surg-1', name: 'Sam Cutter', initials: 'SC', role: 'surgeon', hours: '8hr', hospital: 'Paoli Hospital' }] },
+        daily_shifts: { data: [] },
+      },
+    });
+    await expect(createBoardExecutors(sb as never, PAOLI).set_shift_hours({ staff_id: 'surg-1', hours: '10hr' }))
+      .rejects.toMatchObject({ name: 'ToolInputError' });
+  });
+
+  it('rejects hours outside HOUR_OPTIONS', async () => {
+    const { execs } = boardExecs();
+    await expect(execs.set_shift_hours({ staff_id: 'crna-simon-a', hours: '9hr' }))
+      .rejects.toMatchObject({ name: 'ToolInputError' });
+  });
+});
+
+describe('mark_break (POST /api/breaks — taken_at stamping)', () => {
+  it('upserts with taken_at set when taken=true (onConflict staff_id,board_date,break_type)', async () => {
+    const { execs, calls } = boardExecs();
+    const out = await execs.mark_break({ staff_id: 'crna-simon-a', break_type: 'lunch', taken: true });
+    const b = upserts(calls, 'breaks')[0];
+    expect(b).toMatchObject({ staff_id: 'crna-simon-a', board_date: DATE, break_type: 'lunch', taken: true });
+    expect(typeof b.taken_at).toBe('string'); // stamped now, like the route
+    expect(callsFor(calls, 'breaks', 'upsert')[0].args[1]).toMatchObject({ onConflict: 'staff_id,board_date,break_type' });
+    expect(out.summary).toMatch(/lunch/);
+  });
+
+  it('clears taken_at (null) when taken=false', async () => {
+    const { execs, calls } = boardExecs();
+    await execs.mark_break({ staff_id: 'crna-simon-a', break_type: 'morning', taken: false });
+    expect(upserts(calls, 'breaks')[0].taken_at).toBeNull();
+  });
+
+  it('rejects an unknown break_type', async () => {
+    const { execs } = boardExecs();
+    await expect(execs.mark_break({ staff_id: 'crna-simon-a', break_type: 'brunch', taken: true }))
+      .rejects.toMatchObject({ name: 'ToolInputError' });
+  });
+
+  it('unknown staff → ToolInputError', async () => {
+    const { execs } = boardExecs();
+    await expect(execs.mark_break({ staff_id: 'ghost', break_type: 'lunch', taken: true }))
+      .rejects.toMatchObject({ name: 'ToolInputError' });
+  });
+});
+
+describe('mark_relieved (BoardClient.handleDropRelieved — unassign + denormalized relief_log)', () => {
+  it('deletes assignments and inserts a relief row snapshotting name/role/initials/designation/shift', async () => {
+    const { execs, calls } = boardExecs();
+    const out = await execs.mark_relieved({ staff_id: 'md-nina' }); // physician D3, base 8hr, no shift override
+    // rooms cleared for the date
+    expect(callsFor(calls, 'assignments', 'delete').length).toBe(1);
+    expect(hasEq(calls, 'assignments', 'staff_id', 'md-nina')).toBe(true);
+    // relief_log insert with the denormalized fields captured at time of relief
+    const r = callsFor(calls, 'relief_log', 'insert')[0].args[0] as Record<string, unknown>;
+    expect(r).toMatchObject({
+      staff_id: 'md-nina', staff_name: 'Nina Kalawadia', staff_role: 'physician',
+      staff_initials: 'NK', board_date: DATE, designation: 'D3', shift_hours: '8hr',
+    });
+    expect(typeof r.relieved_at).toBe('string');
+    expect(out.summary).toMatch(/Nina/);
+  });
+
+  it('uses the daily_shift override for shift_hours and null designation for a non-MD', async () => {
+    const { execs, calls } = boardExecs();
+    // crna-simon-a: base hours 10hr but daily_shifts override 12hr; no designation.
+    await execs.mark_relieved({ staff_id: 'crna-simon-a' });
+    const r = callsFor(calls, 'relief_log', 'insert')[0].args[0] as Record<string, unknown>;
+    expect(r).toMatchObject({ staff_id: 'crna-simon-a', shift_hours: '12hr', designation: null });
+  });
+
+  it('unknown staff → ToolInputError', async () => {
+    const { execs } = boardExecs();
+    await expect(execs.mark_relieved({ staff_id: 'ghost' })).rejects.toMatchObject({ name: 'ToolInputError' });
   });
 });
