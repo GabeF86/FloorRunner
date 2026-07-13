@@ -57,7 +57,7 @@ export const boardTools: AssistantToolDef[] = [
   {
     name: 'find_staff',
     description:
-      'Fuzzy-search the staff list by spoken name or initials (scoped to the current hospital). Returns ALL plausible candidates with roles and working flags. If zero or more than one candidate plausibly matches what the user said, ASK the user — never guess, never create people.',
+      'Fuzzy-search the staff list by spoken name or initials (scoped to the current hospital). Returns ALL plausible candidates with roles, working flags, and a match_score (higher = closer match). If zero or more than one candidate plausibly matches what the user said, ASK the user — never guess, never create people.',
     strict: true,
     input_schema: {
       type: 'object',
@@ -65,7 +65,7 @@ export const boardTools: AssistantToolDef[] = [
       required: ['query'],
       properties: {
         query: { type: 'string' },
-        role: { type: 'string', enum: ['physician', 'crna', 'srna', 'resident', 'surgeon'] },
+        role: { type: 'string', enum: ['physician', 'fellow', 'crna', 'srna', 'resident', 'surgeon'] },
       },
     },
   },
@@ -107,15 +107,22 @@ function isSubsequence(needle: string, hay: string): boolean {
   }
   return i === needle.length;
 }
+// Ordinal scores — only their relative order matters (exact > prefix >
+// substring > subsequence); the raw value rides out as match_score so the
+// model can gauge how confident a hit is.
+const SCORE_EXACT = 100;
+const SCORE_PREFIX = 80;
+const SCORE_SUBSTRING = 60;
+const SCORE_SUBSEQUENCE = 40;
 export function scoreStaffMatch(query: string, name: string, initials: string): number | null {
   const q = norm(query);
   if (!q) return null;
   const n = norm(name);
   const ini = norm(initials);
-  if (n === q || ini === q) return 100;
-  if (n.startsWith(q) || ini.startsWith(q) || n.split(' ').some((w) => w.startsWith(q))) return 80;
-  if (n.includes(q) || ini.includes(q)) return 60;
-  if (isSubsequence(q.replace(/\s+/g, ''), n.replace(/\s+/g, ''))) return 40;
+  if (n === q || ini === q) return SCORE_EXACT;
+  if (n.startsWith(q) || ini.startsWith(q) || n.split(' ').some((w) => w.startsWith(q))) return SCORE_PREFIX;
+  if (n.includes(q) || ini.includes(q)) return SCORE_SUBSTRING;
+  if (isSubsequence(q.replace(/\s+/g, ''), n.replace(/\s+/g, ''))) return SCORE_SUBSEQUENCE;
   return null;
 }
 
@@ -143,7 +150,7 @@ async function loadStaffAndActive(
 const FindStaffInput = z
   .object({
     query: z.string().min(1, 'query must be a non-empty name or initials'),
-    role: z.enum(['physician', 'crna', 'srna', 'resident', 'surgeon']).optional(),
+    role: z.enum(['physician', 'fellow', 'crna', 'srna', 'resident', 'surgeon']).optional(),
   })
   .strict();
 
@@ -153,6 +160,10 @@ export function createBoardExecutors(
 ): Record<string, (input: unknown) => Promise<LoopToolOutcome>> {
   return {
     async get_board(): Promise<LoopToolOutcome> {
+      // Result size: a department-day is bounded (~100 staff, dozens of rooms,
+      // a handful of day-scoped rows per person), so no pagination here; the
+      // loop's MAX_TOOL_RESULT_CHARS truncation is the backstop if a board
+      // ever balloons.
       const date = ctx.boardDate;
       const [staffRes, activeRes, sitesRes, assignRes, desgRes, shiftRes, breakRes, reliefRes] =
         await Promise.all([
@@ -208,10 +219,10 @@ export function createBoardExecutors(
 
       // Out-order — mirrors the EFFECTIVE UI pipeline, not OutListPanel in
       // isolation. BoardClient composes the panel's staff prop at
-      // BoardClient.tsx:431-433 (mounted at :682):
-      //   relievedIds  ← the date's reliefLog                    (:431)
-      //   hospitalStaff ← hospital match OR null-hospital        (:432)
-      //   activeStaff  ← hospitalStaff MINUS relieved            (:433)
+      // BoardClient.tsx:432-434 (mounted at :683):
+      //   relievedIds  ← the date's reliefLog                    (:432)
+      //   hospitalStaff ← hospital match OR null-hospital        (:433)
+      //   activeStaff  ← hospitalStaff MINUS relieved            (:434)
       // — there is NO daily_active/working filter in that pipeline. The panel
       // then lists designated physicians by DESIGNATION_OUT_ORDER (D1…D9,
       // 3pm/5pm/7pm, C2; C1/C3 overnight and 8hr/10hr never enter the day

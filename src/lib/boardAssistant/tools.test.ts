@@ -18,6 +18,8 @@ const STAFF = [
   { id: 'md-owen',   name: 'Owen Diaz',      initials: 'OD', role: 'physician', hours: '8hr',  hospital: 'Paoli Hospital' },
   { id: 'md-zed',    name: 'Zed Gray',       initials: 'ZG', role: 'physician', hours: '8hr',  hospital: 'Paoli Hospital' },
   { id: 'md-rita',   name: 'Rita Vaughn',    initials: 'RV', role: 'physician', hours: '8hr',  hospital: 'Paoli Hospital' },
+  // Fellow sharing a query token with md-zed ("gray") — pins the role filter.
+  { id: 'fel-grace', name: 'Grace Grayson',  initials: 'GG', role: 'fellow', hours: '10hr', hospital: 'Paoli Hospital' },
   { id: 'crna-simon-a', name: 'Simon Bell',  initials: 'SB', role: 'crna', hours: '10hr', hospital: 'Paoli Hospital' },
   { id: 'crna-simon-b', name: 'Simone Ford', initials: 'SF', role: 'crna', hours: '10hr', hospital: 'Paoli Hospital' },
   { id: 'crna-null', name: 'Nina Torres',    initials: 'NT', role: 'crna', hours: '8hr',  hospital: null },
@@ -183,8 +185,8 @@ describe('get_board (hospital-scoped)', () => {
 
   // outOrder mirrors the EFFECTIVE UI pipeline, not OutListPanel in isolation:
   // BoardClient builds the panel's staff prop as hospital-scoped staff MINUS
-  // relieved (BoardClient.tsx:431-433: relievedIds ← reliefLog, hospitalStaff,
-  // activeStaff) and mounts it at :682 — there is NO daily_active/working
+  // relieved (BoardClient.tsx:432-434: relievedIds ← reliefLog, hospitalStaff,
+  // activeStaff) and mounts it at :683 — there is NO daily_active/working
   // filter anywhere in that pipeline. The panel then splits physicians into
   // DESIGNATION_OUT_ORDER hits and an undesignated remainder.
   it('builds out-order: designated MDs by DESIGNATION_OUT_ORDER, then ALL undesignated non-relieved MDs', async () => {
@@ -285,6 +287,15 @@ describe('find_staff (fuzzy, hospital-scoped)', () => {
     const ids = r.candidates.map((c) => c.id);
     expect(ids).toContain('md-nina');
     expect(ids).not.toContain('crna-null'); // Nina Torres is a CRNA
+  });
+
+  it('supports the fellow role: returns the seeded fellow and excludes same-query non-fellows', async () => {
+    // "gray" hits both Zed Gray (physician) and Grace Grayson (fellow)…
+    const unfiltered = await runFindStaff(paoli, { query: 'gray' });
+    expect(unfiltered.candidates.map((c) => c.id).sort()).toEqual(['fel-grace', 'md-zed']);
+    // …the fellow filter keeps only the fellow.
+    const r = await runFindStaff(paoli, { query: 'gray', role: 'fellow' });
+    expect(r.candidates.map((c) => c.id)).toEqual(['fel-grace']);
   });
 
   it('excludes out-of-hospital staff, includes them when unscoped', async () => {
