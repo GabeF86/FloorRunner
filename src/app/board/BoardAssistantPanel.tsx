@@ -17,6 +17,11 @@ import { formatUsageFooter, parseUsage } from '@/components/chat/usageCost';
 
 const ASSISTANT_ENDPOINT = '/api/board/assistant';
 
+// Module const so the clear-on-return-to-today effect can recognize (and only
+// ever clear) ITS OWN notice by identity — never an unrelated one (e.g. the
+// undo 409 ordering-guard message).
+const NON_TODAY_NOTICE = "Viewing a non-today date — the board won't live-update until reload.";
+
 /** Shape of the stream's `done` payload (stored on the message as `extra`). */
 interface ActionExtra {
   changes?: unknown;
@@ -60,12 +65,24 @@ export default function BoardAssistantPanel({
     },
   });
 
-  // Re-arm whenever the viewed date changes (including on open, since this
-  // effect also runs on mount) — a user-dismissed notice for the SAME date
-  // stays dismissed; navigating to a different non-today date re-shows it.
+  // Show the non-today notice whenever the viewed date changes (including on
+  // open, since this effect also runs on mount); clear it when the date
+  // transitions back to today — but ONLY when the current notice is still ours
+  // (identity check against NON_TODAY_NOTICE), so an unrelated notice (e.g.
+  // the undo 409 "undo that turn first" message) is never clobbered.
+  //
+  // Deps are deliberately [boardDate, today] WITHOUT chat.notice: this effect
+  // must fire only on date transitions. Including chat.notice would re-fire it
+  // when the user dismisses the banner (notice → null) and immediately re-set
+  // it on a non-today date, making the × button a no-op. Reading chat.notice
+  // inside is still current, not stale: the effect runs after the render in
+  // which the date changed, and chat is rebuilt each render around the latest
+  // notice state.
   useEffect(() => {
     if (!isToday) {
-      chat.setNotice("Viewing a past/future date — the board won't live-update until reload.");
+      chat.setNotice(NON_TODAY_NOTICE);
+    } else if (chat.notice === NON_TODAY_NOTICE) {
+      chat.setNotice(null);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [boardDate, today]);
