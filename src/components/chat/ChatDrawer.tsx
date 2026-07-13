@@ -8,6 +8,7 @@
 // flows (e.g. an undo action) while this drawer renders the results.
 import { useEffect, useRef, useState } from 'react';
 import type { ChatImage, ChatMessage, SSEChat } from './useSSEChat';
+import { useSpeechInput } from './useSpeechInput';
 
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
 // Mirrors the media types the Claude API accepts for base64 image blocks.
@@ -31,6 +32,8 @@ export interface ChatDrawerProps {
   renderExtras?: (msg: ChatMessage, index: number) => React.ReactNode;
   /** While true, send is a no-op (e.g. an undo is in flight). */
   locked?: boolean;
+  /** Show a mic button (hidden automatically when SpeechRecognition is unsupported). */
+  voice?: boolean;
   open: boolean;
   onClose: () => void;
 }
@@ -43,6 +46,7 @@ export default function ChatDrawer({
   chat,
   renderExtras,
   locked = false,
+  voice = false,
   open,
   onClose,
 }: ChatDrawerProps) {
@@ -51,10 +55,47 @@ export default function ChatDrawer({
   const [image, setImage] = useState<ChatImage | null>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+  // Set (via textarea onFocus) when the user starts editing while the mic is
+  // still listening — the escape hatch from auto-send: the eventual final
+  // transcript then lands in the input box instead of being sent.
+  const editIntentRef = useRef(false);
+  const speech = useSpeechInput((text) => {
+    if (editIntentRef.current) {
+      editIntentRef.current = false;
+      setInput(text);
+    } else {
+      chat.send(text);
+    }
+  });
 
   useEffect(() => {
     listRef.current?.scrollTo({ top: listRef.current.scrollHeight });
   }, [messages, status]);
+
+  // Kill the mic whenever the drawer is dismissed (× button or parent-driven
+  // close) or an undo locks the panel mid-listen. The drawer renders null on
+  // !open but stays MOUNTED, so without this the recognition session would
+  // keep the microphone open invisibly. abort (not stop) so a half-spoken
+  // command is discarded — never auto-sent, never left in the input.
+  useEffect(() => {
+    if ((!open || locked) && speech.listening) speech.abort();
+  }, [open, locked, speech]);
+
+  // Surface recognition failures — a silently-dying mic is indistinguishable
+  // from a broken one. 'not-allowed' is by far the most common (browser or
+  // OS-level permission), so its message is a walkthrough, not a shrug.
+  useEffect(() => {
+    if (!speech.error) return;
+    const friendly: Record<string, string> = {
+      'not-allowed':
+        'Microphone access is blocked. Click the mic/camera icon at the right of the address bar and allow the microphone — and if there is no prompt, check System Settings → Privacy & Security → Microphone and enable your browser, then reload this page.',
+      'audio-capture': 'No microphone was found. Check that a mic is connected and selected in your system sound settings.',
+      'network': "Speech recognition couldn't reach the browser's transcription service — check your connection and try again.",
+      'aborted': '', // deliberate cancel — not an error worth showing
+    };
+    const msg = friendly[speech.error] ?? `Speech recognition stopped (${speech.error}). Try again.`;
+    if (msg) setError(msg);
+  }, [speech.error, setError]);
 
   if (!open) return null;
 
@@ -94,6 +135,17 @@ export default function ChatDrawer({
       background: 'var(--bg-surface)', borderLeft: '1px solid var(--border)',
       boxShadow: '-12px 0 32px rgba(15,23,42,0.25)',
     }}>
+      <style>{`
+        @keyframes chatMicPulse {
+          0%, 100% { opacity: 1; transform: scale(1); }
+          50% { opacity: 0.65; transform: scale(1.06); }
+        }
+        .chat-mic-pulse { animation: chatMicPulse 1.1s ease-in-out infinite; }
+        @media (prefers-reduced-motion: reduce) {
+          .chat-mic-pulse { animation: none; }
+        }
+      `}</style>
+
       {/* Header */}
       <div style={{
         display: 'flex', alignItems: 'center', gap: 8, padding: '12px 16px',
@@ -171,13 +223,14 @@ export default function ChatDrawer({
           </div>
         )}
         <textarea
-          value={input}
+          value={speech.listening ? speech.transcript : input}
           onChange={e => setInput(e.target.value)}
+          onFocus={() => { if (speech.listening) editIntentRef.current = true; }}
           onPaste={handlePaste}
           onKeyDown={e => {
             if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); }
           }}
-          placeholder={busy ? 'Working…' : placeholder}
+          placeholder={busy ? 'Working…' : speech.listening ? 'Listening…' : placeholder}
           rows={3}
           disabled={busy}
           style={{
@@ -194,6 +247,23 @@ export default function ChatDrawer({
           <button onClick={() => fileRef.current?.click()} disabled={busy} style={btnStyle} title="Attach an image (or paste one)">
             🖼 Image
           </button>
+          {voice && speech.supported && (
+            <button
+              onClick={() => (speech.listening ? speech.stop() : speech.start())}
+              disabled={busy || locked}
+              title={speech.listening ? 'Stop listening' : 'Speak your message'}
+              className={speech.listening ? 'chat-mic-pulse' : undefined}
+              style={{
+                ...btnStyle,
+                background: speech.listening ? 'color-mix(in srgb, var(--danger) 16%, transparent)' : btnStyle.background,
+                color: speech.listening ? 'var(--danger)' : btnStyle.color,
+                border: speech.listening ? '1px solid color-mix(in srgb, var(--danger) 35%, transparent)' : btnStyle.border,
+                cursor: busy || locked ? 'not-allowed' : 'pointer',
+              }}
+            >
+              🎤 {speech.listening ? 'Listening…' : 'Speak'}
+            </button>
+          )}
           <div style={{ flex: 1 }} />
           <button
             onClick={handleSend}

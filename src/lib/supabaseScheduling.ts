@@ -1,20 +1,7 @@
-import { createClient } from '@supabase/supabase-js';
+import { makeServerClient } from './supabaseServer';
 
-// Server-side client for API routes (uses service role to bypass RLS).
-// Lazy-constructed inside the function — never at module scope — so Next.js
-// can import this module during build-time page-data collection without
-// needing Supabase env vars present in the build environment. Env vars are
-// only required when the function is actually called at request time.
+// Server-side client for the scheduling-schema API routes.
+// See supabaseServer.ts for the lazy-construction / env-var rationale.
 export function sbSchedulingServer() {
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const key = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-  if (!url || !key) {
-    throw new Error(
-      'Supabase env vars missing — set NEXT_PUBLIC_SUPABASE_URL and either SUPABASE_SERVICE_ROLE_KEY or NEXT_PUBLIC_SUPABASE_ANON_KEY.',
-    );
-  }
-  return createClient(url, key, {
-    db: { schema: 'scheduling' },
-    auth: { autoRefreshToken: false, persistSession: false },
-  });
+  return makeServerClient('scheduling');
 }

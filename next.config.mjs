@@ -14,6 +14,7 @@ const nextConfig = {
     outputFileTracingIncludes: {
       '/api/**/*': [
         './src/lib/scheduleAssistant/prompts/**/*',
+        './src/lib/boardAssistant/prompts/**/*',
         './src/lib/gridCalculator/prompts/**/*',
       ],
     },

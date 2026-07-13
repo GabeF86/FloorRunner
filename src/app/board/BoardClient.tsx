@@ -4,11 +4,12 @@ import { useState, useCallback, useEffect, useRef } from 'react';
 import { supabase } from '@/lib/supabase';
 import {
   Site, StaffMember, Assignment, Role, ShiftHours, DraggedPerson,
-  SupervisionLoad, SUPERVISION_LIMITS,
   DailyDesignation, DailyShift, Break, ReliefEntry, MDDesignation,
   BreakType, getMinutesToRelief, getAlertLevel,
   addDays, formatDateLabel, HOSPITALS, Hospital,
 } from '@/types';
+import { computeSupervisionLoads } from '@/lib/boardLogic';
+import BoardAssistantPanel from './BoardAssistantPanel';
 import Sidebar from './Sidebar';
 import SiteCard from './SiteCard';
 import StatsBar from './StatsBar';
@@ -24,28 +25,6 @@ interface Props {
   initialStaff:       StaffMember[];
   initialAssignments: Assignment[];
   today:              string;
-}
-
-export function computeSupervisionLoads(
-  assignments: Assignment[],
-  roomAssignments: Record<string, Assignment[]>
-): Record<string, SupervisionLoad> {
-  const loads: Record<string, SupervisionLoad> = {};
-  assignments.filter((a) => a.staff?.role === 'physician').forEach((pa) => {
-    const room        = roomAssignments[pa.room_id] || [];
-    const hasCrna     = room.some((a) => a.staff?.role === 'crna' || a.staff?.role === 'srna');
-    const hasResident = room.some((a) => a.staff?.role === 'resident');
-    if (!loads[pa.staff_id]) loads[pa.staff_id] = { crnaCount: 0, residentCount: 0, overCrna: false, overResident: false, atCrna: false, atResident: false };
-    if (hasCrna)     loads[pa.staff_id].crnaCount++;
-    if (hasResident) loads[pa.staff_id].residentCount++;
-  });
-  Object.values(loads).forEach((l) => {
-    l.overCrna     = l.crnaCount > SUPERVISION_LIMITS.crna;
-    l.atCrna       = l.crnaCount === SUPERVISION_LIMITS.crna;
-    l.overResident = l.residentCount > SUPERVISION_LIMITS.resident;
-    l.atResident   = l.residentCount === SUPERVISION_LIMITS.resident;
-  });
-  return loads;
 }
 
 const HOSPITAL_BASELINES: Record<string, { name: string; color: string; icon: string; rooms: string[] }[]> = {
@@ -74,6 +53,7 @@ export default function BoardClient({ initialSites, initialStaff, initialAssignm
   const [showAddStaff,  setShowAddStaff]  = useState(false);
   const [showAddRoom,   setShowAddRoom]   = useState<string | null>(null);
   const [showPrint,     setShowPrint]     = useState(false);
+  const [showAssistant, setShowAssistant] = useState(false);
   const [siteHeights,   setSiteHeights]   = useState<Record<string, number>>({});
   const [hospital, setHospital] = useState<Hospital | ''>('');
   const [sidebarWidth, setSidebarWidth] = useState<number>(290);
@@ -144,7 +124,12 @@ export default function BoardClient({ initialSites, initialStaff, initialAssignm
   // ── Real-time ─────────────────────────────────────────────────────────────
   useEffect(() => {
     if (!isToday) return;
-    const channel = supabase.channel('board-rt')
+    // Unique topic per mount: supabase-js returns the SAME channel instance
+    // for a repeated topic name, so under React StrictMode's dev double-mount
+    // the second subscribe() lands on a channel the first cleanup is already
+    // tearing down — leaving the tab with NO live subscription. A fresh topic
+    // guarantees a fresh channel; cleanup still removes it by reference.
+    const channel = supabase.channel(`board-rt-${Date.now()}-${Math.random().toString(36).slice(2)}`)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'assignments' }, async () => {
         const res = await supabase.from('assignments').select('*, staff(*)').eq('board_date', today);
         if (res.data) {
@@ -508,6 +493,17 @@ export default function BoardClient({ initialSites, initialStaff, initialAssignm
           onChange={(v) => setViewModePersistent(v as 'grid' | 'network')}
         />
 
+        <button
+          onClick={() => setShowAssistant((v) => !v)}
+          style={showAssistant ? {
+            ...ghostButton,
+            background: 'color-mix(in srgb, var(--indigo) 16%, transparent)',
+            color: 'var(--indigo)',
+            border: '1px solid color-mix(in srgb, var(--indigo) 40%, transparent)',
+          } : ghostButton}
+          title="Speak or type roster/assignment commands · undoable"
+        >Assistant ✨</button>
+
         <BarDivider />
 
         {/* Date nav */}
@@ -716,6 +712,15 @@ export default function BoardClient({ initialSites, initialStaff, initialAssignm
       </div>
 
       {showPrint && <PrintView date={viewDate} sites={sites} staff={activeStaff} assignments={assignments} designations={designations} dailyShifts={dailyShifts} onClose={() => setShowPrint(false)} />}
+      {showAssistant && (
+        <BoardAssistantPanel
+          boardDate={viewDate}
+          hospital={hospital}
+          today={today}
+          onMutated={() => { if (!isToday) loadDailyData(viewDate); }}
+          onClose={() => setShowAssistant(false)}
+        />
+      )}
       {showAddSite  && <AddSiteModal  onClose={() => setShowAddSite(false)}  onConfirm={addSite} />}
       {showAddStaff && <AddStaffModal onClose={() => setShowAddStaff(false)} onConfirm={addStaff} />}
       {showAddRoom  && <AddRoomModal  onClose={() => setShowAddRoom(null)}   onConfirm={(n) => addRoom(showAddRoom, n)} />}
