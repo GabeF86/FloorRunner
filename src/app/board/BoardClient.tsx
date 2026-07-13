@@ -124,7 +124,12 @@ export default function BoardClient({ initialSites, initialStaff, initialAssignm
   // ── Real-time ─────────────────────────────────────────────────────────────
   useEffect(() => {
     if (!isToday) return;
-    const channel = supabase.channel('board-rt')
+    // Unique topic per mount: supabase-js returns the SAME channel instance
+    // for a repeated topic name, so under React StrictMode's dev double-mount
+    // the second subscribe() lands on a channel the first cleanup is already
+    // tearing down — leaving the tab with NO live subscription. A fresh topic
+    // guarantees a fresh channel; cleanup still removes it by reference.
+    const channel = supabase.channel(`board-rt-${Date.now()}-${Math.random().toString(36).slice(2)}`)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'assignments' }, async () => {
         const res = await supabase.from('assignments').select('*, staff(*)').eq('board_date', today);
         if (res.data) {
