@@ -468,6 +468,66 @@ describe('assign_to_room (POST /api/assignments parity + room-name resolution)',
   });
 });
 
+// Voice transcripts spell numbers out ("room three") — resolveRoom normalizes
+// number words to digits on BOTH sides and, when exact matching finds nothing,
+// falls back to trailing-digit matching gated on the query's prefix tokens
+// (each must be a room-name token or a generic room word). The 'BMH OR 1'
+// test in the describe above pins the guard's negative side: a foreign-site
+// prefix ('bmh') blocks the fallback from landing on Paoli's OR 1.
+describe('assign_to_room voice normalization (number words → digits in resolveRoom)', () => {
+  function roomFake(rooms: Array<{ id: string; name: string }>) {
+    return makeFakeSupabase({
+      tables: {
+        staff: { data: STAFF },
+        daily_active: { data: DAILY_ACTIVE },
+        assignments: { data: [] },
+        sites: {
+          data: [{
+            id: 'st-main', name: 'Main OR', is_float: false, hospital: 'Paoli Hospital', position: 1,
+            rooms: rooms.map((r, i) => ({ ...r, position: i + 1 })),
+          }],
+        },
+      },
+    });
+  }
+
+  it("'or one' resolves OR 1 (normalized-exact pass)", async () => {
+    const { execs, calls } = boardExecs();
+    const out = await execs.assign_to_room({ staff_id: 'md-zed', room: 'or one' });
+    expect(upserts(calls, 'assignments')[0]).toEqual({ room_id: 'r1', staff_id: 'md-zed', board_date: DATE });
+    expect(out.summary).toMatch(/OR 1/);
+  });
+
+  it("'room three' resolves OR 3 via the digit-suffix fallback (rooms OR 1..5)", async () => {
+    const { sb, calls } = roomFake([
+      { id: 'rr1', name: 'OR 1' }, { id: 'rr2', name: 'OR 2' }, { id: 'rr3', name: 'OR 3' },
+      { id: 'rr4', name: 'OR 4' }, { id: 'rr5', name: 'OR 5' },
+    ]);
+    const out = await createBoardExecutors(sb as never, PAOLI)
+      .assign_to_room({ staff_id: 'md-zed', room: 'room three' });
+    expect(upserts(calls, 'assignments')[0]).toEqual({ room_id: 'rr3', staff_id: 'md-zed', board_date: DATE });
+    expect(out.summary).toMatch(/OR 3/);
+  });
+
+  it('normalized-exact always beats the digit-suffix fallback', async () => {
+    const { sb, calls } = roomFake([{ id: 'rr3', name: 'OR 3' }, { id: 'rm3', name: 'Room 3' }]);
+    await createBoardExecutors(sb as never, PAOLI)
+      .assign_to_room({ staff_id: 'md-zed', room: 'room three' }); // exact "room 3", no fallback
+    expect(upserts(calls, 'assignments')[0]).toEqual({ room_id: 'rm3', staff_id: 'md-zed', board_date: DATE });
+  });
+
+  it('ambiguous digit suffix → ToolInputError listing the candidates, nothing written', async () => {
+    const { sb, calls } = roomFake([{ id: 'rr3', name: 'OR 3' }, { id: 'en3', name: 'Endo 3' }]);
+    const err = await createBoardExecutors(sb as never, PAOLI)
+      .assign_to_room({ staff_id: 'md-zed', room: 'room three' })
+      .catch((e) => e);
+    expect(err).toMatchObject({ name: 'ToolInputError' });
+    expect(err.message).toMatch(/OR 3/);
+    expect(err.message).toMatch(/Endo 3/);
+    expect(callsFor(calls, 'assignments', 'upsert').length).toBe(0);
+  });
+});
+
 describe('send_to_float (BoardClient.handleDropFloat — SITE id written as room_id)', () => {
   it('writes the float SITE id into room_id; non-physician clears priors first', async () => {
     const { execs, calls } = boardExecs();

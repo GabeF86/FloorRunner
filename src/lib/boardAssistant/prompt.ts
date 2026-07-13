@@ -8,7 +8,6 @@ import path from 'path';
 
 function candidatePromptPaths(): string[] {
   const candidates: string[] = [];
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const dirname: string | undefined = typeof __dirname === 'string' ? __dirname : undefined;
   if (dirname) candidates.push(path.join(dirname, 'prompts', 'board.md'));
   candidates.push(path.join(process.cwd(), 'src', 'lib', 'boardAssistant', 'prompts', 'board.md'));

@@ -117,7 +117,7 @@ export const boardTools: AssistantToolDef[] = [
   {
     name: 'assign_to_room',
     description:
-      "Assign a staff member to an operating room, resolved by the room's spoken name within the current hospital. Non-physicians move room-to-room (their prior room is cleared); physicians stack (they can supervise several rooms). Auto-adds the person to today's working roster if missing. If the room name is ambiguous or unknown, you get the candidate/available names back — ask the user, don't guess.",
+      "Assign a staff member to an operating room, resolved by room name within the current hospital (case-insensitive; spelled number words are normalized to digits, so 'room three' matches a room stored as 'OR 3'). Non-physicians move room-to-room (their prior room is cleared); physicians stack (they can supervise several rooms). Auto-adds the person to today's working roster if missing. If the room name is ambiguous or unknown, you get the candidate/available names back — ask the user, don't guess.",
     strict: true,
     input_schema: {
       type: 'object',
@@ -384,19 +384,68 @@ async function placeAssignment(sb: BoardClient, ctx: BoardCtx, staff: StaffMembe
   if (error) throw new Error(`assignment write failed: ${error.message}`);
 }
 
+// ── Room-name normalization (voice-transcript hardening) ─────────────────────
+// Speech-to-text renders numbers as words ("room three", "or one"), so room
+// matching normalizes BOTH sides identically: norm() plus each standalone token
+// that is a spelled number word (zero–twenty) mapped to its digit. Multi-word
+// numbers ("twenty one") are NOT joined — the prompt tells the model to write
+// the stored room name for anything the normalizer doesn't cover.
+const NUMBER_WORDS: Record<string, string> = {
+  zero: '0', one: '1', two: '2', three: '3', four: '4', five: '5',
+  six: '6', seven: '7', eight: '8', nine: '9', ten: '10',
+  eleven: '11', twelve: '12', thirteen: '13', fourteen: '14', fifteen: '15',
+  sixteen: '16', seventeen: '17', eighteen: '18', nineteen: '19', twenty: '20',
+};
+function normRoomName(s: string): string {
+  return norm(s)
+    .split(' ')
+    .map((t) => NUMBER_WORDS[t] ?? t)
+    .join(' ');
+}
+// Trailing digit run of a normalized room string ("or 3" → "3"), or null.
+function digitSuffix(normed: string): string | null {
+  const m = normed.match(/(\d+)$/);
+  return m ? m[1] : null;
+}
+// Generic "room" words a speaker prepends to a number without naming the room
+// ("room three", "OR three") — allowed as fallback prefix tokens below.
+const GENERIC_ROOM_WORDS = new Set(['room', 'or']);
+
 // Resolve a spoken room name to a room id within the current hospital's sites.
+// Two passes over normalized names (normRoomName on both sides):
+//   1. normalized-exact — "or one" === "OR 1". An exact name always wins; the
+//      fallback never overrides it. ≥2 exact matches → ambiguity error.
+//   2. digit-suffix fallback — ONLY when pass 1 found nothing AND the query
+//      ends in digits after normalization: rooms whose trailing digit run
+//      EXACTLY equals the query's ("3" matches "OR 3", not "OR 13"/"OR 03"),
+//      provided every query token before the digits is either one of the
+//      room's own name tokens or a generic room word ("room"/"or") — so
+//      "room three" finds "OR 3", but "BMH OR 1" never falls back onto a
+//      different site's "OR 1".
 // 0 matches → list the available room names; ≥2 → list the ambiguous candidates
 // with their site names. Both are ToolInputErrors so the model asks the user.
 function resolveRoom(sites: Site[], roomName: string): { roomId: string; roomName: string } {
-  const q = norm(roomName);
-  const matches: Array<{ roomId: string; roomName: string; siteName: string }> = [];
+  const q = normRoomName(roomName);
+  const rooms: Array<{ roomId: string; roomName: string; siteName: string; normed: string }> = [];
   for (const s of sites) {
     for (const rm of s.rooms ?? []) {
-      if (norm(rm.name) === q) matches.push({ roomId: rm.id, roomName: rm.name, siteName: s.name });
+      rooms.push({ roomId: rm.id, roomName: rm.name, siteName: s.name, normed: normRoomName(rm.name) });
+    }
+  }
+  let matches = rooms.filter((r) => r.normed === q);
+  if (matches.length === 0) {
+    const suffix = digitSuffix(q);
+    if (suffix !== null) {
+      const prefixTokens = q.split(' ').slice(0, -1); // tokens before the digit run
+      matches = rooms.filter((r) => {
+        if (digitSuffix(r.normed) !== suffix) return false;
+        const roomTokens = new Set(r.normed.split(' '));
+        return prefixTokens.every((t) => roomTokens.has(t) || GENERIC_ROOM_WORDS.has(t));
+      });
     }
   }
   if (matches.length === 0) {
-    const avail = sites.flatMap((s) => (s.rooms ?? []).map((rm) => rm.name));
+    const avail = rooms.map((r) => r.roomName);
     throw new ToolInputError(
       `No room named "${roomName}" in this hospital. Available rooms: ${avail.join(', ') || '(none in scope)'}. Ask the user which room.`,
     );
