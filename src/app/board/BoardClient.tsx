@@ -4,11 +4,11 @@ import { useState, useCallback, useEffect, useRef } from 'react';
 import { supabase } from '@/lib/supabase';
 import {
   Site, StaffMember, Assignment, Role, ShiftHours, DraggedPerson,
-  SupervisionLoad, SUPERVISION_LIMITS,
   DailyDesignation, DailyShift, Break, ReliefEntry, MDDesignation,
   BreakType, getMinutesToRelief, getAlertLevel,
   addDays, formatDateLabel, HOSPITALS, Hospital,
 } from '@/types';
+import { computeSupervisionLoads } from '@/lib/boardLogic';
 import Sidebar from './Sidebar';
 import SiteCard from './SiteCard';
 import StatsBar from './StatsBar';
@@ -24,28 +24,6 @@ interface Props {
   initialStaff:       StaffMember[];
   initialAssignments: Assignment[];
   today:              string;
-}
-
-export function computeSupervisionLoads(
-  assignments: Assignment[],
-  roomAssignments: Record<string, Assignment[]>
-): Record<string, SupervisionLoad> {
-  const loads: Record<string, SupervisionLoad> = {};
-  assignments.filter((a) => a.staff?.role === 'physician').forEach((pa) => {
-    const room        = roomAssignments[pa.room_id] || [];
-    const hasCrna     = room.some((a) => a.staff?.role === 'crna' || a.staff?.role === 'srna');
-    const hasResident = room.some((a) => a.staff?.role === 'resident');
-    if (!loads[pa.staff_id]) loads[pa.staff_id] = { crnaCount: 0, residentCount: 0, overCrna: false, overResident: false, atCrna: false, atResident: false };
-    if (hasCrna)     loads[pa.staff_id].crnaCount++;
-    if (hasResident) loads[pa.staff_id].residentCount++;
-  });
-  Object.values(loads).forEach((l) => {
-    l.overCrna     = l.crnaCount > SUPERVISION_LIMITS.crna;
-    l.atCrna       = l.crnaCount === SUPERVISION_LIMITS.crna;
-    l.overResident = l.residentCount > SUPERVISION_LIMITS.resident;
-    l.atResident   = l.residentCount === SUPERVISION_LIMITS.resident;
-  });
-  return loads;
 }
 
 const HOSPITAL_BASELINES: Record<string, { name: string; color: string; icon: string; rooms: string[] }[]> = {
