@@ -1,9 +1,10 @@
 'use client';
 
 import { useState, useRef } from 'react';
-import { Site, Room, Assignment, ROLE_META, DraggedPerson, SUPERVISED_ROLES, ShiftHours, StaffMember } from '@/types';
+import { Site, Room, Assignment, ROLE_META, DraggedPerson, SUPERVISED_ROLES, ShiftHours } from '@/types';
 import { hexToRgb } from './BoardClient';
 import { ShiftBadge } from './Sidebar';
+import PersonChip from './PersonChip';
 
 interface Props {
   site:               Site;
@@ -217,34 +218,6 @@ function RoomCell({ room, site, people, isOver, dragging, alertLevels, dailyShif
       {hov && !dragging && (
         <button onClick={onDeleteRoom} style={{ position: 'absolute', top: -8, right: -8, width: 22, height: 22, borderRadius: '50%', background: 'var(--bg-surface)', border: '1px solid var(--border-strong)', color: 'var(--text-muted)', fontSize: 14, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 800, zIndex: 10, padding: 0 }}>×</button>
       )}
-    </div>
-  );
-}
-
-// ── Person chip inside a room ─────────────────────────────────────────────────
-function PersonChip({ assignment, person, alertLevels, dailyShifts, onRemove }: {
-  assignment: Assignment; person: StaffMember;
-  alertLevels: Record<string, 'none' | 'warning' | 'critical'>;
-  dailyShifts: Record<string, ShiftHours>;
-  onRemove: () => void;
-}) {
-  const m     = ROLE_META[person.role] || ROLE_META.crna;
-  const alert = alertLevels[person.id] || 'none';
-  const hours = person.role !== 'physician' && person.role !== 'surgeon' ? (dailyShifts[person.id] || person.hours) : null;
-
-  // Surgeon shown in room header, not as chip
-  if (person.role === 'surgeon') return null;
-
-  return (
-    <div onClick={onRemove} title={person.name + ' — click to unassign'}
-      style={{ display: 'flex', alignItems: 'center', gap: 5, padding: '4px 7px', borderRadius: 6, cursor: 'pointer', background: m.bg, color: m.color, border: '1px solid ' + (alert === 'critical' ? 'color-mix(in srgb, var(--danger) 70%, transparent)' : alert === 'warning' ? 'color-mix(in srgb, var(--warn) 60%, transparent)' : m.border), fontSize: 12, fontWeight: 700, position: 'relative', transition: 'opacity 0.12s' }}
-      onMouseEnter={(e) => (e.currentTarget.style.opacity = '0.7')}
-      onMouseLeave={(e) => (e.currentTarget.style.opacity = '1')}>
-      {alert !== 'none' && <div style={{ position: 'absolute', inset: 0, borderRadius: 6, border: '1px solid ' + (alert === 'critical' ? 'color-mix(in srgb, var(--danger) 70%, transparent)' : 'color-mix(in srgb, var(--warn) 60%, transparent)'), animation: 'relief-flash ' + (alert === 'critical' ? '1s' : '2s') + ' ease-in-out infinite', pointerEvents: 'none' }} />}
-      <span style={{ fontWeight: 800, fontSize: 11, fontFamily: 'var(--font-mono), ui-monospace, monospace' }}>{person.initials}</span>
-      <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 90 }}>{person.name.split(' ').pop()}</span>
-      {hours && <ShiftBadge hours={hours} role={person.role} />}
-      <span style={{ opacity: 0.4, fontSize: 12 }}>×</span>
     </div>
   );
 }
