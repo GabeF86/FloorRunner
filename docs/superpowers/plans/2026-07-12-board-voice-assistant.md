@@ -226,10 +226,10 @@ First READ the actual constraint name + current value list from the live DB (rea
 - Create: `src/lib/boardAssistant/snapshot.ts`, `src/lib/boardAssistant/snapshot.test.ts`
 - Create: `src/app/api/board/assistant/actions/[id]/revert/route.ts`
 
-- [ ] **Step 6.1 (TDD):** fake-supabase tests: (a) `takeBoardSnapshot(sb, ctx, summary)` inserts a `board_assistant_actions` row whose `snapshot` holds full rows of `daily_active`, `assignments`, `daily_designations`, `daily_shifts`, `breaks` for the date (hospital-scoped via staff ids) plus `reliefIds: []`; returns the id. (b) `recordReliefInsert(actionId, reliefId)` appends to the snapshot's `reliefIds`. (c) `revertBoardAction(sb, id)`: deletes current date rows (same scope), re-inserts snapshot rows, deletes listed relief entries, stamps `reverted_at`; second revert is a no-op error `already reverted`. Round-trip test: seed day → snapshot → mutate via the Task 5 executors → revert → day-state deep-equals the seed.
-- [ ] **Step 6.2:** Implement. Wire `mark_relieved`'s executor to call `recordReliefInsert` when an action is open (executor deps carry the actionId ref the loop set — mirror how scheduleAssistant executors learn the snapshot id; read that wiring first).
-- [ ] **Step 6.3:** Revert route: POST, body-less, loads the action via `sbBoardServer()`, calls `revertBoardAction`, returns `{ok, restored: {counts per table}}`; 404 unknown id, 409 already reverted. Test with injected fake.
-- [ ] **Step 6.4: Commit** `feat: board assistant snapshot/undo — day-scoped restore via board_assistant_actions`.
+- [x] **Step 6.1 (TDD):** fake-supabase tests: (a) `takeBoardSnapshot(sb, ctx, summary)` inserts a `board_assistant_actions` row whose `snapshot` holds full rows of `daily_active`, `assignments`, `daily_designations`, `daily_shifts`, `breaks` for the date (hospital-scoped via staff ids) plus `reliefIds: []`; returns the id. (b) `recordReliefInsert(actionId, reliefId)` appends to the snapshot's `reliefIds`. (c) `revertBoardAction(sb, id)`: deletes current date rows (same scope), re-inserts snapshot rows, deletes listed relief entries, stamps `reverted_at`; second revert is a no-op error `already reverted`. Round-trip test: seed day → snapshot → mutate via the Task 5 executors → revert → day-state deep-equals the seed.
+- [x] **Step 6.2:** Implement. Wire `mark_relieved`'s executor to call `recordReliefInsert` when an action is open (executor deps carry the actionId ref the loop set — mirror how scheduleAssistant executors learn the snapshot id; read that wiring first).
+- [x] **Step 6.3:** Revert route: POST, body-less, loads the action via `sbBoardServer()`, calls `revertBoardAction`, returns `{ok, restored: {counts per table}}`; 404 unknown id, 409 already reverted. Test with injected fake.
+- [x] **Step 6.4: Commit** `feat: board assistant snapshot/undo — day-scoped restore via board_assistant_actions`.
 
 ---
 

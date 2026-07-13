@@ -26,6 +26,10 @@ import {
 } from '@/types';
 import type { AssistantToolDef } from '@/lib/assistantCore/client';
 import type { LoopToolOutcome } from '@/lib/assistantCore/loop';
+// recordReliefInsert lives in ./snapshot, which imports the scope helpers back
+// from here — a benign import cycle: every binding is used lazily (inside
+// function bodies, never at module init), so ESM live-bindings resolve fine.
+import { recordReliefInsert } from './snapshot';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type BoardClient = any;
@@ -36,6 +40,16 @@ export interface BoardCtx {
   boardDate: string;
   // null / '' = "All hospitals" (the board's All facility pill).
   hospital: string | null;
+}
+
+// Shared handle for the turn's open snapshot id. The loop (assistantCore/loop.ts)
+// keeps actionId private and never passes it to executors; instead the adapter's
+// takeSnapshot closure stashes the id here after the pre-mutation snapshot, and
+// executors that need it (mark_relieved, to record the relief_log row it creates)
+// read actionRef.actionId at execution time. The loop's snapshot-before-first-
+// mutation ordering guarantees it is populated before any mutating tool runs.
+export interface BoardActionRef {
+  actionId: string | null;
 }
 
 // Invalid model-supplied tool input → surfaced to the model verbatim as an
@@ -206,10 +220,12 @@ export const MUTATING_BOARD_TOOLS: ReadonlySet<string> = new Set<string>([
 //   is NOT shown when a hospital is selected (BoardClient: `s.is_float ||
 //   s.hospital === hospital`).
 // Empty / null ctx.hospital = "All" — no filtering.
-function scopeAllHospitals(ctx: BoardCtx): boolean {
+// Exported so snapshot.ts scopes the same day rows the board screen shows
+// (single source of truth for the hospital-scope semantics).
+export function scopeAllHospitals(ctx: BoardCtx): boolean {
   return ctx.hospital == null || ctx.hospital === '';
 }
-function staffInScope(ctx: BoardCtx, h?: string | null): boolean {
+export function staffInScope(ctx: BoardCtx, h?: string | null): boolean {
   return scopeAllHospitals(ctx) || h === ctx.hospital || !h;
 }
 function siteInScope(ctx: BoardCtx, site: Site): boolean {
@@ -343,6 +359,10 @@ function displayName(s: StaffMember): string {
 // board_date). For float, roomId is the SITE id (BoardClient.handleDropFloat).
 async function placeAssignment(sb: BoardClient, ctx: BoardCtx, staff: StaffMember, roomId: string): Promise<void> {
   if (staff.role !== 'physician') {
+    // Non-atomic delete-then-upsert (no client-side txn) — the SAME two-step the
+    // UI drag handler runs. Failure mode: if the upsert throws after the delete
+    // lands, the person is left unassigned (not in the new room); the loop
+    // surfaces the error and the turn snapshot makes it undoable.
     const { error: delErr } = await sb
       .from('assignments')
       .delete()
@@ -414,6 +434,10 @@ async function ensureWorking(sb: BoardClient, ctx: BoardCtx, staffId: string): P
 export function createBoardExecutors(
   sb: BoardClient,
   ctx: BoardCtx,
+  // Optional: when the adapter (SSE route) wires an action ref, mark_relieved
+  // records the relief_log row it creates into the open snapshot so revert can
+  // delete it. Omitted in unit tests that don't exercise the undo path.
+  actionRef?: BoardActionRef,
 ): Record<string, (input: unknown) => Promise<LoopToolOutcome>> {
   return {
     async get_board(): Promise<LoopToolOutcome> {
@@ -540,13 +564,7 @@ export function createBoardExecutors(
     },
 
     async find_staff(input: unknown): Promise<LoopToolOutcome> {
-      const parsed = FindStaffInput.safeParse(input);
-      if (!parsed.success) {
-        throw new ToolInputError(
-          `Invalid find_staff input — ${parsed.error.issues.map((i) => i.message).join('; ')}`,
-        );
-      }
-      const { query, role } = parsed.data;
+      const { query, role } = parseInput(FindStaffInput, input, 'find_staff');
       const { staff, workingIds } = await loadStaffAndActive(sb, ctx);
 
       const pool = role ? staff.filter((s) => s.role === role) : staff;
@@ -724,7 +742,11 @@ export function createBoardExecutors(
       const shift_hours: string = shiftRow?.hours ?? staff.hours;
       const designation: string | null = desgRow?.designation ?? null;
 
-      // Unassign first (drag-to-relieved deletes the rooms), then log the relief.
+      // Non-atomic unassign-then-insert (no client-side txn) — the SAME two-step
+      // BoardClient.handleDropRelieved runs on drag-to-relieved. Failure mode: if
+      // the relief insert throws after the delete lands, the person is unassigned
+      // but not logged as relieved; the loop surfaces the error and the turn
+      // snapshot makes it undoable.
       const { error: delErr } = await sb
         .from('assignments')
         .delete()
@@ -732,7 +754,7 @@ export function createBoardExecutors(
         .eq('board_date', ctx.boardDate);
       if (delErr) throw new Error(`assignment clear failed: ${delErr.message}`);
 
-      const { error: insErr } = await sb
+      const { data: reliefRow, error: insErr } = await sb
         .from('relief_log')
         .insert({
           staff_id,
@@ -747,6 +769,12 @@ export function createBoardExecutors(
         .select()
         .single();
       if (insErr) throw new Error(`relief write failed: ${insErr.message}`);
+      // relief_log is append-only (not snapshotted wholesale) — record the new
+      // row's id in the open snapshot so revert deletes exactly this entry.
+      const newReliefId = (reliefRow as { id?: string } | null)?.id;
+      if (actionRef?.actionId && newReliefId) {
+        await recordReliefInsert(sb, actionRef.actionId, newReliefId);
+      }
       const summary = `Relieved ${displayName(staff)} — went home`;
       return { result: { staff_id, designation, shift_hours }, summary };
     },
