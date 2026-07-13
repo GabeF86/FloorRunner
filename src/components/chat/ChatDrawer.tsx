@@ -124,6 +124,10 @@ export default function ChatDrawer({
           0%, 100% { opacity: 1; transform: scale(1); }
           50% { opacity: 0.65; transform: scale(1.06); }
         }
+        .chat-mic-pulse { animation: chatMicPulse 1.1s ease-in-out infinite; }
+        @media (prefers-reduced-motion: reduce) {
+          .chat-mic-pulse { animation: none; }
+        }
       `}</style>
 
       {/* Header */}
@@ -232,16 +236,16 @@ export default function ChatDrawer({
               onClick={() => (speech.listening ? speech.stop() : speech.start())}
               disabled={busy || locked}
               title={speech.listening ? 'Stop listening' : 'Speak your message'}
+              className={speech.listening ? 'chat-mic-pulse' : undefined}
               style={{
                 ...btnStyle,
-                animation: speech.listening ? 'chatMicPulse 1.1s ease-in-out infinite' : undefined,
                 background: speech.listening ? 'color-mix(in srgb, var(--danger) 16%, transparent)' : btnStyle.background,
                 color: speech.listening ? 'var(--danger)' : btnStyle.color,
                 border: speech.listening ? '1px solid color-mix(in srgb, var(--danger) 35%, transparent)' : btnStyle.border,
                 cursor: busy || locked ? 'not-allowed' : 'pointer',
               }}
             >
-              🎤{speech.listening ? ' Listening…' : ''}
+              🎤 {speech.listening ? 'Listening…' : 'Speak'}
             </button>
           )}
           <div style={{ flex: 1 }} />

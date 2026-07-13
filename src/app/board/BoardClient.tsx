@@ -9,6 +9,7 @@ import {
   addDays, formatDateLabel, HOSPITALS, Hospital,
 } from '@/types';
 import { computeSupervisionLoads } from '@/lib/boardLogic';
+import BoardAssistantPanel from './BoardAssistantPanel';
 import Sidebar from './Sidebar';
 import SiteCard from './SiteCard';
 import StatsBar from './StatsBar';
@@ -52,6 +53,7 @@ export default function BoardClient({ initialSites, initialStaff, initialAssignm
   const [showAddStaff,  setShowAddStaff]  = useState(false);
   const [showAddRoom,   setShowAddRoom]   = useState<string | null>(null);
   const [showPrint,     setShowPrint]     = useState(false);
+  const [showAssistant, setShowAssistant] = useState(false);
   const [siteHeights,   setSiteHeights]   = useState<Record<string, number>>({});
   const [hospital, setHospital] = useState<Hospital | ''>('');
   const [sidebarWidth, setSidebarWidth] = useState<number>(290);
@@ -486,6 +488,17 @@ export default function BoardClient({ initialSites, initialStaff, initialAssignm
           onChange={(v) => setViewModePersistent(v as 'grid' | 'network')}
         />
 
+        <button
+          onClick={() => setShowAssistant((v) => !v)}
+          style={showAssistant ? {
+            ...ghostButton,
+            background: 'color-mix(in srgb, var(--indigo) 16%, transparent)',
+            color: 'var(--indigo)',
+            border: '1px solid color-mix(in srgb, var(--indigo) 40%, transparent)',
+          } : ghostButton}
+          title="Speak or type roster/assignment commands · undoable"
+        >Assistant ✨</button>
+
         <BarDivider />
 
         {/* Date nav */}
@@ -694,6 +707,15 @@ export default function BoardClient({ initialSites, initialStaff, initialAssignm
       </div>
 
       {showPrint && <PrintView date={viewDate} sites={sites} staff={activeStaff} assignments={assignments} designations={designations} dailyShifts={dailyShifts} onClose={() => setShowPrint(false)} />}
+      {showAssistant && (
+        <BoardAssistantPanel
+          boardDate={viewDate}
+          hospital={hospital}
+          today={today}
+          onMutated={() => { if (!isToday) loadDailyData(viewDate); }}
+          onClose={() => setShowAssistant(false)}
+        />
+      )}
       {showAddSite  && <AddSiteModal  onClose={() => setShowAddSite(false)}  onConfirm={addSite} />}
       {showAddStaff && <AddStaffModal onClose={() => setShowAddStaff(false)} onConfirm={addStaff} />}
       {showAddRoom  && <AddRoomModal  onClose={() => setShowAddRoom(null)}   onConfirm={(n) => addRoom(showAddRoom, n)} />}
