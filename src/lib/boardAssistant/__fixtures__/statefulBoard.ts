@@ -7,9 +7,18 @@
 // real before/after state. It supports exactly the query shapes the board
 // executors + snapshot module use: select (with eq/in/order + embed-string
 // passthrough), single/maybeSingle, insert/upsert (onConflict), update, delete,
-// and awaiting the builder directly (thenable).
+// and awaiting the builder directly (thenable). failNext(table, op) injects a
+// one-shot error for partial-failure tests.
+//
+// Deliberately NOT modeled (kept dumb on purpose — assert around these):
+// - PK/unique-constraint enforcement on plain insert: duplicate ids happily
+//   coexist, so retry-idempotency tests must deep-equal full table state (a
+//   duplicated row WOULD show up there) rather than trust the fake to reject it;
+// - PostgREST embeds: select() args are ignored entirely, every row comes back
+//   whole (no `staff(*)` joins);
+// - order(): a no-op — sort in the assertion (dump() sorts by id).
 type Row = Record<string, unknown>;
-type Op = 'select' | 'insert' | 'upsert' | 'update' | 'delete';
+export type Op = 'select' | 'insert' | 'upsert' | 'update' | 'delete';
 interface Filter {
   kind: 'eq' | 'in';
   col: string;
@@ -23,6 +32,13 @@ export function makeStatefulSupabase(seed: Record<string, Row[]> = {}) {
   for (const [k, v] of Object.entries(seed)) tables[k] = clone(v);
   let seq = 1;
   const genId = () => `gen-${seq++}`;
+
+  // One-shot error injection: the NEXT operation matching (table, op) resolves
+  // with an error (and applies nothing), then the trigger clears itself.
+  let pendingFailure: { table: string; op: Op } | null = null;
+  function failNext(table: string, op: Op): void {
+    pendingFailure = { table, op };
+  }
 
   const rowsOf = (t: string): Row[] => (tables[t] ??= []);
 
@@ -43,6 +59,10 @@ export function makeStatefulSupabase(seed: Record<string, Row[]> = {}) {
     const filters: Filter[] = [];
 
     function resolve(): { data: unknown; error: unknown } {
+      if (pendingFailure && pendingFailure.table === table && pendingFailure.op === op) {
+        pendingFailure = null;
+        return { data: null, error: { message: `injected ${op} failure on ${table}` } };
+      }
       const rows = rowsOf(table);
       if (op === 'select') {
         return { data: clone(rows.filter((r) => matches(r, filters))), error: null };
@@ -141,5 +161,5 @@ export function makeStatefulSupabase(seed: Record<string, Row[]> = {}) {
     return clone(rowsOf(table)).sort((a, b) => String(a.id).localeCompare(String(b.id)));
   }
 
-  return { sb, dump, tables };
+  return { sb, dump, tables, failNext };
 }

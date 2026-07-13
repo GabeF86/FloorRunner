@@ -67,6 +67,17 @@ describe('POST /api/board/assistant/actions/[id]/revert', () => {
     expect(json.error).toMatch(/already reverted/i);
   });
 
+  it('409 with the blocking turn when a newer un-reverted action exists (undo newest-first)', async () => {
+    const { sb } = makeStatefulSupabase(seed());
+    holder.sb = sb;
+    const older = await takeBoardSnapshot(sb as never, PAOLI, 'turn 1');
+    const newer = await takeBoardSnapshot(sb as never, PAOLI, 'turn 2');
+    const { res, json } = await post(older);
+    expect(res.status).toBe(409);
+    expect(json.error).toMatch(/undo that turn first/);
+    expect(json.newerAction).toEqual({ id: newer, summary: 'turn 2' });
+  });
+
   it('500 when the client throws', async () => {
     holder.sb = { from: () => { throw new Error('boom'); } };
     const { res, json } = await post('any');

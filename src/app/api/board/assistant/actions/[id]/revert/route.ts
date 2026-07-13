@@ -21,6 +21,14 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
     if (result.alreadyReverted) {
       return NextResponse.json({ error: result.errors.join('; ') }, { status: 409 });
     }
+    if (result.newerActionExists) {
+      // Undo must run newest-first (no undo-of-undo in v1) — return the blocking
+      // turn so the UI can point the user at it.
+      return NextResponse.json(
+        { error: result.errors.join('; '), newerAction: result.newerActionExists },
+        { status: 409 },
+      );
+    }
     if (!result.ok) {
       return NextResponse.json({ error: result.errors.join('; ') }, { status: 500 });
     }

@@ -13,6 +13,13 @@
 //   snapshot rows, deletes the turn's relief rows, and stamps reverted_at.
 //   reverted_at is stamped only on a fully clean restore, so a partial failure
 //   stays visibly un-reverted and the Undo can be retried.
+// - Undo model (v1): actions for a date must be reverted NEWEST-FIRST — the
+//   newer-unreverted-action guard in revertBoardAction refuses out-of-order
+//   undo (newerActionExists → 409). There is NO undo-of-undo in v1 (unlike the
+//   schedule side, whose revert first snapshots the about-to-be-overwritten
+//   state); the ordering guard IS the safety mechanism that keeps an older
+//   revert from silently clobbering newer turns' changes irrecoverably. A
+//   pre-revert snapshot is a possible v2.
 //
 // actionId visibility (a NEW pattern, no scheduling-side counterpart —
 // scheduling executors never need the action id): runAssistantLoop
@@ -66,6 +73,20 @@ async function scopedStaffIds(sb: BoardClient, ctx: BoardCtx): Promise<Set<strin
   return ids;
 }
 
+// created_at is stamped client-side with a strictly-monotonic ms clock instead
+// of relying on the column's DEFAULT now(): the revert-ordering guard compares
+// created_at, and two turns landing within the same millisecond must still be
+// totally ordered. Monotonicity holds per process; cross-instance ordering
+// falls back to wall clocks (a same-ms cross-instance race on one board date is
+// negligible, and the guard's failure mode there is allowing an out-of-order
+// undo — the pre-v1 status quo, not new data loss).
+let lastActionMs = 0;
+function monotonicNowIso(): string {
+  const ms = Math.max(Date.now(), lastActionMs + 1);
+  lastActionMs = ms;
+  return new Date(ms).toISOString();
+}
+
 // Reads the in-scope day rows → inserts one board_assistant_actions row →
 // returns its id. Throws on any read/insert failure (the loop treats a throw as
 // "snapshot failed" and refuses mutations rather than run them un-undoably).
@@ -92,6 +113,7 @@ export async function takeBoardSnapshot(sb: BoardClient, ctx: BoardCtx, summary:
       hospital: scopeAllHospitals(ctx) ? null : ctx.hospital,
       summary,
       snapshot,
+      created_at: monotonicNowIso(), // see monotonicNowIso — ordering guard input
     })
     .select('id')
     .single();
@@ -129,9 +151,17 @@ export interface BoardRevertResult {
   notFound?: boolean;
   // Structured already-reverted signal → the route maps this to 409.
   alreadyReverted?: boolean;
+  // Structured ordering-guard signal → the route maps this to 409: a NEWER
+  // un-reverted action exists for the same board_date, and reverting this older
+  // one would clobber that turn's changes with no pre-revert snapshot to
+  // recover them (no undo-of-undo in v1 — see the header). Carries the newest
+  // blocker so the UI can say which turn to undo first.
+  newerActionExists?: { id: string; summary: string | null };
   // Rows re-inserted per snapshot table.
   restored: Record<SnapshotTable, number>;
-  // relief_log rows deleted (the turn's inserts).
+  // relief_log rows deleted — counts the TARGETED ids from the snapshot, not
+  // confirmed row deletions (the delete returns no count; an id already gone is
+  // indistinguishable from one just removed).
   reliefDeleted: number;
   errors: string[];
 }
@@ -139,7 +169,7 @@ export interface BoardRevertResult {
 export async function revertBoardAction(sb: BoardClient, id: string): Promise<BoardRevertResult> {
   const { data: action, error: loadErr } = await sb
     .from('board_assistant_actions')
-    .select('id, board_date, hospital, snapshot, reverted_at')
+    .select('id, board_date, hospital, snapshot, created_at, reverted_at')
     .eq('id', id)
     .maybeSingle();
   if (loadErr) {
@@ -150,6 +180,38 @@ export async function revertBoardAction(sb: BoardClient, id: string): Promise<Bo
   }
   if (action.reverted_at) {
     return { ok: false, alreadyReverted: true, restored: emptyCounts(), reliefDeleted: 0, errors: [`board action ${id} already reverted`] };
+  }
+
+  // ── Ordering guard: refuse to revert past a newer un-reverted action ────────
+  // Deliberately date-scoped only, IGNORING the hospital column: hospital
+  // scopes overlap (null-hospital staff belong to EVERY hospital's scope, and
+  // an "All" action spans everything), so any newer un-reverted action on the
+  // same date conservatively counts as a blocker. Undo must run newest-first.
+  {
+    const { data: siblings, error: sibErr } = await sb
+      .from('board_assistant_actions')
+      .select('id, summary, created_at, reverted_at')
+      .eq('board_date', action.board_date);
+    if (sibErr) {
+      return { ok: false, restored: emptyCounts(), reliefDeleted: 0, errors: [`action list read failed: ${sibErr.message}`] };
+    }
+    const myCreated = Date.parse(String(action.created_at ?? ''));
+    const newer = ((siblings ?? []) as Array<{ id: string; summary: string | null; created_at: string; reverted_at: string | null }>)
+      .filter((r) => r.id !== id && r.reverted_at == null && Date.parse(String(r.created_at ?? '')) > myCreated)
+      .sort((a, b) => Date.parse(String(b.created_at)) - Date.parse(String(a.created_at)));
+    if (newer.length > 0) {
+      const blocker = newer[0]; // the NEWEST — the one to undo first
+      return {
+        ok: false,
+        newerActionExists: { id: blocker.id, summary: blocker.summary ?? null },
+        restored: emptyCounts(),
+        reliefDeleted: 0,
+        errors: [
+          `a newer un-reverted assistant action exists for ${action.board_date}` +
+            `${blocker.summary ? ` ("${blocker.summary}")` : ''} — undo that turn first`,
+        ],
+      };
+    }
   }
 
   const date = action.board_date as string;
@@ -200,12 +262,18 @@ export async function revertBoardAction(sb: BoardClient, id: string): Promise<Bo
     restored[table] = rows.length;
   }
 
-  const reliefIds = Array.isArray(snapshot.reliefIds) ? snapshot.reliefIds : [];
+  // relief_log deletion runs ONLY after the table loop completed cleanly: an
+  // abandoned partial revert must never drop a clinical relief record ("went
+  // home" evidence) while the assignments it belongs with stay un-reverted.
+  // reliefDeleted reports the TARGETED ids, not confirmed row deletions.
   let reliefDeleted = 0;
-  if (reliefIds.length > 0) {
-    const { error: relErr } = await sb.from('relief_log').delete().in('id', reliefIds);
-    if (relErr) errors.push(`relief clear failed: ${relErr.message}`);
-    else reliefDeleted = reliefIds.length;
+  if (errors.length === 0) {
+    const reliefIds = Array.isArray(snapshot.reliefIds) ? snapshot.reliefIds : [];
+    if (reliefIds.length > 0) {
+      const { error: relErr } = await sb.from('relief_log').delete().in('id', reliefIds);
+      if (relErr) errors.push(`relief clear failed: ${relErr.message}`);
+      else reliefDeleted = reliefIds.length;
+    }
   }
 
   // Stamp reverted_at ONLY on a fully clean restore (see the txn note above).

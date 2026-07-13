@@ -177,6 +177,77 @@ describe('revertBoardAction', () => {
     expect(res.notFound).toBe(true);
   });
 
+  it('refuses to revert an older action while a newer un-reverted one exists (newerActionExists → nothing touched)', async () => {
+    const { sb, dump } = makeStatefulSupabase(seed());
+    const older = await takeBoardSnapshot(sb as never, PAOLI, 'turn 1');
+    const execs = createBoardExecutors(sb as never, PAOLI);
+    await execs.set_designation({ staff_id: 'md-a', designation: 'D3' });
+    const newer = await takeBoardSnapshot(sb as never, PAOLI, 'turn 2');
+    await execs.assign_to_room({ staff_id: 'md-b', room: 'OR 2' });
+    const beforeAttempt = dayState(dump);
+
+    const res = await revertBoardAction(sb as never, older);
+    expect(res.ok).toBe(false);
+    expect(res.newerActionExists).toEqual({ id: newer, summary: 'turn 2' });
+    expect(res.errors.join(' ')).toMatch(/undo that turn first/);
+    // Nothing restored, day untouched, reverted_at unset on BOTH actions.
+    expect(res.restored).toEqual({
+      daily_active: 0, assignments: 0, daily_designations: 0, daily_shifts: 0, breaks: 0,
+    });
+    expect(dayState(dump)).toEqual(beforeAttempt);
+    expect(dump('board_assistant_actions').every((a) => a.reverted_at == null)).toBe(true);
+  });
+
+  it('chain-undo in order: reverting the newest works, and then the older one works too', async () => {
+    const { sb, dump } = makeStatefulSupabase(seed());
+    const seedState = dayState(dump);
+    const older = await takeBoardSnapshot(sb as never, PAOLI, 'turn 1');
+    const execs = createBoardExecutors(sb as never, PAOLI);
+    await execs.set_designation({ staff_id: 'md-a', designation: 'D3' });
+    const afterTurn1 = dayState(dump);
+    const newer = await takeBoardSnapshot(sb as never, PAOLI, 'turn 2');
+    await execs.assign_to_room({ staff_id: 'md-b', room: 'OR 2' });
+
+    const newest = await revertBoardAction(sb as never, newer);
+    expect(newest.ok).toBe(true);
+    expect(dayState(dump)).toEqual(afterTurn1); // back to post-turn-1
+
+    // The newer action is reverted → it no longer blocks the older one.
+    const oldest = await revertBoardAction(sb as never, older);
+    expect(oldest.ok).toBe(true);
+    expect(dayState(dump)).toEqual(seedState); // back to the seed
+  });
+
+  it('mid-revert failure keeps the relief record and reverted_at unstamped; the RETRY restores cleanly with no duplicates', async () => {
+    const { sb, dump, failNext } = makeStatefulSupabase(seed());
+    const before = dayState(dump);
+    const actionRef: BoardActionRef = { actionId: null };
+    const id = await takeBoardSnapshot(sb as never, PAOLI, 's');
+    actionRef.actionId = id;
+    const execs = createBoardExecutors(sb as never, PAOLI, actionRef);
+    await execs.assign_to_room({ staff_id: 'md-b', room: 'OR 2' });
+    await execs.mark_relieved({ staff_id: 'crna-a' }); // relief row recorded via actionRef
+
+    failNext('assignments', 'insert'); // one-shot: the assignments restore fails
+    const first = await revertBoardAction(sb as never, id);
+    expect(first.ok).toBe(false);
+    expect(first.errors.join(' ')).toMatch(/injected insert failure on assignments/);
+    // reverted_at unstamped → retryable…
+    expect(dump('board_assistant_actions').find((r) => r.id === id)!.reverted_at).toBeUndefined();
+    // …and the clinical relief record survived the abandoned partial revert
+    // (relief deletion only runs after a fully clean table loop).
+    expect(first.reliefDeleted).toBe(0);
+    expect(dump('relief_log').length).toBe(2);
+
+    const retry = await revertBoardAction(sb as never, id);
+    expect(retry.ok).toBe(true);
+    expect(retry.reliefDeleted).toBe(1);
+    // Deep-equal over FULL table state — the fake does not enforce PKs, so a
+    // duplicated row from a non-idempotent retry would surface right here.
+    expect(dayState(dump)).toEqual(before);
+    expect(dump('board_assistant_actions').find((r) => r.id === id)!.reverted_at).toBeTruthy();
+  });
+
   it('does NOT silently succeed when the staff scope is empty at revert time but the snapshot holds rows', async () => {
     const { sb, dump, tables } = makeStatefulSupabase(seed());
     const id = await takeBoardSnapshot(sb as never, PAOLI, 's'); // snapshot holds rows
