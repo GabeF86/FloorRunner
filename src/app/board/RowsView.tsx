@@ -5,7 +5,7 @@ import { Site, Room, Assignment, ROLE_META, DraggedPerson, SUPERVISED_ROLES, Shi
 import { hexToRgb, AddSiteTile } from './BoardClient';
 import SiteCard, { SiteHeader } from './SiteCard';
 import PersonChip from './PersonChip';
-import { BT } from './boardTheme';
+import { BT, BOARD_DROP_TARGET_CLASS } from './boardTheme';
 
 // ── Rows view ─────────────────────────────────────────────────────────────────
 // Third board view (spec §2): every room is ONE horizontal line; rooms flow
@@ -71,7 +71,7 @@ export default function RowsView({
   ];
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
       {ordered.map((site, i) =>
         site.is_float ? (
           // Float zone — unchanged FloatSiteCard treatment via the shared
@@ -152,9 +152,9 @@ function RowsSiteCard({ site, roomAssignments, dragOver, dragging, alertLevels, 
           grows to fit. When the site box is resized (roomsHeight set) the cap
           applies and any overflow scrolls — multicol layout does not affect
           drop-target event handling, so RoomRow drops work in every column. */}
-      <div style={{ padding: '6px 8px', columnWidth: 260, columnGap: 16, columnRule: BT.rows.divider, maxHeight: roomsHeight ?? undefined, overflowY: 'auto' }}>
+      <div style={{ padding: '4px 8px', columnWidth: 260, columnGap: 16, columnRule: BT.rows.divider, maxHeight: roomsHeight ?? undefined, overflowY: 'auto' }}>
         {site.rooms.map((room) => (
-          <div key={room.id} style={{ breakInside: 'avoid', marginBottom: 3 }}>
+          <div key={room.id} style={{ breakInside: 'avoid', marginBottom: 4 }}>
             <RoomRow
               room={room} site={site}
               people={roomAssignments[room.id] || []}
@@ -171,7 +171,7 @@ function RowsSiteCard({ site, roomAssignments, dragOver, dragging, alertLevels, 
           </div>
         ))}
         {site.rooms.length === 0 && (
-          <div style={{ padding: '6px 4px', color: 'var(--text-dim)', fontSize: 11, fontStyle: 'italic' }}>
+          <div style={{ padding: '4px', color: 'var(--text-dim)', fontSize: BT.font.roomName, fontStyle: 'italic' }}>
             {readOnly ? 'No rooms' : 'No rooms yet — click + Room to add one'}
           </div>
         )}
@@ -216,14 +216,17 @@ function RoomRow({ room, site, people, isOver, dragging, alertLevels, dailyShift
       onDrop={readOnly ? undefined : (e) => { e.preventDefault(); e.stopPropagation(); onDrop(); }}
       onMouseEnter={readOnly ? undefined : () => setHov(true)}
       onMouseLeave={readOnly ? undefined : () => setHov(false)}
+      // Wall (readOnly): no drag-feedback class/transform — the row stays inert.
+      className={readOnly ? undefined : BOARD_DROP_TARGET_CLASS}
       style={{
-        display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 5,
+        display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 4,
         minHeight: BT.rows.rowMinHeight, padding: BT.rows.rowPad,
         borderRadius: BT.chip.radius, border: '1px solid',
         borderColor: isOver ? site.color : needsMd ? 'rgba(245,158,11,.4)' : 'var(--border-faint)',
         background: isOver ? `rgba(${rgb},0.09)` : 'var(--bg-deep)',
         boxShadow: isOver ? `0 0 12px rgba(${rgb},0.22)` : 'none',
-        transition: 'all 0.14s', position: 'relative',
+        transform: !readOnly && isOver ? BT.drag.hoverScale : 'none',
+        position: 'relative',
       }}
     >
       <span style={{ minWidth: 44, flexShrink: 0, fontSize: BT.font.roomName, fontWeight: 750, color: 'var(--text)', letterSpacing: 0.2, fontFamily: 'var(--font-mono), ui-monospace, monospace' }}>

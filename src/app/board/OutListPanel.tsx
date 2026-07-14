@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import { StaffMember, MDDesignation, DESIGNATION_OUT_ORDER } from '@/types';
+import { BT } from './boardTheme';
 
 interface Props {
   staff:        StaffMember[];
@@ -28,13 +29,13 @@ export default function OutListPanel({ staff, designations }: Props) {
   const totalCount = outList.length + (c1Person ? 1 : 0);
 
   return (
-    <div style={{ flex: 1, background: 'var(--bg-surface)', border: '1px solid var(--border)', borderRadius: 12, overflow: 'hidden', maxWidth: 240 }}>
+    <div style={{ flex: 1, background: 'var(--bg-surface)', border: '1px solid var(--border)', borderRadius: 10, overflow: 'hidden', maxWidth: 240 }}>
       {/* Header */}
       <div
         onClick={() => setCollapsed((v) => !v)}
-        style={{ padding: '9px 13px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', cursor: 'pointer', borderBottom: collapsed ? 'none' : '1px solid var(--border)', background: 'rgba(245,158,11,0.06)' }}
+        style={{ padding: '8px 12px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', cursor: 'pointer', borderBottom: collapsed ? 'none' : '1px solid var(--border)', background: 'rgba(245,158,11,0.06)' }}
       >
-        <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <span style={{ fontSize: 13 }}>📋</span>
           <span style={{ fontSize: 11, fontWeight: 800, letterSpacing: 1.5, textTransform: 'uppercase', color: '#f59e0b' }}>Out Order</span>
           <span style={{ fontSize: 10, color: 'var(--text-dim)', background: 'rgba(245,158,11,0.12)', border: '1px solid rgba(245,158,11,0.25)', borderRadius: 10, padding: '1px 6px', fontWeight: 700 }}>{totalCount}</span>
@@ -62,7 +63,7 @@ export default function OutListPanel({ staff, designations }: Props) {
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{person.name}</div>
                 </div>
-                <span style={{ fontSize: 10, fontWeight: 800, padding: '2px 6px', borderRadius: 5, background: isC2 ? 'rgba(251,113,133,0.15)' : 'rgba(245,158,11,0.13)', color: isC2 ? '#fb7185' : '#f59e0b', border: '1px solid ' + (isC2 ? 'rgba(251,113,133,0.3)' : 'rgba(245,158,11,0.3)'), whiteSpace: 'nowrap' }}>
+                <span style={{ fontSize: 10, fontWeight: 800, padding: '2px 6px', borderRadius: BT.chip.radius, background: isC2 ? 'rgba(251,113,133,0.15)' : 'rgba(245,158,11,0.13)', color: isC2 ? '#fb7185' : '#f59e0b', border: '1px solid ' + (isC2 ? 'rgba(251,113,133,0.3)' : 'rgba(245,158,11,0.3)'), whiteSpace: 'nowrap' }}>
                   {desg}
                 </span>
               </div>
@@ -82,7 +83,7 @@ export default function OutListPanel({ staff, designations }: Props) {
                   <div style={{ fontSize: 11, fontWeight: 600, color: '#a78bfa', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c1Person.name}</div>
                   <div style={{ fontSize: 9, color: 'var(--text-dim)' }}>ON CALL OVERNIGHT</div>
                 </div>
-                <span style={{ fontSize: 10, fontWeight: 800, padding: '2px 6px', borderRadius: 5, background: 'rgba(167,139,250,0.15)', color: '#a78bfa', border: '1px solid rgba(167,139,250,0.3)' }}>C1</span>
+                <span style={{ fontSize: 10, fontWeight: 800, padding: '2px 6px', borderRadius: BT.chip.radius, background: 'rgba(167,139,250,0.15)', color: '#a78bfa', border: '1px solid rgba(167,139,250,0.3)' }}>C1</span>
               </div>
             </>
           )}

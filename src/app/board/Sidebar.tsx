@@ -8,7 +8,7 @@ import {
 } from '@/types';
 import { hexToRgb } from './BoardClient';
 import { ShiftBadge } from './ShiftBadge';
-import { BT } from './boardTheme';
+import { BT, BOARD_DROP_TARGET_CLASS } from './boardTheme';
 
 interface Props {
   staff:            StaffMember[];
@@ -55,15 +55,16 @@ export default function Sidebar(props: Props) {
   if (collapsed) {
     return (
       <div
-        style={{ width: BT.railWidth, minWidth: BT.railWidth, height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10, padding: '10px 0', borderRight: '1px solid var(--border)', background: 'var(--bg-sidebar)', boxShadow: isDragTarget ? 'inset -3px 0 12px color-mix(in srgb, var(--blue) 10%, transparent)' : 'none' }}
+        className={BOARD_DROP_TARGET_CLASS}
+        style={{ width: BT.railWidth, minWidth: BT.railWidth, height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8, padding: '8px 0', borderRight: '1px solid var(--border)', background: 'var(--bg-sidebar)', boxShadow: isDragTarget ? 'inset -3px 0 12px color-mix(in srgb, var(--blue) 10%, transparent)' : 'none', transform: isDragTarget ? BT.drag.hoverScale : 'none' }}
         onDragOver={(e) => e.preventDefault()}
         onDrop={onDropSidebar}
       >
-        <button onClick={onToggleCollapse} title="Expand sidebar (⌘B)" style={{ width: 28, height: 28, borderRadius: 7, background: 'var(--bg-deep)', border: '1px solid var(--border)', color: 'var(--text-muted)', cursor: 'pointer', fontSize: 13 }}>≡</button>
+        <button onClick={onToggleCollapse} title="Expand sidebar (⌘B)" style={{ width: 28, height: 28, borderRadius: 8, background: 'var(--bg-deep)', border: '1px solid var(--border)', color: 'var(--text-muted)', cursor: 'pointer', fontSize: 13 }}>≡</button>
         {RAIL_GROUPS.map((g) => {
           const working = staff.filter((p) => g.roles.includes(p.role) && activeStaffIds.has(p.id)).length;
           return (
-            <button key={g.label} onClick={onToggleCollapse} title={`${g.label}: ${working} working today — click to expand`} style={{ position: 'relative', width: 28, height: 28, borderRadius: 7, background: 'var(--bg-deep)', border: '1px solid var(--border)', cursor: 'pointer', fontSize: 12 }}>
+            <button key={g.label} onClick={onToggleCollapse} title={`${g.label}: ${working} working today — click to expand`} style={{ position: 'relative', width: 28, height: 28, borderRadius: 8, background: 'var(--bg-deep)', border: '1px solid var(--border)', cursor: 'pointer', fontSize: 12 }}>
               {g.icon}
               {working > 0 && <span style={{ position: 'absolute', top: -5, right: -5, background: '#1e3a8a', color: '#fff', fontSize: 8, fontWeight: 800, borderRadius: 6, padding: '0 3px', minWidth: 12 }}>{working}</span>}
             </button>
@@ -182,7 +183,11 @@ export default function Sidebar(props: Props) {
 
   return (
     <aside
-      style={{ flex: 1, minWidth: 0, height: '100%', background: 'var(--bg-sidebar)', display: 'flex', flexDirection: 'column', overflow: 'hidden', transition: 'box-shadow 0.2s', boxShadow: isDragTarget ? 'inset -3px 0 12px color-mix(in srgb, var(--blue) 10%, transparent)' : 'none' }}
+      className={BOARD_DROP_TARGET_CLASS}
+      // transform is `none` unless actively drag-targeted, so it establishes no
+      // containing block in the resting state — the fixed-position shift/desg
+      // picker (only open on hover, never mid-drag) keeps viewport anchoring.
+      style={{ flex: 1, minWidth: 0, height: '100%', background: 'var(--bg-sidebar)', display: 'flex', flexDirection: 'column', overflow: 'hidden', boxShadow: isDragTarget ? 'inset -3px 0 12px color-mix(in srgb, var(--blue) 10%, transparent)' : 'none', transform: isDragTarget ? BT.drag.hoverScale : 'none' }}
       onDragOver={(e) => e.preventDefault()}
       onDrop={onDropSidebar}
     >
@@ -214,7 +219,7 @@ export default function Sidebar(props: Props) {
             <span>search for full roster</span>
           </span>
         </div>
-        <button onClick={onAddStaff} style={{ background: 'color-mix(in srgb, var(--blue) 12%, transparent)', border: '1px solid color-mix(in srgb, var(--blue) 30%, transparent)', color: 'var(--blue)', borderRadius: 5, padding: '2px 9px', fontSize: 'var(--fs-xs)', fontWeight: 700, cursor: 'pointer' }}>+ Add</button>
+        <button onClick={onAddStaff} style={{ background: 'color-mix(in srgb, var(--blue) 12%, transparent)', border: '1px solid color-mix(in srgb, var(--blue) 30%, transparent)', color: 'var(--blue)', borderRadius: 4, padding: '2px 8px', fontSize: 'var(--fs-xs)', fontWeight: 700, cursor: 'pointer' }}>+ Add</button>
       </div>
 
       {/* Search bar */}
@@ -224,12 +229,12 @@ export default function Sidebar(props: Props) {
           placeholder="Search full roster…"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          style={{ flex: 1, minWidth: 0, boxSizing: 'border-box', background: 'var(--tint-surface)', border: '1px solid var(--border-input)', borderRadius: 5, padding: 'var(--space-1) var(--space-2)', fontSize: 'var(--fs-xs)', color: 'var(--text)', outline: 'none' }}
+          style={{ flex: 1, minWidth: 0, boxSizing: 'border-box', background: 'var(--tint-surface)', border: '1px solid var(--border-input)', borderRadius: 4, padding: 'var(--space-1) var(--space-2)', fontSize: 'var(--fs-xs)', color: 'var(--text)', outline: 'none' }}
         />
         <button
           onClick={onToggleCollapse}
           title="Collapse sidebar (⌘B)"
-          style={{ flexShrink: 0, width: 24, height: 24, borderRadius: 5, background: 'var(--bg-deep)', border: '1px solid var(--border)', color: 'var(--text-muted)', cursor: 'pointer', fontSize: 12 }}
+          style={{ flexShrink: 0, width: 24, height: 24, borderRadius: 4, background: 'var(--bg-deep)', border: '1px solid var(--border)', color: 'var(--text-muted)', cursor: 'pointer', fontSize: 12 }}
         >≡</button>
       </div>
 
@@ -338,7 +343,7 @@ function StaffCard({ person, role, assignedStaffIds, currentHospital, supervisio
       onDragStart={() => { if (canDrag) onDragStart({ ...person, role }); }}
       onMouseEnter={() => setHov(true)}
       onMouseLeave={() => { setHov(false); setShowPicker(false); }}
-      style={{ borderRadius: 6, marginBottom: 3, border: '1px solid ' + borderColor, background: bgColor, opacity: isActive ? 1 : 0.72, transition: 'all 0.14s', position: 'relative', userSelect: 'none', cursor: canDrag ? 'grab' : 'default' }}
+      style={{ borderRadius: 6, marginBottom: 3, border: '1px solid ' + borderColor, background: bgColor, opacity: isActive ? 1 : 0.72, transition: 'all 120ms ease', position: 'relative', userSelect: 'none', cursor: canDrag ? 'grab' : 'default' }}
     >
       {/* Alert flash */}
       {isActive && alert === 'critical' && <div style={{ position: 'absolute', inset: 0, borderRadius: 6, border: '2px solid color-mix(in srgb, var(--danger) 60%, transparent)', animation: 'relief-flash 1s ease-in-out infinite', pointerEvents: 'none' }} />}

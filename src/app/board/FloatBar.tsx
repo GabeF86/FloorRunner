@@ -96,7 +96,7 @@ export default function FloatBar({ staff, floatIds, assignedIds, activeStaffIds,
                         border: '1px solid ' + (isFloat ? 'color-mix(in srgb, var(--ok) 35%, transparent)' : meta.border),
                         color: isFloat ? 'var(--ok)' : meta.color,
                         fontSize: BT.font.chip, fontWeight: 600,
-                        transition: 'all 0.14s',
+                        transition: 'opacity 120ms ease',
                         userSelect: 'none',
                       }}
                       onMouseEnter={(e) => (e.currentTarget.style.opacity = '0.75')}

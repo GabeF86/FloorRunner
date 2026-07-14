@@ -9,7 +9,7 @@ import {
   addDays, formatDateLabel, HOSPITALS, Hospital,
 } from '@/types';
 import { computeSupervisionLoads } from '@/lib/boardLogic';
-import { BT } from './boardTheme';
+import { BT, BOARD_DROP_STYLE } from './boardTheme';
 import { useBoardRealtime } from './useBoardRealtime';
 import BoardAssistantPanel from './BoardAssistantPanel';
 import Sidebar from './Sidebar';
@@ -428,7 +428,10 @@ export default function BoardClient({ initialSites, initialStaff, initialAssignm
     if (p.role === 'physician') {
       const desg = designations[p.id];
       alertLevels[p.id] = (!desg || desg === 'C1' || (desg !== '8hr' && desg !== '10hr')) ? 'none' : getAlertLevel(getMinutesToRelief(desg as ShiftHours));
-    } else if (['crna', 'srna', 'resident'].includes(p.role)) {
+    } else if (['crna', 'srna', 'resident', 'fellow'].includes(p.role)) {
+      // fellow included: fellows are shift-workers here (they carry hours +
+      // break tracking in the sidebar and shift badges on their chips), so
+      // their end-of-shift relief countdown must surface like SRNAs/residents.
       alertLevels[p.id] = getAlertLevel(getMinutesToRelief(dailyShifts[p.id] || p.hours));
     } else {
       alertLevels[p.id] = 'none';
@@ -455,6 +458,10 @@ export default function BoardClient({ initialSites, initialStaff, initialAssignm
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', overflow: 'hidden', background: 'var(--bg-base)', color: 'var(--text)' }}>
+      {/* Shared drop-target drag-feedback rule + reduced-motion override.
+          Defined once here (the root of every interactive drop target on
+          /board); components opt in via the board-drop-target class. */}
+      <style>{BOARD_DROP_STYLE}</style>
 
       {/* TOP UTILITY BAR */}
       <header style={{ background: 'var(--bg-surface)', borderBottom: '0.5px solid var(--border)', padding: '6px 12px', display: 'flex', alignItems: 'center', gap: 10, position: 'sticky', top: 0, zIndex: 40, minHeight: 38, fontSize: 12 }}>
