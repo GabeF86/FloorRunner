@@ -13,7 +13,7 @@ import { BT } from './boardTheme';
 import BoardAssistantPanel from './BoardAssistantPanel';
 import Sidebar from './Sidebar';
 import SiteCard from './SiteCard';
-import StatsBar from './StatsBar';
+import { StatsInline, SupervisionBanner } from './StatsBar';
 import FloatBar from './FloatBar';
 import OutListPanel from './OutListPanel';
 import RelievedBox from './RelievedBox';
@@ -554,6 +554,12 @@ export default function BoardClient({ initialSites, initialStaff, initialAssignm
 
         <BarDivider />
 
+        {/* Slim stats — MD/CRNA staffed-vs-total + room count, folded into the
+            header line (was: standalone StatsBar box above the board) */}
+        <StatsInline staff={activeStaff} assignedStaffIds={assignedStaffIds} sites={sites} />
+
+        <BarDivider />
+
         {/* Facility pills */}
         <div style={{ display: 'flex', gap: 3 }}>
           <FacilityPillV1 label="All" active={!hospital} onClick={() => { setHospital(''); try { localStorage.setItem('hospital', ''); } catch {} }} />
@@ -587,6 +593,10 @@ export default function BoardClient({ initialSites, initialStaff, initialAssignm
         </div>
       </header>
 
+      {/* Supervision alert — full-width, directly under the header row.
+          Self-contained: renders nothing when nobody is at/over limit. */}
+      <SupervisionBanner supervisionLoads={supervisionLoads} />
+
       {/* Inline planning banner */}
       {isPlanMode && (
         <div style={{ background: 'color-mix(in srgb, var(--warn) 8%, transparent)', borderBottom: '0.5px solid color-mix(in srgb, var(--warn) 25%, transparent)', padding: '4px 12px', display: 'flex', alignItems: 'center', gap: 8, fontSize: 11, color: 'var(--warn)', fontWeight: 600 }}>
@@ -594,8 +604,12 @@ export default function BoardClient({ initialSites, initialStaff, initialAssignm
         </div>
       )}
 
-      {/* BODY */}
-      <div style={{ display: 'flex', flex: 1, overflow: 'hidden', height: isPlanMode ? 'calc(100vh - 62px)' : 'calc(100vh - 38px)' }}>
+      {/* BODY — flex:1 fills whatever vertical space the header + optional
+          supervision/planning banners above it leave; no hardcoded height
+          subtraction, so the now variable-height SupervisionBanner can't
+          push content off-screen (previously a fixed calc(100vh - Npx)
+          assumed only the header/planning-banner heights). */}
+      <div style={{ display: 'flex', flex: 1, minHeight: 0, overflow: 'hidden' }}>
 
         {/* Sidebar — resizable, or a collapsed 44px icon rail */}
         <div style={{ width: sidebarCollapsed ? BT.railWidth : sidebarWidth, minWidth: sidebarCollapsed ? BT.railWidth : sidebarWidth, flexShrink: 0, display: 'flex', overflow: 'hidden' }}>
@@ -639,8 +653,6 @@ export default function BoardClient({ initialSites, initialStaff, initialAssignm
         {/* Main content */}
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
           <main style={{ flex: 1, overflowY: 'auto', padding: '12px 16px' }}>
-            <StatsBar staff={activeStaff} assignments={assignments} assignedStaffIds={assignedStaffIds} supervisionLoads={supervisionLoads} sites={sites} />
-
             {/* CONTINGENCY ROW — sits directly above the Available bar (stub, wired in Phase 2) */}
             <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '4px 10px', marginBottom: 8, borderRadius: 6, border: '0.5px solid var(--border)', background: 'var(--bg-surface)' }}>
               <span style={{ fontSize: 9, color: 'var(--text-muted)', fontWeight: 700, letterSpacing: 0.3, textTransform: 'uppercase', marginRight: 4 }}>Contingencies</span>
