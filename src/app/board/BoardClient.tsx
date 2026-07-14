@@ -19,6 +19,7 @@ import OutListPanel from './OutListPanel';
 import RelievedBox from './RelievedBox';
 import PrintView from './PrintView';
 import NetworkView from './NetworkView';
+import RowsView from './RowsView';
 import { AddSiteModal, AddStaffModal, AddRoomModal } from './Modals';
 
 interface Props {
@@ -59,7 +60,7 @@ export default function BoardClient({ initialSites, initialStaff, initialAssignm
   const [hospital, setHospital] = useState<Hospital | ''>('');
   const [sidebarWidth, setSidebarWidth] = useState<number>(290);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-  const [viewMode, setViewMode] = useState<'grid' | 'network'>('grid');
+  const [viewMode, setViewMode] = useState<'grid' | 'rows' | 'network'>('grid');
 
   // Hydrate from localStorage after mount to avoid SSR mismatch
   useEffect(() => {
@@ -69,7 +70,7 @@ export default function BoardClient({ initialSites, initialStaff, initialAssignm
     try { const v = localStorage.getItem('sidebarCollapsed'); if (v) setSidebarCollapsed(v === 'true'); } catch {}
     try {
       const m = localStorage.getItem('boardViewMode');
-      if (m === 'grid' || m === 'network') setViewMode(m);
+      if (m === 'grid' || m === 'rows' || m === 'network') setViewMode(m);
     } catch {}
   }, []);
 
@@ -96,7 +97,7 @@ export default function BoardClient({ initialSites, initialStaff, initialAssignm
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [toggleSidebarCollapsed]);
 
-  const setViewModePersistent = useCallback((m: 'grid' | 'network') => {
+  const setViewModePersistent = useCallback((m: 'grid' | 'rows' | 'network') => {
     setViewMode(m);
     try { localStorage.setItem('boardViewMode', m); } catch {}
   }, []);
@@ -514,9 +515,9 @@ export default function BoardClient({ initialSites, initialStaff, initialAssignm
       <header style={{ background: 'var(--bg-surface)', borderBottom: '0.5px solid var(--border)', padding: '6px 12px', display: 'flex', alignItems: 'center', gap: 10, position: 'sticky', top: 0, zIndex: 40, minHeight: 38, fontSize: 12 }}>
         {/* Mode toggle (leftmost — most fundamental nav) */}
         <PillToggleV1
-          options={[{ value: 'grid', label: 'Grid' }, { value: 'network', label: 'Network' }]}
+          options={[{ value: 'grid', label: 'Cards' }, { value: 'rows', label: 'Rows' }, { value: 'network', label: 'Network' }]}
           value={viewMode}
-          onChange={(v) => setViewModePersistent(v as 'grid' | 'network')}
+          onChange={(v) => setViewModePersistent(v as 'grid' | 'rows' | 'network')}
         />
 
         <button
@@ -719,6 +720,26 @@ export default function BoardClient({ initialSites, initialStaff, initialAssignm
                   <AddSiteTile onClick={() => setShowAddSite(true)} />
                 </div>
               </div>
+            ) : viewMode === 'rows' ? (
+              <RowsView
+                filteredSites={filteredSites}
+                floatAssignments={floatAssignments}
+                roomAssignments={roomAssignments}
+                dragOver={dragOver} dragging={dragging}
+                alertLevels={alertLevels} dailyShifts={dailyShifts}
+                siteHeights={siteHeights}
+                onDrop={handleDrop}
+                onDropFloat={handleDropFloat}
+                onDragOver={setDragOver}
+                onDragLeave={() => setDragOver(null)}
+                onRemoveAssignment={removeAssignment}
+                onAddRoom={(siteId) => setShowAddRoom(siteId)}
+                onDeleteRoom={(siteId, roomId) => deleteRoom(siteId, roomId)}
+                onDeleteSite={(siteId) => deleteSite(siteId)}
+                onReorderRoom={handleReorderRoom}
+                onResizeHeight={(siteId, h) => setSiteHeight(siteId, h)}
+                onAddSite={() => setShowAddSite(true)}
+              />
             ) : (
               <NetworkView
                 sites={sites}
@@ -879,7 +900,7 @@ function Pill({ label, color, pulse }: { label: string; color: string; pulse?: b
   );
 }
 
-function AddSiteTile({ onClick }: { onClick: () => void }) {
+export function AddSiteTile({ onClick }: { onClick: () => void }) {
   const [hov, setHov] = useState(false);
   return (
     <div onClick={onClick} onMouseEnter={() => setHov(true)} onMouseLeave={() => setHov(false)}
