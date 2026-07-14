@@ -22,6 +22,14 @@ import { BT } from './boardTheme';
 // Ordering note: grid mode groups small sites into shared 2-col spans; rows
 // mode renders every card full-width, so it uses natural DB position order
 // (non-float first, float last) — no small/large grouping needed.
+//
+// Cards-only affordances (by design, not oversights):
+// - Room drag-reorder: multicol flow renders rooms column-major, so visual
+//   order ≠ list order and drag-reorder semantics would be ambiguous. Reorder
+//   rooms in Cards view; no onReorderRoom prop here.
+// - Site resize HANDLE: rows cards still honor a height set in Cards view
+//   (siteHeights → maxHeight in RowsSiteCard) but expose no drag handle of
+//   their own; no onResizeHeight prop here.
 interface Props {
   filteredSites:      Site[];
   floatAssignments:   Assignment[];
@@ -39,8 +47,6 @@ interface Props {
   onAddRoom:          (siteId: string) => void;
   onDeleteRoom:       (siteId: string, roomId: string) => void;
   onDeleteSite:       (siteId: string) => void;
-  onReorderRoom:      (siteId: string, roomId: string, targetRoomId: string) => void;
-  onResizeHeight:     (siteId: string, h: number) => void;
   onAddSite:          () => void;
 }
 
@@ -71,15 +77,18 @@ export default function RowsView(props: Props) {
             onAddRoom={() => props.onAddRoom(site.id)}
             onDeleteRoom={(roomId) => props.onDeleteRoom(site.id, roomId)}
             onDeleteSite={() => props.onDeleteSite(site.id)}
-            onReorderRoom={props.onReorderRoom}
-            onResizeHeight={(h) => props.onResizeHeight(site.id, h)}
+            // SiteCard's Props require these, but is_float early-returns
+            // FloatSiteCard which has no rooms to reorder and no resize
+            // handle — provably unreachable, so no-ops (not threaded props).
+            onReorderRoom={() => {}}
+            onResizeHeight={() => {}}
           />
         ) : (
           <RowsSiteCard
             key={site.id}
             site={site}
             roomAssignments={props.roomAssignments}
-            dragOver={props.dragOver}
+            dragOver={props.dragOver} dragging={props.dragging}
             alertLevels={props.alertLevels} dailyShifts={props.dailyShifts}
             roomsHeight={props.siteHeights[site.id]}
             onDrop={props.onDrop}
@@ -87,6 +96,7 @@ export default function RowsView(props: Props) {
             onDragLeave={props.onDragLeave}
             onRemoveAssignment={props.onRemoveAssignment}
             onAddRoom={() => props.onAddRoom(site.id)}
+            onDeleteRoom={(roomId) => props.onDeleteRoom(site.id, roomId)}
             onDeleteSite={() => props.onDeleteSite(site.id)}
           />
         )
@@ -97,14 +107,15 @@ export default function RowsView(props: Props) {
 }
 
 // ── One site as stacked room-lines in balanced columns ────────────────────────
-function RowsSiteCard({ site, roomAssignments, dragOver, alertLevels, dailyShifts, roomsHeight, onDrop, onDragOver, onDragLeave, onRemoveAssignment, onAddRoom, onDeleteSite }: {
+function RowsSiteCard({ site, roomAssignments, dragOver, dragging, alertLevels, dailyShifts, roomsHeight, onDrop, onDragOver, onDragLeave, onRemoveAssignment, onAddRoom, onDeleteRoom, onDeleteSite }: {
   site: Site; roomAssignments: Record<string, Assignment[]>;
-  dragOver: string | null;
+  dragOver: string | null; dragging: DraggedPerson | null;
   alertLevels: Record<string, 'none' | 'warning' | 'critical'>;
   dailyShifts: Record<string, ShiftHours>;
   roomsHeight?: number;
   onDrop: (roomId: string) => void; onDragOver: (id: string) => void; onDragLeave: () => void;
-  onRemoveAssignment: (id: string) => void; onAddRoom: () => void; onDeleteSite: () => void;
+  onRemoveAssignment: (id: string) => void; onAddRoom: () => void;
+  onDeleteRoom: (roomId: string) => void; onDeleteSite: () => void;
 }) {
   const [hov, setHov] = useState(false);
 
@@ -131,11 +142,13 @@ function RowsSiteCard({ site, roomAssignments, dragOver, alertLevels, dailyShift
               room={room} site={site}
               people={roomAssignments[room.id] || []}
               isOver={dragOver === room.id}
+              dragging={dragging}
               alertLevels={alertLevels} dailyShifts={dailyShifts}
               onDrop={() => onDrop(room.id)}
               onDragOver={() => onDragOver(room.id)}
               onDragLeave={onDragLeave}
               onRemoveAssignment={onRemoveAssignment}
+              onDeleteRoom={() => onDeleteRoom(room.id)}
             />
           </div>
         ))}
@@ -156,14 +169,15 @@ function RowsSiteCard({ site, roomAssignments, dragOver, alertLevels, dailyShift
 // surgeon shown last as amber last-name text, MD then CRNA as chips. Chips
 // flexWrap so a heavily-staffed room wraps to a second line rather than hiding
 // anyone (spec risk #3). No-MD warning = amber row border + compact ⚠ MD badge.
-function RoomRow({ room, site, people, isOver, alertLevels, dailyShifts, onDrop, onDragOver, onDragLeave, onRemoveAssignment }: {
+function RoomRow({ room, site, people, isOver, dragging, alertLevels, dailyShifts, onDrop, onDragOver, onDragLeave, onRemoveAssignment, onDeleteRoom }: {
   room: Room; site: Site; people: Assignment[];
-  isOver: boolean;
+  isOver: boolean; dragging: DraggedPerson | null;
   alertLevels: Record<string, 'none' | 'warning' | 'critical'>;
   dailyShifts: Record<string, ShiftHours>;
   onDrop: () => void; onDragOver: () => void; onDragLeave: () => void;
-  onRemoveAssignment: (id: string) => void;
+  onRemoveAssignment: (id: string) => void; onDeleteRoom: () => void;
 }) {
+  const [hov, setHov] = useState(false);
   const rgb = hexToRgb(site.color);
 
   const surgeon    = people.find((a) => a.staff?.role === 'surgeon');
@@ -179,6 +193,8 @@ function RoomRow({ room, site, people, isOver, alertLevels, dailyShifts, onDrop,
       onDragOver={(e) => { e.preventDefault(); onDragOver(); }}
       onDragLeave={onDragLeave}
       onDrop={(e) => { e.preventDefault(); e.stopPropagation(); onDrop(); }}
+      onMouseEnter={() => setHov(true)}
+      onMouseLeave={() => setHov(false)}
       style={{
         display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 5,
         minHeight: BT.rows.rowMinHeight, padding: BT.rows.rowPad,
@@ -186,7 +202,7 @@ function RoomRow({ room, site, people, isOver, alertLevels, dailyShifts, onDrop,
         borderColor: isOver ? site.color : needsMd ? 'rgba(245,158,11,.4)' : 'var(--border-faint)',
         background: isOver ? `rgba(${rgb},0.09)` : 'var(--bg-deep)',
         boxShadow: isOver ? `0 0 12px rgba(${rgb},0.22)` : 'none',
-        transition: 'all 0.14s',
+        transition: 'all 0.14s', position: 'relative',
       }}
     >
       <span style={{ minWidth: 44, flexShrink: 0, fontSize: BT.font.roomName, fontWeight: 750, color: 'var(--text)', letterSpacing: 0.2, fontFamily: 'var(--font-mono), ui-monospace, monospace' }}>
@@ -210,6 +226,15 @@ function RoomRow({ room, site, people, isOver, alertLevels, dailyShifts, onDrop,
         <span style={{ fontSize: BT.font.chip, color: isOver ? site.color : 'var(--text-dim)', fontStyle: isOver ? 'normal' : 'italic', fontWeight: isOver ? 700 : 400 }}>
           {isOver ? 'Release' : 'drop staff'}
         </span>
+      )}
+
+      {/* Delete room — mirrors RoomCell's reveal-on-hover ✕ (same hov &&
+          !dragging gate, same straight-through onDeleteRoom, no confirm).
+          Absolutely positioned inside the row so the reveal never reflows
+          row height, and inside the bounds because RoomCell's -8px corner
+          offsets would clip against the multicol container's overflow. */}
+      {hov && !dragging && (
+        <button onClick={onDeleteRoom} title={`Delete ${room.name}`} style={{ position: 'absolute', right: 3, top: '50%', transform: 'translateY(-50%)', width: 18, height: 18, borderRadius: '50%', background: 'var(--bg-surface)', border: '1px solid var(--border-strong)', color: 'var(--text-muted)', fontSize: 12, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 800, zIndex: 10, padding: 0 }}>×</button>
       )}
     </div>
   );

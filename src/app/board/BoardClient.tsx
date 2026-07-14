@@ -736,8 +736,6 @@ export default function BoardClient({ initialSites, initialStaff, initialAssignm
                 onAddRoom={(siteId) => setShowAddRoom(siteId)}
                 onDeleteRoom={(siteId, roomId) => deleteRoom(siteId, roomId)}
                 onDeleteSite={(siteId) => deleteSite(siteId)}
-                onReorderRoom={handleReorderRoom}
-                onResizeHeight={(siteId, h) => setSiteHeight(siteId, h)}
                 onAddSite={() => setShowAddSite(true)}
               />
             ) : (
