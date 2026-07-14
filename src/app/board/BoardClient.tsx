@@ -10,6 +10,7 @@ import {
 } from '@/types';
 import { computeSupervisionLoads } from '@/lib/boardLogic';
 import { BT } from './boardTheme';
+import { useBoardRealtime } from './useBoardRealtime';
 import BoardAssistantPanel from './BoardAssistantPanel';
 import Sidebar from './Sidebar';
 import SiteCard from './SiteCard';
@@ -148,67 +149,11 @@ export default function BoardClient({ initialSites, initialStaff, initialAssignm
     });
   }, [hospital]);
 
-  // ── Real-time ─────────────────────────────────────────────────────────────
-  useEffect(() => {
-    if (!isToday) return;
-    // Unique topic per mount: supabase-js returns the SAME channel instance
-    // for a repeated topic name, so under React StrictMode's dev double-mount
-    // the second subscribe() lands on a channel the first cleanup is already
-    // tearing down — leaving the tab with NO live subscription. A fresh topic
-    // guarantees a fresh channel; cleanup still removes it by reference.
-    const channel = supabase.channel(`board-rt-${Date.now()}-${Math.random().toString(36).slice(2)}`)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'assignments' }, async () => {
-        const res = await supabase.from('assignments').select('*, staff(*)').eq('board_date', today);
-        if (res.data) {
-          setAssignments((prev) => {
-            // Keep any optimistic (unconfirmed) entries not yet reflected in DB
-            const confirmedPairs = new Set((res.data as Assignment[]).map((a) => `${a.room_id}:${a.staff_id}`));
-            const opts = prev.filter((a) => a.id.startsWith('opt-') && !confirmedPairs.has(`${a.room_id}:${a.staff_id}`));
-            return [...(res.data as Assignment[]), ...opts];
-          });
-        }
-      })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'staff' }, async () => {
-        const { data } = await supabase.from('staff').select('*').order('role').order('name');
-        if (data) setStaff(data as StaffMember[]);
-      })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'daily_active' }, async () => {
-        const res = await fetch('/api/daily-active?date=' + today);
-        const data: { staff_id: string }[] = await res.json();
-        setActiveStaffIds(new Set(data.map((r) => r.staff_id)));
-      })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'daily_designations' }, async () => {
-        const res  = await fetch('/api/designations?date=' + today);
-        const data: DailyDesignation[] = await res.json();
-        const m: Record<string, MDDesignation> = {};
-        data.forEach((d) => { m[d.staff_id] = d.designation; });
-        setDesignations(m);
-      })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'daily_shifts' }, async () => {
-        const res  = await fetch('/api/daily-shifts?date=' + today);
-        const data: DailyShift[] = await res.json();
-        const m: Record<string, ShiftHours> = {};
-        data.forEach((s) => { m[s.staff_id] = s.hours; });
-        setDailyShifts(m);
-      })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'breaks' }, async () => {
-        const res = await fetch('/api/breaks?date=' + today);
-        setBreaks(await res.json());
-      })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'relief_log' }, async () => {
-        const res = await fetch('/api/relief?date=' + today);
-        setReliefLog(await res.json());
-      })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'sites' }, refreshSites)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'rooms' }, refreshSites)
-      .subscribe();
-    return () => { supabase.removeChannel(channel); };
-  }, [today, isToday]);
-
-  async function refreshSites() {
-    const { data } = await supabase.from('sites').select('*, rooms(*)').order('position').order('position', { referencedTable: 'rooms' });
-    if (data) setSites(data as Site[]);
-  }
+  // ── Real-time (shared with the wall display via useBoardRealtime) ─────────
+  useBoardRealtime(today, isToday, {
+    setSites, setStaff, setAssignments, setActiveStaffIds,
+    setDesignations, setDailyShifts, setBreaks, setReliefLog,
+  });
 
   // ── Active staff toggle ───────────────────────────────────────────────────
   const toggleActive = useCallback(async (staffId: string, active: boolean) => {

@@ -27,10 +27,13 @@ interface Props {
   onDeleteSite:       () => void;
   onReorderRoom:      (siteId: string, roomId: string, targetRoomId: string) => void;
   onResizeHeight:     (h: number) => void;
+  // Wall display: render the float card as a static panel (no drop wiring, no
+  // remove affordances). Defaults false — the grid/editing path is unaffected.
+  readOnly?:          boolean;
 }
 
 export default function SiteCard(props: Props) {
-  const { site, roomAssignments, floatAssignments, dragOver, dragging, alertLevels, dailyShifts, roomsHeight, onResizeHeight } = props;
+  const { site, roomAssignments, floatAssignments, dragOver, dragging, alertLevels, dailyShifts, roomsHeight, onResizeHeight, readOnly = false } = props;
   const [hov, setHov] = useState(false);
   const rgb    = hexToRgb(site.color);
   const isFloat = !!site.is_float;
@@ -59,6 +62,7 @@ export default function SiteCard(props: Props) {
     <FloatSiteCard
       site={site} floatAssignments={floatAssignments} dragging={dragging}
       isOver={dragOver === 'float-' + site.id} dailyShifts={dailyShifts} alertLevels={alertLevels}
+      readOnly={readOnly}
       onDragOver={() => props.onDragOver('float-' + site.id)}
       onDragLeave={props.onDragLeave}
       onDropFloat={() => props.onDropFloat(site.id)}
@@ -118,8 +122,11 @@ export default function SiteCard(props: Props) {
 // interim (worst offenders: EP Lab #f59e0b at 2.15:1, Endoscopy #10b981 at
 // 2.54:1 vs white) — do not add per-color conditionals. `showDelete` is the
 // host card's hover state (Delete Site reveals on hover, matching grid cards).
-export function SiteHeader({ site, showDelete, onAddRoom, onDeleteSite }: {
+export function SiteHeader({ site, showDelete, onAddRoom, onDeleteSite, readOnly = false }: {
   site: Site; showDelete: boolean; onAddRoom: () => void; onDeleteSite: () => void;
+  // Wall display: drop the entire action cluster (+ Room / Delete Site) so the
+  // header is a pure label with no edit affordances.
+  readOnly?: boolean;
 }) {
   return (
     <div style={{ padding: BT.siteHeader.pad, display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: site.color, borderRadius: `${BT.siteHeader.radius}px ${BT.siteHeader.radius}px 0 0` }}>
@@ -127,10 +134,12 @@ export function SiteHeader({ site, showDelete, onAddRoom, onDeleteSite }: {
         <span style={{ fontSize: BT.siteHeader.nameSize, fontWeight: 750, color: '#fff', letterSpacing: -0.3 }}>{site.name}</span>
         <span style={{ fontSize: BT.siteHeader.countSize, color: 'rgba(255,255,255,.65)', fontFamily: 'var(--font-mono), ui-monospace, monospace' }}>· {site.rooms.length} rooms</span>
       </div>
-      <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-        <button draggable={false} onClick={(e) => { e.stopPropagation(); onAddRoom(); }} style={{ background: 'rgba(255,255,255,.14)', border: '1px solid rgba(255,255,255,.3)', color: '#fff', borderRadius: 5, padding: '2px 9px', fontSize: 10, fontWeight: 700, cursor: 'pointer' }}>+ Room</button>
-        {showDelete && <button draggable={false} onClick={(e) => { e.stopPropagation(); onDeleteSite(); }} style={{ background: 'rgba(255,255,255,.12)', border: '1px solid rgba(254,202,202,.4)', color: '#fecaca', borderRadius: 5, padding: '2px 9px', fontSize: 10, fontWeight: 700, cursor: 'pointer' }}>Delete Site</button>}
-      </div>
+      {!readOnly && (
+        <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+          <button draggable={false} onClick={(e) => { e.stopPropagation(); onAddRoom(); }} style={{ background: 'rgba(255,255,255,.14)', border: '1px solid rgba(255,255,255,.3)', color: '#fff', borderRadius: 5, padding: '2px 9px', fontSize: 10, fontWeight: 700, cursor: 'pointer' }}>+ Room</button>
+          {showDelete && <button draggable={false} onClick={(e) => { e.stopPropagation(); onDeleteSite(); }} style={{ background: 'rgba(255,255,255,.12)', border: '1px solid rgba(254,202,202,.4)', color: '#fecaca', borderRadius: 5, padding: '2px 9px', fontSize: 10, fontWeight: 700, cursor: 'pointer' }}>Delete Site</button>}
+        </div>
+      )}
     </div>
   );
 }
@@ -238,10 +247,11 @@ function RoomCell({ room, site, people, isOver, dragging, alertLevels, dailyShif
 }
 
 // ── Float site card ───────────────────────────────────────────────────────────
-function FloatSiteCard({ site, floatAssignments, dragging, isOver, dailyShifts, alertLevels, onDragOver, onDragLeave, onDropFloat, onRemoveAssignment }: {
+function FloatSiteCard({ site, floatAssignments, dragging, isOver, dailyShifts, alertLevels, readOnly = false, onDragOver, onDragLeave, onDropFloat, onRemoveAssignment }: {
   site: Site; floatAssignments: Assignment[]; dragging: DraggedPerson | null;
   isOver: boolean; dailyShifts: Record<string, ShiftHours>;
   alertLevels: Record<string, 'none' | 'warning' | 'critical'>;
+  readOnly?: boolean;
   onDragOver: () => void; onDragLeave: () => void; onDropFloat: () => void;
   onRemoveAssignment: (id: string) => void;
 }) {
@@ -253,14 +263,14 @@ function FloatSiteCard({ site, floatAssignments, dragging, isOver, dailyShifts, 
         <span style={{ fontSize: 10, color: 'var(--text-muted)', fontFamily: 'var(--font-mono), ui-monospace, monospace' }}>· {floatAssignments.length} floating · giving breaks or standby</span>
       </div>
       <div
-        onDragOver={(e) => { e.preventDefault(); onDragOver(); }}
-        onDragLeave={onDragLeave}
-        onDrop={(e) => { e.preventDefault(); onDropFloat(); }}
+        onDragOver={readOnly ? undefined : (e) => { e.preventDefault(); onDragOver(); }}
+        onDragLeave={readOnly ? undefined : onDragLeave}
+        onDrop={readOnly ? undefined : (e) => { e.preventDefault(); onDropFloat(); }}
         style={{ padding: '12px 14px', minHeight: 70, display: 'flex', flexWrap: 'wrap', gap: 7, alignContent: 'flex-start', background: isOver ? 'rgba(' + rgb + ',0.04)' : 'transparent', transition: 'background 0.15s' }}
       >
         {floatAssignments.length === 0 && (
           <div style={{ color: isOver ? site.color : 'var(--text-dim)', fontSize: 13, fontStyle: isOver ? 'normal' : 'italic', fontWeight: isOver ? 700 : 400, width: '100%', textAlign: 'center', paddingTop: 8 }}>
-            {isOver ? 'Release to float' : 'Drop staff here to float'}
+            {readOnly ? 'No one floating' : isOver ? 'Release to float' : 'Drop staff here to float'}
           </div>
         )}
         {floatAssignments.map((a) => {
@@ -269,14 +279,14 @@ function FloatSiteCard({ site, floatAssignments, dragging, isOver, dailyShifts, 
           const h = p.role !== 'physician' ? (dailyShifts[p.id] || p.hours) : null;
           const al = alertLevels[p.id] || 'none';
           return (
-            <div key={a.id} onClick={() => onRemoveAssignment(a.id)} title={p.name + ' — click to remove'}
-              style={{ display: 'flex', alignItems: 'center', gap: 4, padding: '3px 7px', borderRadius: 5, cursor: 'pointer', background: m.bg, color: m.color, border: '1px solid ' + m.border, fontSize: 10, fontWeight: 700 }}
-              onMouseEnter={(e) => (e.currentTarget.style.opacity = '0.7')}
-              onMouseLeave={(e) => (e.currentTarget.style.opacity = '1')}>
+            <div key={a.id} onClick={readOnly ? undefined : () => onRemoveAssignment(a.id)} title={readOnly ? p.name : p.name + ' — click to remove'}
+              style={{ display: 'flex', alignItems: 'center', gap: 4, padding: '3px 7px', borderRadius: 5, cursor: readOnly ? 'default' : 'pointer', background: m.bg, color: m.color, border: '1px solid ' + m.border, fontSize: 10, fontWeight: 700 }}
+              onMouseEnter={readOnly ? undefined : (e) => (e.currentTarget.style.opacity = '0.7')}
+              onMouseLeave={readOnly ? undefined : (e) => (e.currentTarget.style.opacity = '1')}>
               <span style={{ fontWeight: 800, fontSize: 9, fontFamily: 'var(--font-mono), ui-monospace, monospace' }}>{p.initials}</span>
               <span>{p.name.split(' ').pop()}</span>
               {h && <ShiftBadge hours={h} role={p.role} />}
-              <span style={{ opacity: 0.3, fontSize: 11 }}>×</span>
+              {!readOnly && <span style={{ opacity: 0.3, fontSize: 11 }}>×</span>}
             </div>
           );
         })}
