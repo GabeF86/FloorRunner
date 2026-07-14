@@ -185,8 +185,11 @@ export default function Sidebar(props: Props) {
     <aside
       className={BOARD_DROP_TARGET_CLASS}
       // transform is `none` unless actively drag-targeted, so it establishes no
-      // containing block in the resting state — the fixed-position shift/desg
-      // picker (only open on hover, never mid-drag) keeps viewport anchoring.
+      // containing block in the resting state. The fixed-position shift/desg
+      // picker keeps viewport anchoring because it is provably closed whenever
+      // this transform is non-none: a drag starting on the picker's own row is
+      // closed by StaffCard's onDragStart; a drag starting anywhere else means
+      // the pointer left that row first, closing it via onMouseLeave.
       style={{ flex: 1, minWidth: 0, height: '100%', background: 'var(--bg-sidebar)', display: 'flex', flexDirection: 'column', overflow: 'hidden', boxShadow: isDragTarget ? 'inset -3px 0 12px color-mix(in srgb, var(--blue) 10%, transparent)' : 'none', transform: isDragTarget ? BT.drag.hoverScale : 'none' }}
       onDragOver={(e) => e.preventDefault()}
       onDrop={onDropSidebar}
@@ -340,7 +343,12 @@ function StaffCard({ person, role, assignedStaffIds, currentHospital, supervisio
   return (
     <div
       draggable={canDrag}
-      onDragStart={() => { if (canDrag) onDragStart({ ...person, role }); }}
+      // setShowPicker(false) on drag start: while drag-targeted the aside gains
+      // a scale transform, which would become the containing block for the
+      // picker's `position: fixed` and strand its viewport-computed top/left.
+      // onMouseLeave alone can't guarantee the picker is closed — a drag can
+      // start on the very row whose picker is open, without ever leaving it.
+      onDragStart={() => { setShowPicker(false); if (canDrag) onDragStart({ ...person, role }); }}
       onMouseEnter={() => setHov(true)}
       onMouseLeave={() => { setHov(false); setShowPicker(false); }}
       style={{ borderRadius: 6, marginBottom: 3, border: '1px solid ' + borderColor, background: bgColor, opacity: isActive ? 1 : 0.72, transition: 'all 120ms ease', position: 'relative', userSelect: 'none', cursor: canDrag ? 'grab' : 'default' }}

@@ -4,8 +4,8 @@ import { useEffect, useMemo, useState } from 'react';
 import {
   Site, StaffMember, Assignment, MDDesignation, ShiftHours, Break, ReliefEntry,
   DailyDesignation, DailyShift, HOSPITALS, Hospital,
-  getMinutesToRelief, getAlertLevel,
 } from '@/types';
+import { computeAlertLevels } from '@/lib/boardLogic';
 import RowsView from '../RowsView';
 import { useBoardRealtime } from '../useBoardRealtime';
 
@@ -86,18 +86,9 @@ export default function WallClient({ initialSites, initialStaff, initialAssignme
     roomAssignments[a.room_id].push(a);
   });
 
-  // Relief-alert levels — identical logic to BoardClient.
-  const alertLevels: Record<string, 'none' | 'warning' | 'critical'> = {};
-  staff.forEach((p) => {
-    if (p.role === 'physician') {
-      const desg = designations[p.id];
-      alertLevels[p.id] = (!desg || desg === 'C1' || (desg !== '8hr' && desg !== '10hr')) ? 'none' : getAlertLevel(getMinutesToRelief(desg as ShiftHours));
-    } else if (['crna', 'srna', 'resident'].includes(p.role)) {
-      alertLevels[p.id] = getAlertLevel(getMinutesToRelief(dailyShifts[p.id] || p.hours));
-    } else {
-      alertLevels[p.id] = 'none';
-    }
-  });
+  // Relief-alert levels — the same shared implementation BoardClient uses
+  // (computeAlertLevels), so board and wall can never drift.
+  const alertLevels = computeAlertLevels(staff, designations, dailyShifts);
 
   const roomCount = filteredSites.filter((s) => !s.is_float).reduce((n, s) => n + s.rooms.length, 0);
 

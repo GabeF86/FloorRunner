@@ -5,10 +5,10 @@ import { supabase } from '@/lib/supabase';
 import {
   Site, StaffMember, Assignment, Role, ShiftHours, DraggedPerson,
   DailyDesignation, DailyShift, Break, ReliefEntry, MDDesignation,
-  BreakType, getMinutesToRelief, getAlertLevel,
+  BreakType,
   addDays, formatDateLabel, HOSPITALS, Hospital,
 } from '@/types';
-import { computeSupervisionLoads } from '@/lib/boardLogic';
+import { computeAlertLevels, computeSupervisionLoads } from '@/lib/boardLogic';
 import { BT, BOARD_DROP_STYLE } from './boardTheme';
 import { useBoardRealtime } from './useBoardRealtime';
 import BoardAssistantPanel from './BoardAssistantPanel';
@@ -423,20 +423,7 @@ export default function BoardClient({ initialSites, initialStaff, initialAssignm
 
   const supervisionLoads = computeSupervisionLoads(assignments, roomAssignments);
 
-  const alertLevels: Record<string, 'none' | 'warning' | 'critical'> = {};
-  staff.forEach((p) => {
-    if (p.role === 'physician') {
-      const desg = designations[p.id];
-      alertLevels[p.id] = (!desg || desg === 'C1' || (desg !== '8hr' && desg !== '10hr')) ? 'none' : getAlertLevel(getMinutesToRelief(desg as ShiftHours));
-    } else if (['crna', 'srna', 'resident', 'fellow'].includes(p.role)) {
-      // fellow included: fellows are shift-workers here (they carry hours +
-      // break tracking in the sidebar and shift badges on their chips), so
-      // their end-of-shift relief countdown must surface like SRNAs/residents.
-      alertLevels[p.id] = getAlertLevel(getMinutesToRelief(dailyShifts[p.id] || p.hours));
-    } else {
-      alertLevels[p.id] = 'none';
-    }
-  });
+  const alertLevels = computeAlertLevels(staff, designations, dailyShifts);
 
   const breaksMap: Record<string, Break[]> = {};
   breaks.forEach((b) => {
