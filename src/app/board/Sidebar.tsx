@@ -270,7 +270,8 @@ export default function Sidebar(props: Props) {
           {/* CRNAs + SRNAs + Residents / Surgeons split pane */}
           <div ref={bottomRef} style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', minHeight: 0 }}>
             <div style={{ height: srnaSurgeonPct + '%', overflowY: 'auto', minHeight: 0, padding: '8px 10px' }}>
-              {(['crna', 'srna', 'resident'] as Role[]).map((role) => renderRoleGroup(role))}
+              {/* 'fellow' included: fellows were previously reachable only via search (pre-existing gap fixed alongside the rail counts) */}
+              {(['crna', 'srna', 'resident', 'fellow'] as Role[]).map((role) => renderRoleGroup(role))}
             </div>
 
             {/* Divider between SRNA/Resident and Surgeon */}
