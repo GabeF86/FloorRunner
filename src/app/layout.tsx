@@ -19,7 +19,10 @@ export const metadata: Metadata = {
   description: 'Real-time OR staffing board for anesthesia teams',
 };
 
-// Runs before React hydrates so dark→light switch never flashes.
+// Applies a SAVED theme before React hydrates so a chosen preference never
+// flashes. Light is the CSS default (:root), so a first-time visitor with no
+// stored value needs nothing here; a saved 'dark' gets data-theme='dark' set
+// pre-paint (otherwise the light default would flash before the toggle ran).
 const themeInitScript = `(function(){try{var t=localStorage.getItem('theme');if(t==='light'||t==='dark'){document.documentElement.setAttribute('data-theme',t);}}catch(e){}})();`;
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

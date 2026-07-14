@@ -44,10 +44,12 @@ const NAV_SECTIONS: NavSection[] = [
  * Theme contract — mirrors the root layout's pre-hydration init script:
  *   localStorage key 'theme', values 'light' | 'dark',
  *   applied as data-theme on document.documentElement.
- * No attribute (and no stored value) means the :root default (dark).
+ * No attribute (and no stored value) means the :root default (light), so the
+ * initial state below is 'light' to match SSR / the pre-paint script and avoid
+ * a hydration mismatch on the footer toggle label.
  */
 function useTheme() {
-  const [theme, setTheme] = useState<'dark' | 'light'>('dark');
+  const [theme, setTheme] = useState<'dark' | 'light'>('light');
 
   useEffect(() => {
     try {
