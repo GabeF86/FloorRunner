@@ -9,18 +9,17 @@ import {
   addDays, formatDateLabel, HOSPITALS, Hospital,
 } from '@/types';
 import { computeAlertLevels, computeSupervisionLoads } from '@/lib/boardLogic';
-import { BT, BOARD_DROP_STYLE } from './boardTheme';
+import { BT } from './boardTheme';
 import { useBoardRealtime } from './useBoardRealtime';
 import BoardAssistantPanel from './BoardAssistantPanel';
 import Sidebar from './Sidebar';
 import SiteCard from './SiteCard';
-import { StatsInline, SupervisionBanner } from './StatsBar';
+import StatsBar from './StatsBar';
 import FloatBar from './FloatBar';
 import OutListPanel from './OutListPanel';
 import RelievedBox from './RelievedBox';
 import PrintView from './PrintView';
 import NetworkView from './NetworkView';
-import RowsView from './RowsView';
 import { AddSiteModal, AddStaffModal, AddRoomModal } from './Modals';
 
 interface Props {
@@ -61,7 +60,7 @@ export default function BoardClient({ initialSites, initialStaff, initialAssignm
   const [hospital, setHospital] = useState<Hospital | ''>('');
   const [sidebarWidth, setSidebarWidth] = useState<number>(290);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-  const [viewMode, setViewMode] = useState<'grid' | 'rows' | 'network'>('grid');
+  const [viewMode, setViewMode] = useState<'grid' | 'network'>('grid');
 
   // Hydrate from localStorage after mount to avoid SSR mismatch
   useEffect(() => {
@@ -71,7 +70,9 @@ export default function BoardClient({ initialSites, initialStaff, initialAssignm
     try { const v = localStorage.getItem('sidebarCollapsed'); if (v) setSidebarCollapsed(v === 'true'); } catch {}
     try {
       const m = localStorage.getItem('boardViewMode');
-      if (m === 'grid' || m === 'rows' || m === 'network') setViewMode(m);
+      // 'rows' is a retired view — fall stale persisted values back to 'grid'.
+      if (m === 'grid' || m === 'network') setViewMode(m);
+      else if (m === 'rows') setViewMode('grid');
     } catch {}
   }, []);
 
@@ -98,7 +99,7 @@ export default function BoardClient({ initialSites, initialStaff, initialAssignm
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [toggleSidebarCollapsed]);
 
-  const setViewModePersistent = useCallback((m: 'grid' | 'rows' | 'network') => {
+  const setViewModePersistent = useCallback((m: 'grid' | 'network') => {
     setViewMode(m);
     try { localStorage.setItem('boardViewMode', m); } catch {}
   }, []);
@@ -445,18 +446,13 @@ export default function BoardClient({ initialSites, initialStaff, initialAssignm
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', overflow: 'hidden', background: 'var(--bg-base)', color: 'var(--text)' }}>
-      {/* Shared drop-target drag-feedback rule + reduced-motion override.
-          Defined once here (the root of every interactive drop target on
-          /board); components opt in via the board-drop-target class. */}
-      <style>{BOARD_DROP_STYLE}</style>
-
       {/* TOP UTILITY BAR */}
       <header style={{ background: 'var(--bg-surface)', borderBottom: '0.5px solid var(--border)', padding: '6px 12px', display: 'flex', alignItems: 'center', gap: 10, position: 'sticky', top: 0, zIndex: 40, minHeight: 38, fontSize: 12 }}>
         {/* Mode toggle (leftmost — most fundamental nav) */}
         <PillToggleV1
-          options={[{ value: 'grid', label: 'Cards' }, { value: 'rows', label: 'Rows' }, { value: 'network', label: 'Network' }]}
+          options={[{ value: 'grid', label: 'Cards' }, { value: 'network', label: 'Network' }]}
           value={viewMode}
-          onChange={(v) => setViewModePersistent(v as 'grid' | 'rows' | 'network')}
+          onChange={(v) => setViewModePersistent(v as 'grid' | 'network')}
         />
 
         <button
@@ -494,12 +490,6 @@ export default function BoardClient({ initialSites, initialStaff, initialAssignm
 
         <BarDivider />
 
-        {/* Slim stats — MD/CRNA staffed-vs-total + room count, folded into the
-            header line (was: standalone StatsBar box above the board) */}
-        <StatsInline staff={activeStaff} assignedStaffIds={assignedStaffIds} sites={sites} />
-
-        <BarDivider />
-
         {/* Facility pills */}
         <div style={{ display: 'flex', gap: 3 }}>
           <FacilityPillV1 label="All" active={!hospital} onClick={() => { setHospital(''); try { localStorage.setItem('hospital', ''); } catch {} }} />
@@ -533,10 +523,6 @@ export default function BoardClient({ initialSites, initialStaff, initialAssignm
         </div>
       </header>
 
-      {/* Supervision alert — full-width, directly under the header row.
-          Self-contained: renders nothing when nobody is at/over limit. */}
-      <SupervisionBanner supervisionLoads={supervisionLoads} />
-
       {/* Inline planning banner */}
       {isPlanMode && (
         <div style={{ background: 'color-mix(in srgb, var(--warn) 8%, transparent)', borderBottom: '0.5px solid color-mix(in srgb, var(--warn) 25%, transparent)', padding: '4px 12px', display: 'flex', alignItems: 'center', gap: 8, fontSize: 11, color: 'var(--warn)', fontWeight: 600 }}>
@@ -544,11 +530,10 @@ export default function BoardClient({ initialSites, initialStaff, initialAssignm
         </div>
       )}
 
-      {/* BODY — flex:1 fills whatever vertical space the header + optional
-          supervision/planning banners above it leave; no hardcoded height
-          subtraction, so the now variable-height SupervisionBanner can't
-          push content off-screen (previously a fixed calc(100vh - Npx)
-          assumed only the header/planning-banner heights). */}
+      {/* BODY — flex:1 + minHeight:0 fills whatever vertical space the header
+          and optional planning banner leave. Kept over the old hardcoded
+          calc(100vh - Npx): it needs no manual height bookkeeping and can't
+          clip content when the chrome above it changes height. */}
       <div style={{ display: 'flex', flex: 1, minHeight: 0, overflow: 'hidden' }}>
 
         {/* Sidebar — resizable, or a collapsed 44px icon rail */}
@@ -593,6 +578,8 @@ export default function BoardClient({ initialSites, initialStaff, initialAssignm
         {/* Main content */}
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
           <main style={{ flex: 1, overflowY: 'auto', padding: '12px 16px' }}>
+            <StatsBar staff={activeStaff} assignedStaffIds={assignedStaffIds} supervisionLoads={supervisionLoads} sites={sites} />
+
             {/* CONTINGENCY ROW — sits directly above the Available bar (stub, wired in Phase 2) */}
             <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '4px 10px', marginBottom: 8, borderRadius: 6, border: '0.5px solid var(--border)', background: 'var(--bg-surface)' }}>
               <span style={{ fontSize: 9, color: 'var(--text-muted)', fontWeight: 700, letterSpacing: 0.3, textTransform: 'uppercase', marginRight: 4 }}>Contingencies</span>
@@ -659,24 +646,6 @@ export default function BoardClient({ initialSites, initialStaff, initialAssignm
                   <AddSiteTile onClick={() => setShowAddSite(true)} />
                 </div>
               </div>
-            ) : viewMode === 'rows' ? (
-              <RowsView
-                filteredSites={filteredSites}
-                floatAssignments={floatAssignments}
-                roomAssignments={roomAssignments}
-                dragOver={dragOver} dragging={dragging}
-                alertLevels={alertLevels} dailyShifts={dailyShifts}
-                siteHeights={siteHeights}
-                onDrop={handleDrop}
-                onDropFloat={handleDropFloat}
-                onDragOver={setDragOver}
-                onDragLeave={() => setDragOver(null)}
-                onRemoveAssignment={removeAssignment}
-                onAddRoom={(siteId) => setShowAddRoom(siteId)}
-                onDeleteRoom={(siteId, roomId) => deleteRoom(siteId, roomId)}
-                onDeleteSite={(siteId) => deleteSite(siteId)}
-                onAddSite={() => setShowAddSite(true)}
-              />
             ) : (
               <NetworkView
                 sites={sites}
@@ -837,7 +806,7 @@ function Pill({ label, color, pulse }: { label: string; color: string; pulse?: b
   );
 }
 
-export function AddSiteTile({ onClick }: { onClick: () => void }) {
+function AddSiteTile({ onClick }: { onClick: () => void }) {
   const [hov, setHov] = useState(false);
   return (
     <div onClick={onClick} onMouseEnter={() => setHov(true)} onMouseLeave={() => setHov(false)}

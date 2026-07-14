@@ -16,9 +16,6 @@ export const BT = {
   // chip.minHeight is 32 (not 20) — spec risk #1: 20px fails the ≥32px
   // pointer-target floor once padding is border-box'd (see Task 2 report).
   chip: { radius: 4, pad: '2px 6px', minHeight: 32 },
-  // drag feedback (spec §8) — hover-over only, reduced-motion aware
-  drag: { transition: 'transform 120ms ease, box-shadow 120ms ease, border-color 120ms ease', hoverScale: 'scale(1.01)' },
-  rows: { rowMinHeight: 26, rowPad: '4px 8px', colPad: '0 8px', divider: '1px solid var(--border-muted)' },
   railWidth: 44,
 } as const;
 
@@ -31,19 +28,3 @@ export const DARK_SITE_PALETTE: Record<string, string> = {
 };
 // AddSiteModal swatches (order = suggestion order for new sites)
 export const SITE_COLOR_CHOICES = ['#1e3a8a', '#065f46', '#5b21b6', '#0e7490', '#92400e', '#9d174d', '#3f6212', '#334155'];
-
-// ── Drop-target drag feedback (spec §8) ───────────────────────────────────────
-// Reduced-motion approach: ONE shared class carries the 120ms transition; a
-// prefers-reduced-motion media query zeroes both the transition AND the inline
-// scale transform (via !important, which beats inline styles). Every interactive
-// drop target adds this class + an inline `transform: isOver ? hoverScale : none`
-// and its own site-color glow. The class is defined once (rendered by
-// BoardClient, the always-mounted root of every interactive drop target on
-// /board); read-only wall targets never receive the class, so the wall stays
-// inert. Mirrors ChatDrawer's chat-mic-pulse <style> pattern.
-export const BOARD_DROP_TARGET_CLASS = 'board-drop-target';
-export const BOARD_DROP_STYLE = `
-.${BOARD_DROP_TARGET_CLASS} { transition: ${BT.drag.transition}; }
-@media (prefers-reduced-motion: reduce) {
-  .${BOARD_DROP_TARGET_CLASS} { transition: none !important; transform: none !important; }
-}`;

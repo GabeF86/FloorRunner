@@ -3,7 +3,6 @@
 import { useState, useEffect } from 'react';
 import { ReliefEntry, DraggedPerson, ROLE_META } from '@/types';
 import { hexToRgb } from './BoardClient';
-import { BT, BOARD_DROP_TARGET_CLASS } from './boardTheme';
 
 interface Props {
   reliefLog:      ReliefEntry[];
@@ -41,8 +40,7 @@ export default function RelievedBox({ reliefLog, today, dragging, onDropRelieved
 
   return (
     <div
-      className={BOARD_DROP_TARGET_CLASS}
-      style={{ flex: 1, background: 'var(--bg-surface)', border: '1px solid ' + (dragOver && canDrop ? 'color-mix(in srgb, var(--ok) 50%, transparent)' : 'var(--border)'), borderRadius: 10, overflow: 'hidden', boxShadow: dragOver && canDrop ? '0 0 20px color-mix(in srgb, var(--ok) 15%, transparent)' : 'none', transform: dragOver && canDrop ? BT.drag.hoverScale : 'none' }}
+      style={{ flex: 1, background: 'var(--bg-surface)', border: '1px solid ' + (dragOver && canDrop ? 'color-mix(in srgb, var(--ok) 50%, transparent)' : 'var(--border)'), borderRadius: 10, overflow: 'hidden', boxShadow: dragOver && canDrop ? '0 0 20px color-mix(in srgb, var(--ok) 15%, transparent)' : 'none', transition: 'all 0.2s' }}
       onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
       onDragLeave={() => setDragOver(false)}
       onDrop={(e) => { e.preventDefault(); setDragOver(false); if (dragging && canDrop) onDropRelieved(dragging); }}

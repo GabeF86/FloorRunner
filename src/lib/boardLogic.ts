@@ -28,9 +28,9 @@ export function computeSupervisionLoads(
   return loads;
 }
 
-// Relief-alert level per staff member — the single implementation consumed by
-// BOTH BoardClient and WallClient (they previously carried drift-prone copies).
-// Physicians alert only on a per-diem 8hr/10hr designation (C1/no-designation/
+// Relief-alert level per staff member — the single canonical implementation
+// (kept here rather than inline in BoardClient to avoid the drift-prone copies
+// this once replaced). Physicians alert only on a per-diem 8hr/10hr designation (C1/no-designation/
 // D-codes never count down); CRNAs/SRNAs/residents/fellows count down from
 // their daily shift override (falling back to their default hours); surgeons
 // never alert.

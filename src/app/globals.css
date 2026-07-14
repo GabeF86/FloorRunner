@@ -2,71 +2,13 @@
 @tailwind components;
 @tailwind utilities;
 
-/* ── Dark theme (default) ────────────────────────────────────────────────── */
+/* ── Light theme (default) ───────────────────────────────────────────────────
+   Light is the product default: :root holds the light values so a first-time
+   visitor (no stored 'theme') gets light with zero JS. The pre-hydration script
+   in layout.tsx only applies a *saved* preference — it flips to [data-theme='dark']
+   before paint for users who chose dark, so neither default nor saved-dark flash. */
 :root {
   /* Backgrounds */
-  --bg-base:           #070d1a;
-  --bg-surface:        #0d1b30;
-  --bg-deep:           #07111f;
-  --bg-header-from:    #0a1628;
-  --bg-header-to:      #0f1f3d;
-  --bg-sidebar:        #0a1628;
-  --bg-popover:        #0d1b30;
-  --bg-modal-backdrop: rgba(0,0,0,0.75);
-  --bg-print-overlay:  rgba(0,0,0,0.7);
-
-  /* Borders */
-  --border:         #1e3a5f;
-  --border-strong:  #334155;
-  --border-faint:   rgba(255,255,255,0.07);
-  --border-muted:   rgba(255,255,255,0.05);
-  --border-subtle:  rgba(255,255,255,0.08);
-  --border-input:   rgba(255,255,255,0.12);
-
-  /* Text */
-  --text:          #e2e8f0;
-  --text-strong:   #f1f5f9;
-  --text-bright:   #f8fafc;
-  --text-muted:    #64748b;
-  --text-dim:      #334155;
-  --text-faint:    #475569;
-  --text-disabled: #8899aa;
-
-  /* Surface tints (used over surface backgrounds) */
-  --tint-surface:        rgba(255,255,255,0.05);
-  --tint-surface-strong: rgba(255,255,255,0.08);
-  --tint-surface-faint:  rgba(255,255,255,0.02);
-
-  /* Scrollbar */
-  --scrollbar-thumb:       #1e3a5f;
-  --scrollbar-thumb-hover: #2d4f7a;
-
-  /* Shadows */
-  --shadow-card:    0 4px 24px rgba(0,0,0,0.4);
-  --shadow-modal:   0 24px 64px rgba(0,0,0,0.65);
-  --shadow-popover: 0 16px 48px rgba(0,0,0,0.8);
-
-  /* Brand accents (constant in both themes) */
-  --blue:    #0ea5e9;
-  --indigo:  #6366f1;
-  --on-accent: #ffffff; /* text placed on a solid accent fill */
-
-  /* ── Design scales (theme-invariant) ── */
-  --space-1: 4px;  --space-2: 8px;  --space-3: 12px; --space-4: 16px;
-  --space-5: 20px; --space-6: 24px; --space-7: 32px; --space-8: 48px;
-  --radius-sm: 6px; --radius-md: 10px; --radius-lg: 14px;
-  --fs-xs: 11px; --fs-sm: 12.5px; --fs-md: 14px; --fs-lg: 17px; --fs-xl: 22px;
-  --focus-ring: 0 0 0 2px var(--bg-base), 0 0 0 4px var(--blue);
-
-  /* Semantic status (soft -bg tints pair with solid tone text) */
-  --ok:     #34d399; --ok-bg:     rgba(52,211,153,.12);
-  --warn:   #fbbf24; --warn-bg:   rgba(251,191,36,.12);
-  --danger: #f87171; --danger-bg: rgba(248,113,113,.12);
-  --info:   #60a5fa; --info-bg:   rgba(96,165,250,.12);
-}
-
-/* ── Light theme ─────────────────────────────────────────────────────────── */
-[data-theme='light'] {
   --bg-base:           #f1f5f9;
   --bg-surface:        #ffffff;
   --bg-deep:           #f8fafc;
@@ -77,13 +19,15 @@
   --bg-modal-backdrop: rgba(15,23,42,0.45);
   --bg-print-overlay:  rgba(15,23,42,0.4);
 
-  --border:        #cbd5e1;
-  --border-strong: #94a3b8;
-  --border-faint:  rgba(15,23,42,0.08);
-  --border-muted:  rgba(15,23,42,0.06);
-  --border-subtle: rgba(15,23,42,0.1);
-  --border-input:  rgba(15,23,42,0.15);
+  /* Borders */
+  --border:         #cbd5e1;
+  --border-strong:  #94a3b8;
+  --border-faint:   rgba(15,23,42,0.08);
+  --border-muted:   rgba(15,23,42,0.06);
+  --border-subtle:  rgba(15,23,42,0.1);
+  --border-input:   rgba(15,23,42,0.15);
 
+  /* Text */
   --text:          #0f172a;
   --text-strong:   #020617;
   --text-bright:   #0f172a;
@@ -92,27 +36,89 @@
   --text-faint:    #94a3b8;
   --text-disabled: #94a3b8;
 
+  /* Surface tints (used over surface backgrounds) */
   --tint-surface:        rgba(15,23,42,0.05);
   --tint-surface-strong: rgba(15,23,42,0.08);
   --tint-surface-faint:  rgba(15,23,42,0.025);
 
+  /* Scrollbar */
   --scrollbar-thumb:       #cbd5e1;
   --scrollbar-thumb-hover: #94a3b8;
 
+  /* Shadows */
   --shadow-card:    0 1px 3px rgba(15,23,42,0.06), 0 4px 14px rgba(15,23,42,0.07);
   --shadow-modal:   0 12px 48px rgba(15,23,42,0.18);
   --shadow-popover: 0 8px 28px rgba(15,23,42,0.15);
 
-  /* Brand accents — deeper on light surfaces so small accent text meets AA
-     (the :root values sit at ~2.4:1 on white) */
-  --blue:   #0284c7;
-  --indigo: #4f46e5;
+  /* Brand accents — deeper on light surfaces so small accent text meets AA */
+  --blue:    #0284c7;
+  --indigo:  #4f46e5;
+  --on-accent: #ffffff; /* text placed on a solid accent fill (theme-invariant) */
 
-  /* Semantic status — deeper tones for light surfaces */
+  /* ── Design scales (theme-invariant) ── */
+  --space-1: 4px;  --space-2: 8px;  --space-3: 12px; --space-4: 16px;
+  --space-5: 20px; --space-6: 24px; --space-7: 32px; --space-8: 48px;
+  --radius-sm: 6px; --radius-md: 10px; --radius-lg: 14px;
+  --fs-xs: 11px; --fs-sm: 12.5px; --fs-md: 14px; --fs-lg: 17px; --fs-xl: 22px;
+  --focus-ring: 0 0 0 2px var(--bg-base), 0 0 0 4px var(--blue);
+
+  /* Semantic status (soft -bg tints pair with solid tone text) */
   --ok:     #059669; --ok-bg:     rgba(5,150,105,.10);
   --warn:   #b45309; --warn-bg:   rgba(180,83,9,.10);
   --danger: #dc2626; --danger-bg: rgba(220,38,38,.10);
   --info:   #2563eb; --info-bg:   rgba(37,99,235,.10);
+}
+
+/* ── Dark theme ──────────────────────────────────────────────────────────────
+   Applied via data-theme='dark' (by the layout init script pre-paint, or the
+   footer toggle). Only theme-variant tokens are overridden; design scales and
+   --on-accent stay inherited from :root. */
+[data-theme='dark'] {
+  --bg-base:           #070d1a;
+  --bg-surface:        #0d1b30;
+  --bg-deep:           #07111f;
+  --bg-header-from:    #0a1628;
+  --bg-header-to:      #0f1f3d;
+  --bg-sidebar:        #0a1628;
+  --bg-popover:        #0d1b30;
+  --bg-modal-backdrop: rgba(0,0,0,0.75);
+  --bg-print-overlay:  rgba(0,0,0,0.7);
+
+  --border:         #1e3a5f;
+  --border-strong:  #334155;
+  --border-faint:   rgba(255,255,255,0.07);
+  --border-muted:   rgba(255,255,255,0.05);
+  --border-subtle:  rgba(255,255,255,0.08);
+  --border-input:   rgba(255,255,255,0.12);
+
+  --text:          #e2e8f0;
+  --text-strong:   #f1f5f9;
+  --text-bright:   #f8fafc;
+  --text-muted:    #64748b;
+  --text-dim:      #334155;
+  --text-faint:    #475569;
+  --text-disabled: #8899aa;
+
+  --tint-surface:        rgba(255,255,255,0.05);
+  --tint-surface-strong: rgba(255,255,255,0.08);
+  --tint-surface-faint:  rgba(255,255,255,0.02);
+
+  --scrollbar-thumb:       #1e3a5f;
+  --scrollbar-thumb-hover: #2d4f7a;
+
+  --shadow-card:    0 4px 24px rgba(0,0,0,0.4);
+  --shadow-modal:   0 24px 64px rgba(0,0,0,0.65);
+  --shadow-popover: 0 16px 48px rgba(0,0,0,0.8);
+
+  /* Brand accents — brighter on dark surfaces */
+  --blue:    #0ea5e9;
+  --indigo:  #6366f1;
+
+  /* Semantic status — brighter tones for dark surfaces */
+  --ok:     #34d399; --ok-bg:     rgba(52,211,153,.12);
+  --warn:   #fbbf24; --warn-bg:   rgba(251,191,36,.12);
+  --danger: #f87171; --danger-bg: rgba(248,113,113,.12);
+  --info:   #60a5fa; --info-bg:   rgba(96,165,250,.12);
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
