@@ -281,7 +281,6 @@ function FloatSiteCard({ site, floatAssignments, isOver, dailyShifts, alertLevel
           const p = a.staff; if (!p) return null;
           const m = ROLE_META[p.role] || ROLE_META.crna;
           const h = p.role !== 'physician' ? (dailyShifts[p.id] || p.hours) : null;
-          const al = alertLevels[p.id] || 'none';
           return (
             <div key={a.id} onClick={readOnly ? undefined : () => onRemoveAssignment(a.id)} title={readOnly ? p.name : p.name + ' — click to remove'}
               style={{ display: 'flex', alignItems: 'center', gap: 4, padding: BT.chip.pad, minHeight: BT.chip.minHeight, borderRadius: BT.chip.radius, cursor: readOnly ? 'default' : 'pointer', background: m.bg, color: m.color, border: '1px solid ' + m.border, fontSize: BT.font.chip, fontWeight: 700 }}
