@@ -9,6 +9,7 @@ import {
   addDays, formatDateLabel, HOSPITALS, Hospital,
 } from '@/types';
 import { computeSupervisionLoads } from '@/lib/boardLogic';
+import { BT } from './boardTheme';
 import BoardAssistantPanel from './BoardAssistantPanel';
 import Sidebar from './Sidebar';
 import SiteCard from './SiteCard';
@@ -57,6 +58,7 @@ export default function BoardClient({ initialSites, initialStaff, initialAssignm
   const [siteHeights,   setSiteHeights]   = useState<Record<string, number>>({});
   const [hospital, setHospital] = useState<Hospital | ''>('');
   const [sidebarWidth, setSidebarWidth] = useState<number>(290);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [viewMode, setViewMode] = useState<'grid' | 'network'>('grid');
 
   // Hydrate from localStorage after mount to avoid SSR mismatch
@@ -64,11 +66,35 @@ export default function BoardClient({ initialSites, initialStaff, initialAssignm
     try { const v = localStorage.getItem('siteHeights'); if (v) setSiteHeights(JSON.parse(v)); } catch {}
     try { const v = localStorage.getItem('hospital'); if (v) setHospital(v as Hospital); } catch {}
     try { const v = localStorage.getItem('sidebarWidth'); if (v) setSidebarWidth(parseInt(v)); } catch {}
+    try { const v = localStorage.getItem('sidebarCollapsed'); if (v) setSidebarCollapsed(v === 'true'); } catch {}
     try {
       const m = localStorage.getItem('boardViewMode');
       if (m === 'grid' || m === 'network') setViewMode(m);
     } catch {}
   }, []);
+
+  const toggleSidebarCollapsed = useCallback(() => {
+    setSidebarCollapsed((prev) => {
+      const next = !prev;
+      try { localStorage.setItem('sidebarCollapsed', String(next)); } catch {}
+      return next;
+    });
+  }, []);
+
+  // ⌘B / Ctrl+B toggles the sidebar rail — guard against stealing the
+  // shortcut while the user is typing in an input/textarea (or contentEditable).
+  useEffect(() => {
+    function onKeyDown(e: KeyboardEvent) {
+      if (!(e.metaKey || e.ctrlKey) || e.key.toLowerCase() !== 'b') return;
+      const target = e.target as HTMLElement | null;
+      const tag = target?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || target?.isContentEditable) return;
+      e.preventDefault();
+      toggleSidebarCollapsed();
+    }
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [toggleSidebarCollapsed]);
 
   const setViewModePersistent = useCallback((m: 'grid' | 'network') => {
     setViewMode(m);
@@ -571,8 +597,8 @@ export default function BoardClient({ initialSites, initialStaff, initialAssignm
       {/* BODY */}
       <div style={{ display: 'flex', flex: 1, overflow: 'hidden', height: isPlanMode ? 'calc(100vh - 62px)' : 'calc(100vh - 38px)' }}>
 
-        {/* Sidebar — resizable */}
-        <div style={{ width: sidebarWidth, minWidth: sidebarWidth, flexShrink: 0, display: 'flex', overflow: 'hidden' }}>
+        {/* Sidebar — resizable, or a collapsed 44px icon rail */}
+        <div style={{ width: sidebarCollapsed ? BT.railWidth : sidebarWidth, minWidth: sidebarCollapsed ? BT.railWidth : sidebarWidth, flexShrink: 0, display: 'flex', overflow: 'hidden' }}>
           <Sidebar
             staff={activeStaff}
             allStaff={staff}
@@ -595,16 +621,20 @@ export default function BoardClient({ initialSites, initialStaff, initialAssignm
             onSetDailyShift={setDailyShift}
             onToggleBreak={toggleBreak}
             onToggleActive={toggleActive}
+            collapsed={sidebarCollapsed}
+            onToggleCollapse={toggleSidebarCollapsed}
           />
         </div>
 
-        {/* Sidebar resize handle */}
-        <div
-          onMouseDown={onSidebarResizeMouseDown}
-          style={{ width: 5, cursor: 'col-resize', background: 'transparent', flexShrink: 0, transition: 'background 0.15s', zIndex: 10 }}
-          onMouseEnter={(e) => (e.currentTarget.style.background = 'color-mix(in srgb, var(--blue) 35%, transparent)')}
-          onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
-        />
+        {/* Sidebar resize handle — hidden while collapsed (rail has no drag-resize) */}
+        {!sidebarCollapsed && (
+          <div
+            onMouseDown={onSidebarResizeMouseDown}
+            style={{ width: 5, cursor: 'col-resize', background: 'transparent', flexShrink: 0, transition: 'background 0.15s', zIndex: 10 }}
+            onMouseEnter={(e) => (e.currentTarget.style.background = 'color-mix(in srgb, var(--blue) 35%, transparent)')}
+            onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+          />
+        )}
 
         {/* Main content */}
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>

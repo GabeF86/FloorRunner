@@ -8,6 +8,7 @@ import {
 } from '@/types';
 import { hexToRgb } from './BoardClient';
 import { ShiftBadge } from './ShiftBadge';
+import { BT } from './boardTheme';
 
 interface Props {
   staff:            StaffMember[];
@@ -31,11 +32,46 @@ interface Props {
   onSetDailyShift:  (id: string, h: ShiftHours) => void;
   onToggleBreak:    (id: string, t: BreakType, taken: boolean) => void;
   onToggleActive:   (id: string, active: boolean) => void;
+  collapsed:        boolean;
+  onToggleCollapse: () => void;
 }
 
+// Rail role groups — icon + live "working today" count badge per group.
+// Counts reuse the exact sidebar data (staff = activeStaff upstream,
+// already hospital-filtered; activeStaffIds = daily_active for today).
+const RAIL_GROUPS: Array<{ icon: string; label: string; roles: Role[] }> = [
+  { icon: '🩺', label: 'Physicians', roles: ['physician'] },
+  { icon: '💉', label: 'CRNAs / SRNAs / Residents / Fellows', roles: ['crna', 'srna', 'resident', 'fellow'] },
+  { icon: '🔪', label: 'Surgeons', roles: ['surgeon'] },
+];
+
 export default function Sidebar(props: Props) {
-  const { staff, currentHospital, assignedStaffIds, activeStaffIds, dragging, onDropSidebar, onAddStaff } = props;
+  const { staff, currentHospital, assignedStaffIds, activeStaffIds, dragging, onDropSidebar, onAddStaff, collapsed, onToggleCollapse } = props;
   const isDragTarget = !!dragging && assignedStaffIds.has(dragging.id);
+
+  // Collapsed → 44px icon rail instead of the full panes. The rail stays a
+  // drop target (same onDragOver/onDrop as the expanded <aside>) so dragging
+  // a person onto the collapsed sidebar still unassigns them.
+  if (collapsed) {
+    return (
+      <div
+        style={{ width: BT.railWidth, minWidth: BT.railWidth, height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10, padding: '10px 0', borderRight: '1px solid var(--border)', background: 'var(--bg-sidebar)', boxShadow: isDragTarget ? 'inset -3px 0 12px color-mix(in srgb, var(--blue) 10%, transparent)' : 'none' }}
+        onDragOver={(e) => e.preventDefault()}
+        onDrop={onDropSidebar}
+      >
+        <button onClick={onToggleCollapse} title="Expand sidebar (⌘B)" style={{ width: 28, height: 28, borderRadius: 7, background: 'var(--bg-deep)', border: '1px solid var(--border)', color: 'var(--text-muted)', cursor: 'pointer', fontSize: 13 }}>≡</button>
+        {RAIL_GROUPS.map((g) => {
+          const working = staff.filter((p) => g.roles.includes(p.role) && activeStaffIds.has(p.id)).length;
+          return (
+            <button key={g.label} onClick={onToggleCollapse} title={`${g.label}: ${working} working today — click to expand`} style={{ position: 'relative', width: 28, height: 28, borderRadius: 7, background: 'var(--bg-deep)', border: '1px solid var(--border)', cursor: 'pointer', fontSize: 12 }}>
+              {g.icon}
+              {working > 0 && <span style={{ position: 'absolute', top: -5, right: -5, background: '#1e3a8a', color: '#fff', fontSize: 8, fontWeight: 800, borderRadius: 6, padding: '0 3px', minWidth: 12 }}>{working}</span>}
+            </button>
+          );
+        })}
+      </div>
+    );
+  }
 
   // Sidebar auto-populates with home staff for the currently selected facility.
   // (`staff` here is `activeStaff` upstream, which is already hospital-filtered.)
@@ -182,14 +218,19 @@ export default function Sidebar(props: Props) {
       </div>
 
       {/* Search bar */}
-      <div style={{ padding: 'var(--space-1) var(--space-2)', borderBottom: '1px solid var(--border)', flexShrink: 0 }}>
+      <div style={{ padding: 'var(--space-1) var(--space-2)', borderBottom: '1px solid var(--border)', flexShrink: 0, display: 'flex', alignItems: 'center', gap: 6 }}>
         <input
           type="text"
           placeholder="Search full roster…"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          style={{ width: '100%', boxSizing: 'border-box', background: 'var(--tint-surface)', border: '1px solid var(--border-input)', borderRadius: 5, padding: 'var(--space-1) var(--space-2)', fontSize: 'var(--fs-xs)', color: 'var(--text)', outline: 'none' }}
+          style={{ flex: 1, minWidth: 0, boxSizing: 'border-box', background: 'var(--tint-surface)', border: '1px solid var(--border-input)', borderRadius: 5, padding: 'var(--space-1) var(--space-2)', fontSize: 'var(--fs-xs)', color: 'var(--text)', outline: 'none' }}
         />
+        <button
+          onClick={onToggleCollapse}
+          title="Collapse sidebar (⌘B)"
+          style={{ flexShrink: 0, width: 24, height: 24, borderRadius: 5, background: 'var(--bg-deep)', border: '1px solid var(--border)', color: 'var(--text-muted)', cursor: 'pointer', fontSize: 12 }}
+        >≡</button>
       </div>
 
       {isDragTarget && (
