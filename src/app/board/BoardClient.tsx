@@ -806,7 +806,7 @@ function Pill({ label, color, pulse }: { label: string; color: string; pulse?: b
   );
 }
 
-export function AddSiteTile({ onClick }: { onClick: () => void }) {
+function AddSiteTile({ onClick }: { onClick: () => void }) {
   const [hov, setHov] = useState(false);
   return (
     <div onClick={onClick} onMouseEnter={() => setHov(true)} onMouseLeave={() => setHov(false)}
