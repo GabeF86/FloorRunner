@@ -9,28 +9,25 @@ export default function PersonChip({ assignment, person, alertLevels, dailyShift
   assignment: Assignment; person: StaffMember;
   alertLevels: Record<string, 'none' | 'warning' | 'critical'>;
   dailyShifts: Record<string, ShiftHours>;
-  // Omitted in read-only contexts (wall display): the chip renders as a static
-  // label — no click-to-unassign, no × affordance, no hover feedback.
-  onRemove?: () => void;
+  onRemove: () => void;
 }) {
-  const m         = ROLE_META[person.role] || ROLE_META.crna;
-  const alert     = alertLevels[person.id] || 'none';
-  const hours     = person.role !== 'physician' && person.role !== 'surgeon' ? (dailyShifts[person.id] || person.hours) : null;
-  const removable = !!onRemove;
+  const m     = ROLE_META[person.role] || ROLE_META.crna;
+  const alert = alertLevels[person.id] || 'none';
+  const hours = person.role !== 'physician' && person.role !== 'surgeon' ? (dailyShifts[person.id] || person.hours) : null;
 
   // Surgeon shown in room header, not as chip
   if (person.role === 'surgeon') return null;
 
   return (
-    <div onClick={onRemove} title={removable ? person.name + ' — click to unassign' : person.name}
-      style={{ display: 'flex', alignItems: 'center', gap: 5, padding: BT.chip.pad, minHeight: BT.chip.minHeight, borderRadius: BT.chip.radius, cursor: removable ? 'pointer' : 'default', background: m.bg, color: m.color, border: '1px solid ' + (alert === 'critical' ? 'color-mix(in srgb, var(--danger) 70%, transparent)' : alert === 'warning' ? 'color-mix(in srgb, var(--warn) 60%, transparent)' : m.border), fontSize: BT.font.chip, fontWeight: 700, position: 'relative', transition: 'opacity 0.12s' }}
-      onMouseEnter={removable ? (e) => (e.currentTarget.style.opacity = '0.7') : undefined}
-      onMouseLeave={removable ? (e) => (e.currentTarget.style.opacity = '1') : undefined}>
+    <div onClick={onRemove} title={person.name + ' — click to unassign'}
+      style={{ display: 'flex', alignItems: 'center', gap: 5, padding: BT.chip.pad, minHeight: BT.chip.minHeight, borderRadius: BT.chip.radius, cursor: 'pointer', background: m.bg, color: m.color, border: '1px solid ' + (alert === 'critical' ? 'color-mix(in srgb, var(--danger) 70%, transparent)' : alert === 'warning' ? 'color-mix(in srgb, var(--warn) 60%, transparent)' : m.border), fontSize: BT.font.chip, fontWeight: 700, position: 'relative', transition: 'opacity 0.12s' }}
+      onMouseEnter={(e) => (e.currentTarget.style.opacity = '0.7')}
+      onMouseLeave={(e) => (e.currentTarget.style.opacity = '1')}>
       {alert !== 'none' && <div style={{ position: 'absolute', inset: 0, borderRadius: BT.chip.radius, border: '1px solid ' + (alert === 'critical' ? 'color-mix(in srgb, var(--danger) 70%, transparent)' : 'color-mix(in srgb, var(--warn) 60%, transparent)'), animation: 'relief-flash ' + (alert === 'critical' ? '1s' : '2s') + ' ease-in-out infinite', pointerEvents: 'none' }} />}
       <span style={{ fontWeight: 800, fontSize: BT.font.chipSub, fontFamily: 'var(--font-mono), ui-monospace, monospace' }}>{person.initials}</span>
       <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 90 }}>{person.name.split(' ').pop()}</span>
       {hours && <ShiftBadge hours={hours} role={person.role} />}
-      {removable && <span style={{ opacity: 0.4, fontSize: BT.font.chipSub }}>×</span>}
+      <span style={{ opacity: 0.4, fontSize: BT.font.chipSub }}>×</span>
     </div>
   );
 }

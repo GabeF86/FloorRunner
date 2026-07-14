@@ -8,7 +8,7 @@ import {
 } from '@/types';
 import { hexToRgb } from './BoardClient';
 import { ShiftBadge } from './ShiftBadge';
-import { BT, BOARD_DROP_TARGET_CLASS } from './boardTheme';
+import { BT } from './boardTheme';
 
 interface Props {
   staff:            StaffMember[];
@@ -55,8 +55,7 @@ export default function Sidebar(props: Props) {
   if (collapsed) {
     return (
       <div
-        className={BOARD_DROP_TARGET_CLASS}
-        style={{ width: BT.railWidth, minWidth: BT.railWidth, height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8, padding: '8px 0', borderRight: '1px solid var(--border)', background: 'var(--bg-sidebar)', boxShadow: isDragTarget ? 'inset -3px 0 12px color-mix(in srgb, var(--blue) 10%, transparent)' : 'none', transform: isDragTarget ? BT.drag.hoverScale : 'none' }}
+        style={{ width: BT.railWidth, minWidth: BT.railWidth, height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8, padding: '8px 0', borderRight: '1px solid var(--border)', background: 'var(--bg-sidebar)', boxShadow: isDragTarget ? 'inset -3px 0 12px color-mix(in srgb, var(--blue) 10%, transparent)' : 'none' }}
         onDragOver={(e) => e.preventDefault()}
         onDrop={onDropSidebar}
       >
@@ -183,14 +182,7 @@ export default function Sidebar(props: Props) {
 
   return (
     <aside
-      className={BOARD_DROP_TARGET_CLASS}
-      // transform is `none` unless actively drag-targeted, so it establishes no
-      // containing block in the resting state. The fixed-position shift/desg
-      // picker keeps viewport anchoring because it is provably closed whenever
-      // this transform is non-none: a drag starting on the picker's own row is
-      // closed by StaffCard's onDragStart; a drag starting anywhere else means
-      // the pointer left that row first, closing it via onMouseLeave.
-      style={{ flex: 1, minWidth: 0, height: '100%', background: 'var(--bg-sidebar)', display: 'flex', flexDirection: 'column', overflow: 'hidden', boxShadow: isDragTarget ? 'inset -3px 0 12px color-mix(in srgb, var(--blue) 10%, transparent)' : 'none', transform: isDragTarget ? BT.drag.hoverScale : 'none' }}
+      style={{ flex: 1, minWidth: 0, height: '100%', background: 'var(--bg-sidebar)', display: 'flex', flexDirection: 'column', overflow: 'hidden', transition: 'box-shadow 0.2s', boxShadow: isDragTarget ? 'inset -3px 0 12px color-mix(in srgb, var(--blue) 10%, transparent)' : 'none' }}
       onDragOver={(e) => e.preventDefault()}
       onDrop={onDropSidebar}
     >

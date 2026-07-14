@@ -5,7 +5,7 @@ import { Site, Room, Assignment, ROLE_META, DraggedPerson, SUPERVISED_ROLES, Shi
 import { hexToRgb } from './BoardClient';
 import { ShiftBadge } from './ShiftBadge';
 import PersonChip from './PersonChip';
-import { BT, BOARD_DROP_TARGET_CLASS } from './boardTheme';
+import { BT } from './boardTheme';
 
 interface Props {
   site:               Site;
@@ -27,13 +27,10 @@ interface Props {
   onDeleteSite:       () => void;
   onReorderRoom:      (siteId: string, roomId: string, targetRoomId: string) => void;
   onResizeHeight:     (h: number) => void;
-  // Wall display: render the float card as a static panel (no drop wiring, no
-  // remove affordances). Defaults false — the grid/editing path is unaffected.
-  readOnly?:          boolean;
 }
 
 export default function SiteCard(props: Props) {
-  const { site, roomAssignments, floatAssignments, dragOver, dragging, alertLevels, dailyShifts, roomsHeight, onResizeHeight, readOnly = false } = props;
+  const { site, roomAssignments, floatAssignments, dragOver, dragging, alertLevels, dailyShifts, roomsHeight, onResizeHeight } = props;
   const [hov, setHov] = useState(false);
   const rgb    = hexToRgb(site.color);
   const isFloat = !!site.is_float;
@@ -62,7 +59,6 @@ export default function SiteCard(props: Props) {
     <FloatSiteCard
       site={site} floatAssignments={floatAssignments}
       isOver={dragOver === 'float-' + site.id} dailyShifts={dailyShifts} alertLevels={alertLevels}
-      readOnly={readOnly}
       onDragOver={() => props.onDragOver('float-' + site.id)}
       onDragLeave={props.onDragLeave}
       onDropFloat={() => props.onDropFloat(site.id)}
@@ -116,17 +112,14 @@ export default function SiteCard(props: Props) {
 }
 
 // ── Site header (solid bar) ───────────────────────────────────────────────────
-// Extracted so RowsView reuses the exact same treatment (spec §3). White text
-// is tuned for the dark palette (applied as data at the Task 9 gate). On the
+// Extracted as its own component for the solid-bar treatment (spec §3). White
+// text is tuned for the dark palette (applied as data at the Task 9 gate). On the
 // current light DB colors this header is intentionally washed out in the
 // interim (worst offenders: EP Lab #f59e0b at 2.15:1, Endoscopy #10b981 at
 // 2.54:1 vs white) — do not add per-color conditionals. `showDelete` is the
 // host card's hover state (Delete Site reveals on hover, matching grid cards).
-export function SiteHeader({ site, showDelete, onAddRoom, onDeleteSite, readOnly = false }: {
+export function SiteHeader({ site, showDelete, onAddRoom, onDeleteSite }: {
   site: Site; showDelete: boolean; onAddRoom: () => void; onDeleteSite: () => void;
-  // Wall display: drop the entire action cluster (+ Room / Delete Site) so the
-  // header is a pure label with no edit affordances.
-  readOnly?: boolean;
 }) {
   return (
     <div style={{ padding: BT.siteHeader.pad, display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: site.color, borderRadius: `${BT.siteHeader.radius}px ${BT.siteHeader.radius}px 0 0` }}>
@@ -134,12 +127,10 @@ export function SiteHeader({ site, showDelete, onAddRoom, onDeleteSite, readOnly
         <span style={{ fontSize: BT.siteHeader.nameSize, fontWeight: 750, color: '#fff', letterSpacing: -0.3 }}>{site.name}</span>
         <span style={{ fontSize: BT.siteHeader.countSize, color: 'rgba(255,255,255,.65)', fontFamily: 'var(--font-mono), ui-monospace, monospace' }}>· {site.rooms.length} rooms</span>
       </div>
-      {!readOnly && (
-        <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-          <button draggable={false} onClick={(e) => { e.stopPropagation(); onAddRoom(); }} style={{ background: 'rgba(255,255,255,.14)', border: '1px solid rgba(255,255,255,.3)', color: '#fff', borderRadius: BT.chip.radius, padding: '2px 8px', fontSize: BT.font.chip, fontWeight: 700, cursor: 'pointer' }}>+ Room</button>
-          {showDelete && <button draggable={false} onClick={(e) => { e.stopPropagation(); onDeleteSite(); }} style={{ background: 'rgba(255,255,255,.12)', border: '1px solid rgba(254,202,202,.4)', color: '#fecaca', borderRadius: BT.chip.radius, padding: '2px 8px', fontSize: BT.font.chip, fontWeight: 700, cursor: 'pointer' }}>Delete Site</button>}
-        </div>
-      )}
+      <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+        <button draggable={false} onClick={(e) => { e.stopPropagation(); onAddRoom(); }} style={{ background: 'rgba(255,255,255,.14)', border: '1px solid rgba(255,255,255,.3)', color: '#fff', borderRadius: BT.chip.radius, padding: '2px 8px', fontSize: BT.font.chip, fontWeight: 700, cursor: 'pointer' }}>+ Room</button>
+        {showDelete && <button draggable={false} onClick={(e) => { e.stopPropagation(); onDeleteSite(); }} style={{ background: 'rgba(255,255,255,.12)', border: '1px solid rgba(254,202,202,.4)', color: '#fecaca', borderRadius: BT.chip.radius, padding: '2px 8px', fontSize: BT.font.chip, fontWeight: 700, cursor: 'pointer' }}>Delete Site</button>}
+      </div>
     </div>
   );
 }
@@ -187,15 +178,13 @@ function RoomCell({ room, site, people, isOver, dragging, alertLevels, dailyShif
       }}
       onMouseEnter={() => setHov(true)}
       onMouseLeave={() => setHov(false)}
-      className={BOARD_DROP_TARGET_CLASS}
       style={{
         flexShrink: 0, width: 'auto', minWidth: BT.room.minWidth, minHeight: BT.room.minHeight,
         borderRadius: BT.room.radius, border: '1px solid',
         borderColor: isOver ? site.color : needsMd ? 'color-mix(in srgb, var(--warn) 50%, transparent)' : draggingRoom ? site.color : 'var(--border-faint)',
         background: isOver ? 'rgba(' + rgb + ',0.09)' : draggingRoom ? 'rgba(' + rgb + ',0.04)' : 'var(--bg-deep)',
         boxShadow: isOver ? '0 0 16px rgba(' + rgb + ',0.25)' : '0 1px 2px rgba(15,23,42,0.04)',
-        transform: isOver ? BT.drag.hoverScale : 'none',
-        cursor: draggingRoom ? 'grabbing' : 'default',
+        transition: 'all 0.14s', cursor: draggingRoom ? 'grabbing' : 'default',
         display: 'flex', flexDirection: 'column', position: 'relative',
         opacity: draggingRoom ? 0.5 : 1,
       }}
@@ -249,32 +238,29 @@ function RoomCell({ room, site, people, isOver, dragging, alertLevels, dailyShif
 }
 
 // ── Float site card ───────────────────────────────────────────────────────────
-function FloatSiteCard({ site, floatAssignments, isOver, dailyShifts, alertLevels, readOnly = false, onDragOver, onDragLeave, onDropFloat, onRemoveAssignment }: {
+function FloatSiteCard({ site, floatAssignments, isOver, dailyShifts, alertLevels, onDragOver, onDragLeave, onDropFloat, onRemoveAssignment }: {
   site: Site; floatAssignments: Assignment[];
   isOver: boolean; dailyShifts: Record<string, ShiftHours>;
   alertLevels: Record<string, 'none' | 'warning' | 'critical'>;
-  readOnly?: boolean;
   onDragOver: () => void; onDragLeave: () => void; onDropFloat: () => void;
   onRemoveAssignment: (id: string) => void;
 }) {
   const rgb = hexToRgb(site.color);
   return (
-    <div
-      className={readOnly ? undefined : BOARD_DROP_TARGET_CLASS}
-      style={{ background: 'var(--bg-surface)', borderRadius: BT.siteHeader.radius, border: '1px solid ' + (isOver ? site.color : 'var(--border)'), marginBottom: 12, boxShadow: isOver ? '0 0 20px rgba(' + rgb + ',0.2)' : 'none', transform: !readOnly && isOver ? BT.drag.hoverScale : 'none' }}>
+    <div style={{ background: 'var(--bg-surface)', borderRadius: BT.siteHeader.radius, border: '1px solid ' + (isOver ? site.color : 'var(--border)'), marginBottom: 12, boxShadow: isOver ? '0 0 20px rgba(' + rgb + ',0.2)' : 'none', transition: 'all 0.15s' }}>
       <div style={{ padding: BT.siteHeader.pad, display: 'flex', alignItems: 'baseline', gap: 8, borderBottom: '1px solid rgba(' + rgb + ',0.32)', background: 'linear-gradient(135deg,rgba(' + rgb + ',0.28) 0%,rgba(' + rgb + ',0.14) 100%)', borderRadius: `${BT.siteHeader.radius}px ${BT.siteHeader.radius}px 0 0` }}>
         <span style={{ fontSize: BT.siteHeader.nameSize, fontWeight: 700, color: site.color }}>{site.name}</span>
         <span style={{ fontSize: BT.siteHeader.countSize, color: 'var(--text-muted)', fontFamily: 'var(--font-mono), ui-monospace, monospace' }}>· {floatAssignments.length} floating · giving breaks or standby</span>
       </div>
       <div
-        onDragOver={readOnly ? undefined : (e) => { e.preventDefault(); onDragOver(); }}
-        onDragLeave={readOnly ? undefined : onDragLeave}
-        onDrop={readOnly ? undefined : (e) => { e.preventDefault(); onDropFloat(); }}
+        onDragOver={(e) => { e.preventDefault(); onDragOver(); }}
+        onDragLeave={onDragLeave}
+        onDrop={(e) => { e.preventDefault(); onDropFloat(); }}
         style={{ padding: BT.roomsArea.pad, minHeight: 72, display: 'flex', flexWrap: 'wrap', gap: BT.roomsArea.gap, alignContent: 'flex-start', background: isOver ? 'rgba(' + rgb + ',0.04)' : 'transparent', transition: 'background 0.15s' }}
       >
         {floatAssignments.length === 0 && (
           <div style={{ color: isOver ? site.color : 'var(--text-dim)', fontSize: 13, fontStyle: isOver ? 'normal' : 'italic', fontWeight: isOver ? 700 : 400, width: '100%', textAlign: 'center', paddingTop: 8 }}>
-            {readOnly ? 'No one floating' : isOver ? 'Release to float' : 'Drop staff here to float'}
+            {isOver ? 'Release to float' : 'Drop staff here to float'}
           </div>
         )}
         {floatAssignments.map((a) => {
@@ -282,14 +268,14 @@ function FloatSiteCard({ site, floatAssignments, isOver, dailyShifts, alertLevel
           const m = ROLE_META[p.role] || ROLE_META.crna;
           const h = p.role !== 'physician' ? (dailyShifts[p.id] || p.hours) : null;
           return (
-            <div key={a.id} onClick={readOnly ? undefined : () => onRemoveAssignment(a.id)} title={readOnly ? p.name : p.name + ' — click to remove'}
-              style={{ display: 'flex', alignItems: 'center', gap: 4, padding: BT.chip.pad, minHeight: BT.chip.minHeight, borderRadius: BT.chip.radius, cursor: readOnly ? 'default' : 'pointer', background: m.bg, color: m.color, border: '1px solid ' + m.border, fontSize: BT.font.chip, fontWeight: 700 }}
-              onMouseEnter={readOnly ? undefined : (e) => (e.currentTarget.style.opacity = '0.7')}
-              onMouseLeave={readOnly ? undefined : (e) => (e.currentTarget.style.opacity = '1')}>
+            <div key={a.id} onClick={() => onRemoveAssignment(a.id)} title={p.name + ' — click to remove'}
+              style={{ display: 'flex', alignItems: 'center', gap: 4, padding: BT.chip.pad, minHeight: BT.chip.minHeight, borderRadius: BT.chip.radius, cursor: 'pointer', background: m.bg, color: m.color, border: '1px solid ' + m.border, fontSize: BT.font.chip, fontWeight: 700 }}
+              onMouseEnter={(e) => (e.currentTarget.style.opacity = '0.7')}
+              onMouseLeave={(e) => (e.currentTarget.style.opacity = '1')}>
               <span style={{ fontWeight: 800, fontSize: BT.font.chipSub, fontFamily: 'var(--font-mono), ui-monospace, monospace' }}>{p.initials}</span>
               <span>{p.name.split(' ').pop()}</span>
               {h && <ShiftBadge hours={h} role={p.role} />}
-              {!readOnly && <span style={{ opacity: 0.3, fontSize: BT.font.chipSub }}>×</span>}
+              <span style={{ opacity: 0.3, fontSize: BT.font.chipSub }}>×</span>
             </div>
           );
         })}
