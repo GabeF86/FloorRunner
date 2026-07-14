@@ -234,3 +234,13 @@ Known deferrals / follow-ups:
 - Cards-view inter-card `gap: 14` in BoardClient vs Rows' 12 — match if desired.
 - EP Lab (#92400e) and Endoscopy (#065f46) header-text contrast vs white are below
   4.5:1 (documented interim in SiteCard.tsx; "do not add per-color conditionals").
+
+## Refinement pass (2026-07-14, merge 21229e9)
+
+After using the deployed refresh, Gabriel kept: dark palette (all hospitals), compact
+cards + solid headers, board sidebar rail, all bug fixes. He asked to REMOVE: the slim
+stats line (boxed StatsBar + original header restored), the Rows view, the /board/wall
+TV page, and the drag hover effect. Added at his request: light mode as the app-wide
+default theme (:root = light palette; pre-paint script honors saved preference) and a
+collapsible icon rail for the main AppShell sidebar (button-only; ⌘B stays board-owned).
+Branch `board-refine`, all changes spec/quality reviewed, gates green at merge.
