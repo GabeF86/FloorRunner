@@ -5,19 +5,22 @@ import { supabase } from '@/lib/supabase';
 import {
   Site, StaffMember, Assignment, Role, ShiftHours, DraggedPerson,
   DailyDesignation, DailyShift, Break, ReliefEntry, MDDesignation,
-  BreakType, getMinutesToRelief, getAlertLevel,
+  BreakType,
   addDays, formatDateLabel, HOSPITALS, Hospital,
 } from '@/types';
-import { computeSupervisionLoads } from '@/lib/boardLogic';
+import { computeAlertLevels, computeSupervisionLoads } from '@/lib/boardLogic';
+import { BT, BOARD_DROP_STYLE } from './boardTheme';
+import { useBoardRealtime } from './useBoardRealtime';
 import BoardAssistantPanel from './BoardAssistantPanel';
 import Sidebar from './Sidebar';
 import SiteCard from './SiteCard';
-import StatsBar from './StatsBar';
+import { StatsInline, SupervisionBanner } from './StatsBar';
 import FloatBar from './FloatBar';
 import OutListPanel from './OutListPanel';
 import RelievedBox from './RelievedBox';
 import PrintView from './PrintView';
 import NetworkView from './NetworkView';
+import RowsView from './RowsView';
 import { AddSiteModal, AddStaffModal, AddRoomModal } from './Modals';
 
 interface Props {
@@ -57,20 +60,45 @@ export default function BoardClient({ initialSites, initialStaff, initialAssignm
   const [siteHeights,   setSiteHeights]   = useState<Record<string, number>>({});
   const [hospital, setHospital] = useState<Hospital | ''>('');
   const [sidebarWidth, setSidebarWidth] = useState<number>(290);
-  const [viewMode, setViewMode] = useState<'grid' | 'network'>('grid');
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [viewMode, setViewMode] = useState<'grid' | 'rows' | 'network'>('grid');
 
   // Hydrate from localStorage after mount to avoid SSR mismatch
   useEffect(() => {
     try { const v = localStorage.getItem('siteHeights'); if (v) setSiteHeights(JSON.parse(v)); } catch {}
     try { const v = localStorage.getItem('hospital'); if (v) setHospital(v as Hospital); } catch {}
     try { const v = localStorage.getItem('sidebarWidth'); if (v) setSidebarWidth(parseInt(v)); } catch {}
+    try { const v = localStorage.getItem('sidebarCollapsed'); if (v) setSidebarCollapsed(v === 'true'); } catch {}
     try {
       const m = localStorage.getItem('boardViewMode');
-      if (m === 'grid' || m === 'network') setViewMode(m);
+      if (m === 'grid' || m === 'rows' || m === 'network') setViewMode(m);
     } catch {}
   }, []);
 
-  const setViewModePersistent = useCallback((m: 'grid' | 'network') => {
+  const toggleSidebarCollapsed = useCallback(() => {
+    setSidebarCollapsed((prev) => {
+      const next = !prev;
+      try { localStorage.setItem('sidebarCollapsed', String(next)); } catch {}
+      return next;
+    });
+  }, []);
+
+  // ⌘B / Ctrl+B toggles the sidebar rail — guard against stealing the
+  // shortcut while the user is typing in an input/textarea (or contentEditable).
+  useEffect(() => {
+    function onKeyDown(e: KeyboardEvent) {
+      if (!(e.metaKey || e.ctrlKey) || e.key.toLowerCase() !== 'b') return;
+      const target = e.target as HTMLElement | null;
+      const tag = target?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || target?.isContentEditable) return;
+      e.preventDefault();
+      toggleSidebarCollapsed();
+    }
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [toggleSidebarCollapsed]);
+
+  const setViewModePersistent = useCallback((m: 'grid' | 'rows' | 'network') => {
     setViewMode(m);
     try { localStorage.setItem('boardViewMode', m); } catch {}
   }, []);
@@ -121,67 +149,11 @@ export default function BoardClient({ initialSites, initialStaff, initialAssignm
     });
   }, [hospital]);
 
-  // ── Real-time ─────────────────────────────────────────────────────────────
-  useEffect(() => {
-    if (!isToday) return;
-    // Unique topic per mount: supabase-js returns the SAME channel instance
-    // for a repeated topic name, so under React StrictMode's dev double-mount
-    // the second subscribe() lands on a channel the first cleanup is already
-    // tearing down — leaving the tab with NO live subscription. A fresh topic
-    // guarantees a fresh channel; cleanup still removes it by reference.
-    const channel = supabase.channel(`board-rt-${Date.now()}-${Math.random().toString(36).slice(2)}`)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'assignments' }, async () => {
-        const res = await supabase.from('assignments').select('*, staff(*)').eq('board_date', today);
-        if (res.data) {
-          setAssignments((prev) => {
-            // Keep any optimistic (unconfirmed) entries not yet reflected in DB
-            const confirmedPairs = new Set((res.data as Assignment[]).map((a) => `${a.room_id}:${a.staff_id}`));
-            const opts = prev.filter((a) => a.id.startsWith('opt-') && !confirmedPairs.has(`${a.room_id}:${a.staff_id}`));
-            return [...(res.data as Assignment[]), ...opts];
-          });
-        }
-      })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'staff' }, async () => {
-        const { data } = await supabase.from('staff').select('*').order('role').order('name');
-        if (data) setStaff(data as StaffMember[]);
-      })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'daily_active' }, async () => {
-        const res = await fetch('/api/daily-active?date=' + today);
-        const data: { staff_id: string }[] = await res.json();
-        setActiveStaffIds(new Set(data.map((r) => r.staff_id)));
-      })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'daily_designations' }, async () => {
-        const res  = await fetch('/api/designations?date=' + today);
-        const data: DailyDesignation[] = await res.json();
-        const m: Record<string, MDDesignation> = {};
-        data.forEach((d) => { m[d.staff_id] = d.designation; });
-        setDesignations(m);
-      })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'daily_shifts' }, async () => {
-        const res  = await fetch('/api/daily-shifts?date=' + today);
-        const data: DailyShift[] = await res.json();
-        const m: Record<string, ShiftHours> = {};
-        data.forEach((s) => { m[s.staff_id] = s.hours; });
-        setDailyShifts(m);
-      })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'breaks' }, async () => {
-        const res = await fetch('/api/breaks?date=' + today);
-        setBreaks(await res.json());
-      })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'relief_log' }, async () => {
-        const res = await fetch('/api/relief?date=' + today);
-        setReliefLog(await res.json());
-      })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'sites' }, refreshSites)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'rooms' }, refreshSites)
-      .subscribe();
-    return () => { supabase.removeChannel(channel); };
-  }, [today, isToday]);
-
-  async function refreshSites() {
-    const { data } = await supabase.from('sites').select('*, rooms(*)').order('position').order('position', { referencedTable: 'rooms' });
-    if (data) setSites(data as Site[]);
-  }
+  // ── Real-time (shared with the wall display via useBoardRealtime) ─────────
+  useBoardRealtime(today, isToday, {
+    setSites, setStaff, setAssignments, setActiveStaffIds,
+    setDesignations, setDailyShifts, setBreaks, setReliefLog,
+  });
 
   // ── Active staff toggle ───────────────────────────────────────────────────
   const toggleActive = useCallback(async (staffId: string, active: boolean) => {
@@ -451,17 +423,7 @@ export default function BoardClient({ initialSites, initialStaff, initialAssignm
 
   const supervisionLoads = computeSupervisionLoads(assignments, roomAssignments);
 
-  const alertLevels: Record<string, 'none' | 'warning' | 'critical'> = {};
-  staff.forEach((p) => {
-    if (p.role === 'physician') {
-      const desg = designations[p.id];
-      alertLevels[p.id] = (!desg || desg === 'C1' || (desg !== '8hr' && desg !== '10hr')) ? 'none' : getAlertLevel(getMinutesToRelief(desg as ShiftHours));
-    } else if (['crna', 'srna', 'resident'].includes(p.role)) {
-      alertLevels[p.id] = getAlertLevel(getMinutesToRelief(dailyShifts[p.id] || p.hours));
-    } else {
-      alertLevels[p.id] = 'none';
-    }
-  });
+  const alertLevels = computeAlertLevels(staff, designations, dailyShifts);
 
   const breaksMap: Record<string, Break[]> = {};
   breaks.forEach((b) => {
@@ -483,14 +445,18 @@ export default function BoardClient({ initialSites, initialStaff, initialAssignm
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', overflow: 'hidden', background: 'var(--bg-base)', color: 'var(--text)' }}>
+      {/* Shared drop-target drag-feedback rule + reduced-motion override.
+          Defined once here (the root of every interactive drop target on
+          /board); components opt in via the board-drop-target class. */}
+      <style>{BOARD_DROP_STYLE}</style>
 
       {/* TOP UTILITY BAR */}
       <header style={{ background: 'var(--bg-surface)', borderBottom: '0.5px solid var(--border)', padding: '6px 12px', display: 'flex', alignItems: 'center', gap: 10, position: 'sticky', top: 0, zIndex: 40, minHeight: 38, fontSize: 12 }}>
         {/* Mode toggle (leftmost — most fundamental nav) */}
         <PillToggleV1
-          options={[{ value: 'grid', label: 'Grid' }, { value: 'network', label: 'Network' }]}
+          options={[{ value: 'grid', label: 'Cards' }, { value: 'rows', label: 'Rows' }, { value: 'network', label: 'Network' }]}
           value={viewMode}
-          onChange={(v) => setViewModePersistent(v as 'grid' | 'network')}
+          onChange={(v) => setViewModePersistent(v as 'grid' | 'rows' | 'network')}
         />
 
         <button
@@ -528,6 +494,12 @@ export default function BoardClient({ initialSites, initialStaff, initialAssignm
 
         <BarDivider />
 
+        {/* Slim stats — MD/CRNA staffed-vs-total + room count, folded into the
+            header line (was: standalone StatsBar box above the board) */}
+        <StatsInline staff={activeStaff} assignedStaffIds={assignedStaffIds} sites={sites} />
+
+        <BarDivider />
+
         {/* Facility pills */}
         <div style={{ display: 'flex', gap: 3 }}>
           <FacilityPillV1 label="All" active={!hospital} onClick={() => { setHospital(''); try { localStorage.setItem('hospital', ''); } catch {} }} />
@@ -561,6 +533,10 @@ export default function BoardClient({ initialSites, initialStaff, initialAssignm
         </div>
       </header>
 
+      {/* Supervision alert — full-width, directly under the header row.
+          Self-contained: renders nothing when nobody is at/over limit. */}
+      <SupervisionBanner supervisionLoads={supervisionLoads} />
+
       {/* Inline planning banner */}
       {isPlanMode && (
         <div style={{ background: 'color-mix(in srgb, var(--warn) 8%, transparent)', borderBottom: '0.5px solid color-mix(in srgb, var(--warn) 25%, transparent)', padding: '4px 12px', display: 'flex', alignItems: 'center', gap: 8, fontSize: 11, color: 'var(--warn)', fontWeight: 600 }}>
@@ -568,11 +544,15 @@ export default function BoardClient({ initialSites, initialStaff, initialAssignm
         </div>
       )}
 
-      {/* BODY */}
-      <div style={{ display: 'flex', flex: 1, overflow: 'hidden', height: isPlanMode ? 'calc(100vh - 62px)' : 'calc(100vh - 38px)' }}>
+      {/* BODY — flex:1 fills whatever vertical space the header + optional
+          supervision/planning banners above it leave; no hardcoded height
+          subtraction, so the now variable-height SupervisionBanner can't
+          push content off-screen (previously a fixed calc(100vh - Npx)
+          assumed only the header/planning-banner heights). */}
+      <div style={{ display: 'flex', flex: 1, minHeight: 0, overflow: 'hidden' }}>
 
-        {/* Sidebar — resizable */}
-        <div style={{ width: sidebarWidth, minWidth: sidebarWidth, flexShrink: 0, display: 'flex', overflow: 'hidden' }}>
+        {/* Sidebar — resizable, or a collapsed 44px icon rail */}
+        <div style={{ width: sidebarCollapsed ? BT.railWidth : sidebarWidth, minWidth: sidebarCollapsed ? BT.railWidth : sidebarWidth, flexShrink: 0, display: 'flex', overflow: 'hidden' }}>
           <Sidebar
             staff={activeStaff}
             allStaff={staff}
@@ -595,22 +575,24 @@ export default function BoardClient({ initialSites, initialStaff, initialAssignm
             onSetDailyShift={setDailyShift}
             onToggleBreak={toggleBreak}
             onToggleActive={toggleActive}
+            collapsed={sidebarCollapsed}
+            onToggleCollapse={toggleSidebarCollapsed}
           />
         </div>
 
-        {/* Sidebar resize handle */}
-        <div
-          onMouseDown={onSidebarResizeMouseDown}
-          style={{ width: 5, cursor: 'col-resize', background: 'transparent', flexShrink: 0, transition: 'background 0.15s', zIndex: 10 }}
-          onMouseEnter={(e) => (e.currentTarget.style.background = 'color-mix(in srgb, var(--blue) 35%, transparent)')}
-          onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
-        />
+        {/* Sidebar resize handle — hidden while collapsed (rail has no drag-resize) */}
+        {!sidebarCollapsed && (
+          <div
+            onMouseDown={onSidebarResizeMouseDown}
+            style={{ width: 5, cursor: 'col-resize', background: 'transparent', flexShrink: 0, transition: 'background 0.15s', zIndex: 10 }}
+            onMouseEnter={(e) => (e.currentTarget.style.background = 'color-mix(in srgb, var(--blue) 35%, transparent)')}
+            onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+          />
+        )}
 
         {/* Main content */}
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
           <main style={{ flex: 1, overflowY: 'auto', padding: '12px 16px' }}>
-            <StatsBar staff={activeStaff} assignments={assignments} assignedStaffIds={assignedStaffIds} supervisionLoads={supervisionLoads} sites={sites} />
-
             {/* CONTINGENCY ROW — sits directly above the Available bar (stub, wired in Phase 2) */}
             <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '4px 10px', marginBottom: 8, borderRadius: 6, border: '0.5px solid var(--border)', background: 'var(--bg-surface)' }}>
               <span style={{ fontSize: 9, color: 'var(--text-muted)', fontWeight: 700, letterSpacing: 0.3, textTransform: 'uppercase', marginRight: 4 }}>Contingencies</span>
@@ -677,6 +659,24 @@ export default function BoardClient({ initialSites, initialStaff, initialAssignm
                   <AddSiteTile onClick={() => setShowAddSite(true)} />
                 </div>
               </div>
+            ) : viewMode === 'rows' ? (
+              <RowsView
+                filteredSites={filteredSites}
+                floatAssignments={floatAssignments}
+                roomAssignments={roomAssignments}
+                dragOver={dragOver} dragging={dragging}
+                alertLevels={alertLevels} dailyShifts={dailyShifts}
+                siteHeights={siteHeights}
+                onDrop={handleDrop}
+                onDropFloat={handleDropFloat}
+                onDragOver={setDragOver}
+                onDragLeave={() => setDragOver(null)}
+                onRemoveAssignment={removeAssignment}
+                onAddRoom={(siteId) => setShowAddRoom(siteId)}
+                onDeleteRoom={(siteId, roomId) => deleteRoom(siteId, roomId)}
+                onDeleteSite={(siteId) => deleteSite(siteId)}
+                onAddSite={() => setShowAddSite(true)}
+              />
             ) : (
               <NetworkView
                 sites={sites}
@@ -837,7 +837,7 @@ function Pill({ label, color, pulse }: { label: string; color: string; pulse?: b
   );
 }
 
-function AddSiteTile({ onClick }: { onClick: () => void }) {
+export function AddSiteTile({ onClick }: { onClick: () => void }) {
   const [hov, setHov] = useState(false);
   return (
     <div onClick={onClick} onMouseEnter={() => setHov(true)} onMouseLeave={() => setHov(false)}

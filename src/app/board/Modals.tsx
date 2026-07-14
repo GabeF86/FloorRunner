@@ -4,6 +4,7 @@ import { useState, useEffect, useRef } from 'react';
 import { Role, ROLE_META, HOUR_OPTIONS, ShiftHours, HOSPITALS } from '@/types';
 import { hexToRgb } from './BoardClient';
 import { Modal, Button } from '@/components/ui';
+import { SITE_COLOR_CHOICES } from './boardTheme';
 
 // ── Shared dialog shell — thin wrapper over the shared Modal so the three
 // dialogs keep their (title, onClose, onConfirm, confirmLabel) call shape ────
@@ -52,7 +53,7 @@ export function AddSiteModal({ onClose, onConfirm }: {
   onConfirm: (name: string, color: string, icon: string) => void;
 }) {
   const [name,  setName]  = useState('');
-  const [color, setColor] = useState('#0ea5e9');
+  const [color, setColor] = useState<string>(SITE_COLOR_CHOICES[0]);
   const [icon,  setIcon]  = useState('◈');
   const ref = useRef<HTMLInputElement>(null);
   useEffect(() => ref.current?.focus(), []);
@@ -82,6 +83,20 @@ export function AddSiteModal({ onClose, onConfirm }: {
       </div>
 
       <label style={labelStyle}>Accent Color</label>
+      <div style={{ display: 'flex', gap: 6, marginBottom: 10, flexWrap: 'wrap' }}>
+        {SITE_COLOR_CHOICES.map((c) => {
+          const active = color.toLowerCase() === c.toLowerCase();
+          return (
+            <button key={c} type="button" onClick={() => setColor(c)} title={c} aria-label={`Color ${c}`} aria-pressed={active}
+              style={{
+                width: 28, height: 28, borderRadius: 7, padding: 0, cursor: 'pointer',
+                background: c,
+                border: active ? '2px solid #fff' : '1px solid var(--border)',
+                boxShadow: active ? `0 0 0 2px ${c}` : 'none',
+              }} />
+          );
+        })}
+      </div>
       <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 4 }}>
         <input type="color" value={color} onChange={(e) => setColor(e.target.value)}
           style={{ width: 48, height: 38, border: 'none', borderRadius: 8, cursor: 'pointer', background: 'none' }} />

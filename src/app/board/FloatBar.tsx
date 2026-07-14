@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { StaffMember, ROLE_META, Role, ShiftHours, DraggedPerson, MDDesignation } from '@/types';
 import { hexToRgb } from './BoardClient';
+import { BT } from './boardTheme';
 
 interface Props {
   staff:         StaffMember[];
@@ -90,30 +91,30 @@ export default function FloatBar({ staff, floatIds, assignedIds, activeStaffIds,
                       title={person.name + (isFloat ? ' — Floating' : '')}
                       style={{
                         display: 'flex', alignItems: 'center', gap: 'var(--space-1)',
-                        padding: '2px 6px', borderRadius: 4, cursor: 'grab',
+                        padding: BT.chip.pad, minHeight: BT.chip.minHeight, borderRadius: BT.chip.radius, cursor: 'grab',
                         background: isFloat ? 'var(--ok-bg)' : meta.bg,
                         border: '1px solid ' + (isFloat ? 'color-mix(in srgb, var(--ok) 35%, transparent)' : meta.border),
                         color: isFloat ? 'var(--ok)' : meta.color,
-                        fontSize: 'var(--fs-xs)', fontWeight: 600,
-                        transition: 'all 0.14s',
+                        fontSize: BT.font.chip, fontWeight: 600,
+                        transition: 'opacity 120ms ease',
                         userSelect: 'none',
                       }}
                       onMouseEnter={(e) => (e.currentTarget.style.opacity = '0.75')}
                       onMouseLeave={(e) => (e.currentTarget.style.opacity = '1')}
                     >
-                      <span style={{ fontWeight: 800, fontSize: 'var(--fs-xs)', fontFamily: 'var(--font-mono), ui-monospace, monospace' }}>{person.initials}</span>
+                      <span style={{ fontWeight: 800, fontSize: BT.font.chipSub, fontFamily: 'var(--font-mono), ui-monospace, monospace' }}>{person.initials}</span>
                       <span>{person.name.split(' ').pop()}</span>
-                      {isFloat && <span style={{ fontSize: 'var(--fs-xs)', opacity: 0.7 }}>🔄</span>}
+                      {isFloat && <span style={{ fontSize: BT.font.chipSub, opacity: 0.7 }}>🔄</span>}
                       {desg && (
                         <span style={{
-                          fontSize: 'var(--fs-xs)', fontWeight: 800, padding: '0 4px', borderRadius: 3,
+                          fontSize: BT.font.chipSub, fontWeight: 800, padding: '0 4px', borderRadius: 3,
                           background: 'rgba(' + hexToRgb(meta.color) + ',0.15)',
                           border: '0.5px solid rgba(' + hexToRgb(meta.color) + ',0.3)',
                           fontFamily: 'var(--font-mono), ui-monospace, monospace',
                         }}>{desg}</span>
                       )}
                       {hours && (
-                        <span style={{ fontSize: 'var(--fs-xs)', opacity: 0.7, fontFamily: 'var(--font-mono), ui-monospace, monospace' }}>{hours.replace('hr', 'h')}</span>
+                        <span style={{ fontSize: BT.font.chipSub, opacity: 0.7, fontFamily: 'var(--font-mono), ui-monospace, monospace' }}>{hours.replace('hr', 'h')}</span>
                       )}
                     </div>
                   );

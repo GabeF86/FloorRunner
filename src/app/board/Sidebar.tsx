@@ -7,6 +7,8 @@ import {
   Break, BreakType, getBreaksForShift,
 } from '@/types';
 import { hexToRgb } from './BoardClient';
+import { ShiftBadge } from './ShiftBadge';
+import { BT, BOARD_DROP_TARGET_CLASS } from './boardTheme';
 
 interface Props {
   staff:            StaffMember[];
@@ -30,11 +32,47 @@ interface Props {
   onSetDailyShift:  (id: string, h: ShiftHours) => void;
   onToggleBreak:    (id: string, t: BreakType, taken: boolean) => void;
   onToggleActive:   (id: string, active: boolean) => void;
+  collapsed:        boolean;
+  onToggleCollapse: () => void;
 }
 
+// Rail role groups — icon + live "working today" count badge per group.
+// Counts reuse the exact sidebar data (staff = activeStaff upstream,
+// already hospital-filtered; activeStaffIds = daily_active for today).
+const RAIL_GROUPS: Array<{ icon: string; label: string; roles: Role[] }> = [
+  { icon: '🩺', label: 'Physicians', roles: ['physician'] },
+  { icon: '💉', label: 'CRNAs / SRNAs / Residents / Fellows', roles: ['crna', 'srna', 'resident', 'fellow'] },
+  { icon: '🔪', label: 'Surgeons', roles: ['surgeon'] },
+];
+
 export default function Sidebar(props: Props) {
-  const { staff, currentHospital, assignedStaffIds, activeStaffIds, dragging, onDropSidebar, onAddStaff } = props;
+  const { staff, currentHospital, assignedStaffIds, activeStaffIds, dragging, onDropSidebar, onAddStaff, collapsed, onToggleCollapse } = props;
   const isDragTarget = !!dragging && assignedStaffIds.has(dragging.id);
+
+  // Collapsed → 44px icon rail instead of the full panes. The rail stays a
+  // drop target (same onDragOver/onDrop as the expanded <aside>) so dragging
+  // a person onto the collapsed sidebar still unassigns them.
+  if (collapsed) {
+    return (
+      <div
+        className={BOARD_DROP_TARGET_CLASS}
+        style={{ width: BT.railWidth, minWidth: BT.railWidth, height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8, padding: '8px 0', borderRight: '1px solid var(--border)', background: 'var(--bg-sidebar)', boxShadow: isDragTarget ? 'inset -3px 0 12px color-mix(in srgb, var(--blue) 10%, transparent)' : 'none', transform: isDragTarget ? BT.drag.hoverScale : 'none' }}
+        onDragOver={(e) => e.preventDefault()}
+        onDrop={onDropSidebar}
+      >
+        <button onClick={onToggleCollapse} title="Expand sidebar (⌘B)" style={{ width: 28, height: 28, borderRadius: 8, background: 'var(--bg-deep)', border: '1px solid var(--border)', color: 'var(--text-muted)', cursor: 'pointer', fontSize: 13 }}>≡</button>
+        {RAIL_GROUPS.map((g) => {
+          const working = staff.filter((p) => g.roles.includes(p.role) && activeStaffIds.has(p.id)).length;
+          return (
+            <button key={g.label} onClick={onToggleCollapse} title={`${g.label}: ${working} working today — click to expand`} style={{ position: 'relative', width: 28, height: 28, borderRadius: 8, background: 'var(--bg-deep)', border: '1px solid var(--border)', cursor: 'pointer', fontSize: 12 }}>
+              {g.icon}
+              {working > 0 && <span style={{ position: 'absolute', top: -5, right: -5, background: '#1e3a8a', color: '#fff', fontSize: 8, fontWeight: 800, borderRadius: 6, padding: '0 3px', minWidth: 12 }}>{working}</span>}
+            </button>
+          );
+        })}
+      </div>
+    );
+  }
 
   // Sidebar auto-populates with home staff for the currently selected facility.
   // (`staff` here is `activeStaff` upstream, which is already hospital-filtered.)
@@ -145,7 +183,14 @@ export default function Sidebar(props: Props) {
 
   return (
     <aside
-      style={{ flex: 1, minWidth: 0, height: '100%', background: 'var(--bg-sidebar)', display: 'flex', flexDirection: 'column', overflow: 'hidden', transition: 'box-shadow 0.2s', boxShadow: isDragTarget ? 'inset -3px 0 12px color-mix(in srgb, var(--blue) 10%, transparent)' : 'none' }}
+      className={BOARD_DROP_TARGET_CLASS}
+      // transform is `none` unless actively drag-targeted, so it establishes no
+      // containing block in the resting state. The fixed-position shift/desg
+      // picker keeps viewport anchoring because it is provably closed whenever
+      // this transform is non-none: a drag starting on the picker's own row is
+      // closed by StaffCard's onDragStart; a drag starting anywhere else means
+      // the pointer left that row first, closing it via onMouseLeave.
+      style={{ flex: 1, minWidth: 0, height: '100%', background: 'var(--bg-sidebar)', display: 'flex', flexDirection: 'column', overflow: 'hidden', boxShadow: isDragTarget ? 'inset -3px 0 12px color-mix(in srgb, var(--blue) 10%, transparent)' : 'none', transform: isDragTarget ? BT.drag.hoverScale : 'none' }}
       onDragOver={(e) => e.preventDefault()}
       onDrop={onDropSidebar}
     >
@@ -177,18 +222,23 @@ export default function Sidebar(props: Props) {
             <span>search for full roster</span>
           </span>
         </div>
-        <button onClick={onAddStaff} style={{ background: 'color-mix(in srgb, var(--blue) 12%, transparent)', border: '1px solid color-mix(in srgb, var(--blue) 30%, transparent)', color: 'var(--blue)', borderRadius: 5, padding: '2px 9px', fontSize: 'var(--fs-xs)', fontWeight: 700, cursor: 'pointer' }}>+ Add</button>
+        <button onClick={onAddStaff} style={{ background: 'color-mix(in srgb, var(--blue) 12%, transparent)', border: '1px solid color-mix(in srgb, var(--blue) 30%, transparent)', color: 'var(--blue)', borderRadius: 4, padding: '2px 8px', fontSize: 'var(--fs-xs)', fontWeight: 700, cursor: 'pointer' }}>+ Add</button>
       </div>
 
       {/* Search bar */}
-      <div style={{ padding: 'var(--space-1) var(--space-2)', borderBottom: '1px solid var(--border)', flexShrink: 0 }}>
+      <div style={{ padding: 'var(--space-1) var(--space-2)', borderBottom: '1px solid var(--border)', flexShrink: 0, display: 'flex', alignItems: 'center', gap: 6 }}>
         <input
           type="text"
           placeholder="Search full roster…"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          style={{ width: '100%', boxSizing: 'border-box', background: 'var(--tint-surface)', border: '1px solid var(--border-input)', borderRadius: 5, padding: 'var(--space-1) var(--space-2)', fontSize: 'var(--fs-xs)', color: 'var(--text)', outline: 'none' }}
+          style={{ flex: 1, minWidth: 0, boxSizing: 'border-box', background: 'var(--tint-surface)', border: '1px solid var(--border-input)', borderRadius: 4, padding: 'var(--space-1) var(--space-2)', fontSize: 'var(--fs-xs)', color: 'var(--text)', outline: 'none' }}
         />
+        <button
+          onClick={onToggleCollapse}
+          title="Collapse sidebar (⌘B)"
+          style={{ flexShrink: 0, width: 24, height: 24, borderRadius: 4, background: 'var(--bg-deep)', border: '1px solid var(--border)', color: 'var(--text-muted)', cursor: 'pointer', fontSize: 12 }}
+        >≡</button>
       </div>
 
       {isDragTarget && (
@@ -228,7 +278,8 @@ export default function Sidebar(props: Props) {
           {/* CRNAs + SRNAs + Residents / Surgeons split pane */}
           <div ref={bottomRef} style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', minHeight: 0 }}>
             <div style={{ height: srnaSurgeonPct + '%', overflowY: 'auto', minHeight: 0, padding: '8px 10px' }}>
-              {(['crna', 'srna', 'resident'] as Role[]).map((role) => renderRoleGroup(role))}
+              {/* 'fellow' included: fellows were previously reachable only via search (pre-existing gap fixed alongside the rail counts) */}
+              {(['crna', 'srna', 'resident', 'fellow'] as Role[]).map((role) => renderRoleGroup(role))}
             </div>
 
             {/* Divider between SRNA/Resident and Surgeon */}
@@ -292,10 +343,15 @@ function StaffCard({ person, role, assignedStaffIds, currentHospital, supervisio
   return (
     <div
       draggable={canDrag}
-      onDragStart={() => { if (canDrag) onDragStart({ ...person, role }); }}
+      // setShowPicker(false) on drag start: while drag-targeted the aside gains
+      // a scale transform, which would become the containing block for the
+      // picker's `position: fixed` and strand its viewport-computed top/left.
+      // onMouseLeave alone can't guarantee the picker is closed — a drag can
+      // start on the very row whose picker is open, without ever leaving it.
+      onDragStart={() => { setShowPicker(false); if (canDrag) onDragStart({ ...person, role }); }}
       onMouseEnter={() => setHov(true)}
       onMouseLeave={() => { setHov(false); setShowPicker(false); }}
-      style={{ borderRadius: 6, marginBottom: 3, border: '1px solid ' + borderColor, background: bgColor, opacity: isActive ? 1 : 0.72, transition: 'all 0.14s', position: 'relative', userSelect: 'none', cursor: canDrag ? 'grab' : 'default' }}
+      style={{ borderRadius: 6, marginBottom: 3, border: '1px solid ' + borderColor, background: bgColor, opacity: isActive ? 1 : 0.72, transition: 'all 120ms ease', position: 'relative', userSelect: 'none', cursor: canDrag ? 'grab' : 'default' }}
     >
       {/* Alert flash */}
       {isActive && alert === 'critical' && <div style={{ position: 'absolute', inset: 0, borderRadius: 6, border: '2px solid color-mix(in srgb, var(--danger) 60%, transparent)', animation: 'relief-flash 1s ease-in-out infinite', pointerEvents: 'none' }} />}
@@ -457,30 +513,5 @@ function BreakCheckbox({ type, done, onChange }: { type: BreakType; done: boolea
         {labels[type]}
       </span>
     </label>
-  );
-}
-
-const LATE_SHIFT_COLORS: Record<string, string> = {
-  '10hr': '#f59e0b',  // amber
-  '12hr': '#f97316',  // orange
-  '16hr': '#ef4444',  // red-orange
-  '24hr': '#f87171',  // bright red
-};
-
-export function ShiftBadge({ hours, role }: { hours: string; role: Role }) {
-  const lateColor = LATE_SHIFT_COLORS[hours];
-  const roleColor = ROLE_META[role]?.color || '#94a3b8';
-  const color     = lateColor ?? roleColor;
-  return (
-    <span style={{
-      fontSize: 9, fontWeight: 800, padding: '1px 5px', borderRadius: 3,
-      background: `rgba(${hexToRgb(color)},${lateColor ? 0.18 : 0.12})`,
-      color,
-      border: `1px solid rgba(${hexToRgb(color)},${lateColor ? 0.45 : 0.28})`,
-      letterSpacing: lateColor ? 0.2 : 0,
-      fontFamily: 'var(--font-mono), ui-monospace, monospace',
-    }}>
-      {hours.replace('hr', 'h')}
-    </span>
   );
 }

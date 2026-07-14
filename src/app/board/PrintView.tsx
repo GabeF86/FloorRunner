@@ -29,7 +29,10 @@ export default function PrintView({ date, sites, staff, assignments, designation
   const assignedIds = new Set(assignments.map((a) => a.staff_id));
   const unassigned  = staff.filter((p) => !assignedIds.has(p.id) && p.role !== 'surgeon');
 
-  const roleOrder = ['physician', 'crna', 'srna', 'resident', 'surgeon'];
+  // 'fellow' included: without it indexOf returns -1 and fellows sort ahead of
+  // every MD. Placed in the MD tier (matches NetworkView, which slots fellows
+  // into the MD column).
+  const roleOrder = ['physician', 'fellow', 'crna', 'srna', 'resident', 'surgeon'];
   const sortByRole = (a: StaffMember, b: StaffMember) =>
     roleOrder.indexOf(a.role) - roleOrder.indexOf(b.role) || a.name.localeCompare(b.name);
 
