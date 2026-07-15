@@ -1,5 +1,6 @@
 -- ╔══════════════════════════════════════════════════════════════════════════╗
--- ║ STATUS: NOT APPLIED. User-gated — apply during the draft-isolation         ║
+-- ║ STATUS: APPLIED 2026-07-15 (Management API). SUPERSEDED BY patch24 —       ║
+-- ║ NEVER apply this file after patch24 (it would revert the sat/sun split).   ║
 -- ║ rollout to project qhwdbtixhzdsgwwtcfrm ("Floor Runner"), ref verified,    ║
 -- ║ via the project-scoped supabase-floorrunner MCP server (or the dashboard   ║
 -- ║ SQL editor). Never run through the atlas-staging / chiefos MCP servers.    ║

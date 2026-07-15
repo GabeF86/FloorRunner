@@ -1,5 +1,5 @@
 -- ╔══════════════════════════════════════════════════════════════════════════╗
--- ║ STATUS: NOT APPLIED. User-gated — apply during the split-weekend-buckets   ║
+-- ║ STATUS: NOT APPLIED. Supersedes patch21 (includes its published-only join) ║
 -- ║ rollout to project qhwdbtixhzdsgwwtcfrm ("Floor Runner"), ref verified,    ║
 -- ║ via the project-scoped supabase-floorrunner MCP server (or the dashboard   ║
 -- ║ SQL editor). Never run through the atlas-staging / chiefos MCP servers.    ║
