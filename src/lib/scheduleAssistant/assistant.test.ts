@@ -468,6 +468,90 @@ describe('runAssistant — tool-use loop', () => {
   });
 });
 
+describe('runAssistant — intake workflow', () => {
+  // Org-wired tables: record_availability's org guard and takeSnapshot's
+  // org-availability read both walk sites.organization_id → providers, and the
+  // profile write needs an existing employment-profile row to patch.
+  function intakeTables(): Record<string, Row[]> {
+    const t = baseTables();
+    t.sites = [{ id: 'site1', name: 'Main OR', short_name: 'MAIN', organization_id: 'org1' }];
+    t.providers = [
+      { id: 'p1', last_name: 'Smith', short_display_name: 'Smith', provider_type: 'physician', organization_id: 'org1' },
+      { id: 'p2', last_name: 'Jones', short_display_name: 'Jones', provider_type: 'physician', organization_id: 'org1' },
+    ];
+    t.provider_employment_profiles = [
+      { id: 'ep2', provider_id: 'p2', home_site_id: 'site1', fte_value: 1.0,
+        call_taker: true, partial_call_taker: false, is_day_doc: false },
+    ];
+    t.provider_availability = [];
+    return t;
+  }
+
+  it('records availability + updates a profile in one turn: ONE snapshot before both writes, results fed back, final text', async () => {
+    const sb = makeFakeSb(intakeTables());
+    const { client, calls } = makeFakeClient([
+      // Scheduler already confirmed the preview (prompt-enforced) → the model
+      // fires both intake writers in a single mutating turn.
+      toolTurn([
+        text('Recording both facts.'),
+        toolUse('tu1', 'record_availability', {
+          provider_id: 'p1', availability_type: 'pto',
+          start_date: '2026-07-06', end_date: '2026-07-10',
+        }),
+        toolUse('tu2', 'update_provider_profile', { provider_id: 'p2', fte_value: 0.6 }),
+      ]),
+      endTurn([text('Recorded Smith’s PTO (Jul 6–10) and set Jones to 0.6 FTE. One Undo reverts both.')]),
+    ]);
+
+    const out = await runAssistant({
+      sb, client, scheduleId: 'sched1',
+      messages: [{ role: 'user', content: 'Smith is on PTO the 6th–10th and Jones is now 0.6 FTE — go ahead' }],
+    });
+
+    // Both writes landed on the real live levers.
+    const avail = sb.__tables.provider_availability;
+    expect(avail).toHaveLength(1);
+    expect(avail[0].provider_id).toBe('p1');
+    expect(avail[0].availability_type).toBe('pto');
+    // Mirrors POST /availability: approved + all-day, provenance 'assistant'.
+    expect(avail[0].approval_status).toBe('approved');
+    expect(avail[0].all_day).toBe(true);
+    expect(avail[0].source).toBe('assistant');
+    const prof = sb.__tables.provider_employment_profiles.find(p => p.provider_id === 'p2')!;
+    expect(prof.fte_value).toBe(0.6);
+
+    // Two mutating tools → exactly ONE snapshot for the whole intake turn,
+    // inserted BEFORE either write.
+    expect(sb.__tables.assistant_actions).toHaveLength(1);
+    const snapIdx = opIndex(sb.__ops, o => o.table === 'assistant_actions' && o.kind === 'insert');
+    const availIdx = opIndex(sb.__ops, o => o.table === 'provider_availability' && o.kind === 'insert');
+    const profIdx = opIndex(sb.__ops, o => o.table === 'provider_employment_profiles' && o.kind === 'update');
+    expect(snapIdx).toBeGreaterThanOrEqual(0);
+    expect(availIdx).toBeGreaterThan(snapIdx);
+    expect(profIdx).toBeGreaterThan(snapIdx);
+
+    // Both tool results were fed back as non-error tool_results next turn.
+    const followup = calls[1];
+    const lastToolMsg = followup.messages[followup.messages.length - 1];
+    const results = (lastToolMsg.content as ContentBlock[])
+      .filter((b): b is Extract<ContentBlock, { type: 'tool_result' }> => b.type === 'tool_result');
+    expect(results).toHaveLength(2);
+    for (const r of results) expect(r.is_error, String(r.content)).not.toBe(true);
+
+    // Two change chips; actionId points at the single snapshot; final text turn.
+    expect(out.changes).toHaveLength(2);
+    expect(out.actionId).toBeTruthy();
+    const finalMsg = out.messages[out.messages.length - 1];
+    expect(finalMsg.role).toBe('assistant');
+    const finalText = Array.isArray(finalMsg.content)
+      ? finalMsg.content
+          .filter((b): b is Extract<ContentBlock, { type: 'text' }> => b.type === 'text')
+          .map(b => b.text).join(' ')
+      : String(finalMsg.content);
+    expect(finalText).toMatch(/Undo/i);
+  });
+});
+
 describe('snapshot round-trip', () => {
   it('revertAction restores pattern, shift types and assignments, re-snapshots, stamps reverted_at', async () => {
     const tables = baseTables();
