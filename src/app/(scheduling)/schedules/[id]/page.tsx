@@ -2752,7 +2752,7 @@ function CalendarView({
                       >
                         <span style={{
                           flexShrink: 0, fontSize: 8, fontWeight: 700,
-                          padding: '1px 3px', borderRadius: 3,
+                          padding: '1px 4px', borderRadius: 3,
                           background: colorWithAlpha(w.color, 0.18),
                           color: w.color,
                           letterSpacing: '0.02em',
