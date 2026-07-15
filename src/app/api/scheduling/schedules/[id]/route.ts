@@ -1,8 +1,30 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { sbSchedulingServer } from '@/lib/supabaseScheduling';
+import { publishRevalidation, type PublishValidationSummary } from '@/lib/rulesEngine/commit';
 
 // Never prerender — this route hits Supabase per request.
 export const dynamic = 'force-dynamic';
+
+// Non-blocking post-publish revalidation (draft isolation §3). A validation
+// failure must NEVER fail the publish — surface it in the payload instead
+// (invariant 6: if it could not run, say so; never report fake-clean).
+async function safeRevalidate(
+  sb: ReturnType<typeof sbSchedulingServer>,
+  siteId: string | null | undefined,
+  versionId: string,
+): Promise<PublishValidationSummary> {
+  if (!siteId) {
+    return { hardCount: 0, softCount: 0, errors: ['validation-unavailable — schedule site_id missing'] };
+  }
+  try {
+    return await publishRevalidation(sb, siteId, versionId);
+  } catch (e) {
+    return {
+      hardCount: 0, softCount: 0,
+      errors: [`validation-unavailable — revalidation threw: ${e instanceof Error ? e.message : String(e)}`],
+    };
+  }
+}
 
 export async function GET(
   req: NextRequest,
@@ -40,7 +62,7 @@ export async function PATCH(
   if (body.status === 'published') {
     const { data: version, error: verErr } = await sb
       .from('schedule_versions')
-      .select('id')
+      .select('id, version_number')
       .eq('schedule_id', id)
       .order('version_number', { ascending: false })
       .limit(1)
@@ -52,6 +74,21 @@ export async function PATCH(
       .update({ version_status: 'published', published_at: new Date().toISOString() })
       .eq('id', version.id);
     if (updErr) return NextResponse.json({ error: updErr.message }, { status: 500 });
+
+    // B1 parity fix: keep schedules.published_version_number in sync. The
+    // versions route already does this on publish; this UI path did not, leaving
+    // a stale pointer. version_status = 'published' is the authoritative
+    // committed predicate, but the pointer is still read by other surfaces.
+    const { error: pvErr } = await sb
+      .from('schedules')
+      .update({ published_version_number: (version as { version_number: number }).version_number })
+      .eq('id', id);
+    if (pvErr) return NextResponse.json({ error: pvErr.message }, { status: 500 });
+
+    const publishValidation = await safeRevalidate(
+      sb, (data as { site_id?: string }).site_id, (version as { id: string }).id,
+    );
+    return NextResponse.json({ ...data, publishValidation });
   }
 
   return NextResponse.json(data);

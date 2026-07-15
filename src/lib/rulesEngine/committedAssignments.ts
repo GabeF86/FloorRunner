@@ -34,14 +34,42 @@ type QueryBuilder = any;
 type QueryError = { code?: string; message?: string } | null;
 
 // ── the authoritative committed predicate ───────────────────────────────────
-const VERSION_STATUS_PATH = 'schedule_slots.schedule_versions.version_status';
 const PUBLISHED = 'published';
+const VERSION_STATUS_LEAF = 'version_status';
+// The PostgREST embed path from `assignments` to the joined schedule_versions
+// row (assignments → schedule_slots → schedule_versions). Callers that go
+// through fetchCommittedAssignments select this shape; the exported
+// filterPublishedVersions() defaults to it.
+const ASSIGNMENTS_VERSIONS_PATH = 'schedule_slots.schedule_versions';
+const VERSION_STATUS_PATH = `${ASSIGNMENTS_VERSIONS_PATH}.${VERSION_STATUS_LEAF}`;
 // Companion filter paths (the exclusion / current-version scoping the callers
 // layer on top of the committed predicate).
 const SCHEDULE_ID_PATH = 'schedule_slots.schedule_versions.schedule_id';
 const SITE_ID_PATH = 'schedule_slots.site_id';
 const VERSION_ID_PATH = 'schedule_slots.schedule_version_id';
 const DEFAULT_SLOT_DATE_PATH = 'schedule_slots.slot_date';
+
+/**
+ * Apply the committed ("published version") predicate to a query assembled
+ * OUTSIDE fetchCommittedAssignments. A few call sites build their own select
+ * with a shape/window the option bag cannot express (genContext's legacy
+ * fallback scan uses `.lt` with no lower bound and an `.eq` site filter; a
+ * reporting surface may query `schedule_slots` directly) — but the string
+ * `version_status = 'published'` must still have exactly ONE home. Route those
+ * sites through here.
+ *
+ * `versionsPath` is the PostgREST embed path from the queried table to the
+ * joined schedule_versions row — the default matches the `assignments` →
+ * `schedule_slots` → `schedule_versions` shape; pass `'schedule_versions'` when
+ * querying `schedule_slots` directly. The caller's select MUST embed
+ * `schedule_versions!inner(version_status)` at that path.
+ */
+export function filterPublishedVersions(
+  query: QueryBuilder,
+  versionsPath: string = ASSIGNMENTS_VERSIONS_PATH,
+): QueryBuilder {
+  return query.eq(`${versionsPath}.${VERSION_STATUS_LEAF}`, PUBLISHED);
+}
 
 export interface CommittedScopeOptions {
   // Provider filter — exactly one of these. `providerIds` → `.in`, `providerId`

@@ -401,6 +401,49 @@ describe('loadGenerationContext — historical fairness RPC (requirement 4)', ()
     // Legacy-scan data path still engaged (empty canned assignments → empty maps).
     expect(res.ctx!.historicalAssignedByPid.size).toBe(0);
   });
+
+  // Draft isolation (invariant 3): the RPC (patch21) counts published call only;
+  // the in-code legacy fallback must carry the SAME predicate — a past DRAFT's
+  // call rows do not skew historical fairness, a PUBLISHED schedule's do.
+  it('legacy fallback counts only PUBLISHED past call (drafts do not skew fairness)', async () => {
+    const publishedRow = { provider_id: 'p1', schedule_slots: {
+      slot_date: '2025-12-01', site_id: 'site1', derived_day_type: 'saturday',
+      schedule_versions: { version_status: 'published' }, shift_types: { code: 'C1', category: 'call' } } };
+    const draftRow = { provider_id: 'p2', schedule_slots: {
+      slot_date: '2025-12-02', site_id: 'site1', derived_day_type: 'weekday',
+      schedule_versions: { version_status: 'draft' }, shift_types: { code: 'C2', category: 'call' } } };
+    const { res, calls } = await run({
+      ...twoCallSlots,
+      // Emulate the DB's version_status filter so the test is sensitive to the
+      // committed predicate (mirrors the conflict-scan fake below).
+      assignments: (filters) => {
+        const sel = (filters.find(f => f.method === 'select')?.args[0] as string) ?? '';
+        if (!sel.includes('derived_day_type')) return { data: [], error: null }; // cross-site scan
+        const eqs = filters.filter(f => f.method === 'eq');
+        const rows = [publishedRow, draftRow].filter(r =>
+          eqs.every(f => {
+            const [col, val] = f.args as [string, unknown];
+            if (col === 'schedule_slots.schedule_versions.version_status') {
+              return r.schedule_slots.schedule_versions.version_status === val;
+            }
+            return true;
+          }));
+        return { data: rows, error: null };
+      },
+    }, { historical_call_counts: { data: null, error: { message: 'function scheduling.historical_call_counts(uuid, date) does not exist', code: '42883' } } });
+
+    // Published row counted; draft row NOT.
+    expect(res.ctx!.historicalAssignedByPid.get('p1')?.get('weekend|C1')).toBe(1);
+    expect(res.ctx!.historicalAssignedByPid.has('p2')).toBe(false);
+    // The committed predicate + inner join were emitted on the fallback scan.
+    const histSelect = calls.find(c => c.table === 'assignments' && c.method === 'select'
+      && (c.args[0] as string).includes('derived_day_type'));
+    expect(histSelect!.args[0] as string).toContain('schedule_versions!inner(version_status)');
+    const pub = calls.filter(c => c.table === 'assignments' && c.method === 'eq'
+      && c.args[0] === 'schedule_slots.schedule_versions.version_status' && c.args[1] === 'published');
+    // Both the cross-site scan (§1) and this fallback apply the predicate.
+    expect(pub.length).toBeGreaterThanOrEqual(1);
+  });
 });
 
 describe('loadGenerationContext — cross-site window (requirement 5)', () => {

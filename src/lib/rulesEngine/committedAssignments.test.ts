@@ -3,7 +3,7 @@
 // applied, the exclusions (schedule/site), the two-query includeVersionId merge
 // + dedupe, and error passthrough (so fail-closed callers keep failing closed).
 import { describe, it, expect } from 'vitest';
-import { fetchCommittedAssignments } from './committedAssignments';
+import { fetchCommittedAssignments, filterPublishedVersions } from './committedAssignments';
 import { makeFakeSupabase, callsFor } from './__fixtures__/fakeSupabase';
 import type { Filter } from './__fixtures__/fakeSupabase';
 
@@ -170,5 +170,31 @@ describe('fetchCommittedAssignments', () => {
     expect(one.calls.some(c => c.method === 'eq' && c.args[0] === 'provider_id' && c.args[1] === 'p9')).toBe(true);
     expect(one.calls.some(c => c.method === 'gte' && c.args[0] === 'schedule_slots.slot_date' && c.args[1] === '2026-01-01')).toBe(true);
     expect(one.calls.some(c => c.method === 'lte' && c.args[0] === 'schedule_slots.slot_date' && c.args[1] === '2026-01-31')).toBe(true);
+  });
+});
+
+describe('filterPublishedVersions (exported predicate for bespoke-shape callers)', () => {
+  interface QB { select(s: string): QB; eq(c: string, v: unknown): QB; in(c: string, v: unknown): QB }
+  const qb = (b: unknown) => b as QB;
+
+  it('applies version_status = published at the default assignments-shape path', () => {
+    const { sb, calls } = makeFakeSupabase({ tables: { assignments: assignmentsFor([]) } });
+    filterPublishedVersions(qb(sb.from('assignments')).select('id')).eq('assignment_status', 'assigned');
+    expect(calls.some(c => c.method === 'eq'
+      && c.args[0] === 'schedule_slots.schedule_versions.version_status' && c.args[1] === 'published')).toBe(true);
+  });
+
+  it('honors an override embed path (e.g. querying schedule_slots directly)', () => {
+    const { sb, calls } = makeFakeSupabase({ tables: { schedule_slots: () => ({ data: [], error: null }) } });
+    filterPublishedVersions(qb(sb.from('schedule_slots')).select('id'), 'schedule_versions');
+    expect(calls.some(c => c.method === 'eq'
+      && c.args[0] === 'schedule_versions.version_status' && c.args[1] === 'published')).toBe(true);
+  });
+
+  it('returns the query builder so filters chain', () => {
+    const { sb, calls } = makeFakeSupabase({ tables: { assignments: assignmentsFor([]) } });
+    const q = filterPublishedVersions(qb(sb.from('assignments')).select('id')) as QB;
+    q.in('provider_id', ['p1']);
+    expect(calls.some(c => c.method === 'in' && c.args[0] === 'provider_id')).toBe(true);
   });
 });

@@ -254,3 +254,36 @@ export async function commitValidation(
   const batch = await batchValidateVersion(sb, scheduleVersionId, siteCtx);
   return { dbQueries: dbQueries + batch.dbQueries, errors: batch.errors };
 }
+
+export interface PublishValidationSummary {
+  hardCount: number;
+  softCount: number;
+  errors: string[];
+}
+
+// Post-publish revalidation (draft isolation §3). Once a version's status flips
+// to 'published' its rows become committed bookings, so a draft-vs-draft overlap
+// that was deliberately invisible during generation now conflicts against the
+// OTHER published schedule. Re-run batch validation so those overlaps surface as
+// hard flags the instant the second schedule is published.
+//
+// NON-BLOCKING by contract: the caller reports this summary but must NEVER fail
+// the publish on it. Invariant 6 — if validation could not run (site-context or
+// preload failure), `errors` is non-empty and the caller must say so rather than
+// report a fake-clean zero. Un-evaluated rows (evaluated:false) carry 0/0 counts
+// and are surfaced only through `errors`, so summing every row is safe.
+export async function publishRevalidation(
+  sb: SupabaseClient,
+  siteId: string,
+  scheduleVersionId: string,
+): Promise<PublishValidationSummary> {
+  const siteCtx = await loadSiteValidationContext(sb, siteId);
+  const batch = await batchValidateVersion(sb, scheduleVersionId, siteCtx);
+  let hardCount = 0;
+  let softCount = 0;
+  for (const r of batch.results) {
+    hardCount += r.hardCount;
+    softCount += r.softCount;
+  }
+  return { hardCount, softCount, errors: batch.errors };
+}
