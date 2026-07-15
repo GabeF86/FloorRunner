@@ -132,12 +132,14 @@ describe('assistant tool schemas — strict grammar limit', () => {
     //   analysis reads:  get_coverage_summary 2 + who_is_on 3            = 5
     //   intake:          list_availability 3 + record_availability 1
     //                    + cancel_availability 0 + update_provider_profile 4
-    //                    + update_site_credentials 4                     = 12
+    //                    + update_site_credentials 3                     = 11
+    //   (update_site_credentials deliberately EXCLUDES can_take_backup_call —
+    //    dead in the engine: eligibility.ts gates call/weekend/holiday only)
     //   (get_schedule_context / get_grid / get_fairness_report /
     //    find_unfilled / assign_provider / clear_assignment /
     //    regenerate_schedule contribute 0 optionals each)
-    // → 17 total, comfortably under the API's grammar bound (locally 20).
-    expect(totalOptional).toBe(17);
+    // → 16 total, comfortably under the API's grammar bound (locally 20).
+    expect(totalOptional).toBe(16);
     expect(totalOptional).toBeLessThanOrEqual(20);
   });
 

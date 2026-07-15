@@ -2,10 +2,12 @@
 // list_availability (read) + record_availability / cancel_availability /
 // update_provider_profile / update_site_credentials (writers). Canned rows via
 // the shared call-recording fake supabase client. These pin: input validation
-// (bad type, bad dates, org mismatch, empty patch, missing rows), the honest
-// ToolInputError copy the loop surfaces verbatim, and the write payloads
-// (approved default, source='assistant', patch scoping). Snapshot/undo of these
-// same writes is a separate round-trip in snapshot.intake.test.ts.
+// (bad type, bad dates, empty patch, missing rows), the org guards, the
+// undo-window overlap guards (a write outside the snapshot's availability
+// window would be un-undoable), the honest ToolInputError copy the loop
+// surfaces verbatim, and the write payloads (approved default,
+// source='assistant', patch scoping). Snapshot/undo of these same writes is a
+// separate round-trip in snapshot.intake.test.ts.
 import { describe, it, expect } from 'vitest';
 import {
   createToolExecutors,
@@ -15,6 +17,7 @@ import {
   type ScheduleCtx,
 } from './tools';
 import { AVAILABILITY_TYPES } from '@/lib/validation/providers';
+import { BLOCKING_AVAIL } from '@/lib/rulesEngine/shared';
 import {
   makeFakeSupabase,
   callsFor,
@@ -55,14 +58,22 @@ describe('intake tools — registry', () => {
     }
   });
 
-  it('record_availability writable types are the engine-meaningful subset of AVAILABILITY_TYPES', () => {
+  it('record_availability writable types = BLOCKING_AVAIL ∪ {no_call_request}, all valid AVAILABILITY_TYPES', () => {
     const tool = assistantTools.find(t => t.name === 'record_availability')!;
     const schema = tool.input_schema as { properties: { availability_type: { enum: string[] } } };
     const enumVals = schema.properties.availability_type.enum;
+    // Set-equality with the engine's canonical blocking set + the one soft-flag
+    // lever — the write set is DERIVED from BLOCKING_AVAIL, so it cannot drift.
+    expect(new Set(enumVals)).toEqual(new Set([...BLOCKING_AVAIL, 'no_call_request']));
     for (const v of enumVals) expect(AVAILABILITY_TYPES as readonly string[]).toContain(v);
-    expect(enumVals).toContain('no_call_request'); // soft-flag lever kept
-    expect(enumVals).not.toContain('call_request'); // dead type dropped
+    expect(enumVals).not.toContain('call_request'); // consumer-less type excluded
     expect(enumVals).not.toContain('available'); // informational, not engine-meaningful
+  });
+
+  it('update_site_credentials does NOT expose can_take_backup_call (dead in the engine)', () => {
+    const tool = assistantTools.find(t => t.name === 'update_site_credentials')!;
+    const schema = tool.input_schema as { properties: Record<string, unknown> };
+    expect(Object.keys(schema.properties)).not.toContain('can_take_backup_call');
   });
 });
 
@@ -129,15 +140,39 @@ describe('record_availability', () => {
       provider_id: 'p1', availability_type: 'pto', start_date: '2026-01-10', end_date: '2026-01-10',
     })).rejects.toThrow(/organization/);
   });
+
+  // Undo-window guard (schedule 2026-01-01 → 2026-01-31, window ±14d =
+  // 2025-12-18 → 2026-02-14): a row entirely outside would escape the snapshot
+  // baseline AND the revert delete-new pass — un-undoable invariant-2 data.
+  it('rejects a range entirely outside the undo window (nothing inserted)', async () => {
+    const { executors, sb, calls } = run({});
+    await expect(executors.record_availability(sb, ctx, {
+      provider_id: 'p1', availability_type: 'pto', start_date: '2026-03-01', end_date: '2026-03-05',
+    })).rejects.toThrow(/undo window/);
+    expect(callsFor(calls, 'provider_availability', 'insert')).toHaveLength(0);
+  });
+
+  it('accepts a range PARTIALLY overlapping the window (overlap is sufficient — the snapshot reads overlap too)', async () => {
+    const { executors, sb, calls } = run({ ...okOrg, provider_availability: { data: { id: 'av-3' } } });
+    const out = await executors.record_availability(sb, ctx, {
+      provider_id: 'p1', availability_type: 'pto', start_date: '2026-02-10', end_date: '2026-02-20',
+    });
+    expect(res(out).ok).toBe(true);
+    expect(callsFor(calls, 'provider_availability', 'insert')).toHaveLength(1);
+  });
 });
 
 // ── cancel_availability ──────────────────────────────────────────────────────
 
 describe('cancel_availability', () => {
+  const okOrg = { providers: { data: { organization_id: 'org-1' } }, sites: { data: { organization_id: 'org-1' } } };
+  const inWindowRow = (over: Record<string, unknown> = {}) => ({
+    id: 'av-1', approval_status: 'approved', provider_id: 'p1',
+    start_date: '2026-01-10', end_date: '2026-01-12', ...over,
+  });
+
   it('flips approval_status to canceled (soft-cancel, never hard-delete)', async () => {
-    const { executors, sb, calls } = run({
-      provider_availability: { data: { id: 'av-1', approval_status: 'approved' } },
-    });
+    const { executors, sb, calls } = run({ ...okOrg, provider_availability: { data: inWindowRow() } });
     const out = await executors.cancel_availability(sb, ctx, { id: 'av-1' });
     expect(res(out).ok).toBe(true);
     expect(callsFor(calls, 'provider_availability', 'update')[0].args[0]).toEqual({ approval_status: 'canceled' });
@@ -149,13 +184,35 @@ describe('cancel_availability', () => {
     const { executors, sb } = run({ provider_availability: { data: null } });
     await expect(executors.cancel_availability(sb, ctx, { id: 'nope' })).rejects.toThrow(/not found/);
   });
+
+  it('rejects an entry entirely outside the undo window (the flip could not be reverted)', async () => {
+    const { executors, sb, calls } = run({
+      ...okOrg,
+      provider_availability: { data: inWindowRow({ start_date: '2026-05-01', end_date: '2026-05-05' }) },
+    });
+    await expect(executors.cancel_availability(sb, ctx, { id: 'av-1' })).rejects.toThrow(/undo window/);
+    expect(callsFor(calls, 'provider_availability', 'update')).toHaveLength(0);
+  });
+
+  it("rejects an entry whose provider is outside this site's organization", async () => {
+    const { executors, sb, calls } = run({
+      providers: { data: { organization_id: 'org-2' } },
+      sites: { data: { organization_id: 'org-1' } },
+      provider_availability: { data: inWindowRow() },
+    });
+    await expect(executors.cancel_availability(sb, ctx, { id: 'av-1' })).rejects.toThrow(/organization/);
+    expect(callsFor(calls, 'provider_availability', 'update')).toHaveLength(0);
+  });
 });
 
 // ── update_provider_profile ──────────────────────────────────────────────────
 
 describe('update_provider_profile', () => {
+  const okOrg = { providers: { data: { organization_id: 'org-1' } }, sites: { data: { organization_id: 'org-1' } } };
+
   it('patches only the passed live fields', async () => {
     const { executors, sb, calls } = run({
+      ...okOrg,
       provider_employment_profiles: { data: [{ id: 'prof-1', provider_id: 'p1', fte_value: 0.8, call_taker: false }] },
     });
     const out = await executors.update_provider_profile(sb, ctx, { provider_id: 'p1', fte_value: 0.8, call_taker: false });
@@ -173,8 +230,17 @@ describe('update_provider_profile', () => {
     await expect(executors.update_provider_profile(sb, ctx, { provider_id: 'p1', fte_value: 5 })).rejects.toBeInstanceOf(ToolInputError);
   });
 
+  it("rejects a provider outside this site's organization (org guard — org-wide snapshot scope)", async () => {
+    const { executors, sb, calls } = run({
+      providers: { data: { organization_id: 'org-2' } },
+      sites: { data: { organization_id: 'org-1' } },
+    });
+    await expect(executors.update_provider_profile(sb, ctx, { provider_id: 'p9', fte_value: 0.8 })).rejects.toThrow(/organization/);
+    expect(callsFor(calls, 'provider_employment_profiles', 'update')).toHaveLength(0);
+  });
+
   it('errors (never inserts) when the provider has no employment profile', async () => {
-    const { executors, sb, calls } = run({ provider_employment_profiles: { data: [] } });
+    const { executors, sb, calls } = run({ ...okOrg, provider_employment_profiles: { data: [] } });
     await expect(executors.update_provider_profile(sb, ctx, { provider_id: 'p1', fte_value: 0.8 })).rejects.toThrow(/No employment profile/);
     expect(callsFor(calls, 'provider_employment_profiles', 'insert')).toHaveLength(0);
     expect(callsFor(calls, 'provider_employment_profiles', 'upsert')).toHaveLength(0);
@@ -198,6 +264,13 @@ describe('update_site_credentials', () => {
   it('rejects an empty patch', async () => {
     const { executors, sb } = run({});
     await expect(executors.update_site_credentials(sb, ctx, { provider_id: 'p1' })).rejects.toThrow(/at least one field/);
+  });
+
+  it('rejects can_take_backup_call (dead field — no engine consumer; spec: never write dead fields)', async () => {
+    const { executors, sb, calls } = run({});
+    await expect(executors.update_site_credentials(sb, ctx, { provider_id: 'p1', can_take_backup_call: false }))
+      .rejects.toBeInstanceOf(ToolInputError);
+    expect(callsFor(calls, 'provider_site_credentials', 'update')).toHaveLength(0);
   });
 
   it('errors clearly (never invents a row) when no credential row exists for this provider+site', async () => {
@@ -241,5 +314,20 @@ describe('list_availability', () => {
   it('rejects date_start after date_end', async () => {
     const { executors, sb } = run({});
     await expect(executors.list_availability(sb, ctx, { date_start: '2026-02-01', date_end: '2026-01-01' })).rejects.toThrow(/on or before/);
+  });
+
+  it('chunks the provider-id .in read at READ_CHUNK (URL-length safety, snapshot.ts convention)', async () => {
+    const many = Array.from({ length: 201 }, (_, i) => ({
+      id: `p${i}`, last_name: `L${i}`, short_display_name: `P ${i}`,
+    }));
+    const { executors, sb, calls } = run({
+      sites: { data: { organization_id: 'org-1' } },
+      providers: canned(many),
+      provider_availability: canned([]),
+    });
+    const out = await executors.list_availability(sb, ctx, {});
+    expect(res(out).total).toBe(0);
+    // 201 org providers → two .in chunks (200 + 1).
+    expect(callsFor(calls, 'provider_availability', 'in')).toHaveLength(2);
   });
 });

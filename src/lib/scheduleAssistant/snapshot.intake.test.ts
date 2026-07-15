@@ -25,6 +25,9 @@ function seed() {
     ],
     provider_employment_profiles: [
       { id: 'prof-1', provider_id: 'p1', home_site_id: 'site-1', fte_value: 1, call_taker: true, partial_call_taker: false, is_day_doc: false },
+      // Org provider whose HOME is another site — engines still read this
+      // profile, so the snapshot must capture it (org-wide scope) for undo.
+      { id: 'prof-2', provider_id: 'p2', home_site_id: 'site-2', fte_value: 0.9, call_taker: true, partial_call_taker: false, is_day_doc: true },
     ],
     provider_site_credentials: [
       { id: 'cred-1', provider_id: 'p1', site_id: 'site-1', can_take_call: true, can_take_weekend_call: true, can_take_holiday_call: true, can_take_backup_call: true },
@@ -84,6 +87,21 @@ describe('intake snapshot round-trip', () => {
     expect(revert.ok).toBe(true);
     expect(dump('provider_availability').find(r => r.id === 'av-old')!.approval_status).toBe('approved');
     expect(avIds(dump)).toEqual(['av-old']); // nothing deleted (row existed at snapshot)
+  });
+
+  it('an org provider whose home is ANOTHER site still round-trips (org-wide profile snapshot)', async () => {
+    const { sb, dump } = makeStatefulSupabase(seed());
+    const execs = createToolExecutors();
+
+    const actionId = await takeSnapshot(sb as never, 'sched-1', null, 'Assistant: FTE change', 'p2 to 0.5');
+    await execs.update_provider_profile(sb as never, ctx, { provider_id: 'p2', fte_value: 0.5 });
+    expect(dump('provider_employment_profiles').find(r => r.id === 'prof-2')!.fte_value).toBe(0.5);
+
+    const revert = await revertAction(sb as never, actionId);
+    expect(revert.errors).toEqual([]);
+    expect(revert.ok).toBe(true);
+    // A home-site-only capture would have missed prof-2 and left 0.5 in place.
+    expect(dump('provider_employment_profiles').find(r => r.id === 'prof-2')!.fte_value).toBe(0.9);
   });
 
   it('a pre-intake action (no new config_before keys) still reverts, leaving intake tables untouched', async () => {

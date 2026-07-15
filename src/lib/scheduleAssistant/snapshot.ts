@@ -42,7 +42,8 @@ interface ConfigBefore {
   // defined baseline. Pre-intake stored actions lack these keys entirely →
   // revertAction skips all three blocks (backward-compatible). ──
   //   provider_availability: org rows overlapping the schedule ± AVAIL_WINDOW_DAYS.
-  //   provider_employment_profiles: the site's HOME providers' profiles.
+  //   provider_employment_profiles: ORG-WIDE (engines read profiles regardless
+  //     of home site, and update_provider_profile may patch any org provider).
   //   provider_site_credentials: this site's credential rows.
   provider_availability?: Array<Record<string, unknown>>;
   provider_employment_profiles?: Array<Record<string, unknown>>;
@@ -84,8 +85,10 @@ async function orgProviderIds(sb: SchedulingClient, siteId: string): Promise<str
 }
 
 // Provider-availability rows for the org, overlapping [dateStart −, dateEnd +]
-// AVAIL_WINDOW_DAYS — the exact window record_availability writes into and the
-// delete-new pass re-reads on revert. Chunked .in for URL safety.
+// AVAIL_WINDOW_DAYS. record_availability / cancel_availability ENFORCE that
+// every write overlaps this exact window (assertOverlapsUndoWindow, tools.ts),
+// so nothing the tools touch can escape this baseline or the delete-new pass
+// that re-reads it on revert. Chunked .in for URL safety.
 async function readOrgAvailabilityWindow(
   sb: SchedulingClient,
   orgPids: string[],
@@ -146,18 +149,25 @@ export async function takeSnapshot(
     ruleDefinitions = (data ?? []) as Array<Record<string, unknown>>;
   }
 
-  // ── Intake extension: availability (org, windowed), profiles (home
-  // providers), credentials (this site). Full rows for a verbatim upsert
-  // restore. Always captured (possibly empty) so the delete-new-availability
-  // pass on revert has a defined baseline. ──
+  // ── Intake extension: availability (org, windowed), profiles (ORG-WIDE —
+  // engines read employment profiles regardless of home site, and
+  // update_provider_profile may patch any org provider, so a home-site-only
+  // capture would let a non-home profile edit escape undo), credentials (this
+  // site). Full rows for a verbatim upsert restore. Always captured (possibly
+  // empty) so the delete-new-availability pass on revert has a defined
+  // baseline. ──
   const orgPids = await orgProviderIds(sb, siteId);
   const availabilityRows = orgPids.length > 0
     ? await readOrgAvailabilityWindow(sb, orgPids, dateStart, dateEnd, '*')
     : [];
 
-  const { data: profiles, error: profErr } = await sb
-    .from('provider_employment_profiles').select('*').eq('home_site_id', siteId);
-  if (profErr) throw new Error(`provider_employment_profiles snapshot read failed: ${profErr.message}`);
+  const profiles: Array<Record<string, unknown>> = [];
+  for (const ids of chunk(orgPids, READ_CHUNK)) {
+    const { data, error } = await sb
+      .from('provider_employment_profiles').select('*').in('provider_id', ids);
+    if (error) throw new Error(`provider_employment_profiles snapshot read failed: ${error.message}`);
+    profiles.push(...((data ?? []) as Array<Record<string, unknown>>));
+  }
 
   const { data: credentials, error: credErr } = await sb
     .from('provider_site_credentials').select('*').eq('site_id', siteId);
@@ -192,7 +202,7 @@ export async function takeSnapshot(
     shift_types: (shiftTypes ?? []) as Array<Record<string, unknown>>,
     rule_definitions: ruleDefinitions,
     provider_availability: availabilityRows,
-    provider_employment_profiles: (profiles ?? []) as Array<Record<string, unknown>>,
+    provider_employment_profiles: profiles,
     provider_site_credentials: (credentials ?? []) as Array<Record<string, unknown>>,
   };
 
