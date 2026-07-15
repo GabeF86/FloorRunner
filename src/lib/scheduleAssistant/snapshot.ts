@@ -7,6 +7,7 @@
 import { chunk, WRITE_CHUNK, batchValidateVersion } from '@/lib/rulesEngine/batchValidate';
 import { bulkWriteWithRowFallback } from '@/lib/rulesEngine/commit';
 import { loadSiteValidationContext } from '@/lib/rulesEngine/loadContext';
+import { addDays, AVAIL_WINDOW_DAYS } from '@/lib/rulesEngine/shared';
 import { replaceActivePattern } from './mutations';
 import type { CallPatternDoc } from '@/lib/rulesEngine/callPattern';
 
@@ -36,14 +37,79 @@ interface ConfigBefore {
   // post-revert batch validation runs under the ORIGINAL rules, not the
   // mutated ones). Optional: pre-existing snapshots lack it (no-op restore).
   rule_definitions?: Array<Record<string, unknown>>;
+  // ── Intake extension (assistant-intake). Full rows, captured on every NEW
+  // snapshot (possibly empty arrays) so the delete-new-availability pass has a
+  // defined baseline. Pre-intake stored actions lack these keys entirely →
+  // revertAction skips all three blocks (backward-compatible). ──
+  //   provider_availability: org rows overlapping the schedule ± AVAIL_WINDOW_DAYS.
+  //   provider_employment_profiles: ORG-WIDE (engines read profiles regardless
+  //     of home site, and update_provider_profile may patch any org provider).
+  //   provider_site_credentials: this site's credential rows.
+  provider_availability?: Array<Record<string, unknown>>;
+  provider_employment_profiles?: Array<Record<string, unknown>>;
+  provider_site_credentials?: Array<Record<string, unknown>>;
 }
 
-async function siteIdForSchedule(sb: SchedulingClient, scheduleId: string): Promise<string> {
+interface ScheduleMeta {
+  siteId: string;
+  dateStart: string;
+  dateEnd: string;
+}
+
+async function loadScheduleMeta(sb: SchedulingClient, scheduleId: string): Promise<ScheduleMeta> {
   const { data, error } = await sb
-    .from('schedules').select('site_id').eq('id', scheduleId).maybeSingle();
+    .from('schedules').select('site_id, date_start, date_end').eq('id', scheduleId).maybeSingle();
   if (error) throw new Error(`schedule load failed: ${error.message}`);
   if (!data) throw new Error(`schedule ${scheduleId} not found`);
-  return data.site_id as string;
+  return {
+    siteId: data.site_id as string,
+    dateStart: data.date_start as string,
+    dateEnd: data.date_end as string,
+  };
+}
+
+// The site's organization's provider ids — availability is a provider-level
+// fact (engines read it by provider_id, never site_id), so its snapshot +
+// delete-new pass scope to the whole org. Returns [] when the site/org is
+// missing (nothing to capture or delete).
+async function orgProviderIds(sb: SchedulingClient, siteId: string): Promise<string[]> {
+  const { data: site, error: siteErr } = await sb
+    .from('sites').select('organization_id').eq('id', siteId).maybeSingle();
+  if (siteErr) throw new Error(`site org lookup failed: ${siteErr.message}`);
+  const orgId = (site as { organization_id?: string } | null)?.organization_id;
+  if (!orgId) return [];
+  const { data, error } = await sb
+    .from('providers').select('id').eq('organization_id', orgId);
+  if (error) throw new Error(`org providers read failed: ${error.message}`);
+  return ((data ?? []) as Array<{ id: string }>).map(p => p.id);
+}
+
+// Provider-availability rows for the org, overlapping [dateStart −, dateEnd +]
+// AVAIL_WINDOW_DAYS. record_availability / cancel_availability ENFORCE that
+// every write overlaps this exact window (assertOverlapsUndoWindow, tools.ts),
+// so nothing the tools touch can escape this baseline or the delete-new pass
+// that re-reads it on revert. Chunked .in for URL safety.
+async function readOrgAvailabilityWindow(
+  sb: SchedulingClient,
+  orgPids: string[],
+  dateStart: string,
+  dateEnd: string,
+  columns: string,
+): Promise<Array<Record<string, unknown>>> {
+  const availStart = addDays(dateStart, -AVAIL_WINDOW_DAYS);
+  const availEnd = addDays(dateEnd, AVAIL_WINDOW_DAYS);
+  const out: Array<Record<string, unknown>> = [];
+  for (const ids of chunk(orgPids, READ_CHUNK)) {
+    const { data, error } = await sb
+      .from('provider_availability')
+      .select(columns)
+      .in('provider_id', ids)
+      .lte('start_date', availEnd)
+      .gte('end_date', availStart);
+    if (error) throw new Error(`provider_availability read failed: ${error.message}`);
+    out.push(...((data ?? []) as Array<Record<string, unknown>>));
+  }
+  return out;
 }
 
 // Reads current state → inserts one assistant_actions row → returns its id.
@@ -56,7 +122,7 @@ export async function takeSnapshot(
   summary: string,
   requestText: string | null,
 ): Promise<string> {
-  const siteId = await siteIdForSchedule(sb, scheduleId);
+  const { siteId, dateStart, dateEnd } = await loadScheduleMeta(sb, scheduleId);
 
   const { data: pattern, error: patErr } = await sb
     .from('call_patterns')
@@ -82,6 +148,30 @@ export async function takeSnapshot(
     if (error) throw new Error(`rule_definitions snapshot read failed: ${error.message}`);
     ruleDefinitions = (data ?? []) as Array<Record<string, unknown>>;
   }
+
+  // ── Intake extension: availability (org, windowed), profiles (ORG-WIDE —
+  // engines read employment profiles regardless of home site, and
+  // update_provider_profile may patch any org provider, so a home-site-only
+  // capture would let a non-home profile edit escape undo), credentials (this
+  // site). Full rows for a verbatim upsert restore. Always captured (possibly
+  // empty) so the delete-new-availability pass on revert has a defined
+  // baseline. ──
+  const orgPids = await orgProviderIds(sb, siteId);
+  const availabilityRows = orgPids.length > 0
+    ? await readOrgAvailabilityWindow(sb, orgPids, dateStart, dateEnd, '*')
+    : [];
+
+  const profiles: Array<Record<string, unknown>> = [];
+  for (const ids of chunk(orgPids, READ_CHUNK)) {
+    const { data, error } = await sb
+      .from('provider_employment_profiles').select('*').in('provider_id', ids);
+    if (error) throw new Error(`provider_employment_profiles snapshot read failed: ${error.message}`);
+    profiles.push(...((data ?? []) as Array<Record<string, unknown>>));
+  }
+
+  const { data: credentials, error: credErr } = await sb
+    .from('provider_site_credentials').select('*').eq('site_id', siteId);
+  if (credErr) throw new Error(`provider_site_credentials snapshot read failed: ${credErr.message}`);
 
   // Version assignments via slots → assignments (two flat queries; no join
   // filter, so the fake-client path in tests stays trivial).
@@ -111,6 +201,9 @@ export async function takeSnapshot(
       : null,
     shift_types: (shiftTypes ?? []) as Array<Record<string, unknown>>,
     rule_definitions: ruleDefinitions,
+    provider_availability: availabilityRows,
+    provider_employment_profiles: profiles,
+    provider_site_credentials: (credentials ?? []) as Array<Record<string, unknown>>,
   };
 
   const { data: action, error: insErr } = await sb
@@ -165,10 +258,10 @@ export async function revertAction(sb: SchedulingClient, actionId: string): Prom
   const config = action.config_before as ConfigBefore;
   const assignmentsBefore = (action.assignments_before ?? []) as SnapshotAssignmentRow[];
 
-  let siteId: string;
+  let meta: ScheduleMeta;
   let revertActionId: string | null = null;
   try {
-    siteId = await siteIdForSchedule(sb, scheduleId);
+    meta = await loadScheduleMeta(sb, scheduleId);
     // Undo-of-undo: capture the CURRENT (about-to-be-overwritten) state first.
     revertActionId = await takeSnapshot(
       sb, scheduleId, versionId, `Undo of: ${action.summary}`, null,
@@ -183,7 +276,7 @@ export async function revertAction(sb: SchedulingClient, actionId: string): Prom
 
   // ── 1. Restore the call pattern ────────────────────────────────────────────
   if (config?.call_pattern) {
-    const { error } = await replaceActivePattern(sb, siteId, config.call_pattern.definition, {
+    const { error } = await replaceActivePattern(sb, meta.siteId, config.call_pattern.definition, {
       name: config.call_pattern.name,
       source: 'assistant',
     });
@@ -193,7 +286,7 @@ export async function revertAction(sb: SchedulingClient, actionId: string): Prom
     const { error } = await sb
       .from('call_patterns')
       .update({ status: 'archived' })
-      .eq('site_id', siteId)
+      .eq('site_id', meta.siteId)
       .eq('status', 'active');
     if (error) errors.push(`call pattern archive failed: ${error.message}`);
   }
@@ -216,6 +309,65 @@ export async function revertAction(sb: SchedulingClient, actionId: string): Prom
       onConflict: 'id', label: 'assistant revert rule_definitions',
     });
     for (const e of w.rowErrors) errors.push(`rule_definition restore failed: ${e.message}`);
+  }
+
+  // ── 3b–3d. Restore intake state BEFORE assignments — availability feeds the
+  // step-5 revalidation, so it must be correct first. All three blocks are
+  // skipped on pre-intake snapshots (key absent → backward-compatible). ──────
+
+  // 3b. provider_availability: upsert captured rows by id, THEN delete any
+  // current window row the snapshot did not have — a row recorded after the
+  // snapshot (record_availability). Mirrors step-4b's open-slot set-difference;
+  // like it, this is org+window scoped, so an unrelated availability row
+  // inserted after the snapshot within the window is also removed (undo =
+  // restore-to-snapshot). Restore first so a row that existed at snapshot time
+  // (e.g. a cancel_availability status flip) is upserted, never deleted.
+  if (config?.provider_availability !== undefined) {
+    const availRows = config.provider_availability;
+    for (const rows of chunk(availRows, WRITE_CHUNK)) {
+      const w = await bulkWriteWithRowFallback(sb, 'provider_availability', rows, {
+        onConflict: 'id', label: 'assistant revert provider_availability',
+      });
+      for (const e of w.rowErrors) errors.push(`availability restore failed: ${e.message}`);
+    }
+    try {
+      const orgPids = await orgProviderIds(sb, meta.siteId);
+      if (orgPids.length > 0) {
+        const current = await readOrgAvailabilityWindow(
+          sb, orgPids, meta.dateStart, meta.dateEnd, 'id',
+        );
+        const known = new Set(availRows.map(r => r.id as string));
+        const newIds = current.map(r => r.id as string).filter(id => !known.has(id));
+        for (const ids of chunk(newIds, WRITE_CHUNK)) {
+          const { error } = await sb.from('provider_availability').delete().in('id', ids);
+          if (error) errors.push(`availability delete-new failed: ${error.message}`);
+        }
+      }
+    } catch (err) {
+      errors.push(`availability delete-new failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  // 3c. provider_employment_profiles: pure upsert by id (tools never insert new
+  // profile rows, so no delete pass — update_provider_profile UPDATEs only).
+  if (config?.provider_employment_profiles !== undefined) {
+    for (const rows of chunk(config.provider_employment_profiles, WRITE_CHUNK)) {
+      const w = await bulkWriteWithRowFallback(sb, 'provider_employment_profiles', rows, {
+        onConflict: 'id', label: 'assistant revert provider_employment_profiles',
+      });
+      for (const e of w.rowErrors) errors.push(`employment profile restore failed: ${e.message}`);
+    }
+  }
+
+  // 3d. provider_site_credentials: pure upsert by id (same rationale —
+  // update_site_credentials UPDATEs an existing row only).
+  if (config?.provider_site_credentials !== undefined) {
+    for (const rows of chunk(config.provider_site_credentials, WRITE_CHUNK)) {
+      const w = await bulkWriteWithRowFallback(sb, 'provider_site_credentials', rows, {
+        onConflict: 'id', label: 'assistant revert provider_site_credentials',
+      });
+      for (const e of w.rowErrors) errors.push(`site credential restore failed: ${e.message}`);
+    }
   }
 
   // ── 4. Restore assignments (upsert on UNIQUE(schedule_slot_id)) ────────────
@@ -264,7 +416,7 @@ export async function revertAction(sb: SchedulingClient, actionId: string): Prom
   // ── 5. Re-run batch validation so stored flags reflect the restored state ──
   if (versionId) {
     try {
-      const siteCtx = await loadSiteValidationContext(sb, siteId);
+      const siteCtx = await loadSiteValidationContext(sb, meta.siteId);
       const batch = await batchValidateVersion(sb, versionId, siteCtx);
       validationErrors.push(...batch.errors);
     } catch (err) {
