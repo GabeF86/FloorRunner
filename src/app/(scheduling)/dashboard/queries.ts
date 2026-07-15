@@ -86,6 +86,10 @@ interface AttentionAssignment {
 export interface AttentionSlotRow {
   id: string;
   assignments: OneOrMany<AttentionAssignment>;
+  // A slot's shift_type is a to-one FK (mirrors TodaysCallSlotRow.shift_types
+  // below) — always a single object or null, never an array; no asArray()
+  // needed here.
+  shift_types: { category: string } | null;
   schedule_versions: { schedule_id: string; version_number: number } | null;
 }
 
@@ -202,7 +206,11 @@ export function attentionFor(rows: AttentionSlotRow[]): AttentionEntry[] {
       bySchedule.set(v.schedule_id, entry);
     }
     const assignments = asArray(row.assignments);
-    if (!assignments.some(fills)) entry.unfilled++;
+    // Unfilled counter is call-only (day/float/admin slots being open is
+    // normal scheduler workflow, not a rollup warning — Gabriel 2026-07-14).
+    // assigned/checked/hard stay category-blind below: they aggregate real
+    // assignments and violations, which remain meaningful for day slots.
+    if (row.shift_types?.category === 'call' && !assignments.some(fills)) entry.unfilled++;
     for (const a of assignments) {
       if (!a.provider_id) continue; // same guard as the grid page's counter
       entry.assigned++;
@@ -241,7 +249,7 @@ const TODAYS_CALL_COLUMNS =
   'id, slot_date, sites(name, short_name), shift_types!inner(code, name, category, display_order), assignments(provider_id, assignment_status, providers(last_name, short_display_name, initials)), schedule_versions!inner(schedule_id, version_number, version_status, schedules!inner(status))';
 
 const ATTENTION_COLUMNS =
-  'id, assignments(provider_id, assignment_status, validation_flags), schedule_versions!inner(schedule_id, version_number)';
+  'id, assignments(provider_id, assignment_status, validation_flags), shift_types(category), schedule_versions!inner(schedule_id, version_number)';
 
 // PostgREST's silent per-request row cap; also the .range() page size for the
 // rollup. Live repro: 2,201 matching slot rows returned exactly 1,000 with no
