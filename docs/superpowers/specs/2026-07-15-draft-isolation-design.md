@@ -52,3 +52,25 @@ Callers (current behavior → new):
 - Deploy + apply patch21 (Management API, ref qhwdbtixhzdsgwwtcfrm verified, user-gated).
 - Live proof: regenerate nothing — instead re-run the genContext conflict scan logic via a probe (or simply revalidate + have Gabriel regenerate August): the August draft's overlap window should show the July draft no longer blocking. Report counts before/after (crossSiteByDate sizes or unfilled deltas if Gabriel regenerates).
 - `scripts/revalidateAllVersions.ts` after deploy so stored cross-schedule flags reflect the new semantics.
+
+---
+
+## Close-out (2026-07-15)
+
+Merged `c3562a9` to main and deployed. 7 branch commits; T1 (helper + six sites)
+and the full branch each passed dedicated reviews; engine reviewer's findings all
+addressed pre-merge: C1 → publishing now archives superseded published siblings
+(demote-before-flip, .neq self-guard, mutation-pinned tests); C2 → patch21 header
+documents the post-deploy/pre-apply window; S1 → CLAUDE.md wording scoped to
+engine/assistant reads. 729 tests green at merge; goldens untouched.
+
+Rollout: revalidateAllVersions run post-merge — July draft (354 rows) and August
+draft (711 rows) both 0 hard flags. Live proof: 43 provider-date pairs in the
+July draft's 2026-08-09→30 overlap window no longer block August generation.
+Live DB had zero published versions (no sibling repair needed). patch21 NOT yet
+applied — awaiting Gabriel's go (fairness history still counts drafts until then).
+
+Deferred (reviewer nits, non-blocking): S2 setPublishResult declaration order;
+S3 hardCount could be null (vs 0) in validation-unavailable payloads; display-layer
+predicate inlines (dashboard/master-schedule) could route through
+filterPublishedVersions.
