@@ -13,6 +13,7 @@
 // whose violations just changed would keep stale flags client-side until the
 // next full grid load.
 import { evaluateAssignment } from './evaluate';
+import { fetchCommittedAssignments } from './committedAssignments';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type SupabaseClient = any;
@@ -27,21 +28,23 @@ export async function revalidateNeighbors(
   try {
     const { data: changedSlot } = await sb
       .from('schedule_slots')
-      .select('slot_date')
+      .select('slot_date, schedule_version_id')
       .eq('id', changedSlotId)
       .maybeSingle();
     if (!changedSlot) return revalidatedSlotIds;
     const center = (changedSlot as { slot_date: string }).slot_date;
+    const versionId = (changedSlot as { schedule_version_id?: string | null }).schedule_version_id ?? null;
     const start = shiftDate(center, -7);
     const end = shiftDate(center, 7);
 
-    const { data: neighbors } = await sb
-      .from('assignments')
-      .select('id, schedule_slot_id, schedule_slots!inner(slot_date)')
-      .eq('provider_id', providerId)
-      .eq('assignment_status', 'assigned')
-      .gte('schedule_slots.slot_date', start)
-      .lte('schedule_slots.slot_date', end);
+    // Draft isolation (invariant 3): revalidate only the provider's neighbors
+    // that are committed (published) or in the version being edited — an edit
+    // in one draft must not rewrite a different draft's stored flags.
+    const { data: neighbors } = await fetchCommittedAssignments(
+      sb,
+      'id, schedule_slot_id, schedule_slots!inner(slot_date, schedule_versions!inner(version_status))',
+      { providerId, start, end, includeVersionId: versionId },
+    );
 
     for (const row of (neighbors || []) as Array<{
       id: string;

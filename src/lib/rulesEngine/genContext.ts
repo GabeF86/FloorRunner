@@ -25,6 +25,7 @@ import type {
 } from './genTypes';
 
 import { CallPatternDocSchema, patternWarnings, callFillOrderWarnings, type CallPatternDoc } from './callPattern';
+import { fetchCommittedAssignments } from './committedAssignments';
 import { embedArray } from '@/lib/embed';
 
 const DEFAULT_PAR_LEVEL = 12; // fallback when site.call_par_level isn't set
@@ -506,20 +507,26 @@ export async function loadGenerationContext(
   const crossWindowStart = addDays(allSlotDates[0], -1);
   const crossWindowEnd = addDays(allSlotDates[allSlotDates.length - 1], 1);
   countQ();
-  let conflictQuery = sb
-    .from('assignments')
-    .select('provider_id, schedule_slots!inner(slot_date, site_id, schedule_versions!inner(schedule_id))')
-    .in('provider_id', providerIds)
-    .eq('assignment_status', 'assigned')
-    .gte('schedule_slots.slot_date', crossWindowStart)
-    .lte('schedule_slots.slot_date', crossWindowEnd);
-  conflictQuery = parentScheduleId
-    ? conflictQuery.neq('schedule_slots.schedule_versions.schedule_id', parentScheduleId)
-    // Degraded fallback (warned above): the legacy other-sites-only scope.
-    // Never falls back to version-only exclusion — that would self-conflict
-    // cloned sibling versions.
-    : conflictQuery.neq('schedule_slots.site_id', siteId);
-  const { data: crossSite } = await conflictQuery;
+  // Draft isolation (invariant 3): a conflict is a booking in a PUBLISHED
+  // version — an overlapping *unpublished* draft is invisible (resolved at
+  // publish time). Exclude the parent schedule either way (its sibling versions
+  // are clones — counting them self-conflicts every regenerate). Degraded
+  // no-parent fallback keeps the legacy other-sites-only scope AND the
+  // published-only filter — never version-only exclusion (would self-conflict
+  // clones). No includeVersionId: the current version IS the parent schedule,
+  // already excluded, and its own rows are seeded separately.
+  const { data: crossSite } = await fetchCommittedAssignments(
+    sb,
+    'provider_id, schedule_slots!inner(slot_date, site_id, schedule_versions!inner(schedule_id, version_status))',
+    {
+      providerIds,
+      start: crossWindowStart,
+      end: crossWindowEnd,
+      ...(parentScheduleId
+        ? { excludeScheduleId: parentScheduleId }
+        : { excludeSiteId: siteId }),
+    },
+  );
 
   // crossSiteByDate: pid -> Set<date> — provider is assigned elsewhere (another
   // site, or another schedule at this same site) on these dates. Field name

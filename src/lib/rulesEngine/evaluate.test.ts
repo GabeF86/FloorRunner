@@ -133,13 +133,22 @@ describe('loadContext fail-closed (serial provider-section query failures)', () 
     ['availability', { ...okTables(), provider_availability: failure }],
     ['neighbors', {
       ...okTables(),
+      // Only the neighbor query carries the site_id scope; the cross-site
+      // committed-scope reads (published + current version) never do.
       assignments: (filters: Filter[]) =>
-        filters.some(f => f.method === 'gte') ? failure : { data: [], error: null },
+        filters.some(f => f.method === 'eq' && f.args[0] === 'schedule_slots.site_id')
+          ? failure : { data: [], error: null },
     }],
     ['cross-site', {
       ...okTables(),
-      assignments: (filters: Filter[]) =>
-        filters.some(f => f.method === 'gte') ? { data: [], error: null } : failure,
+      // Fail any assignments READ that is NOT the site-scoped neighbor query —
+      // i.e. the two committed-scope cross-site reads. Either failing must
+      // fail-close the whole evaluation (a hidden double-booking is invariant 3).
+      assignments: (filters: Filter[]) => {
+        const isWrite = filters.some(f => ['update', 'insert', 'upsert'].includes(f.method));
+        const isNeighbor = filters.some(f => f.method === 'eq' && f.args[0] === 'schedule_slots.site_id');
+        return !isWrite && !isNeighbor ? failure : { data: [], error: null };
+      },
     }],
     ['same-day slots', {
       ...okTables(),
@@ -190,7 +199,7 @@ describe('loadContext fail-closed (serial provider-section query failures)', () 
 });
 
 describe('loadContext neighbor scoping', () => {
-  it('scopes the neighbor query to the slot version+site; cross-site query stays unscoped', async () => {
+  it('scopes the neighbor query to version+site; the cross-site read is committed-scope (published + this version)', async () => {
     const { sb, calls } = makeFakeSupabase({
       tables: {
         schedule_slots: (filters: Filter[]) => {
@@ -212,13 +221,21 @@ describe('loadContext neighbor scoping', () => {
     const siteScopes = calls.filter(
       c => c.table === 'assignments' && c.method === 'eq' && c.args[0] === 'schedule_slots.site_id',
     );
-    // Exactly one assignments query (the neighbor window) carries each scope —
-    // the cross-site double-booking query must remain unscoped.
-    expect(versionScopes).toHaveLength(1);
-    expect(versionScopes[0].args[1]).toBe('v1');
+    const publishedScopes = calls.filter(
+      c => c.table === 'assignments' && c.method === 'eq'
+        && c.args[0] === 'schedule_slots.schedule_versions.version_status' && c.args[1] === 'published',
+    );
+    // Two version scopes now: the neighbor window AND the cross-site read's
+    // current-version variant (draft isolation) — both this slot's version.
+    expect(versionScopes).toHaveLength(2);
+    expect(versionScopes.every(c => c.args[1] === 'v1')).toBe(true);
+    // Only the neighbor query carries the site scope; the cross-site reads never do.
     expect(siteScopes).toHaveLength(1);
     expect(siteScopes[0].args[1]).toBe('s1');
-    expect(calls.filter(c => c.table === 'assignments' && c.method === 'from').length).toBe(2);
+    // The committed predicate appears exactly once — the cross-site published read.
+    expect(publishedScopes).toHaveLength(1);
+    // Three assignments reads: neighbor + cross-site (published + current version).
+    expect(calls.filter(c => c.table === 'assignments' && c.method === 'from').length).toBe(3);
   });
 });
 

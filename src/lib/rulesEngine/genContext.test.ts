@@ -428,40 +428,63 @@ describe('loadGenerationContext — cross-site window (requirement 5)', () => {
 // same-site assignment in ANOTHER schedule now conflicts, while a sibling
 // version of this schedule never self-conflicts. Mirrors dayShiftAutoGen.
 describe('loadGenerationContext — conflict scan scope (other schedules, same site included)', () => {
-  const conflictRow = (scheduleId: string) => ({
+  // status defaults to 'published' (a committed booking); pass 'draft' to model
+  // an unpublished overlapping draft that draft isolation must ignore.
+  const conflictRow = (scheduleId: string, status = 'published') => ({
     provider_id: 'p1',
     schedule_slots: {
       slot_date: '2026-01-07', site_id: 'site1',
-      schedule_versions: { schedule_id: scheduleId },
+      schedule_versions: { schedule_id: scheduleId, version_status: status },
     },
   });
-  // Emulate the DB's neq filters so the test is sensitive to the query shape.
+  // Emulate the DB's eq/neq filters so the test is sensitive to the query shape:
+  // the published predicate (version_status = 'published') AND the exclusions.
   const conflictAwareAssignments = (rows: Array<ReturnType<typeof conflictRow>>): TableCfg =>
     (filters: Filter[]) => {
+      const eqs = filters.filter(f => f.method === 'eq');
       const neqs = filters.filter(f => f.method === 'neq');
       return {
-        data: rows.filter(r => neqs.every(f => {
-          const [col, val] = f.args as [string, unknown];
-          if (col === 'schedule_slots.site_id') return r.schedule_slots.site_id !== val;
-          if (col === 'schedule_slots.schedule_versions.schedule_id') {
-            return r.schedule_slots.schedule_versions.schedule_id !== val;
-          }
-          return true;
-        })),
+        data: rows.filter(r =>
+          eqs.every(f => {
+            const [col, val] = f.args as [string, unknown];
+            if (col === 'schedule_slots.schedule_versions.version_status') {
+              return r.schedule_slots.schedule_versions.version_status === val;
+            }
+            return true;
+          })
+          && neqs.every(f => {
+            const [col, val] = f.args as [string, unknown];
+            if (col === 'schedule_slots.site_id') return r.schedule_slots.site_id !== val;
+            if (col === 'schedule_slots.schedule_versions.schedule_id') {
+              return r.schedule_slots.schedule_versions.schedule_id !== val;
+            }
+            return true;
+          })),
         error: null,
       };
     };
 
-  it('a same-site assignment in ANOTHER schedule lands in crossSiteByDate; a sibling version of THIS schedule does not', async () => {
+  it('a PUBLISHED same-site assignment in ANOTHER schedule lands in crossSiteByDate; a sibling version of THIS schedule does not', async () => {
     const { res, calls } = await run({
       assignments: conflictAwareAssignments([
-        conflictRow('schedOther'), // other schedule, same site → conflict
+        conflictRow('schedOther'), // other schedule, same site, published → conflict
       ]),
     });
     expect(res.ctx!.crossSiteByDate.get('p1')?.has('2026-01-07')).toBe(true);
     const neqs = calls.filter(c => c.table === 'assignments' && c.method === 'neq');
     expect(neqs.some(c => c.args[0] === 'schedule_slots.schedule_versions.schedule_id' && c.args[1] === 'sched1')).toBe(true);
     expect(neqs.some(c => c.args[0] === 'schedule_slots.site_id')).toBe(false);
+    // The committed predicate is applied.
+    const pub = calls.filter(c => c.table === 'assignments' && c.method === 'eq'
+      && c.args[0] === 'schedule_slots.schedule_versions.version_status' && c.args[1] === 'published');
+    expect(pub).toHaveLength(1);
+  });
+
+  it('a DRAFT overlapping schedule at the same site does NOT block (draft isolation, invariant 3)', async () => {
+    const { res } = await run({
+      assignments: conflictAwareAssignments([conflictRow('schedOther', 'draft')]),
+    });
+    expect(res.ctx!.crossSiteByDate.get('p1')?.has('2026-01-07') ?? false).toBe(false);
   });
 
   it('sibling versions of the SAME schedule are clones — excluded from the conflict map', async () => {
