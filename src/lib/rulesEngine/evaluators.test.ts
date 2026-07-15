@@ -402,6 +402,36 @@ describe('coverage evaluator', () => {
     }), 'coverage');
     expect(v).toHaveLength(0);
   });
+
+  it('implicit check does NOT flag an under-filled REGULAR slot (open day slots are normal workflow)', () => {
+    const v = byCategory(ctx({
+      shiftType: SHIFT_TYPES[3], // D1, regular
+      sameDayAssignments: [sameDay({ code: 'D1', provider_id: null })],
+    }), 'coverage');
+    expect(v).toHaveLength(0);
+  });
+
+  it('implicit check still flags an under-filled CALL slot', () => {
+    const v = byCategory(ctx({
+      sameDayAssignments: [sameDay({ provider_id: null })],
+    }), 'coverage');
+    expect(v).toHaveLength(1);
+    expect(v[0].rule_name).toBe('Slot under-covered');
+  });
+
+  it('rule-driven coverage rule still fires on a REGULAR shift (explicit rules stay category-blind)', () => {
+    const v = byCategory(ctx({
+      shiftType: SHIFT_TYPES[3], // D1, regular
+      rules: [rule({
+        rule_category: 'coverage',
+        condition: { shift_code: 'D1' },
+        action: { min_providers: 1 },
+      })],
+      sameDayAssignments: [sameDay({ code: 'D1', provider_id: null })],
+    }), 'coverage');
+    expect(v).toHaveLength(1);
+    expect(v[0].details).toMatchObject({ assigned: 0, required: 1 });
+  });
 });
 
 // ── pairing ──────────────────────────────────────────────────────────────────

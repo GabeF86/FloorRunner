@@ -589,13 +589,18 @@ const coverage: Evaluator = ctx => {
     }
   }
 
-  // Implicit coverage check: if this slot's required_count > assigned
+  // Implicit coverage check: if this slot's required_count > assigned.
+  // CALL slots only — an under-staffed day (regular/float/admin) slot is
+  // normal scheduler workflow, not a warning (Gabriel 2026-07-15; same
+  // rationale as openSlot's call-only default). Rule-driven coverage rules
+  // above remain category-blind: an explicit rule naming a day code is a
+  // deliberate coverage requirement.
   const mySlotAssignments = ctx.sameDayAssignments.filter(
     a => a.slot_id === ctx.slot.id,
   );
   const assignedToMySlot = mySlotAssignments.filter(a => a.provider_id).length;
   const requiredForMySlot = mySlotAssignments[0]?.required_count ?? 1;
-  if (assignedToMySlot < requiredForMySlot) {
+  if (ctx.shiftType.category === 'call' && assignedToMySlot < requiredForMySlot) {
     violations.push({
       rule_id: null,
       rule_name: 'Slot under-covered',
