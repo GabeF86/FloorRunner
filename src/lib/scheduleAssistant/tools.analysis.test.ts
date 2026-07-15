@@ -13,6 +13,7 @@ import {
   makeFakeSupabase,
   callsFor,
   type TableCfg,
+  type Filter,
 } from '@/lib/rulesEngine/__fixtures__/fakeSupabase';
 
 const ctx: ScheduleCtx = {
@@ -475,6 +476,46 @@ describe('find_unfilled', () => {
 });
 
 // ── who_is_on ────────────────────────────────────────────────────────────────
+//
+// Draft isolation (2026-07-15 spec §4, user-approved behavior change): the tool
+// reads the COMMITTED scope — assignments in PUBLISHED versions (any site) plus
+// this schedule's current version. An unpublished draft of ANOTHER schedule is
+// not a real booking and must be invisible; both directions are pinned below.
+// The executor runs two paged legs per mode (published + current-version) and
+// dedupes, so the fakes emulate the version_status / schedule_version_id eq
+// filters — exclusion is pinned against the emitted query shape, not the fake's
+// goodwill.
+
+// Shared predicate for both fake shapes: assignment rows carry the version info
+// under the schedule_slots embed; slot rows carry it flat.
+function matchesVersionFilters(r: Record<string, unknown>, filters: Filter[]): boolean {
+  const slot = (r.schedule_slots ?? r) as Record<string, unknown>;
+  return filters.every(f => {
+    if (f.method !== 'eq') return true;
+    const [col, val] = f.args as [string, unknown];
+    if (col.endsWith('schedule_versions.version_status')) {
+      return (slot.schedule_versions as { version_status?: string } | undefined)?.version_status === val;
+    }
+    if (col.endsWith('schedule_version_id')) return slot.schedule_version_id === val;
+    return true;
+  });
+}
+function committedAware(rows: Array<Record<string, unknown>>): TableCfg {
+  return (filters) => {
+    const out = rows.filter(r => matchesVersionFilters(r, filters));
+    return { data: out, count: out.length };
+  };
+}
+// Filter-aware AND range-paged (for the row-cap test).
+function pagedCommitted(all: Array<Record<string, unknown>>): TableCfg {
+  return (filters) => {
+    const matching = all.filter(r => matchesVersionFilters(r, filters));
+    const rangeF = filters.find(f => f.method === 'range');
+    const from = (rangeF?.args[0] as number) ?? 0;
+    const to = (rangeF?.args[1] as number) ?? matching.length - 1;
+    return { data: matching.slice(from, to + 1), count: matching.length };
+  };
+}
 
 describe('who_is_on', () => {
   it('requires at least one of provider_id / date (schema cannot express oneOf in strict mode)', async () => {
@@ -490,19 +531,27 @@ describe('who_is_on', () => {
       .rejects.toBeInstanceOf(ToolInputError);
   });
 
-  it('provider mode: one joined query, cross-version + cross-site rows, flags the current version', async () => {
+  it('provider mode: committed scope — current-version draft + published other-version rows; another schedule\'s DRAFT is excluded', async () => {
     const { executors, sb, calls } = run({
-      assignments: canned([
+      assignments: committedAware([
         { id: 'a1', provider_id: 'p1', assignment_status: 'assigned',
           providers: { last_name: 'Smith', short_display_name: 'S. Smith' },   // object embed
           schedule_slots: { id: 'sl1', slot_date: '2026-01-05', site_id: 'site-1',
             derived_day_type: 'weekday', schedule_version_id: 'ver-1',
+            schedule_versions: { version_status: 'draft' },                    // current version, still draft → included
             shift_types: { code: 'C1' }, sites: { name: 'Main', short_name: 'MAIN' } } },
         { id: 'a2', provider_id: 'p1', assignment_status: 'assigned',
           providers: [{ last_name: 'Smith', short_display_name: 'S. Smith' }], // array embed
           schedule_slots: { id: 'sl2', slot_date: '2026-01-06', site_id: 'site-2',
             derived_day_type: 'weekday', schedule_version_id: 'ver-9',
+            schedule_versions: { version_status: 'published' },                // committed elsewhere → included, flagged false
             shift_types: { code: 'C2' }, sites: { name: 'North', short_name: 'NORTH' } } },
+        { id: 'a3', provider_id: 'p1', assignment_status: 'assigned',
+          providers: { short_display_name: 'S. Smith' },
+          schedule_slots: { id: 'sl3', slot_date: '2026-01-06', site_id: 'site-3',
+            derived_day_type: 'weekday', schedule_version_id: 'ver-8',
+            schedule_versions: { version_status: 'draft' },                    // ANOTHER schedule's draft → invisible
+            shift_types: { code: 'C9' }, sites: { short_name: 'WEST' } } },
       ]),
     });
     const out = await executors.who_is_on(sb, ctx, { provider_id: 'p1', date: '2026-01-05', window_days: 1 });
@@ -519,10 +568,33 @@ describe('who_is_on', () => {
       date: '2026-01-06', code: 'C2', site: 'NORTH',
       schedule_version_id: 'ver-9', in_current_version: false,
     });
-    // Filters: provider eq + date window on the joined slot date.
-    expect(callsFor(calls, 'assignments', 'eq').some(c => c.args[0] === 'provider_id' && c.args[1] === 'p1')).toBe(true);
+    // The other-schedule draft row is ABSENT (draft isolation).
+    expect(r.rows.some(row => row.schedule_version_id === 'ver-8')).toBe(false);
+    // Filters: provider eq + date window on the joined slot date, plus the
+    // committed predicate on one leg and the current-version eq on the other.
+    const eqs = callsFor(calls, 'assignments', 'eq');
+    expect(eqs.some(c => c.args[0] === 'provider_id' && c.args[1] === 'p1')).toBe(true);
     expect(callsFor(calls, 'assignments', 'gte')[0].args).toEqual(['schedule_slots.slot_date', '2026-01-04']);
     expect(callsFor(calls, 'assignments', 'lte')[0].args).toEqual(['schedule_slots.slot_date', '2026-01-06']);
+    expect(eqs.some(c => c.args[0] === 'schedule_slots.schedule_versions.version_status' && c.args[1] === 'published')).toBe(true);
+    expect(eqs.some(c => c.args[0] === 'schedule_slots.schedule_version_id' && c.args[1] === 'ver-1')).toBe(true);
+  });
+
+  it('provider mode dedupes a row that is both PUBLISHED and in the current version', async () => {
+    const { executors, sb } = run({
+      assignments: committedAware([
+        { id: 'a1', provider_id: 'p1', assignment_status: 'assigned',
+          providers: { short_display_name: 'S. Smith' },
+          schedule_slots: { id: 'sl1', slot_date: '2026-01-05', site_id: 'site-1',
+            derived_day_type: 'weekday', schedule_version_id: 'ver-1',
+            schedule_versions: { version_status: 'published' },                // satisfies BOTH legs
+            shift_types: { code: 'C1' }, sites: { short_name: 'MAIN' } } },
+      ]),
+    });
+    const out = await executors.who_is_on(sb, ctx, { provider_id: 'p1' });
+    const r = out.result as { total: number; rows: unknown[] };
+    expect(r.total).toBe(1);
+    expect(r.rows).toHaveLength(1);
   });
 
   it('provider mode without a date defaults the window to the schedule range', async () => {
@@ -532,15 +604,47 @@ describe('who_is_on', () => {
     expect(callsFor(calls, 'assignments', 'lte')[0].args).toEqual(['schedule_slots.slot_date', '2026-01-31']);
   });
 
+  it('date mode: committed scope — published + current-version slots included, another schedule\'s DRAFT slots excluded', async () => {
+    const slot = (id: string, version: string, status: string, code: string) => ({
+      id, slot_date: '2026-01-05', site_id: 'site-1', derived_day_type: 'weekday',
+      schedule_version_id: version, schedule_versions: { version_status: status },
+      shift_types: { code }, sites: { short_name: 'MAIN' },
+    });
+    const { executors, sb } = run({
+      schedule_slots: committedAware([
+        slot('sl1', 'ver-1', 'draft', 'C1'),      // current version (draft) → included
+        slot('sl2', 'ver-9', 'published', 'C2'),  // committed elsewhere → included
+        slot('sl3', 'ver-8', 'draft', 'C3'),      // another schedule's draft → invisible
+      ]),
+      // Serve one assigned row per slot id the executor asks for.
+      assignments: (filters) => {
+        const inF = filters.find(f => f.method === 'in');
+        const ids = (inF?.args[1] as string[]) ?? [];
+        return {
+          data: ids.map(id => ({ id: `a-${id}`, schedule_slot_id: id, provider_id: 'p1',
+            assignment_status: 'assigned', providers: { short_display_name: 'S. Smith' } })),
+        };
+      },
+    });
+    const out = await executors.who_is_on(sb, ctx, { date: '2026-01-05' });
+    const r = out.result as {
+      rows: Array<{ code: string; schedule_version_id: string; in_current_version: boolean }>;
+    };
+    expect(r.rows.map(x => x.code).sort()).toEqual(['C1', 'C2']);
+    expect(r.rows.find(x => x.code === 'C1')).toMatchObject({ schedule_version_id: 'ver-1', in_current_version: true });
+    expect(r.rows.find(x => x.code === 'C2')).toMatchObject({ schedule_version_id: 'ver-9', in_current_version: false });
+    expect(r.rows.some(x => x.schedule_version_id === 'ver-8')).toBe(false);
+  });
+
   it('date mode: chunks assignment reads at READ_CHUNK over the slot ids', async () => {
     const manySlots = Array.from({ length: READ_CHUNK + 50 }, (_, i) => ({
       id: `sl${i}`, slot_date: '2026-01-05', site_id: 'site-1',
-      derived_day_type: 'weekday', schedule_version_id: 'ver-1',
+      derived_day_type: 'weekday', schedule_version_id: 'ver-1',  // all current-version (the published leg matches none)
       shift_types: { code: 'C1' }, sites: { short_name: 'MAIN' },
     }));
     // Function-config: serve one assigned row per recorded `.in` chunk.
     const { executors, sb, calls } = run({
-      schedule_slots: canned(manySlots),
+      schedule_slots: committedAware(manySlots),
       assignments: (filters) => {
         const inF = filters.find(f => f.method === 'in');
         const ids = (inF?.args[1] as string[]) ?? [];
@@ -564,23 +668,25 @@ describe('who_is_on', () => {
     expect(r.rows[0].provider).toBe('S. Smith');
   });
 
-  // Review IMPORTANT 2: the date-mode slots read spans all versions/sites —
-  // PostgREST's ~1000-row default cap would silently understate. The read
-  // must page with count:'exact' + .range() until every row arrived
+  // Review IMPORTANT 2: the date-mode slots read spans sites and (published)
+  // schedules — PostgREST's ~1000-row default cap would silently understate.
+  // Both legs must page with count:'exact' + .range() until every row arrived
   // (dashboard fetchRollupRows precedent).
-  it('date mode pages the unscoped slots read past the PostgREST row cap', async () => {
+  it('date mode pages the slots reads past the PostgREST row cap', async () => {
     const ALL = Array.from({ length: 1050 }, (_, i) => ({
       id: `sl${String(i).padStart(4, '0')}`, slot_date: '2026-01-05', site_id: 'site-1',
-      derived_day_type: 'weekday', schedule_version_id: 'ver-1',
+      derived_day_type: 'weekday', schedule_version_id: 'ver-1',  // current-version leg carries all 1050
       shift_types: { code: 'C1' }, sites: { short_name: 'MAIN' },
     }));
     const { executors, sb, calls } = run({
-      schedule_slots: pagedTable(ALL),
+      schedule_slots: pagedCommitted(ALL),
       assignments: canned([]),
     });
     await executors.who_is_on(sb, ctx, { date: '2026-01-05' });
     const ranges = callsFor(calls, 'schedule_slots', 'range');
-    expect(ranges.length).toBe(2); // 1050 rows → full page + short page
+    // Published leg: one (empty) page. Current-version leg: 1050 rows → full
+    // page + short page.
+    expect(ranges.length).toBe(3);
     // Every slot id flowed into the chunked assignment reads: 1050 → 6 chunks.
     expect(callsFor(calls, 'assignments', 'in')).toHaveLength(6);
   });
