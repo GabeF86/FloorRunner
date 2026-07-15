@@ -23,6 +23,7 @@ import { embedArray } from '@/lib/embed';
 // Function-level-only cycle (commit.ts imports batchValidateVersion/chunk from
 // here); nothing crosses at module top level, so evaluation order is safe.
 import { bulkWriteWithRowFallback } from './commit';
+import { fetchCommittedAssignments } from './committedAssignments';
 import {
   providerGroupFromType,
   parseEmbeddedFte,
@@ -183,23 +184,25 @@ export async function batchValidateVersion(
   }
 
   // ── 4. All assigned rows for those providers, version range ±31d ───────────
-  // Deliberately UNSCOPED by site/version: one query serves both the
-  // neighbor window (scoped in memory to this version+site, matching the
-  // serial loadContext filters) and cross-site double-booking detection
-  // (which must see every site and every version).
+  // Committed scope (draft isolation, invariant 3): every PUBLISHED version
+  // plus THIS version under validation. One helper call serves both the
+  // neighbor window (scoped in memory to this version+site, matching the serial
+  // loadContext filters) and cross-site double-booking detection (which must
+  // see every committed schedule + this version — but NOT other drafts).
   const rowsByPid = new Map<string, ProviderJoinedRow[]>();
   if (providerIds.length > 0) {
     dbQueries++;
-    const { data, error } = await sb
-      .from('assignments')
-      .select(
-        'id, provider_id, schedule_slot_id, schedule_slots!inner(id, slot_date, shift_type_id, derived_day_type, site_id, schedule_version_id)',
-      )
-      .in('provider_id', providerIds)
-      .eq('assignment_status', 'assigned')
-      .gte('schedule_slots.slot_date', addDays(minDate, -NEIGHBOR_WINDOW_DAYS))
-      .lte('schedule_slots.slot_date', addDays(maxDate, NEIGHBOR_WINDOW_DAYS));
-    if (error) return bail('assignments window', error.message);
+    const { data, error } = await fetchCommittedAssignments(
+      sb,
+      'id, provider_id, schedule_slot_id, schedule_slots!inner(id, slot_date, shift_type_id, derived_day_type, site_id, schedule_version_id, schedule_versions!inner(version_status))',
+      {
+        providerIds,
+        start: addDays(minDate, -NEIGHBOR_WINDOW_DAYS),
+        end: addDays(maxDate, NEIGHBOR_WINDOW_DAYS),
+        includeVersionId: scheduleVersionId,
+      },
+    );
+    if (error) return bail('assignments window', error.message ?? 'unknown error');
     for (const row of (data || []) as Array<Record<string, unknown>>) {
       if (!row.schedule_slots) continue;
       const pid = row.provider_id as string;
@@ -305,7 +308,9 @@ export async function batchValidateVersion(
       if (mapped) neighborAssignments.push(mapped);
     }
 
-    // Cross-site rows: same date, ANY site/version, self included (serial parity).
+    // Cross-site rows: same date, any COMMITTED (published) site/version plus
+    // this version, self included (serial parity — rowsByPid is already scoped
+    // to committed + current-version by the helper above).
     const crossSiteAssignments: EvaluationContext['crossSiteAssignments'] = [];
     for (const r of providerRows) {
       if ((r.schedule_slots!.slot_date as string) !== slot.slot_date) continue;

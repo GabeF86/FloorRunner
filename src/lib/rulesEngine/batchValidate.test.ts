@@ -80,32 +80,42 @@ const CREDS = ['p1', 'p2'].map(pid => ({
   skill_tags: [],
 }));
 
-// All assigned rows for p1/p2 across all sites/versions (what the real DB
-// holds). ax is p2's C1 at another site+version — the scoping decoy.
-function joined(id: string, pid: string, slotId: string, date: string, code: string, siteId = 's1', versionId = 'v1') {
+// All assigned rows for p1/p2 the real DB holds. The version under validation
+// (v1) is a DRAFT — its rows are seen only via the helper's includeVersionId
+// variant. ax is p2's C1 at another site+version; it is PUBLISHED (committed),
+// so it both cross-flags a2 and serves as the neighbor-scoping decoy.
+function joined(
+  id: string, pid: string, slotId: string, date: string, code: string,
+  siteId = 's1', versionId = 'v1', status = 'draft',
+) {
   return {
     id, provider_id: pid, schedule_slot_id: slotId, assignment_status: 'assigned',
     schedule_slots: {
       id: slotId, slot_date: date, shift_type_id: `st-${code}`,
       derived_day_type: 'weekday', site_id: siteId, schedule_version_id: versionId,
+      schedule_versions: { version_status: status },
     },
   };
 }
+type JoinedRow = ReturnType<typeof joined>;
 const ASSIGNED_ROWS = [
-  joined('a1', 'p1', 'sA', '2026-01-07', 'C1'),
-  joined('a2', 'p2', 'sB', '2026-01-07', 'C2'),
-  joined('a4', 'p1', 'sD', '2026-01-08', 'C2'),
-  joined('a5', 'p2', 'sE', '2026-01-08', 'C2'),
-  joined('ax', 'p2', 'sX', '2026-01-07', 'C1', 's2', 'v9'),
+  joined('a1', 'p1', 'sA', '2026-01-07', 'C1'),                             // v1 draft
+  joined('a2', 'p2', 'sB', '2026-01-07', 'C2'),                             // v1 draft
+  joined('a4', 'p1', 'sD', '2026-01-08', 'C2'),                             // v1 draft
+  joined('a5', 'p2', 'sE', '2026-01-08', 'C2'),                             // v1 draft
+  joined('ax', 'p2', 'sX', '2026-01-07', 'C1', 's2', 'v9', 'published'),    // committed decoy
 ];
 
 // Honest mini-DB for the assignments table: applies the recorded eq/in/gte/lte
-// filters so both the batch and serial query shapes get correctly-filtered rows.
-function assignmentsTable(filters: Filter[]) {
+// filters (including the published predicate and the current-version scope) so
+// both the batch and serial query shapes get correctly-filtered rows. The
+// helper's two-query strategy (published + current version) resolves each
+// variant against this and merges.
+function assignmentsTableFor(source: JoinedRow[], filters: Filter[]) {
   if (filters.some(f => f.method === 'upsert' || f.method === 'update' || f.method === 'insert')) {
     return { data: null, error: null };
   }
-  let rows = ASSIGNED_ROWS;
+  let rows = source;
   for (const f of filters) {
     const [col, val] = f.args as [string, unknown];
     if (f.method === 'eq') {
@@ -114,6 +124,7 @@ function assignmentsTable(filters: Filter[]) {
       if (col === 'schedule_slots.slot_date') rows = rows.filter(r => r.schedule_slots.slot_date === val);
       if (col === 'schedule_slots.site_id') rows = rows.filter(r => r.schedule_slots.site_id === val);
       if (col === 'schedule_slots.schedule_version_id') rows = rows.filter(r => r.schedule_slots.schedule_version_id === val);
+      if (col === 'schedule_slots.schedule_versions.version_status') rows = rows.filter(r => r.schedule_slots.schedule_versions.version_status === val);
     }
     if (f.method === 'in' && col === 'provider_id') {
       rows = rows.filter(r => (val as string[]).includes(r.provider_id));
@@ -126,6 +137,9 @@ function assignmentsTable(filters: Filter[]) {
     }
   }
   return { data: rows, error: null };
+}
+function assignmentsTable(filters: Filter[]) {
+  return assignmentsTableFor(ASSIGNED_ROWS, filters);
 }
 
 function batchTables(over: Record<string, TableCfg> = {}): Record<string, TableCfg> {
@@ -166,10 +180,13 @@ function serialTables(): Record<string, TableCfg> {
 }
 
 describe('batchValidateVersion', () => {
-  it('issues at most 6 queries for the whole version', async () => {
+  it('issues at most 7 queries for the whole version', async () => {
+    // slots + providers + availability + credentials + the committed-scope
+    // assignments window (TWO reads: published + this version, draft isolation)
+    // + one bulk write.
     const { sb, calls } = makeFakeSupabase({ tables: batchTables() });
     await batchValidateVersion(sb, 'v1', siteCtx);
-    expect(fromCount(calls)).toBeLessThanOrEqual(6);
+    expect(fromCount(calls)).toBeLessThanOrEqual(7);
   });
 
   it('per-assignment violations are identical to serial evaluateAssignment', async () => {
@@ -222,6 +239,49 @@ describe('batchValidateVersion', () => {
     // excludes it → no rest violation. A scoping leak in either path would
     // fail here or break the parity loop above.
     expect(byAssignment.get('a5')!.violations).toEqual([]);
+  });
+
+  // Draft isolation (invariant 3): the same-day other-site booking flags a2 as
+  // cross_site ONLY when its version is committed (published). A second
+  // unpublished draft must be invisible.
+  describe('cross-site draft isolation', () => {
+    // p1 alone: one slot in v1(draft) at s1, plus a same-day booking at s2 in a
+    // separate version whose publish status is the variable under test.
+    const isoSlots = [slot('sA', '2026-01-07', 'C1', { id: 'a1', provider_id: 'p1', assignment_status: 'assigned' })];
+    const isoProviders = [{ id: 'p1', provider_type: 'physician', provider_employment_profiles: { fte_value: 1 } }];
+    const isoCreds = [{
+      provider_id: 'p1', site_id: 's1', is_active: true, credentialed: true,
+      can_take_call: true, can_take_weekend_call: true, can_take_holiday_call: true,
+      can_take_backup_call: true, allowed_shift_types: [], excluded_shift_types: [], skill_tags: [],
+    }];
+    const isoTables = (otherStatus: string): Record<string, TableCfg> => ({
+      schedule_slots: { data: isoSlots, error: null },
+      providers: { data: isoProviders, error: null },
+      provider_availability: { data: [], error: null },
+      provider_site_credentials: { data: isoCreds, error: null },
+      assignments: (filters: Filter[]) => assignmentsTableFor([
+        joined('a1', 'p1', 'sA', '2026-01-07', 'C1', 's1', 'v1', 'draft'),          // self (current version)
+        joined('aO', 'p1', 'sO', '2026-01-07', 'C1', 's2', 'v9', otherStatus),      // other site + version
+      ], filters),
+    });
+
+    it('a PUBLISHED other-site booking → cross_site hard flag', async () => {
+      const { sb } = makeFakeSupabase({ tables: isoTables('published') });
+      const res = await batchValidateVersion(sb, 'v1', siteCtx);
+      const a1 = res.results.find(r => r.assignmentId === 'a1')!;
+      expect(a1.evaluated).toBe(true);
+      expect(a1.violations).toEqual(
+        expect.arrayContaining([expect.objectContaining({ category: 'cross_site', severity: 'hard' })]),
+      );
+    });
+
+    it('a DRAFT other-site booking → no cross_site flag', async () => {
+      const { sb } = makeFakeSupabase({ tables: isoTables('draft') });
+      const res = await batchValidateVersion(sb, 'v1', siteCtx);
+      const a1 = res.results.find(r => r.assignmentId === 'a1')!;
+      expect(a1.evaluated).toBe(true);
+      expect(a1.violations.some(v => v.category === 'cross_site')).toBe(false);
+    });
   });
 
   it('persists with ONE bulk upsert (id + validation_flags per row)', async () => {

@@ -78,10 +78,13 @@ function slot(o: {
   };
 }
 
-// Provider-wide assignments-window row (joined shape, NO version filter).
+// Provider-wide assignments-window row (joined shape). `version` defaults to
+// the trigger's own version 'v1' and `status` to 'draft' (the version under
+// edit — seen via the helper's includeVersionId variant). A row in ANOTHER
+// version only surfaces when it is committed (status 'published').
 function winAssign(o: {
   id: string; date: string; code: string; site?: string; version?: string;
-  slotId?: string; source?: string; stOpts?: StOpts;
+  status?: string; slotId?: string; source?: string; stOpts?: StOpts;
 }) {
   return {
     id: o.id,
@@ -91,6 +94,7 @@ function winAssign(o: {
       slot_date: o.date,
       site_id: o.site ?? 'siteA',
       schedule_version_id: o.version ?? 'v1',
+      schedule_versions: { version_status: o.status ?? 'draft' },
       shift_types: st(o.code, o.stOpts),
     },
   };
@@ -111,10 +115,24 @@ function tables(o: {
       filters.some(f => f.method === 'eq' && f.args[0] === 'id')
         ? { data: o.trigger ?? null }
         : { data: o.slots ?? [] },
-    assignments: (filters) =>
-      filters.some(f => ['update', 'insert', 'upsert'].includes(f.method))
-        ? { data: [{}], error: null }
-        : { data: o.assignments ?? [], error: null },
+    // Honors the helper's two committed-scope reads: the published variant
+    // (version_status = 'published') and the current-version variant
+    // (schedule_version_id = trigger's version). Each read resolves against the
+    // canned rows; the helper merges + dedupes them.
+    assignments: (filters) => {
+      if (filters.some(f => ['update', 'insert', 'upsert'].includes(f.method))) {
+        return { data: [{}], error: null };
+      }
+      const rows = (o.assignments ?? []) as Array<{
+        schedule_slots: { schedule_version_id: string; schedule_versions?: { version_status?: string } };
+      }>;
+      const publishedEq = filters.find(f => f.method === 'eq' && f.args[0] === 'schedule_slots.schedule_versions.version_status');
+      const versionEq = filters.find(f => f.method === 'eq' && f.args[0] === 'schedule_slots.schedule_version_id');
+      let data = rows;
+      if (publishedEq) data = data.filter(r => r.schedule_slots.schedule_versions?.version_status === publishedEq.args[1]);
+      if (versionEq) data = data.filter(r => r.schedule_slots.schedule_version_id === versionEq.args[1]);
+      return { data, error: null };
+    },
     provider_availability: { data: o.availability ?? [] },
     call_patterns: { data: o.callPatternRow ?? null },
   };
@@ -306,15 +324,16 @@ describe('applySequenceAutoFill — pattern-driven fill', () => {
 // ── post-call rest guard (clinical invariant 1) ──────────────────────────────
 
 describe('applySequenceAutoFill — post-call rest guard', () => {
-  it('declines a fill on the rest day of ANOTHER rest-requiring call (any site/version)', async () => {
-    // The provider holds a rest-requiring 24h call on Mon at site B (different
-    // version). Tue is their post-call day off — the D1 fill must decline.
+  it('declines a fill on the rest day of ANOTHER rest-requiring call (any site, any PUBLISHED version)', async () => {
+    // The provider holds a rest-requiring 24h call on Mon at site B in a
+    // committed (published) version. Tue is their post-call day off — the D1
+    // fill must decline.
     const { sb, calls } = makeFakeSupabase({
       tables: tables({
         trigger: triggerSlot({ date: MON }),
         slots: [slot({ id: 'slot-d1-tue', date: TUE, code: 'D1', assignments: [openRow('open-1')] })],
         assignments: [winAssign({
-          id: 'a-callB', date: MON, code: 'CX', site: 'siteB', version: 'v2', slotId: 'slot-callB',
+          id: 'a-callB', date: MON, code: 'CX', site: 'siteB', version: 'v2', status: 'published', slotId: 'slot-callB',
           stOpts: { category: 'call', call_rank: 0, requires_post_call_rule: true },
         })],
       }),
@@ -349,13 +368,13 @@ describe('applySequenceAutoFill — post-call rest guard', () => {
 // ── 2. cross-site fix: provider-wide same-day conflict (any site/version) ───
 
 describe('applySequenceAutoFill — cross-site conflict (clinical invariant 3)', () => {
-  it('does NOT fill D1 when the provider is assigned that day at another site in a different version', async () => {
+  it('does NOT fill D1 when the provider is assigned that day at another site in a PUBLISHED version', async () => {
     const { sb, calls } = makeFakeSupabase({
       tables: tables({
         trigger: triggerSlot({ date: MON }),
         slots: [slot({ id: 'slot-d1-tue', date: TUE, code: 'D1', assignments: [openRow('open-1')] })],
         assignments: [winAssign({
-          id: 'x1', date: TUE, code: 'OR1', site: 'siteB', version: 'v2',
+          id: 'x1', date: TUE, code: 'OR1', site: 'siteB', version: 'v2', status: 'published',
           stOpts: { category: 'regular' },
         })],
       }),
@@ -368,13 +387,33 @@ describe('applySequenceAutoFill — cross-site conflict (clinical invariant 3)',
     expect(inserts(calls)).toHaveLength(0);
   });
 
-  it('same-site same-day conflict is recorded as occupied, not cross-site', async () => {
+  // Draft isolation (invariant 3): the SAME booking, but in an unpublished
+  // DRAFT of another version, is invisible — D1 fills and no skip is recorded.
+  it('DOES fill D1 when the other-site booking is an unpublished DRAFT (draft isolation)', async () => {
+    const { sb, calls } = makeFakeSupabase({
+      tables: tables({
+        trigger: triggerSlot({ date: MON }),
+        slots: [slot({ id: 'slot-d1-tue', date: TUE, code: 'D1', assignments: [openRow('open-1')] })],
+        assignments: [winAssign({
+          id: 'x1', date: TUE, code: 'OR1', site: 'siteB', version: 'v2', status: 'draft',
+          stOpts: { category: 'regular' },
+        })],
+      }),
+    });
+    const result = await applySequenceAutoFill(sb, 'trig', 'p1', CLASSIC_PATTERN);
+
+    expect(result.filledSlotIds).toEqual(['slot-d1-tue']);
+    expect(result.skips.every(s => s.code !== 'D1')).toBe(true);
+    expect(updates(calls)).toHaveLength(1);
+  });
+
+  it('same-site same-day conflict (published) is recorded as occupied, not cross-site', async () => {
     const { sb } = makeFakeSupabase({
       tables: tables({
         trigger: triggerSlot({ date: MON }),
         slots: [slot({ id: 'slot-d1-tue', date: TUE, code: 'D1', assignments: [openRow('open-1')] })],
         assignments: [winAssign({
-          id: 'x1', date: TUE, code: 'OR1', site: 'siteA', version: 'v2',
+          id: 'x1', date: TUE, code: 'OR1', site: 'siteA', version: 'v2', status: 'published',
           stOpts: { category: 'regular' },
         })],
       }),
@@ -386,14 +425,14 @@ describe('applySequenceAutoFill — cross-site conflict (clinical invariant 3)',
 
   it('labels relative to the CHOSEN slot site: conflict at siteB with the only candidate at siteB → occupied', async () => {
     // The fill would land at siteB (sole candidate); the provider's conflicting
-    // assignment is also at siteB — same-site relative to where the fill goes,
-    // even though it differs from the trigger site.
+    // (published) assignment is also at siteB — same-site relative to where the
+    // fill goes, even though it differs from the trigger site.
     const { sb } = makeFakeSupabase({
       tables: tables({
         trigger: triggerSlot({ date: MON }),
         slots: [slot({ id: 'slot-d1-tue-b', date: TUE, code: 'D1', site: 'siteB', assignments: [openRow('open-b')] })],
         assignments: [winAssign({
-          id: 'x1', date: TUE, code: 'OR1', site: 'siteB', version: 'v2',
+          id: 'x1', date: TUE, code: 'OR1', site: 'siteB', version: 'v2', status: 'published',
           stOpts: { category: 'regular' },
         })],
       }),
@@ -590,13 +629,15 @@ describe('applySequenceAutoFill — rank precedence (renamed D3→PRE)', () => {
     expect(updates(calls)).toHaveLength(0);
   });
 
-  it('an auto-generated PRE in a DIFFERENT schedule version is not evicted', async () => {
+  it('an auto-generated PRE in a DIFFERENT (published) schedule version is not evicted', async () => {
+    // The other version is PUBLISHED, so its PRE is visible; the eviction guard
+    // is same-version-only, so it survives and blocks the D1 fill as occupied.
     const { sb, calls } = makeFakeSupabase({
       tables: tables({
         trigger: triggerSlot({ date: MON }),
         slots: [slot({ id: 'slot-d1-tue', date: TUE, code: 'D1', assignments: [openRow('open-1')] })],
         assignments: [winAssign({
-          id: 'a-pre', date: TUE, code: 'PRE', version: 'v2', source: 'auto_generated',
+          id: 'a-pre', date: TUE, code: 'PRE', version: 'v2', status: 'published', source: 'auto_generated',
         })],
       }),
     });
@@ -645,7 +686,7 @@ describe('applySequenceAutoFill — rank precedence (renamed D3→PRE)', () => {
 // ── 6. query budget ──────────────────────────────────────────────────────────
 
 describe('applySequenceAutoFill — query budget', () => {
-  it('a fill costs ≤5 DB calls: trigger + assignments-window + availability + slots + 1 write', async () => {
+  it('a fill costs ≤6 DB calls: trigger + assignments-window (published + current version) + availability + slots + 1 write', async () => {
     const { sb, calls } = makeFakeSupabase({
       tables: tables({
         trigger: triggerSlot({ date: MON }),
@@ -654,10 +695,12 @@ describe('applySequenceAutoFill — query budget', () => {
     });
     await applySequenceAutoFill(sb, 'trig', 'p1', CLASSIC_PATTERN);
 
-    expect(fromCount(calls)).toBeLessThanOrEqual(5);
+    expect(fromCount(calls)).toBeLessThanOrEqual(6);
     expect(fromCount(calls, 'schedule_slots')).toBe(2);      // trigger fetch + slots window
     expect(fromCount(calls, 'provider_availability')).toBe(1);
-    expect(callsFor(calls, 'assignments', 'select')).toHaveLength(1); // one window read
+    // Draft isolation: the window is two committed-scope reads (published
+    // versions + the trigger's own version), merged in the helper.
+    expect(callsFor(calls, 'assignments', 'select')).toHaveLength(2);
   });
 });
 

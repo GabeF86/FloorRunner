@@ -776,11 +776,22 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
         body: JSON.stringify({ status: 'published' }),
       });
       if (!res.ok) throw new Error('Failed to publish');
+      // Non-blocking post-publish revalidation (draft isolation): the schedule
+      // is published either way — surface hard conflicts against OTHER published
+      // schedules (invisible while both were drafts), or say if it couldn't run.
+      const data = await res.json().catch(() => null);
+      const pv = data?.publishValidation as
+        | { hardCount?: number; softCount?: number; errors?: string[] }
+        | undefined;
+      setPublishResult(pv ?? null);
       await loadGrid();
     } catch {
       setActionError('Failed to publish schedule');
     }
   };
+  const [publishResult, setPublishResult] = useState<{
+    hardCount?: number; softCount?: number; errors?: string[];
+  } | null>(null);
 
   const [generating, setGenerating] = useState(false);
   const [genResult, setGenResult] = useState<{
@@ -1164,6 +1175,27 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
                 }, {})).map(([reason, n]) => `${n} ${reason}`).join(', ')}
                 ) — left unassigned, see unfilled/derived report.
               </div>
+            )}
+          </Banner>
+        </div>
+      )}
+
+      {/* Publish revalidation result — only surfaces when there is something to
+          flag: hard conflicts against other published schedules, or that
+          validation could not run (never fake-clean, invariant 6). */}
+      {publishResult && ((publishResult.hardCount ?? 0) > 0 || (publishResult.errors?.length ?? 0) > 0) && (
+        <div style={{ marginBottom: 8 }}>
+          <Banner tone="warn" onDismiss={() => setPublishResult(null)}>
+            {(publishResult.errors?.length ?? 0) > 0 ? (
+              <span>
+                Published, but conflict validation could not run — the grid may hold
+                unflagged conflicts. ({publishResult.errors!.slice(0, 2).join(' · ')})
+              </span>
+            ) : (
+              <span>
+                Published with {publishResult.hardCount} hard conflict{publishResult.hardCount !== 1 ? 's' : ''} against
+                other published schedules — check the grid.
+              </span>
             )}
           </Banner>
         </div>

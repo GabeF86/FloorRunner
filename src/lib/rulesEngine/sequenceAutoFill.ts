@@ -9,9 +9,10 @@
 // generation disagree about the chain shape).
 //
 // Sanctioned I/O module (like genContext/commit). Query budget per invocation:
-// one trigger-slot fetch + one provider-wide assignments-window read + one
-// availability read + one candidate-slots read (fired in parallel), then
-// in-memory evaluation (+ the writes). Callers holding a cached CallPatternDoc
+// one trigger-slot fetch + the provider-wide assignments-window read (two
+// committed-scope queries — published + the trigger's own version — merged in
+// the helper) + one availability read + one candidate-slots read (fired in
+// parallel), then in-memory evaluation (+ the writes). Callers holding a cached CallPatternDoc
 // pass it via `doc`; otherwise the module loads the site's active pattern once
 // (using the trigger slot's site) and surfaces load problems in
 // `patternWarnings`.
@@ -20,6 +21,7 @@
 // (clinical invariant 4: left unassigned AND recorded, never silently dropped).
 
 import { addDays, daysBetween, isBlockingAvailability } from './shared';
+import { fetchCommittedAssignments } from './committedAssignments';
 import { embedArray } from '@/lib/embed';
 import {
   CLASSIC_PATTERN,
@@ -239,24 +241,27 @@ async function loadTriggerSlot(sb: SupabaseClient, slotId: string): Promise<Load
   );
 }
 
-// Provider-wide assignments window: ANY site, ANY schedule version (clinical
-// invariant 3 — the old version-scoped check let cross-site double-bookings
-// through). One query; all link evaluation happens in memory.
+// Provider-wide assignments window: every PUBLISHED (committed) version at any
+// site, PLUS the trigger's own draft version (clinical invariant 3 + draft
+// isolation — cross-site double-bookings against committed schedules still
+// block, but an overlapping unpublished draft does not). The trigger's version
+// MUST stay visible: eviction (same-version guard, L~491) and occupied-checks
+// read those rows. Two committed-scope queries merged in the helper; all link
+// evaluation happens in memory.
 async function loadAssignmentsWindow(
   sb: SupabaseClient,
   providerId: string,
+  versionId: string,
   start: string,
   end: string,
 ): Promise<LoadOutcome<WindowAssignment[]>> {
   return loadWithNarrowRetry<WindowAssignment[]>(
     'assignments window', [],
-    stCols => sb
-      .from('assignments')
-      .select(`id, source_type, schedule_slots!inner(id, slot_date, site_id, schedule_version_id, shift_types(${stCols}))`)
-      .eq('provider_id', providerId)
-      .eq('assignment_status', 'assigned')
-      .gte('schedule_slots.slot_date', start)
-      .lte('schedule_slots.slot_date', end),
+    stCols => fetchCommittedAssignments(
+      sb,
+      `id, source_type, schedule_slots!inner(id, slot_date, site_id, schedule_version_id, schedule_versions!inner(version_status), shift_types(${stCols}))`,
+      { providerId, start, end, includeVersionId: versionId },
+    ),
     data => {
       const out: WindowAssignment[] = [];
       for (const raw of ((data || []) as Array<Record<string, unknown>>)) {
@@ -407,7 +412,7 @@ export async function applySequenceAutoFill(
 
   // The three reads are independent — one round-trip of latency, not three.
   const [windowLoad, availLoad, candLoad] = await Promise.all([
-    loadAssignmentsWindow(sb, providerId, windowStart, windowEnd),
+    loadAssignmentsWindow(sb, providerId, trigger.schedule_version_id, windowStart, windowEnd),
     loadAvailabilityWindow(sb, providerId, windowStart, windowEnd),
     loadCandidateSlots(sb, trigger.schedule_version_id, addDays(trigger.slot_date, -maxAbs), windowEnd),
   ]);

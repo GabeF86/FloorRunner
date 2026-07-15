@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { sbSchedulingServer } from '@/lib/supabaseScheduling';
+import { fetchCommittedAssignments } from '@/lib/rulesEngine/committedAssignments';
 
 // GET /api/scheduling/providers/:id/burden?from=...&to=...
 // Computes call burden from assignments on-the-fly.
@@ -20,17 +21,15 @@ export async function GET(
   const from = searchParams.get('from') || `${now.getFullYear()}-01-01`;
   const to = searchParams.get('to') || `${now.getFullYear()}-12-31`;
 
-  // Fetch all this provider's assignments in the window, joined to slots + shift types
-  const { data: assignments, error } = await sb
-    .from('assignments')
-    .select(
-      'id, assignment_status, source_type, assigned_at, schedule_slots!inner(slot_date, derived_day_type, site_id, shift_types(code, name, category, counts_toward_call_burden, counts_as_weekend_burden, counts_as_holiday_burden))',
-    )
-    .eq('provider_id', providerId)
-    .eq('assignment_status', 'assigned')
-    .gte('schedule_slots.slot_date', from)
-    .lte('schedule_slots.slot_date', to)
-    .order('schedule_slots(slot_date)', { ascending: false });
+  // Fetch this provider's COMMITTED assignments in the window (draft isolation:
+  // only PUBLISHED versions count toward burden — an unpublished draft is not a
+  // real booking). No current-version context here — this is pure committed
+  // reporting, so it funnels straight through the shared committed-scope helper.
+  const { data: assignments, error } = await fetchCommittedAssignments(
+    sb,
+    'id, assignment_status, source_type, assigned_at, schedule_slots!inner(slot_date, derived_day_type, site_id, schedule_versions!inner(version_status), shift_types(code, name, category, counts_toward_call_burden, counts_as_weekend_burden, counts_as_holiday_burden))',
+    { providerId, start: from, end: to },
+  );
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
 
@@ -86,6 +85,9 @@ export async function GET(
       site_id: slot.site_id as string,
     });
   }
+
+  // Newest-first (the helper does not order; the previous DB query did).
+  history.sort((a, b) => b.slot_date.localeCompare(a.slot_date));
 
   return NextResponse.json({ period: { from, to }, burden, history });
 }

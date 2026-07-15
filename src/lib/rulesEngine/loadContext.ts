@@ -3,6 +3,7 @@
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type SupabaseClient = any;
 import { addDays, NEIGHBOR_WINDOW_DAYS, AVAIL_WINDOW_DAYS } from './shared';
+import { fetchCommittedAssignments } from './committedAssignments';
 import { embedArray } from '@/lib/embed';
 import type {
   EvaluationContext,
@@ -315,19 +316,25 @@ export async function loadContext(
     });
   }
 
-  // 6. Cross-site assignments for this provider on the same date
-  //    (across ALL schedules, not just this version — to detect double-booking)
+  // 6. Cross-site assignments for this provider on the same date — every
+  //    PUBLISHED (committed) version plus THIS slot's version (draft isolation,
+  //    invariant 3). The self row is included via includeVersionId; an
+  //    overlapping *other* draft is invisible (resolved at publish time).
   let crossSiteAssignments: EvaluationContext['crossSiteAssignments'] = [];
   if (providerId) {
-    const { data: crossSite, error: crossSiteErr } = await sb
-      .from('assignments')
-      .select('id, schedule_slots!inner(site_id, slot_date, shift_type_id)')
-      .eq('provider_id', providerId)
-      .eq('assignment_status', 'assigned')
-      .eq('schedule_slots.slot_date', slotRow.slot_date);
+    const { data: crossSite, error: crossSiteErr } = await fetchCommittedAssignments(
+      sb,
+      'id, schedule_slots!inner(site_id, slot_date, shift_type_id, schedule_versions!inner(version_status))',
+      {
+        providerId,
+        start: slotRow.slot_date,
+        end: slotRow.slot_date,
+        includeVersionId: scheduleVersionId,
+      },
+    );
     if (crossSiteErr) return null; // a hidden double-booking is invariant 3 broken
 
-    crossSiteAssignments = ((crossSite || []) as JoinedAssignmentRow[])
+    crossSiteAssignments = ((crossSite ?? []) as unknown as JoinedAssignmentRow[])
       .map(row => mapCrossSiteRow(row, shiftTypesById))
       .filter((x): x is NonNullable<typeof x> => x !== null);
   }

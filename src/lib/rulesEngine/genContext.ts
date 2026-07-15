@@ -25,6 +25,7 @@ import type {
 } from './genTypes';
 
 import { CallPatternDocSchema, patternWarnings, callFillOrderWarnings, type CallPatternDoc } from './callPattern';
+import { fetchCommittedAssignments, filterPublishedVersions } from './committedAssignments';
 import { embedArray } from '@/lib/embed';
 
 const DEFAULT_PAR_LEVEL = 12; // fallback when site.call_par_level isn't set
@@ -506,20 +507,26 @@ export async function loadGenerationContext(
   const crossWindowStart = addDays(allSlotDates[0], -1);
   const crossWindowEnd = addDays(allSlotDates[allSlotDates.length - 1], 1);
   countQ();
-  let conflictQuery = sb
-    .from('assignments')
-    .select('provider_id, schedule_slots!inner(slot_date, site_id, schedule_versions!inner(schedule_id))')
-    .in('provider_id', providerIds)
-    .eq('assignment_status', 'assigned')
-    .gte('schedule_slots.slot_date', crossWindowStart)
-    .lte('schedule_slots.slot_date', crossWindowEnd);
-  conflictQuery = parentScheduleId
-    ? conflictQuery.neq('schedule_slots.schedule_versions.schedule_id', parentScheduleId)
-    // Degraded fallback (warned above): the legacy other-sites-only scope.
-    // Never falls back to version-only exclusion — that would self-conflict
-    // cloned sibling versions.
-    : conflictQuery.neq('schedule_slots.site_id', siteId);
-  const { data: crossSite } = await conflictQuery;
+  // Draft isolation (invariant 3): a conflict is a booking in a PUBLISHED
+  // version — an overlapping *unpublished* draft is invisible (resolved at
+  // publish time). Exclude the parent schedule either way (its sibling versions
+  // are clones — counting them self-conflicts every regenerate). Degraded
+  // no-parent fallback keeps the legacy other-sites-only scope AND the
+  // published-only filter — never version-only exclusion (would self-conflict
+  // clones). No includeVersionId: the current version IS the parent schedule,
+  // already excluded, and its own rows are seeded separately.
+  const { data: crossSite } = await fetchCommittedAssignments(
+    sb,
+    'provider_id, schedule_slots!inner(slot_date, site_id, schedule_versions!inner(schedule_id, version_status))',
+    {
+      providerIds,
+      start: crossWindowStart,
+      end: crossWindowEnd,
+      ...(parentScheduleId
+        ? { excludeScheduleId: parentScheduleId }
+        : { excludeSiteId: siteId }),
+    },
+  );
 
   // crossSiteByDate: pid -> Set<date> — provider is assigned elsewhere (another
   // site, or another schedule at this same site) on these dates. Field name
@@ -570,14 +577,23 @@ export async function loadGenerationContext(
       ? 'historical_call_counts RPC unavailable — using legacy scan (apply patch18)'
       : `historical_call_counts RPC failed — using legacy scan: ${rpcErr.message || 'unknown error'}`);
     countQ();
-    const { data: hist } = await sb
-      .from('assignments')
-      .select('provider_id, schedule_slots!inner(slot_date, site_id, derived_day_type, shift_types!inner(code, category))')
-      .in('provider_id', providerIds)
-      .eq('assignment_status', 'assigned')
-      .eq('schedule_slots.site_id', siteId)
-      .eq('schedule_slots.shift_types.category', 'call')
-      .lt('schedule_slots.slot_date', minDate);
+    // Draft isolation (invariant 3): historical fairness counts only COMMITTED
+    // past call — a booking in a PUBLISHED version. A past DRAFT schedule (or a
+    // superseded sibling draft) must not skew the burden. The published RPC path
+    // (patch21) does this in SQL; this legacy fallback applies the same predicate
+    // in code via the one shared home. Shape (per-site `.eq` + unbounded `.lt`,
+    // no cross-version include) doesn't fit fetchCommittedAssignments' option
+    // bag, so we layer the predicate on directly.
+    const { data: hist } = await filterPublishedVersions(
+      sb
+        .from('assignments')
+        .select('provider_id, schedule_slots!inner(slot_date, site_id, derived_day_type, schedule_versions!inner(version_status), shift_types!inner(code, category))')
+        .in('provider_id', providerIds)
+        .eq('assignment_status', 'assigned')
+        .eq('schedule_slots.site_id', siteId)
+        .eq('schedule_slots.shift_types.category', 'call')
+        .lt('schedule_slots.slot_date', minDate),
+    );
 
     for (const row of (hist || []) as Array<Record<string, unknown>>) {
       const pid = row.provider_id as string | null;
