@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { NextRequest } from 'next/server';
-import { makeFakeSupabase, callsFor } from '@/lib/rulesEngine/__fixtures__/fakeSupabase';
+import { makeFakeSupabase, callsFor, type Filter } from '@/lib/rulesEngine/__fixtures__/fakeSupabase';
 
 // ── Mocks ────────────────────────────────────────────────────────────────────
 // The route's post-publish revalidation seam is publishRevalidation (which runs
@@ -76,5 +76,76 @@ describe('PATCH /api/scheduling/schedules/:id — publish flow', () => {
     const { json } = await patch({ notes: 'edit' });
     expect(holder.revalidate).not.toHaveBeenCalled();
     expect(json.publishValidation).toBeUndefined();
+  });
+});
+
+// ── C1: superseded published siblings are demoted on publish ─────────────────
+// "Committed = published" makes published-ness load-bearing: a schedule with
+// TWO published versions counts phantom bookings in every other schedule's
+// conflict scans and double-counts call history. The fake emulates the demote
+// UPDATE's filters against a mini version table so the semantics are pinned as
+// behavior (only published siblings; never the target; drafts untouched), not
+// just query shape.
+
+type VersionRow = { id: string; schedule_id: string; version_status: string };
+
+function demoteAware(rows: VersionRow[], latest: { id: string; version_number: number }) {
+  const demoted: string[] = [];
+  const cfg = (filters: Filter[]) => {
+    const upd = filters.find(f => f.method === 'update');
+    if (upd && (upd.args[0] as { version_status?: string }).version_status === 'archived') {
+      demoted.push(...rows.filter(r => filters.every(f => {
+        const [col, val] = f.args as [string, unknown];
+        if (f.method === 'eq') return (r as Record<string, unknown>)[col] === val;
+        if (f.method === 'neq') return (r as Record<string, unknown>)[col] !== val;
+        return true;
+      })).map(r => r.id));
+      return { data: null, error: null };
+    }
+    if (upd) return { data: null, error: null }; // the publish flip
+    return { data: latest, error: null };        // the latest-version select
+  };
+  return { cfg, demoted };
+}
+
+describe('PATCH /api/scheduling/schedules/:id — superseded published siblings (C1)', () => {
+  it('publishing archives the published sibling ONLY — drafts and the target untouched; revalidation still runs', async () => {
+    const { cfg, demoted } = demoteAware([
+      { id: 'ver-9', schedule_id: 'sched-1', version_status: 'draft' },     // the target (latest)
+      { id: 'ver-8', schedule_id: 'sched-1', version_status: 'published' }, // superseded → archived
+      { id: 'ver-7', schedule_id: 'sched-1', version_status: 'draft' },     // draft → untouched
+    ], { id: 'ver-9', version_number: 4 });
+    setup({ schedule_versions: cfg });
+    const { res } = await patch({ status: 'published' });
+    expect(res.status).toBe(200);
+    expect(demoted).toEqual(['ver-8']);
+    expect(holder.revalidate).toHaveBeenCalledWith(holder.sb, 'site-1', 'ver-9');
+  });
+
+  it('re-publishing the already-published latest version archives NOTHING (.neq self-guard)', async () => {
+    const { cfg, demoted } = demoteAware([
+      { id: 'ver-9', schedule_id: 'sched-1', version_status: 'published' }, // the target, already published
+      { id: 'ver-7', schedule_id: 'sched-1', version_status: 'draft' },
+    ], { id: 'ver-9', version_number: 4 });
+    setup({ schedule_versions: cfg });
+    const { res } = await patch({ status: 'published' });
+    expect(res.status).toBe(200);
+    expect(demoted).toEqual([]);
+    expect(holder.revalidate).toHaveBeenCalled();
+  });
+
+  it('a failed demotion fails the publish loudly — phantom committed bookings must not persist silently', async () => {
+    setup({
+      schedule_versions: (filters: Filter[]) => {
+        const upd = filters.find(f => f.method === 'update');
+        if (upd && (upd.args[0] as { version_status?: string }).version_status === 'archived') {
+          return { data: null, error: { message: 'demote blocked' } };
+        }
+        return { data: { id: 'ver-9', version_number: 4 }, error: null };
+      },
+    });
+    const { res, json } = await patch({ status: 'published' });
+    expect(res.status).toBe(500);
+    expect(json.error).toBe('demote blocked');
   });
 });

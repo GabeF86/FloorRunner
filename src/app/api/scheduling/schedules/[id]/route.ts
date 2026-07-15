@@ -69,6 +69,21 @@ export async function PATCH(
       .single();
     if (verErr) return NextResponse.json({ error: verErr.message }, { status: 500 });
 
+    // C1 (draft isolation): "committed = published" makes published-ness
+    // load-bearing — a schedule must carry at most ONE published version, or a
+    // superseded version keeps counting as phantom committed bookings in every
+    // other schedule's conflict scans (and double-counts call history). Demote
+    // superseded published siblings to 'archived' before flipping the new one;
+    // published_at stays as-is (historical). The .neq guard makes a
+    // same-version re-publish a no-op rather than archive-then-publish.
+    const { error: demoteErr } = await sb
+      .from('schedule_versions')
+      .update({ version_status: 'archived' })
+      .eq('schedule_id', id)
+      .eq('version_status', 'published')
+      .neq('id', version.id);
+    if (demoteErr) return NextResponse.json({ error: demoteErr.message }, { status: 500 });
+
     const { error: updErr } = await sb
       .from('schedule_versions')
       .update({ version_status: 'published', published_at: new Date().toISOString() })
