@@ -53,3 +53,22 @@ Codify the intake workflow (echoes Gabriel's PTO-insertion process rules from 20
 - No writes to dead fields, ever.
 - No natural-language name resolution server-side — the model resolves via roster + confirmation (prompt-enforced).
 - Availability recurrence (recurrence_rule) — out of scope v1; date-range rows only.
+
+---
+
+## Close-out (2026-07-15)
+
+Merged `52e99b5` to main and deployed. T1 (tools+undo) + T2 (prompt+conversation
+test); engine review returned FIX-FIRST with 7 findings, all fixed and re-verified
+to MERGE: F1/F2 undo-window + org guards on availability writes (no write can
+escape the snapshot's delete-new/restore scope — proven, not assumed); F3 org-wide
+profile snapshot matching the write scope; F4 can_take_backup_call dropped (dead
+in eligibility.ts — never sold as enforced); F5 prompt honesty on no_call_request
+(generator ignores it; surfaces as soft flag); F6 write-type set derived from
+BLOCKING_AVAIL; F7 chunked reads. 767 tests at merge; rulesEngine untouched
+(goldens 8/8). Strict-tool budget: 16/20 optionals.
+
+Known limitations (documented in prompt/tool descriptions): backup-call
+eligibility not enforceable (eligibility.ts gap — follow-up candidate);
+partial-day/recurring availability out of scope v1; preview+confirm is
+prompt-enforced (no server-side gate).
