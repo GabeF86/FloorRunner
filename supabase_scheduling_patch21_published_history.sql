@@ -23,6 +23,10 @@
 --   genContext RPC call is unchanged. Safe to apply before OR after the app
 --   deploy: pre-deploy it simply narrows the aggregate the current code already
 --   consumes; the in-code legacy fallback scan carries the same predicate.
+--   NOTE the reverse window: until this patch is applied, the live RPC still
+--   counts DRAFT rows in call-burden history (silently — the RPC succeeds and
+--   disagrees with the deployed fallback's semantics). Apply promptly after
+--   deploy; treat deploy + apply as one rollout step.
 --
 -- Idempotent: CREATE OR REPLACE FUNCTION is safe to re-run. No data changes.
 

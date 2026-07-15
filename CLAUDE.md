@@ -16,7 +16,7 @@ Anesthesia department management: scheduling engine + staffing calculators + OR 
 ## Clinical invariants (violating any of these is a bug, never a tradeoff)
 1. Post-call day off after a 24h in-house call (`requires_post_call_rule` shift types) — including seeded/manual assignments.
 2. PTO/availability always respected; PENDING PTO blocks in every engine (`isBlockingAvailability` in `shared.ts`).
-3. No cross-site double-booking against any PUBLISHED version (any site), plus the version under generation/validation. Draft-vs-draft overlap is deliberate (drafts are hypotheticals, Gabriel 2026-07-15) and is caught by publish-time revalidation. Committed = `schedule_versions.version_status = 'published'`; the predicate is single-homed in `committedAssignments.ts` — never re-inline it.
+3. No cross-site double-booking against any PUBLISHED version (any site), plus the version under generation/validation. Draft-vs-draft overlap is deliberate (drafts are hypotheticals, Gabriel 2026-07-15) and is caught by publish-time revalidation. Committed = `schedule_versions.version_status = 'published'`; for engine/assistant reads the predicate is single-homed in `committedAssignments.ts` — never re-inline it there (two pre-existing display-layer inlines: dashboard queries.ts, master-schedule route).
 4. Skipped derived shifts (e.g. D1 post-C2 blocked by PTO/cross-site) must be left unassigned AND recorded (`plan.skippedDerived`), never silently dropped.
 5. Call burden distributes per-FTE (bucket quotas + fairness metrics).
 6. Validation must never silently report clean on failure (`EvaluateResult.evaluated`).
