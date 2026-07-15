@@ -16,10 +16,14 @@ import type {
 // ── fixture builders ─────────────────────────────────────────────────────────
 // Dates: 2026-01-05 Mon, 06 Tue, 07 Wed, 08 Thu, 09 Fri, 10 Sat, 11 Sun.
 
-function st(code: string, category: ShiftTypeRow['category'] = 'call'): ShiftTypeRow {
+function st(
+  code: string,
+  category: ShiftTypeRow['category'] = 'call',
+  generation_engine: string | null = null,
+): ShiftTypeRow {
   return {
     id: `st-${code}`, site_id: 's1', code, name: code, category,
-    requires_credential: null, requires_specific_skills: [],
+    requires_credential: null, requires_specific_skills: [], generation_engine,
   };
 }
 
@@ -72,7 +76,7 @@ function neighbor(date: string, code: string, over: Partial<EvaluationContext['n
 function ctx(over: Partial<EvaluationContext> = {}): EvaluationContext {
   return {
     slot: slot(), shiftType: SHIFT_TYPES[0], providerId: 'p1',
-    providerGroup: 'physician', credentials: cred(), fte_value: 1,
+    providerGroup: 'physician', credentials: cred(), fte_value: 1, poolFlags: null,
     neighborAssignments: [], availability: [], sameDayAssignments: [],
     crossSiteAssignments: [], scheduleVersionId: 'v1', rules: [],
     shiftTypesByCode: new Map(SHIFT_TYPES.map(s => [s.code, s])),
@@ -595,5 +599,96 @@ describe('eligibility evaluator', () => {
     expect(v).toHaveLength(1);
     expect(v[0].severity).toBe('warning');
     expect(v[0].message).toBe('Unknown rule vocabulary: quantum_flux');
+  });
+});
+
+// ── poolEligibility ──────────────────────────────────────────────────────────
+// Asymmetric rule: D1–D9 (D-code + generation_engine 'call') are reserved for
+// call takers; day-pool slots (generation_engine 'day_pool', e.g. 7-3/7-5) are
+// auto-generated for day docs but call takers may legitimately hold them.
+
+describe('poolEligibility evaluator', () => {
+  const DAY_DOC = { call_taker: false, partial_call_taker: false, is_day_doc: true };
+  const CALL_TAKER = { call_taker: true, partial_call_taker: false, is_day_doc: false };
+  const PARTIAL = { call_taker: false, partial_call_taker: true, is_day_doc: false };
+  const NEITHER = { call_taker: false, partial_call_taker: false, is_day_doc: false };
+
+  const dCode = st('D5', 'regular', 'call'); // derived/relief D-code owned by call engine
+  const dayPool = st('7-3', 'regular', 'day_pool'); // day-doc slot
+  const poolViolations = (c: EvaluationContext) =>
+    run(c).filter(v => v.rule_name === 'Pool eligibility');
+
+  it('day doc on a D-code → hard, message mentions call takers', () => {
+    const v = poolViolations(ctx({ shiftType: dCode, poolFlags: DAY_DOC }));
+    expect(v).toHaveLength(1);
+    expect(v[0].severity).toBe('hard');
+    expect(v[0].category).toBe('eligibility');
+    expect(v[0].message).toContain('reserved for call takers');
+    expect(v[0].message).toContain('D5');
+  });
+
+  it('call taker on a day-pool slot → NO violation (legitimate pickup)', () => {
+    expect(poolViolations(ctx({ shiftType: dayPool, poolFlags: CALL_TAKER }))).toHaveLength(0);
+  });
+
+  it('day doc on a day-pool slot → no violation', () => {
+    expect(poolViolations(ctx({ shiftType: dayPool, poolFlags: DAY_DOC }))).toHaveLength(0);
+  });
+
+  it('call taker on a D-code → no violation', () => {
+    expect(poolViolations(ctx({ shiftType: dCode, poolFlags: CALL_TAKER }))).toHaveLength(0);
+  });
+
+  it('partial call taker satisfies both pools', () => {
+    expect(poolViolations(ctx({ shiftType: dCode, poolFlags: PARTIAL }))).toHaveLength(0);
+    expect(poolViolations(ctx({ shiftType: dayPool, poolFlags: PARTIAL }))).toHaveLength(0);
+  });
+
+  it('neither-flag provider on a day-pool slot → hard (neither Day Doc nor call taker)', () => {
+    const v = poolViolations(ctx({ shiftType: dayPool, poolFlags: NEITHER }));
+    expect(v).toHaveLength(1);
+    expect(v[0].severity).toBe('hard');
+    expect(v[0].message).toContain('neither a Day Doc nor a call taker');
+  });
+
+  it('neither-flag provider on a D-code → hard', () => {
+    const v = poolViolations(ctx({ shiftType: dCode, poolFlags: NEITHER }));
+    expect(v).toHaveLength(1);
+    expect(v[0].severity).toBe('hard');
+    expect(v[0].message).toContain('reserved for call takers');
+  });
+
+  it('null poolFlags (no profile) on a D-code → hard, mentions missing profile', () => {
+    const v = poolViolations(ctx({ shiftType: dCode, poolFlags: null }));
+    expect(v).toHaveLength(1);
+    expect(v[0].severity).toBe('hard');
+    expect(v[0].message).toContain('no employment profile');
+  });
+
+  it('null poolFlags (no profile) on a day-pool slot → hard, mentions missing profile', () => {
+    const v = poolViolations(ctx({ shiftType: dayPool, poolFlags: null }));
+    expect(v).toHaveLength(1);
+    expect(v[0].severity).toBe('hard');
+    expect(v[0].message).toContain('no employment profile');
+  });
+
+  it('open slot (no provider) → no violation', () => {
+    const v = poolViolations(ctx({
+      providerId: null, credentials: null, providerGroup: null,
+      shiftType: dCode, poolFlags: null,
+    }));
+    expect(v).toHaveLength(0);
+  });
+
+  it('a call slot (C1, engine call, non-D code) → no violation regardless of flags', () => {
+    const c1 = st('C1', 'call', 'call');
+    expect(poolViolations(ctx({ shiftType: c1, poolFlags: DAY_DOC }))).toHaveLength(0);
+    expect(poolViolations(ctx({ shiftType: c1, poolFlags: NEITHER }))).toHaveLength(0);
+    expect(poolViolations(ctx({ shiftType: c1, poolFlags: null }))).toHaveLength(0);
+  });
+
+  it('a D-code without call generation_engine is not gated (engine keys the rule)', () => {
+    const orphanD = st('D5', 'regular', null);
+    expect(poolViolations(ctx({ shiftType: orphanD, poolFlags: DAY_DOC }))).toHaveLength(0);
   });
 });

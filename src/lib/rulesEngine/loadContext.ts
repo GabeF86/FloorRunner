@@ -34,6 +34,22 @@ export function parseEmbeddedFte(rel: unknown): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
+// Parse the provider_employment_profiles(call_taker, partial_call_taker,
+// is_day_doc) embed into the pool flags the poolEligibility evaluator needs.
+// Same object-or-array tolerance as parseEmbeddedFte. Returns null when there
+// is NO profile row (evaluator treats null as ineligible for both pools —
+// never a silent pass); a present row defaults absent booleans to false.
+export function parseEmbeddedPoolFlags(rel: unknown): EvaluationContext['poolFlags'] {
+  const row = Array.isArray(rel) ? rel[0] : rel;
+  if (!row || typeof row !== 'object') return null;
+  const r = row as Record<string, unknown>;
+  return {
+    call_taker: !!r.call_taker,
+    partial_call_taker: !!r.partial_call_taker,
+    is_day_doc: !!r.is_day_doc,
+  };
+}
+
 export function mapCredentialsRow(row: Record<string, unknown>): ProviderSiteCredentials {
   return {
     provider_id: row.provider_id as string,
@@ -124,7 +140,7 @@ export async function loadSiteValidationContext(
 
   const { data: shiftTypes, error: stErr } = await sb
     .from('shift_types')
-    .select('id, site_id, code, name, category, requires_credential, requires_specific_skills')
+    .select('id, site_id, code, name, category, requires_credential, requires_specific_skills, generation_engine')
     .eq('site_id', siteId);
   if (stErr) return fail(`shift_types load failed: ${stErr.message}`);
   const shiftTypeRows: ShiftTypeRow[] = (shiftTypes || []).map((s: Record<string, unknown>) => ({
@@ -136,6 +152,7 @@ export async function loadSiteValidationContext(
     requires_credential: (s.requires_credential as string | null) ?? null,
     requires_specific_skills: Array.isArray(s.requires_specific_skills)
       ? (s.requires_specific_skills as string[]) : [],
+    generation_engine: (s.generation_engine as string | null) ?? null,
   }));
   const { data: ruleSets, error: rsErr } = await sb
     .from('rule_sets').select('id').eq('site_id', siteId).eq('status', 'active');
@@ -194,6 +211,7 @@ export async function loadContext(
   let credentials: ProviderSiteCredentials | null = null;
   let providerGroup: EvaluationContext['providerGroup'] = null;
   let fteValue: number | null = null;
+  let poolFlags: EvaluationContext['poolFlags'] = null;
   let neighborAssignments: EvaluationContext['neighborAssignments'] = [];
   let availability: AvailabilityRow[] = [];
 
@@ -207,7 +225,7 @@ export async function loadContext(
     // A MISSING row is tolerated (group stays null); a query ERROR is not.
     const { data: provider, error: providerErr } = await sb
       .from('providers')
-      .select('id, provider_type, provider_employment_profiles(fte_value)')
+      .select('id, provider_type, provider_employment_profiles(fte_value, call_taker, partial_call_taker, is_day_doc)')
       .eq('id', providerId)
       .maybeSingle();
     if (providerErr) return null;
@@ -215,6 +233,7 @@ export async function loadContext(
       const p = provider as Record<string, unknown>;
       providerGroup = providerGroupFromType(p.provider_type as string);
       fteValue = parseEmbeddedFte(p.provider_employment_profiles);
+      poolFlags = parseEmbeddedPoolFlags(p.provider_employment_profiles);
     }
 
     // Site credentials (missing row = not-yet-configured, tolerated)
@@ -320,6 +339,7 @@ export async function loadContext(
     providerGroup,
     credentials,
     fte_value: fteValue,
+    poolFlags,
     neighborAssignments,
     availability,
     sameDayAssignments,

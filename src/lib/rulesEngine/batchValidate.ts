@@ -26,6 +26,7 @@ import { bulkWriteWithRowFallback } from './commit';
 import {
   providerGroupFromType,
   parseEmbeddedFte,
+  parseEmbeddedPoolFlags,
   mapCredentialsRow,
   mapNeighborRow,
   mapCrossSiteRow,
@@ -141,19 +142,24 @@ export async function batchValidateVersion(
   // against the wrong site's credentials/rules.
   const siteId = slots[0].site_id;
 
-  // ── 2. Provider info: group + FTE ──────────────────────────────────────────
-  const provInfo = new Map<string, { group: 'physician' | 'crna' | 'both'; fte: number | null }>();
+  // ── 2. Provider info: group + FTE + pool flags ─────────────────────────────
+  const provInfo = new Map<string, {
+    group: 'physician' | 'crna' | 'both';
+    fte: number | null;
+    poolFlags: EvaluationContext['poolFlags'];
+  }>();
   if (providerIds.length > 0) {
     dbQueries++;
     const { data, error } = await sb
       .from('providers')
-      .select('id, provider_type, provider_employment_profiles(fte_value)')
+      .select('id, provider_type, provider_employment_profiles(fte_value, call_taker, partial_call_taker, is_day_doc)')
       .in('id', providerIds);
     if (error) return bail('providers', error.message);
     for (const row of (data || []) as Array<Record<string, unknown>>) {
       provInfo.set(row.id as string, {
         group: providerGroupFromType(row.provider_type as string),
         fte: parseEmbeddedFte(row.provider_employment_profiles),
+        poolFlags: parseEmbeddedPoolFlags(row.provider_employment_profiles),
       });
     }
   }
@@ -320,6 +326,7 @@ export async function batchValidateVersion(
       providerGroup: info?.group ?? null,
       credentials: (pid && credByPid.get(pid)) || null,
       fte_value: info?.fte ?? null,
+      poolFlags: info?.poolFlags ?? null,
       neighborAssignments,
       availability,
       sameDayAssignments: sameDayFor(slot.slot_date),

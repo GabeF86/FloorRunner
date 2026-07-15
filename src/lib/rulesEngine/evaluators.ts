@@ -756,6 +756,58 @@ const openSlot: Evaluator = ctx => {
   return violations;
 };
 
+// ── Pool eligibility ─────────────────────────────────────────────────────────
+//
+// Always-on (Gabriel 2026-07-14, spec 2026-07-14). The rule is ASYMMETRIC:
+//   - D1–D9 (a D-code whose shift_type is owned by the call engine,
+//     generation_engine === 'call') are reserved for call takers — a day doc
+//     placed there is a hard flag.
+//   - Day-pool slots (generation_engine === 'day_pool', e.g. 7-3/7-5) are
+//     auto-generated for day docs, but call takers may legitimately hold them
+//     (PTO sell-back, extra-shift pickup) — only a provider who is NEITHER a
+//     day doc nor a call taker flags.
+// Hard-flag, never block: exceptions stay possible, nothing is hidden. Keyed on
+// generation_engine (data-driven, patch18) — the D-code regex only mirrors the
+// call engine's own ownership convention for the derived/relief codes.
+
+const D_CODE = /^D[0-9]+$/i;
+
+const poolEligibility: Evaluator = ctx => {
+  if (!ctx.providerId) return [];
+  const st = ctx.shiftType;
+  const isDerivedDCode = D_CODE.test(st.code) && st.generation_engine === 'call';
+  const isDayPoolSlot = st.generation_engine === 'day_pool';
+  if (!isDerivedDCode && !isDayPoolSlot) return [];
+
+  // null poolFlags = no employment profile on file → ineligible for both pools
+  // (never silently pass — invariant 6 spirit).
+  const f = ctx.poolFlags;
+  const noProfile = ' (no employment profile on file)';
+  const isCallTaker = !!(f?.call_taker || f?.partial_call_taker);
+  const isDayDoc = !!f?.is_day_doc;
+  const violations: RuleViolation[] = [];
+
+  if (isDerivedDCode && !isCallTaker) {
+    violations.push({
+      rule_id: null,
+      rule_name: 'Pool eligibility',
+      category: 'eligibility',
+      severity: 'hard',
+      message: `${st.code} is reserved for call takers — this provider is not a call taker${f ? '' : noProfile}.`,
+    });
+  }
+  if (isDayPoolSlot && !(isDayDoc || isCallTaker)) {
+    violations.push({
+      rule_id: null,
+      rule_name: 'Pool eligibility',
+      category: 'eligibility',
+      severity: 'hard',
+      message: `${st.code} is a day shift — this provider is neither a Day Doc nor a call taker${f ? '' : noProfile}.`,
+    });
+  }
+  return violations;
+};
+
 // ── Cross-Site ─────────────────────────────────────────────────────────────
 
 // Detects when a provider is assigned at more than one site on the same day.
@@ -807,6 +859,7 @@ export const evaluators: Evaluator[] = [
   pairing,
   fairness,
   openSlot,
+  poolEligibility,
   crossSite,
 ];
 

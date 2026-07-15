@@ -13,7 +13,7 @@ import type { EvaluationContext, ShiftTypeRow } from './types';
 function st(code: string, category: ShiftTypeRow['category'] = 'call'): ShiftTypeRow {
   return {
     id: `st-${code}`, site_id: 's1', code, name: code, category,
-    requires_credential: null, requires_specific_skills: [],
+    requires_credential: null, requires_specific_skills: [], generation_engine: null,
   };
 }
 const C1 = st('C1');
@@ -38,7 +38,7 @@ function baseCtx(over: Partial<EvaluationContext> = {}): EvaluationContext {
       can_take_backup_call: true, allowed_shift_types: [], excluded_shift_types: [],
       skill_tags: [],
     },
-    fte_value: 1, neighborAssignments: [], availability: [],
+    fte_value: 1, poolFlags: null, neighborAssignments: [], availability: [],
     sameDayAssignments: [], crossSiteAssignments: [], scheduleVersionId: 'v1',
     rules: [], shiftTypesByCode: siteCtx.shiftTypesByCode, shiftTypesById: siteCtx.shiftTypesById,
     ...over,

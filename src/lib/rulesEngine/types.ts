@@ -52,6 +52,10 @@ export interface ShiftTypeRow {
   category: 'call' | 'regular' | 'float' | 'admin' | 'unavailable' | 'leave';
   requires_credential: string | null;
   requires_specific_skills: string[];
+  // Which generation engine owns this shift type: 'call' (chains/relief D-codes),
+  // 'day_pool' (7-3/7-5 day-doc slots), 'none', or null when unknown/pre-patch18.
+  // Read-only for validation — the poolEligibility evaluator keys on it.
+  generation_engine: string | null;
 }
 
 export interface SlotRow {
@@ -111,6 +115,10 @@ export interface EvaluationContext {
   // Provider FTE (provider_employment_profiles.fte_value); null when unknown.
   // Fairness thresholds scale by this so part-timers flag at a lower burden.
   fte_value: number | null;
+
+  // Employment-profile pool flags (null = no profile row — treat as
+  // ineligible for both pools, never silently pass; invariant 6 spirit).
+  poolFlags: { call_taker: boolean; partial_call_taker: boolean; is_day_doc: boolean } | null;
 
   // Provider's other assignments in a ±NEIGHBOR_WINDOW_DAYS (31d) window
   // around the slot, scoped to the slot's schedule version + site

@@ -24,7 +24,7 @@ import type { RuleDefinition, ShiftTypeRow } from './types';
 function st(code: string, category: ShiftTypeRow['category'] = 'call'): ShiftTypeRow {
   return {
     id: `st-${code}`, site_id: 's1', code, name: code, category,
-    requires_credential: null, requires_specific_skills: [],
+    requires_credential: null, requires_specific_skills: [], generation_engine: null,
   };
 }
 const SHIFT_TYPES = [st('C1'), st('C2')];
