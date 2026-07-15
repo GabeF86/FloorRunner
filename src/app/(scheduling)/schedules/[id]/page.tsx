@@ -903,7 +903,7 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
   const colCount = visibleDates.length;
 
   return (
-    <div className="schedule-builder-page" style={{ padding: '10px 16px', height: '100%', display: 'flex', flexDirection: 'column' }}>
+    <div className="schedule-builder-page" style={{ padding: '4px 8px', height: '100%', display: 'flex', flexDirection: 'column' }}>
       <style>{`
         .schedule-builder-page button:focus-visible,
         .schedule-builder-page input:focus-visible {
@@ -913,7 +913,7 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
         }
       `}</style>
       {/* Breadcrumb */}
-      <div style={{ fontSize: 12, color: 'var(--text-dim)', marginBottom: 6 }}>
+      <div style={{ fontSize: 12, color: 'var(--text-dim)', marginBottom: 4 }}>
         <Link href="/schedules" style={{ color: 'var(--blue)', textDecoration: 'none' }}>Schedules</Link>
         <span style={{ margin: '0 6px' }}>/</span>
         <span style={{ color: 'var(--text-muted)' }}>{schedule.schedule_name}</span>
@@ -1034,7 +1034,7 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
       />
 
       {/* Top Bar — toolbar row */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 8, paddingTop: 6, borderTop: '1px solid var(--border)' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 4, paddingTop: 4, borderTop: '1px solid var(--border)' }}>
 
         {/* View toggle */}
         <div style={{ display: 'inline-flex', border: '1px solid var(--border)', borderRadius: 8, overflow: 'hidden' }}>
@@ -1228,7 +1228,7 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
             position: 'sticky', top: 0, left: 0, zIndex: 4,
             background: gridTokens.chrome, borderBottom: '1px solid #1e3a5f',
             borderRight: '1px solid #1e3a5f', padding: '6px 12px',
-            minHeight: 26,
+            minHeight: 22,
           }} />
 
           {/* Day-of-week labels */}
@@ -1247,11 +1247,11 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
                 borderBottom: '1px solid #1e3a5f',
                 borderRight: '1px solid #1e3a5f',
                 borderLeft: isToday ? '2px solid ' + gridTokens.accent : isSatBorder ? '2px solid rgba(30,58,95,0.6)' : 'none',
-                padding: '3px 8px', textAlign: 'center',
+                padding: '2px 6px', textAlign: 'center',
                 fontSize: 10, fontWeight: 700,
                 color: isHoliday ? '#fbbf24' : isWeekend ? '#cbd5e1' : gridTokens.chromeMuted,
                 textTransform: 'uppercase', letterSpacing: '0.05em',
-                minHeight: 26, display: 'flex', alignItems: 'center', justifyContent: 'center',
+                minHeight: 22, display: 'flex', alignItems: 'center', justifyContent: 'center',
               }}>
                 {DAYS_SHORT[dow]}
               </div>
@@ -1262,9 +1262,9 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
 
           {/* Corner cell "Shifts" */}
           <div style={{
-            position: 'sticky', top: 26, left: 0, zIndex: 4,
+            position: 'sticky', top: 22, left: 0, zIndex: 4,
             background: gridTokens.chrome, borderBottom: '2px solid #1e3a5f',
-            borderRight: '1px solid #1e3a5f', padding: '3px 12px',
+            borderRight: '1px solid #1e3a5f', padding: '2px 10px',
             fontSize: 11, fontWeight: 700, color: gridTokens.chromeMuted,
           }}>
             Shifts
@@ -1281,12 +1281,12 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
             const crnaCount = crnaCountByDate[date] ?? 0;
             return (
               <div key={`date-${date}`} title={holiday ? holiday.holiday_name : undefined} style={{
-                position: 'sticky', top: 26, zIndex: 3,
+                position: 'sticky', top: 22, zIndex: 3,
                 background: holiday ? '#3a3010' : isWeekend ? gridTokens.chromeWeekend : gridTokens.chrome,
                 borderBottom: '2px solid #1e3a5f',
                 borderRight: '1px solid #1e3a5f',
                 borderLeft: isToday ? '2px solid ' + gridTokens.accent : isSatBorder ? '2px solid rgba(30,58,95,0.6)' : 'none',
-                padding: '3px 8px', textAlign: 'center',
+                padding: '2px 6px', textAlign: 'center',
                 fontSize: 12.5, fontWeight: 700,
                 color: isToday ? gridTokens.accent : holiday ? '#fbbf24' : gridTokens.chromeText,
                 boxShadow: isToday ? 'inset 0 -3px 0 ' + gridTokens.accentStrong : undefined,
@@ -1320,8 +1320,8 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
                 borderLeft: '4px solid ' + gridTokens.accent,
                 borderBottom: '1px solid #1e3a5f',
                 borderRight: '1px solid #1e3a5f',
-                padding: '4px 10px', display: 'flex', flexDirection: 'column', justifyContent: 'center',
-                minHeight: 24,
+                padding: '2px 8px', display: 'flex', flexDirection: 'column', justifyContent: 'center',
+                minHeight: 20,
               }}>
                 <div style={{ fontSize: 13, fontWeight: 800, color: '#ffffff', whiteSpace: 'nowrap' }}>{st.code}</div>
                 <div style={{ fontSize: 9.5, color: gridTokens.chromeMuted, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{st.name}</div>
@@ -1383,8 +1383,8 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
                       borderBottom: '1px solid ' + gridTokens.line,
                       borderRight: '1px solid ' + gridTokens.line,
                       borderLeft: isToday ? '2px solid ' + gridTokens.accentStrong : isSatBorder ? '2px solid #1e3a5f' : 'none',
-                      padding: '1px 4px',
-                      minHeight: 24,
+                      padding: '1px 3px',
+                      minHeight: 20,
                       display: 'flex', alignItems: 'center', justifyContent: 'center',
                       cursor: slot ? 'pointer' : 'default',
                       position: 'relative',
@@ -1768,8 +1768,8 @@ function renderVirtualRows({
         borderBottom: '1px solid #1e3a5f',
         borderRight: '1px solid #1e3a5f',
         ...(zoneTop && isFirstRow ? { borderTop: '2px solid #33455f' } : {}),
-        padding: '3px 10px', display: 'flex', alignItems: 'center',
-        minHeight: 22,
+        padding: '2px 8px', display: 'flex', alignItems: 'center',
+        minHeight: 18,
       }}>
         <div style={{ fontSize: 11.5, fontWeight: 700, color: '#e2e8f0', whiteSpace: 'nowrap' }}>
           {label}{count > 1 ? ` ${idx + 1}` : ''}
@@ -1793,8 +1793,8 @@ function renderVirtualRows({
           borderRight: '1px solid ' + gridTokens.line,
           borderLeft: isToday ? '2px solid ' + gridTokens.accentStrong : isSatBorder ? '2px solid #1e3a5f' : 'none',
           ...(zoneTop && isFirstRow ? { borderTop: '2px solid #cbd5e1' } : {}),
-          padding: '1px 4px',
-          minHeight: 22,
+          padding: '1px 3px',
+          minHeight: 18,
           display: 'flex', alignItems: 'center', justifyContent: 'center',
         }}>
           {provider ? (

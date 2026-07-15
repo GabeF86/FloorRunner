@@ -19,7 +19,7 @@ export function PageHeader({ title, subtitle, actions, compact }: PageHeaderProp
         display: 'flex',
         alignItems: 'flex-start',
         gap: 'var(--space-4)',
-        marginBottom: compact ? 8 : 'var(--space-5)',
+        marginBottom: compact ? 4 : 'var(--space-5)',
       }}
     >
       <div style={{ minWidth: 0 }}>
