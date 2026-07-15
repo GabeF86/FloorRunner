@@ -759,25 +759,25 @@ const openSlot: Evaluator = ctx => {
 // ── Pool eligibility ─────────────────────────────────────────────────────────
 //
 // Always-on (Gabriel 2026-07-14, spec 2026-07-14). The rule is ASYMMETRIC:
-//   - D1–D9 (a D-code whose shift_type is owned by the call engine,
-//     generation_engine === 'call') are reserved for call takers — a day doc
-//     placed there is a hard flag.
+//   - Call-engine-owned NON-call slots (generation_engine === 'call' with
+//     category !== 'call' — the derived/relief D1–D9 on live data) are
+//     reserved for call takers — a day doc placed there is a hard flag.
 //   - Day-pool slots (generation_engine === 'day_pool', e.g. 7-3/7-5) are
 //     auto-generated for day docs, but call takers may legitimately hold them
 //     (PTO sell-back, extra-shift pickup) — only a provider who is NEITHER a
 //     day doc nor a call taker flags.
-// Hard-flag, never block: exceptions stay possible, nothing is hidden. Keyed on
-// generation_engine (data-driven, patch18) — the D-code regex only mirrors the
-// call engine's own ownership convention for the derived/relief codes.
-
-const D_CODE = /^D[0-9]+$/i;
+// Hard-flag, never block: exceptions stay possible, nothing is hidden. Keyed
+// entirely on generation_engine + category (data-driven, patch18) — never on
+// code-name patterns, so a future call-derived code not named D* can't
+// silently escape. Call-category slots have their own pool gating at
+// generation; not this evaluator's job.
 
 const poolEligibility: Evaluator = ctx => {
   if (!ctx.providerId) return [];
   const st = ctx.shiftType;
-  const isDerivedDCode = D_CODE.test(st.code) && st.generation_engine === 'call';
+  const isDerivedCallSlot = st.generation_engine === 'call' && st.category !== 'call';
   const isDayPoolSlot = st.generation_engine === 'day_pool';
-  if (!isDerivedDCode && !isDayPoolSlot) return [];
+  if (!isDerivedCallSlot && !isDayPoolSlot) return [];
 
   // null poolFlags = no employment profile on file → ineligible for both pools
   // (never silently pass — invariant 6 spirit).
@@ -787,7 +787,7 @@ const poolEligibility: Evaluator = ctx => {
   const isDayDoc = !!f?.is_day_doc;
   const violations: RuleViolation[] = [];
 
-  if (isDerivedDCode && !isCallTaker) {
+  if (isDerivedCallSlot && !isCallTaker) {
     violations.push({
       rule_id: null,
       rule_name: 'Pool eligibility',

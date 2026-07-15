@@ -603,8 +603,9 @@ describe('eligibility evaluator', () => {
 });
 
 // ── poolEligibility ──────────────────────────────────────────────────────────
-// Asymmetric rule: D1–D9 (D-code + generation_engine 'call') are reserved for
-// call takers; day-pool slots (generation_engine 'day_pool', e.g. 7-3/7-5) are
+// Asymmetric rule keyed on generation_engine + category, never code names:
+// call-engine-owned NON-call slots (D1–D9 on live data) are reserved for call
+// takers; day-pool slots (generation_engine 'day_pool', e.g. 7-3/7-5) are
 // auto-generated for day docs but call takers may legitimately hold them.
 
 describe('poolEligibility evaluator', () => {
@@ -680,15 +681,25 @@ describe('poolEligibility evaluator', () => {
     expect(v).toHaveLength(0);
   });
 
-  it('a call slot (C1, engine call, non-D code) → no violation regardless of flags', () => {
+  it('a call-CATEGORY slot (C1, engine call) → no violation regardless of flags', () => {
+    // Call slots have their own pool gating at generation — excluded here by
+    // category, not by code name.
     const c1 = st('C1', 'call', 'call');
     expect(poolViolations(ctx({ shiftType: c1, poolFlags: DAY_DOC }))).toHaveLength(0);
     expect(poolViolations(ctx({ shiftType: c1, poolFlags: NEITHER }))).toHaveLength(0);
     expect(poolViolations(ctx({ shiftType: c1, poolFlags: null }))).toHaveLength(0);
   });
 
-  it('a D-code without call generation_engine is not gated (engine keys the rule)', () => {
+  it('a regular slot without a generation_engine is not gated (engine+category key the rule)', () => {
     const orphanD = st('D5', 'regular', null);
     expect(poolViolations(ctx({ shiftType: orphanD, poolFlags: DAY_DOC }))).toHaveLength(0);
+  });
+
+  it('a call-owned non-call slot NOT named D* is still gated (no code-name pattern)', () => {
+    const r1 = st('R1', 'regular', 'call'); // future call-derived code
+    const v = poolViolations(ctx({ shiftType: r1, poolFlags: DAY_DOC }));
+    expect(v).toHaveLength(1);
+    expect(v[0].severity).toBe('hard');
+    expect(v[0].message).toContain('reserved for call takers');
   });
 });
