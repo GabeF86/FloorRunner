@@ -87,7 +87,7 @@ export interface AttentionSlotRow {
   id: string;
   assignments: OneOrMany<AttentionAssignment>;
   // A slot's shift_type is a to-one FK (mirrors TodaysCallSlotRow.shift_types
-  // below) — always a single object or null, never an array; no asArray()
+  // above) — always a single object or null, never an array; no asArray()
   // needed here.
   shift_types: { category: string } | null;
   schedule_versions: { schedule_id: string; version_number: number } | null;
