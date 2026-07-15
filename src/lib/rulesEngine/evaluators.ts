@@ -740,14 +740,18 @@ const openSlot: Evaluator = ctx => {
     }
   }
 
-  // Default: soft warning for any open slot
-  violations.push({
-    rule_id: null,
-    rule_name: 'Open slot',
-    category: 'open_slot',
-    severity: 'soft',
-    message: `${ctx.shiftType.code} on ${ctx.slot.slot_date} has no provider assigned.`,
-  });
+  // Default: soft warning for open CALL slots only. An open day (regular/
+  // float/admin) slot is normal scheduler workflow, not a warning — Gabriel
+  // 2026-07-14. Rule-driven deadlines above remain category-blind.
+  if (ctx.shiftType.category === 'call') {
+    violations.push({
+      rule_id: null,
+      rule_name: 'Open slot',
+      category: 'open_slot',
+      severity: 'soft',
+      message: `${ctx.shiftType.code} on ${ctx.slot.slot_date} has no provider assigned.`,
+    });
+  }
 
   return violations;
 };

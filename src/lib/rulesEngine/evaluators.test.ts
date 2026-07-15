@@ -498,6 +498,38 @@ describe('openSlot evaluator', () => {
     expect(v).toHaveLength(1);
     expect(v[0].severity).toBe('hard');
   });
+
+  it('open CALL slot → soft violation still emitted', () => {
+    const v = byCategory(ctx({
+      providerId: null, credentials: null, providerGroup: null,
+      shiftType: st('C1', 'call'),
+    }), 'open_slot');
+    expect(v).toHaveLength(1);
+    expect(v[0].severity).toBe('soft');
+    expect(v[0].rule_name).toBe('Open slot');
+  });
+
+  it('open REGULAR (day) slot → NO soft open_slot violation', () => {
+    const v = byCategory(ctx({
+      providerId: null, credentials: null, providerGroup: null,
+      shiftType: st('D1', 'regular'),
+    }), 'open_slot');
+    expect(v).toHaveLength(0);
+  });
+
+  it('deadline escalation is category-blind — fires for an open regular slot', () => {
+    const v = byCategory(ctx({
+      providerId: null, credentials: null, providerGroup: null,
+      shiftType: st('D1', 'regular'),
+      rules: [rule({
+        rule_category: 'open_slot',
+        action: { days_before_slot: 100000 },
+        hard_constraint: true,
+      })],
+    }), 'open_slot');
+    expect(v).toHaveLength(1);
+    expect(v[0].severity).toBe('hard');
+  });
 });
 
 // ── crossSite ────────────────────────────────────────────────────────────────
