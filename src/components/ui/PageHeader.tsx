@@ -4,22 +4,28 @@ export interface PageHeaderProps {
   title: string;
   subtitle?: ReactNode;
   actions?: ReactNode;
+  /**
+   * Opt-in density reduction for space-constrained pages (e.g. the schedule
+   * detail grid): smaller h1 and tighter bottom margin. Omitted/false renders
+   * byte-identically to the default header used everywhere else.
+   */
+  compact?: boolean;
 }
 
-export function PageHeader({ title, subtitle, actions }: PageHeaderProps) {
+export function PageHeader({ title, subtitle, actions, compact }: PageHeaderProps) {
   return (
     <header
       style={{
         display: 'flex',
         alignItems: 'flex-start',
         gap: 'var(--space-4)',
-        marginBottom: 'var(--space-5)',
+        marginBottom: compact ? 8 : 'var(--space-5)',
       }}
     >
       <div style={{ minWidth: 0 }}>
         <h1
           style={{
-            fontSize: 'var(--fs-xl)',
+            fontSize: compact ? 17 : 'var(--fs-xl)',
             fontWeight: 700,
             letterSpacing: -0.5,
             lineHeight: 1.15,
