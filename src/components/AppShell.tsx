@@ -116,6 +116,12 @@ export default function AppShell({ fullBleed, children }: { fullBleed?: boolean;
   const { theme, toggle } = useTheme();
   const { collapsed, toggle: toggleCollapsed } = useSidebarCollapsed();
 
+  // The schedule detail route (`/schedules/<id>`) renders full-bleed so the grid
+  // gets the full viewport width and a clean height:100% chain. The `/schedules`
+  // list (no trailing slash) stays boxed. An explicit `fullBleed` from a
+  // consumer (e.g. /board's layout) still wins over this default.
+  const effectiveFullBleed = fullBleed ?? pathname.startsWith('/schedules/');
+
   return (
     <div style={{ display: 'flex', height: '100vh', overflow: 'hidden', background: 'var(--bg-base)', color: 'var(--text)' }}>
       {/* Sidebar — full pane or slim icon rail when collapsed */}
@@ -222,7 +228,7 @@ export default function AppShell({ fullBleed, children }: { fullBleed?: boolean;
 
       {/* Content */}
       <main style={{ flex: 1, minWidth: 0, overflow: 'auto', background: 'var(--bg-base)', color: 'var(--text)' }}>
-        {fullBleed
+        {effectiveFullBleed
           ? children
           : <div style={{ padding: 'var(--space-6)', maxWidth: 1280, margin: '0 auto' }}>{children}</div>}
       </main>
