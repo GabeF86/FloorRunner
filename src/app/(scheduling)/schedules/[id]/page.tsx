@@ -477,7 +477,7 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
   /* ── Per-date working roster + over-par detection ───────────────────────── */
 
   // Matches the engine's `dayTypeBucket` from src/lib/rulesEngine/shared.ts:
-  //   Mon-Thu → weekday, Fri → friday, Sat/Sun → weekend, holidays → holiday
+  //   Mon-Thu → weekday, Fri → friday, Sat → saturday, Sun → sunday, holidays → holiday
   // The per-bucket totals × FTE ÷ call_par_level gives each provider's base
   // target; over-par means their assignment count in (code, bucket) is
   // strictly greater than that target. Deficit carry-forward (which the
@@ -519,7 +519,8 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
       if (holidayMap[date]) return 'holiday';
       const dow = getDayOfWeek(date);
       if (dow === 5) return 'friday';
-      if (dow === 0 || dow === 6) return 'weekend';
+      if (dow === 6) return 'saturday';
+      if (dow === 0) return 'sunday';
       return 'weekday';
     };
 
@@ -2135,11 +2136,14 @@ const smallBtn: React.CSSProperties = {
 };
 
 function CallCountsModal({ grid, onClose }: { grid: GridData; onClose: () => void }) {
-  // Bucket key = combined day_type group (weekday | friday | weekend)
+  // Bucket key = day_type group (weekday | friday | saturday | sunday).
+  // Saturday and Sunday are SEPARATE fairness buckets (mirrors the engine's
+  // dayTypeBucket) so per-day call burden is visible per provider.
   const BUCKETS = [
-    { key: 'weekday', label: 'M–Th' },
-    { key: 'friday',  label: 'Fri' },
-    { key: 'weekend', label: 'Sat/Sun' },
+    { key: 'weekday',  label: 'M–Th' },
+    { key: 'friday',   label: 'Fri' },
+    { key: 'saturday', label: 'Sat' },
+    { key: 'sunday',   label: 'Sun' },
   ] as const;
   const CODES = ['C1', 'C2', 'C3'] as const;
 
@@ -2164,7 +2168,8 @@ function CallCountsModal({ grid, onClose }: { grid: GridData; onClose: () => voi
     let bucket: string;
     if (dt === 'weekday') bucket = 'weekday';
     else if (dt === 'friday') bucket = 'friday';
-    else if (dt === 'saturday' || dt === 'sunday') bucket = 'weekend';
+    else if (dt === 'saturday') bucket = 'saturday';
+    else if (dt === 'sunday') bucket = 'sunday';
     else continue; // skip holidays for now
     const key = `${bucket}|${code}`;
     blockTotals[key] = (blockTotals[key] || 0) + 1;
@@ -2234,7 +2239,7 @@ function CallCountsModal({ grid, onClose }: { grid: GridData; onClose: () => voi
   // we compute the FTE-weighted base target — (block_total / par_level) ×
   // fte_value — and count how many assignments in that bucket exceed
   // floor(target). The Extra C1 column then sums those excesses across
-  // M-Th, Fri, and Sat/Sun for C1. Same math as the red grid cells.
+  // M-Th, Fri, Sat, and Sun for C1. Same math as the red grid cells.
   //
   // Deficit carry-forward is NOT included (we don't have historical data
   // here), so this can over-report for part-timers legitimately catching

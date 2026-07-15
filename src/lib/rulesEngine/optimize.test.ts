@@ -200,7 +200,7 @@ describe('optimize — eligibility pre-gate, wall-clock budget, movable day type
       [callSlot('s1', '2026-01-03', 'C1', 'saturday'), callSlot('s2', '2026-01-10', 'C1', 'saturday')],
       [prov('pX'), prov('pY')],
       {
-        bucketTarget: new Map([['pX|weekend|C1', 1], ['pY|weekend|C1', 1]]),
+        bucketTarget: new Map([['pX|saturday|C1', 1], ['pY|saturday|C1', 1]]),
         availByPid: new Map([['pY', [{
           availability_type: 'pto', start_date: '2026-01-10', end_date: '2026-01-10',
           approval_status: 'approved',

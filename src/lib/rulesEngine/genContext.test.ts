@@ -342,13 +342,15 @@ describe('loadGenerationContext — call pattern (requirement 2 + 3)', () => {
 });
 
 describe('loadGenerationContext — historical fairness RPC (requirement 4)', () => {
+  // patch24: the RPC now emits split saturday/sunday buckets (not merged
+  // 'weekend'). p1's history is on Saturdays, p2's on a Sunday.
   const histRpcRows = [
-    { provider_id: 'p1', bucket: 'weekend', code: 'C1', n: 3 },
+    { provider_id: 'p1', bucket: 'saturday', code: 'C1', n: 3 },
     { provider_id: 'p1', bucket: 'weekday', code: 'C2', n: 2 },
-    { provider_id: 'p2', bucket: 'weekend', code: 'C1', n: 1 },
+    { provider_id: 'p2', bucket: 'sunday', code: 'C1', n: 1 },
   ];
-  // Legacy raw rows equivalent to the aggregate above (dayTypeBucket collapses
-  // saturday/sunday → weekend).
+  // Legacy raw rows equivalent to the aggregate above (dayTypeBucket now keeps
+  // saturday and sunday as their own buckets).
   const legacyRows = [
     ...Array.from({ length: 3 }, () => ({ provider_id: 'p1', schedule_slots: { slot_date: '2025-12-01', site_id: 'site1', derived_day_type: 'saturday', shift_types: { code: 'C1', category: 'call' } } })),
     ...Array.from({ length: 2 }, () => ({ provider_id: 'p1', schedule_slots: { slot_date: '2025-12-02', site_id: 'site1', derived_day_type: 'weekday', shift_types: { code: 'C2', category: 'call' } } })),
@@ -364,10 +366,14 @@ describe('loadGenerationContext — historical fairness RPC (requirement 4)', ()
   it('populates historical maps from the RPC aggregate + calls it with site/before', async () => {
     const { res, calls } = await run(twoCallSlots, { historical_call_counts: { data: histRpcRows, error: null } });
     const ctx = res.ctx!;
-    expect(ctx.historicalAssignedByPid.get('p1')!.get('weekend|C1')).toBe(3);
+    expect(ctx.historicalAssignedByPid.get('p1')!.get('saturday|C1')).toBe(3);
     expect(ctx.historicalAssignedByPid.get('p1')!.get('weekday|C2')).toBe(2);
-    expect(ctx.historicalAssignedByPid.get('p2')!.get('weekend|C1')).toBe(1);
-    expect(ctx.historicalTotalByBucket.get('weekend|C1')).toBe(4);
+    expect(ctx.historicalAssignedByPid.get('p2')!.get('sunday|C1')).toBe(1);
+    // Saturday and Sunday no longer share a bucket: p1's Saturdays and p2's
+    // Sunday land in separate totals instead of a merged weekend|C1 of 4.
+    expect(ctx.historicalTotalByBucket.get('saturday|C1')).toBe(3);
+    expect(ctx.historicalTotalByBucket.get('sunday|C1')).toBe(1);
+    expect(ctx.historicalTotalByBucket.get('weekend|C1')).toBeUndefined();
     expect(ctx.historicalTotalByBucket.get('weekday|C2')).toBe(2);
     const rpcCall = calls.find(c => c.method === 'rpc' && c.fn === 'historical_call_counts');
     expect(rpcCall!.args[0]).toEqual({ p_site_id: 'site1', p_before: '2026-01-10' });
@@ -432,8 +438,9 @@ describe('loadGenerationContext — historical fairness RPC (requirement 4)', ()
       },
     }, { historical_call_counts: { data: null, error: { message: 'function scheduling.historical_call_counts(uuid, date) does not exist', code: '42883' } } });
 
-    // Published row counted; draft row NOT.
-    expect(res.ctx!.historicalAssignedByPid.get('p1')?.get('weekend|C1')).toBe(1);
+    // Published row counted; draft row NOT. publishedRow is a Saturday, so it
+    // lands in the split saturday|C1 bucket (no longer merged weekend|C1).
+    expect(res.ctx!.historicalAssignedByPid.get('p1')?.get('saturday|C1')).toBe(1);
     expect(res.ctx!.historicalAssignedByPid.has('p2')).toBe(false);
     // The committed predicate + inner join were emitted on the fallback scan.
     const histSelect = calls.find(c => c.table === 'assignments' && c.method === 'select'

@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { solve } from './solve';
+import { computeBucketTargets } from './genContext';
 import type {
   GenerationContext, SlotToFill, CandidateProvider,
 } from './genTypes';
@@ -131,7 +132,7 @@ describe('solve — weekend block (H1)', () => {
     const sun = callSlot('sun', '2026-01-04', 'C1', 'sunday');
     const ctx = buildCtx([sat, sun], [prov('p1')], {
       bucketTarget: new Map([
-        ['p1|weekend|C2', 99], ['p1|weekend|C1', 99],
+        ['p1|saturday|C2', 99], ['p1|sunday|C1', 99],
       ]),
       credByPid: new Map([['p1', {
         is_active: true, credentialed: true, can_take_call: true,
@@ -146,7 +147,7 @@ describe('solve — weekend block (H1)', () => {
     // Now revoke weekend cred: the Sat slot won't fill, so the chain can't run,
     // and Sun stays unfilled — never force-assigned.
     const ctx2 = buildCtx([sat, sun], [prov('p1')], {
-      bucketTarget: new Map([['p1|weekend|C2', 99], ['p1|weekend|C1', 99]]),
+      bucketTarget: new Map([['p1|saturday|C2', 99], ['p1|sunday|C1', 99]]),
       credByPid: new Map([['p1', {
         is_active: true, credentialed: true, can_take_call: true,
         can_take_weekend_call: false, can_take_holiday_call: true,
@@ -211,8 +212,8 @@ describe('solve — characterization: weekend Sat-C1 chain', () => {
     const friC2 = callSlot('friC2', '2026-01-02', 'C2', 'friday');
     const ctx = buildCtx([friC2, satC1, sunC2], [prov('p1')], {
       bucketTarget: new Map([
-        ['p1|weekend|C1', 99],
-        ['p1|weekend|C2', 99],
+        ['p1|saturday|C1', 99],
+        ['p1|sunday|C2', 99],
         ['p1|friday|C2', 99],
       ]),
       credByPid: new Map([['p1', {
@@ -232,6 +233,65 @@ describe('solve — characterization: weekend Sat-C1 chain', () => {
     // so p1 gets Fri-C2 from the main loop; the Sat chain finds it already handled.
     expect(friAssign?.provider_id).toBe('p1');
     expect(friAssign?.source).toBe('main-loop');
+  });
+});
+
+// ── Split saturday/sunday fairness buckets steer per-day (the whole point) ───
+// Two providers with OPPOSITE weekend-day histories: A has taken Saturdays,
+// B has taken Sundays. Under the OLD merged 'weekend' bucket they look
+// identical (2 weekend calls each), so the engine cannot tell that A owes
+// Sundays and B owes Saturdays — it hands each of them one Saturday and one
+// Sunday this block, leaving A permanently Saturday-heavy across blocks. With
+// the split, dayTypeBucket keys saturday|C1 and sunday|C1 separately, the
+// deficit carry-forward reads a Sunday deficit for A and a Saturday deficit for
+// B, and the greedy steers A onto the Sundays and B onto the Saturdays —
+// correcting the per-day imbalance instead of perpetuating it.
+describe('solve — split weekend buckets steer per-day (two-weekend fixture)', () => {
+  const buildSplitCtx = () => {
+    const providers = [prov('pA'), prov('pB')]; // FTE 1.0 each
+    // Two weekends: two Saturday C1 + two Sunday C1 slots.
+    const slots = [
+      callSlot('sat1', '2026-01-10', 'C1', 'saturday'),
+      callSlot('sat2', '2026-01-17', 'C1', 'saturday'),
+      callSlot('sun1', '2026-01-11', 'C1', 'sunday'),
+      callSlot('sun2', '2026-01-18', 'C1', 'sunday'),
+    ];
+    const parLevel = 2;
+    const bucketTotals = new Map([['saturday|C1', 2], ['sunday|C1', 2]]);
+    // A: two historical Saturdays, zero Sundays. B: mirror image.
+    const historicalAssignedByPid = new Map([
+      ['pA', new Map([['saturday|C1', 2]])],
+      ['pB', new Map([['sunday|C1', 2]])],
+    ]);
+    const historicalTotalByBucket = new Map([['saturday|C1', 2], ['sunday|C1', 2]]);
+    const bucketTarget = computeBucketTargets(
+      bucketTotals, historicalTotalByBucket, historicalAssignedByPid, providers, parLevel,
+    );
+    return buildCtx(slots, providers, {
+      parLevel, bucketTotals, historicalAssignedByPid, historicalTotalByBucket, bucketTarget,
+    });
+  };
+
+  it('reads a Sunday deficit for the Saturday-heavy provider (targets steer per-day)', () => {
+    const ctx = buildSplitCtx();
+    // A owes Sundays (no Saturday deficit — already saturated), B owes Saturdays.
+    // These per-day targets are exactly what the merged bucket could not express.
+    expect(ctx.bucketTarget.get('pA|sunday|C1')).toBeGreaterThan(ctx.bucketTarget.get('pA|saturday|C1')!);
+    expect(ctx.bucketTarget.get('pB|saturday|C1')).toBeGreaterThan(ctx.bucketTarget.get('pB|sunday|C1')!);
+  });
+
+  it('steers the Saturday-heavy provider onto Sundays and vice versa (not one-of-each)', () => {
+    const plan = solve(buildSplitCtx());
+    expect(plan.unfilled).toHaveLength(0);
+    const byProvider = (pid: string) => plan.assignments
+      .filter(a => a.provider_id === pid)
+      .map(a => a.slot_id).sort();
+    // A (Saturday-heavy history) is steered entirely onto the Sundays; B onto
+    // the Saturdays. The old merged bucket would instead give each one Saturday
+    // and one Sunday (A: sat1+sun1, B: sat2+sun2) — a valid "even" weekend split
+    // that never corrects A's standing Saturday surplus.
+    expect(byProvider('pA')).toEqual(['sun1', 'sun2']);
+    expect(byProvider('pB')).toEqual(['sat1', 'sat2']);
   });
 });
 

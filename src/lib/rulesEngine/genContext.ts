@@ -298,13 +298,18 @@ export async function loadGenerationContext(
   // (unless the active pattern sets callFillOrder='call_rank' — solve
   // re-sorts within each date).
   //
-  // IMPORTANT: this sort reads `derived_day_type` DIRECTLY — not through
-  // dayTypeBucket(). The bucket collapses saturday/sunday into 'weekend',
-  // which isn't in dayOrder; both Sat and Sun would fall through to the
-  // `?? 5` default and end up dead-last. That broke the whole weekend-first
-  // contract — the weekend chain (Sat-C2 → Sun-C1 + Fri-D2, etc.) needs to
-  // run before the Friday slots get filled by their own normal pass,
+  // IMPORTANT: this sort reads `derived_day_type` DIRECTLY, and `dayOrder`
+  // enumerates the RAW day types (saturday, sunday, friday, weekday, the two
+  // holiday types). The weekend-first contract needs Saturday and Sunday slots
+  // ordered ahead of Friday so the weekend chain (Sat-C2 → Sun-C1 + Fri-D2,
+  // etc.) runs before the Friday slots get filled by their own normal pass —
   // otherwise the chain double-books providers across Friday + Saturday.
+  // dayTypeBucket() now splits saturday/sunday into their own fairness buckets
+  // (they used to collapse to 'weekend', which wasn't in dayOrder and sank both
+  // to the `?? 5` default), so routing the sort through it would order weekends
+  // correctly too — but it still merges the two holiday types, and there's no
+  // reason to bucket a raw value the sort already has. Keep the sort on
+  // derived_day_type.
   const dayOrder: Record<string, number> = {
     saturday: 0,
     sunday: 1,
