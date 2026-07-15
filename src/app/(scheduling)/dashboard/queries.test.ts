@@ -52,6 +52,9 @@ function attnSlot(over: Partial<AttentionSlotRow> & Record<string, unknown> = {}
       { provider_id: 'p1', assignment_status: 'assigned', validation_flags: [] },
     ],
     schedule_versions: { schedule_id: 'sch-1', version_number: 1 },
+    // Default 'call' keeps every existing unfilled-count assertion meaningful
+    // now that unfilled is call-only; override per-case to exercise day slots.
+    shift_types: { category: 'call' },
     ...over,
   } as AttentionSlotRow;
 }
@@ -254,6 +257,29 @@ describe('attentionFor', () => {
     ];
     expect(attentionFor(rows)).toEqual([
       { schedule_id: 'sch-1', unfilled: 1, hard: 1, assigned: 1, checked: 1 },
+    ]);
+  });
+
+  it('does not count an unfilled regular-category slot as unfilled (unfilled is call-only)', () => {
+    const rows = [
+      attnSlot({ id: 's-1', assignments: [], shift_types: { category: 'regular' } }), // unfilled day slot: not counted
+      attnSlot({
+        id: 's-2',
+        assignments: [{ provider_id: 'p1', assignment_status: 'assigned', validation_flags: [{ severity: 'hard' }] }],
+        shift_types: { category: 'regular' },
+      }), // filled day slot: assigned/hard/checked accounting stays category-blind
+    ];
+    expect(attentionFor(rows)).toEqual([
+      { schedule_id: 'sch-1', unfilled: 0, hard: 1, assigned: 1, checked: 1 },
+    ]);
+  });
+
+  it('still counts an unfilled call-category slot as unfilled', () => {
+    const rows = [
+      attnSlot({ id: 's-1', assignments: [], shift_types: { category: 'call' } }),
+    ];
+    expect(attentionFor(rows)).toEqual([
+      { schedule_id: 'sch-1', unfilled: 1, hard: 0, assigned: 0, checked: 0 },
     ]);
   });
 

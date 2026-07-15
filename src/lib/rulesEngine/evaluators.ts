@@ -740,15 +740,71 @@ const openSlot: Evaluator = ctx => {
     }
   }
 
-  // Default: soft warning for any open slot
-  violations.push({
-    rule_id: null,
-    rule_name: 'Open slot',
-    category: 'open_slot',
-    severity: 'soft',
-    message: `${ctx.shiftType.code} on ${ctx.slot.slot_date} has no provider assigned.`,
-  });
+  // Default: soft warning for open CALL slots only. An open day (regular/
+  // float/admin) slot is normal scheduler workflow, not a warning — Gabriel
+  // 2026-07-14. Rule-driven deadlines above remain category-blind.
+  if (ctx.shiftType.category === 'call') {
+    violations.push({
+      rule_id: null,
+      rule_name: 'Open slot',
+      category: 'open_slot',
+      severity: 'soft',
+      message: `${ctx.shiftType.code} on ${ctx.slot.slot_date} has no provider assigned.`,
+    });
+  }
 
+  return violations;
+};
+
+// ── Pool eligibility ─────────────────────────────────────────────────────────
+//
+// Always-on (Gabriel 2026-07-14, spec 2026-07-14). The rule is ASYMMETRIC:
+//   - Call-engine-owned NON-call slots (generation_engine === 'call' with
+//     category !== 'call' — the derived/relief D1–D9 on live data) are
+//     reserved for call takers — a day doc placed there is a hard flag.
+//   - Day-pool slots (generation_engine === 'day_pool', e.g. 7-3/7-5) are
+//     auto-generated for day docs, but call takers may legitimately hold them
+//     (PTO sell-back, extra-shift pickup) — only a provider who is NEITHER a
+//     day doc nor a call taker flags.
+// Hard-flag, never block: exceptions stay possible, nothing is hidden. Keyed
+// entirely on generation_engine + category (data-driven, patch18) — never on
+// code-name patterns, so a future call-derived code not named D* can't
+// silently escape. Call-category slots have their own pool gating at
+// generation; not this evaluator's job.
+
+const poolEligibility: Evaluator = ctx => {
+  if (!ctx.providerId) return [];
+  const st = ctx.shiftType;
+  const isDerivedCallSlot = st.generation_engine === 'call' && st.category !== 'call';
+  const isDayPoolSlot = st.generation_engine === 'day_pool';
+  if (!isDerivedCallSlot && !isDayPoolSlot) return [];
+
+  // null poolFlags = no employment profile on file → ineligible for both pools
+  // (never silently pass — invariant 6 spirit).
+  const f = ctx.poolFlags;
+  const noProfile = ' (no employment profile on file)';
+  const isCallTaker = !!(f?.call_taker || f?.partial_call_taker);
+  const isDayDoc = !!f?.is_day_doc;
+  const violations: RuleViolation[] = [];
+
+  if (isDerivedCallSlot && !isCallTaker) {
+    violations.push({
+      rule_id: null,
+      rule_name: 'Pool eligibility',
+      category: 'eligibility',
+      severity: 'hard',
+      message: `${st.code} is reserved for call takers — this provider is not a call taker${f ? '' : noProfile}.`,
+    });
+  }
+  if (isDayPoolSlot && !(isDayDoc || isCallTaker)) {
+    violations.push({
+      rule_id: null,
+      rule_name: 'Pool eligibility',
+      category: 'eligibility',
+      severity: 'hard',
+      message: `${st.code} is a day shift — this provider is neither a Day Doc nor a call taker${f ? '' : noProfile}.`,
+    });
+  }
   return violations;
 };
 
@@ -803,6 +859,7 @@ export const evaluators: Evaluator[] = [
   pairing,
   fairness,
   openSlot,
+  poolEligibility,
   crossSite,
 ];
 
