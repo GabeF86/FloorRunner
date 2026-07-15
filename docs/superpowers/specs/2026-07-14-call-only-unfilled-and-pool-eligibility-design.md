@@ -30,9 +30,10 @@ Enforcement decision (Gabriel): wrong-pool assignments are **hard-flagged but al
 - The grid renderer needs no change (badge disappears because the flag is never written). Existing already-written `open_slot` flags on day slots in the live DB will clear on the next validation run of each version; note this in rollout.
 
 ### 3. Pool-eligibility evaluator (hard, non-blocking)
+- Clarified by Gabriel 2026-07-14: the rule is ASYMMETRIC. Day docs can never take D1–D9, but call takers CAN legitimately hold 7-3/7-5 (PTO sell-back, extra-shift pickup) — those must not flag. Auto-generation pools are unchanged (day pool still auto-assigns only day docs; call-taker 7-3s arrive via manual/pickup paths only).
 - New always-on evaluator in `evaluators.ts` (same registration pattern as `openSlot`), fires only when a provider IS assigned:
-  - Slot owned by the day pool (`shift_types.generation_engine === 'day_pool'`): provider's employment profile must have `is_day_doc = true`, else hard violation `pool_eligibility`: "<code> is a Day Doc shift — <name> is not a Day Doc."
-  - Slot with code matching `/^D[0-9]+$/i` and `generation_engine === 'call'` (the derived/relief D-codes): profile must have `call_taker OR partial_call_taker`, else hard violation: "<code> is reserved for call takers — <name> is not a call taker."
+  - Slot with code matching `/^D[0-9]+$/i` and `generation_engine === 'call'` (the derived/relief D-codes): profile must have `call_taker OR partial_call_taker`, else hard violation `pool_eligibility`: "<code> is reserved for call takers — <name> is not a call taker." (This is what flags a day doc on a D-slot.)
+  - Slot owned by the day pool (`shift_types.generation_engine === 'day_pool'`): profile must have `is_day_doc OR call_taker OR partial_call_taker`, else hard violation: "<code> is a day shift — <name> is neither a Day Doc nor a call taker."
   - Missing employment profile → treat as ineligible for both pools (hard flag with a "no employment profile" message) — never silently pass (invariant 6 spirit).
 - Keyed on `generation_engine` (data-driven), not hardcoded code lists, except the D-code regex which mirrors the engine's own ownership convention (patch18). If a site later adds day codes, marking them `day_pool` makes the rule follow automatically.
 - Surfaces everywhere `validation_flags` already surface: grid "!" badge, dashboard hard counts, assistant `assign_provider` responses, batch validation. No blocking anywhere.
@@ -51,4 +52,5 @@ Enforcement decision (Gabriel): wrong-pool assignments are **hard-flagged but al
 
 ## Risks
 - Existing soft `open_slot` flags on day slots persist until each version revalidates — cosmetic, self-healing.
-- Providers with neither flag set (not day doc, not call taker) will now hard-flag on BOTH slot families — correct behavior, but if the roster data has unset flags for legitimate workers, the grid will light up; check live data during rollout and report counts to Gabriel before merging.
+- Providers with neither flag set (not day doc, not call taker; 20 of 82 active physicians as of 2026-07-14) hard-flag on BOTH slot families if placed — correct behavior per Gabriel.
+- Live-data dry run (2026-07-14): zero flags on current assignments under the final rule — all D1–D9 held by call takers; the 10 call-taker 7-3s (Havildar, Ganiyu, October) are legitimate pickups and pass.
