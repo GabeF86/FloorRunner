@@ -133,14 +133,18 @@ export function normalizeWeekdays(v: unknown): boolean[] {
 
 // ── Bucket keys ────────────────────────────────────────────────────────────
 
-// Collapse day-of-week into the group used for FTE-proportional quotas.
-// Saturday + Sunday share one "weekend" bucket so fractional FTE targets
-// (e.g. 1.44 for a 0.6 FTE) have enough granularity to distinguish from
-// integer assignments. Holidays lump together regardless of major/federal.
+// Collapse day-of-week into the group used for FTE-proportional call-fairness
+// quotas. Saturday and Sunday each get their OWN bucket (they used to share a
+// merged 'weekend' bucket) so weekend fairness is tracked per-day: a provider's
+// Saturday call load no longer offsets a Sunday deficit, and across successive
+// blocks call-takers rotate through Saturday and Sunday evenly instead of one
+// person accumulating all the Saturdays. Friday and weekday stand alone; the two
+// holiday types still lump into one 'holiday' bucket (out of scope for the split).
 export function dayTypeBucket(dt: string): string {
   if (dt === 'weekday') return 'weekday';
   if (dt === 'friday') return 'friday';
-  if (dt === 'saturday' || dt === 'sunday') return 'weekend';
+  if (dt === 'saturday') return 'saturday';
+  if (dt === 'sunday') return 'sunday';
   if (dt === 'federal_holiday' || dt === 'major_holiday') return 'holiday';
   return dt;
 }

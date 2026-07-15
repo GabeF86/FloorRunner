@@ -175,7 +175,7 @@ const FAIRNESS_PROVIDERS = [
     provider_employment_profiles: null },
 ];
 
-// Calls: p1×3 (one saturday → 'weekend' bucket, two weekday), p3×1 (weekday,
+// Calls: p1×3 (one saturday → 'saturday' bucket, two weekday), p3×1 (weekday,
 // out-of-pool), plus a non-call D1 for p2 that must NOT count.
 const FAIRNESS_SLOTS = [
   { id: 's1', slot_date: '2026-01-03', derived_day_type: 'saturday',
@@ -226,7 +226,7 @@ describe('get_fairness_report', () => {
     expect(r.total_call_assignments).toBe(4);
     const p1 = row(r, 'p1')!;
     expect(p1.calls_total).toBe(3);
-    expect(p1.calls_by_bucket).toEqual({ weekend: 1, weekday: 2 }); // saturday→weekend
+    expect(p1.calls_by_bucket).toEqual({ saturday: 1, weekday: 2 }); // saturday is its own bucket (split)
     // Non-call D1 never counts.
     expect(row(r, 'p2')!.calls_total).toBe(0);
   });

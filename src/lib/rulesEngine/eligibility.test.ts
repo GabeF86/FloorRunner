@@ -98,7 +98,7 @@ describe('evaluateEligibility — call gate', () => {
 
   it('rejects a weekend slot without weekend-call credential (H1 guard)', () => {
     const c = ctx({
-      bucketTarget: new Map([['p1|weekend|C1', 5]]),
+      bucketTarget: new Map([['p1|saturday|C1', 5]]),
       credByPid: new Map([['p1', {
         is_active: true, credentialed: true, can_take_call: true,
         can_take_weekend_call: false, can_take_holiday_call: true,
@@ -113,7 +113,7 @@ describe('evaluateEligibility — call gate', () => {
 
   it('rejects a Saturday slot when PTO covers the prior Mon-Fri week', () => {
     const c = ctx({
-      bucketTarget: new Map([['p1|weekend|C1', 5]]),
+      bucketTarget: new Map([['p1|saturday|C1', 5]]),
       // 2026-01-03 Sat; prior week Mon-Fri = Dec 29 .. Jan 2. PTO Dec 30-31.
       availByPid: new Map([['p1', [{
         availability_type: 'pto', start_date: '2025-12-30', end_date: '2025-12-31',
@@ -142,7 +142,7 @@ describe('evaluateEligibility — call gate', () => {
     // the Sat-C1 person on Sun-C2).
     const st = emptySolveState();
     st.assignedOnDate.set('2026-01-04', new Set(['p1']));
-    const c = ctx({ bucketTarget: new Map([['p1|weekend|C1', 5]]) });
+    const c = ctx({ bucketTarget: new Map([['p1|saturday|C1', 5]]) });
     const satC1 = slot({ slot_date: '2026-01-03', derived_day_type: 'saturday' });
     const r = evaluateEligibility(satC1, provider(), st, c, 'call');
     expect(r.eligible).toBe(true);

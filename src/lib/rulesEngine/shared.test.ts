@@ -80,10 +80,19 @@ describe('dayTypeBucket', () => {
   it('collapses day types into quota buckets', () => {
     expect(dayTypeBucket('weekday')).toBe('weekday');
     expect(dayTypeBucket('friday')).toBe('friday');
-    expect(dayTypeBucket('saturday')).toBe('weekend');
-    expect(dayTypeBucket('sunday')).toBe('weekend');
     expect(dayTypeBucket('federal_holiday')).toBe('holiday');
     expect(dayTypeBucket('major_holiday')).toBe('holiday');
+  });
+
+  it('gives Saturday and Sunday SEPARATE buckets (the split — no longer merged into weekend)', () => {
+    // Both directions pinned: saturday is its own bucket, sunday is its own
+    // bucket, and neither is 'weekend'. This is what lets a provider's Saturday
+    // call load stop offsetting their Sunday deficit (and vice versa).
+    expect(dayTypeBucket('saturday')).toBe('saturday');
+    expect(dayTypeBucket('sunday')).toBe('sunday');
+    expect(dayTypeBucket('saturday')).not.toBe(dayTypeBucket('sunday'));
+    expect(dayTypeBucket('saturday')).not.toBe('weekend');
+    expect(dayTypeBucket('sunday')).not.toBe('weekend');
   });
 });
 

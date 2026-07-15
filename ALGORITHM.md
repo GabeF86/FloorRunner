@@ -49,7 +49,7 @@ AND provider_type = 'physician'
 
 ## 4. Bucket quotas — FTE-weighted with deficit carryforward
 
-Slots are grouped by **(bucket, shift_code)**. Buckets come from [`dayTypeBucket`](src/lib/rulesEngine/shared.ts): `weekday`, `friday`, `weekend` (Sat+Sun merged), `holiday`.
+Slots are grouped by **(bucket, shift_code)**. Buckets come from [`dayTypeBucket`](src/lib/rulesEngine/shared.ts): `weekday`, `friday`, `saturday`, `sunday` (split 2026-07-15 so each weekend day balances independently), `holiday` (federal+major merged).
 
 Per provider, per bucket:
 ```
