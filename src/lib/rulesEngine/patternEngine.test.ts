@@ -251,6 +251,56 @@ describe('patternEngine — overlay shift type', () => {
   });
 });
 
+// ── 6b. Overlay block chain: Doc C's neuro block, BOTH link orders ───────────
+// The saturday-C3 anchor carries Fri C3 (overlay evening call) + Fri D4 (the
+// day shift) + Sun C3 onto ONE provider. The two −1 links must land BOTH Friday
+// pieces regardless of order: an overlay placement never marks the date
+// (solve.record), and the overlay slot's same-date check is skipped
+// (eligibility) — so C3-then-D4 and D4-then-C3 both succeed. This is the
+// production Sat-C3 chain shape (weekendV2.ts).
+describe('patternEngine — overlay block chain (Doc C neuro, both link orders)', () => {
+  const orders = [
+    { name: 'C3-then-D4', links: [{ offset: -1, code: 'C3' }, { offset: -1, code: 'D4' }, { offset: 1, code: 'C3' }] },
+    { name: 'D4-then-C3', links: [{ offset: -1, code: 'D4' }, { offset: -1, code: 'C3' }, { offset: 1, code: 'C3' }] },
+  ];
+  for (const order of orders) {
+    it(`places Fri D4 + Fri C3 + Sat C3 + Sun C3 on one provider (${order.name})`, () => {
+      const pattern: CallPatternDoc = {
+        version: 1,
+        blocks: [{ anchorDayType: 'saturday', chains: [{ trigger: 'C3', links: order.links }] }],
+        dayChains: [], spans: [], placementPasses: [], reliefPass: null, optimizerMovableDayTypes: [],
+      };
+      const shiftTypes = new Map<string, ShiftTypeInfo>([
+        ['C3', shiftInfo('C3', { category: 'call', call_rank: 2, is_overlay: true })],
+        ['D4', shiftInfo('D4', { category: 'regular' })],
+      ]);
+      // Saturday anchor listed FIRST so it fires the block chain before the main
+      // loop reaches the other C3 slots. Fri = 2026-01-09, Sat = 10, Sun = 11.
+      const slots = [
+        callSlot('satC3', '2026-01-10', 'C3', 'saturday'),
+        callSlot('friC3', '2026-01-09', 'C3', 'friday'),
+        callSlot('sunC3', '2026-01-11', 'C3', 'sunday'),
+        dSlot('friD4', '2026-01-09', 'D4', 'friday'),
+      ];
+      const plan = solve(buildCtx(slots, [prov('p01'), prov('p02')], { callPattern: pattern, shiftTypes }));
+
+      const byId = Object.fromEntries(plan.assignments.map(a => [a.slot_id, a.provider_id]));
+      const docC = byId['satC3'];
+      expect(docC).toBeDefined();
+      // All four pieces land on ONE provider.
+      expect(byId['friC3']).toBe(docC);
+      expect(byId['sunC3']).toBe(docC);
+      expect(byId['friD4']).toBe(docC);
+      // The crux: Doc C holds BOTH Fri D4 (day) and Fri C3 (overlay call) on the
+      // same Friday — impossible without the overlay same-date exemption working
+      // in BOTH placement directions.
+      expect(plan.assignments.filter(a => a.provider_id === docC && a.slot_date === '2026-01-09')).toHaveLength(2);
+      // Nothing in the block was suppressed/dropped.
+      expect(plan.skippedDerived!.some(s => s.code === 'D4' || s.code === 'C3')).toBe(false);
+    });
+  }
+});
+
 // ── 7. Custom call code fairness plumbing (category-driven, not C1/C2/C3) ────
 describe('patternEngine — custom call code call-date tracking', () => {
   it('tracks a custom NC call for recency so a later NC prefers the other provider', () => {

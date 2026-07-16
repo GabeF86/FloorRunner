@@ -100,6 +100,7 @@ interface StRow {
   call_rank?: number | null;
   relief_rank?: number | null;
   requires_post_call_rule?: boolean;
+  is_overlay?: boolean;
 }
 
 interface TriggerSlot {
@@ -176,7 +177,11 @@ function preFillCodes(doc: CallPatternDoc): Set<string> {
 // `failed: true` with a warning (+ console.error) and the caller aborts —
 // an empty-looking window would silently pass the rest/conflict guards.
 
-const WIDE_ST = 'code, category, call_rank, relief_rank, requires_post_call_rule';
+// is_overlay is a patch18 column (like call_rank/relief_rank), so it rides in
+// the WIDE embed and is dropped by the narrow retry: on a pre-patch18 DB it is
+// absent → treated as non-overlay → overlay rows block same-date, the
+// conservative pre-overlay behavior.
+const WIDE_ST = 'code, category, call_rank, relief_rank, requires_post_call_rule, is_overlay';
 const NARROW_ST = 'code, category, requires_post_call_rule';
 
 export const RANKS_DEGRADED_WARNING =
@@ -518,11 +523,19 @@ export async function applySequenceAutoFill(
     // Provider-wide same-day conflict — ANY site, ANY schedule version
     // (clinical invariant 3). Labeled relative to the CHOSEN slot's site
     // (where the fill would land), not the trigger's.
+    //
+    // Overlay coexistence is SAME-SITE ONLY (spec 2026-07-15 §Changes/2): an
+    // overlay row (is_overlay shift type, e.g. neuro C3) at the CHOSEN slot's
+    // site does not consume the one-shift-per-day budget, so it must not block a
+    // co-located fill (Doc C's Fri C3 coexists with a Fri day fill). A
+    // cross-site overlay row STILL conflicts (conservative — two places at
+    // once), so it stays in the scan and surfaces as a cross-site skip.
     const conflicts = windowAssignments.filter(a =>
       a.slot_date === linkedDate
       && !evictedIds.has(a.id)
       && a.slot_id !== chosen!.id
-      && a.slot_id !== trigger.id);
+      && a.slot_id !== trigger.id
+      && !(a.st?.is_overlay && a.site_id === chosen!.site_id));
     if (conflicts.length > 0) {
       const crossSite = conflicts.some(c => c.site_id !== chosen!.site_id);
       skip(linkedDate, code, crossSite ? 'cross-site' : 'occupied');

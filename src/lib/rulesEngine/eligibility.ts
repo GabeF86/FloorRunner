@@ -43,7 +43,13 @@ export function evaluateEligibility(
     return { eligible: false, reason: 'same-date' };
   }
 
-  // Cross-site conflict (preloaded)
+  // Cross-site conflict (preloaded). DELIBERATELY overlay-blind (conservative,
+  // spec 2026-07-15 §Changes/2): the same-date overlay exemption above is a
+  // SAME-SITE block-design affordance (Doc C's Fri D4 + Fri C3 coexist because
+  // one is a day shift, the other evening neuro call at the SAME site). A
+  // published assignment at ANOTHER site on the same day is a genuine two-places
+  // conflict regardless of overlay, so it still blocks. Revisit only if a
+  // cross-site overlay coexistence case is actually specified.
   if (ctx.crossSiteByDate.get(p.id)?.has(slot.slot_date)) {
     return { eligible: false, reason: 'cross-site' };
   }

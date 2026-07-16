@@ -5,6 +5,17 @@
 // Sat-C2 person carries Fri C2 + Sun C1; Neuro (C3) covers Fri→Sun; Sat-C1
 // person gets Fri D2 and Sunday off. callFillOrder makes in-house C1 fill
 // before home-call within each date under pool pressure.
+//
+// Neuro overlay (Doc C, spec 2026-07-15): the Sat-C3 person works a REGULAR
+// DAY (D4) on Friday and starts neuro call (C3) that evening, then carries C3
+// Sat + Sun. So the saturday C3 anchor links BOTH Fri C3 (−1) and Fri D4 (−1)
+// onto that one provider — two −1 links on the same anchor. C3 is an
+// is_overlay shift type (patch25), so its Friday assignment does NOT consume
+// that provider's one-shift-per-day budget: Fri D4 and Fri C3 coexist on one
+// person, one block. The two −1 links are order-independent — an overlay
+// placement never marks the date and the overlay same-date check is skipped —
+// so C3-then-D4 and D4-then-C3 both land both pieces (see solve.record /
+// eligibility overlay exemption, and patternEngine.test.ts both-order test).
 import { CallPatternDocSchema, type CallPatternDoc } from '../callPattern';
 
 // The upcoming patch19 SQL seed embeds this constant (mirroring how the
@@ -15,7 +26,10 @@ export const WEEKEND_V2_PATTERN: CallPatternDoc = CallPatternDocSchema.parse({
   spans: [],
   blocks: [
     { anchorDayType: 'saturday', chains: [
-      { trigger: 'C3', links: [{ offset: -1, code: 'C3' }, { offset: 1, code: 'C3' }] },
+      // Neuro block: Fri C3 (evening call) + Fri D4 (the day shift, overlay) +
+      // Sun C3 — all on the saturday-C3 provider (Doc C). Two −1 links are legal
+      // (BlockChainSchema.links has no offset-uniqueness) and order-independent.
+      { trigger: 'C3', links: [{ offset: -1, code: 'C3' }, { offset: -1, code: 'D4' }, { offset: 1, code: 'C3' }] },
       { trigger: 'C1', links: [{ offset: -1, code: 'D2' }] },
       { trigger: 'C2', links: [{ offset: -1, code: 'C2' }, { offset: 1, code: 'C1' }] },
     ]},

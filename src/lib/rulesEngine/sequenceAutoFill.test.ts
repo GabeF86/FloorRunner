@@ -36,6 +36,7 @@ interface StOpts {
   call_rank?: number | null;
   relief_rank?: number | null;
   requires_post_call_rule?: boolean;
+  is_overlay?: boolean;
 }
 const st = (code: string, o: StOpts = {}) => ({
   code,
@@ -43,6 +44,7 @@ const st = (code: string, o: StOpts = {}) => ({
   call_rank: o.call_rank ?? null,
   relief_rank: o.relief_rank ?? null,
   requires_post_call_rule: o.requires_post_call_rule ?? false,
+  is_overlay: o.is_overlay ?? false,
 });
 
 // Trigger slot as returned by the eq-id schedule_slots fetch.
@@ -439,6 +441,48 @@ describe('applySequenceAutoFill — cross-site conflict (clinical invariant 3)',
     });
     const result = await applySequenceAutoFill(sb, 'trig', 'p1', CLASSIC_PATTERN);
     expect(result.skips).toContainEqual({ date: TUE, code: 'D1', provider_id: 'p1', reason: 'occupied' });
+  });
+});
+
+// ── 2b. overlay coexistence: SAME-SITE overlay does not block, cross-site does ─
+// An is_overlay row (neuro C3) at the CHOSEN slot's site does not consume the
+// one-shift-per-day budget, so it must not block a co-located fill (Doc C's Fri
+// C3 coexists with a Fri day fill). A cross-site overlay STILL blocks
+// (conservative — two places at once).
+
+describe('applySequenceAutoFill — overlay coexistence (same-site vs cross-site)', () => {
+  it('fills D1 even though the provider holds a SAME-SITE overlay call (neuro C3) that day', async () => {
+    const { sb, calls } = makeFakeSupabase({
+      tables: tables({
+        trigger: triggerSlot({ date: MON }),
+        slots: [slot({ id: 'slot-d1-tue', date: TUE, code: 'D1', assignments: [openRow('open-1')] })],
+        assignments: [winAssign({
+          id: 'ovl', date: TUE, code: 'C3', site: 'siteA', slotId: 'slot-c3-tue',
+          stOpts: { category: 'call', call_rank: 2, is_overlay: true },
+        })],
+      }),
+    });
+    const result = await applySequenceAutoFill(sb, 'trig', 'p1', CLASSIC_PATTERN);
+    expect(result.filledSlotIds).toEqual(['slot-d1-tue']);
+    expect(result.skips.every(s => s.code !== 'D1')).toBe(true);
+    expect(updates(calls)).toHaveLength(1);
+  });
+
+  it('a CROSS-SITE overlay row still blocks the fill (recorded cross-site)', async () => {
+    const { sb, calls } = makeFakeSupabase({
+      tables: tables({
+        trigger: triggerSlot({ date: MON }),
+        slots: [slot({ id: 'slot-d1-tue', date: TUE, code: 'D1', assignments: [openRow('open-1')] })],
+        assignments: [winAssign({
+          id: 'ovlB', date: TUE, code: 'C3', site: 'siteB', version: 'v2', status: 'published', slotId: 'slot-c3-tue-b',
+          stOpts: { category: 'call', call_rank: 2, is_overlay: true },
+        })],
+      }),
+    });
+    const result = await applySequenceAutoFill(sb, 'trig', 'p1', CLASSIC_PATTERN);
+    expect(result.filledSlotIds).toEqual([]);
+    expect(result.skips).toContainEqual({ date: TUE, code: 'D1', provider_id: 'p1', reason: 'cross-site' });
+    expect(updates(calls)).toHaveLength(0);
   });
 });
 
