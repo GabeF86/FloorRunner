@@ -36,3 +36,21 @@ Doc C works a REGULAR DAY (D4) on Friday and starts neuro call (C3) that evening
 
 ## Rollout
 Deploy + patch25 as one step; Gabriel regenerates and verifies Doc C's block appears as one person's Fri D4/C3 + Sat/Sun C3 in the grid and Call Counts.
+
+---
+
+## Close-out (2026-07-15)
+
+Shipped with the friday-first re-anchor (merge `d0efa5a`; patch25 applied + verified
+structurally: C3 is_overlay=true, Friday D4 template active, 11 Friday D4 slots
+backfilled into the drafts, live pattern carries the D4 link).
+
+Engine review round 1 was FIX-FIRST with three PROVEN severity-1 findings — the
+naive overlay exemption allowed call-on-call stacking (Sat C1 onto the Sat C3
+holder, even with free providers) and post-call blocked-day bypass. Final overlay
+semantics: an overlay CALL coexists with REGULAR day work only; call-category
+placements collide with ANY same-date call; blocked days always bind
+(SolveState.blockedOnDate). sequenceAutoFill uses a two-sided category-aware
+coexists predicate. All collision directions negatively tested. Follow-up
+candidate from review: no evaluator flags same-provider/same-site/same-date call
+pairs (construction prevents; manual edits aren't flagged) — small evaluator later.

@@ -28,3 +28,18 @@ genContext sorts slotsToFill with a hardcoded dayOrder (saturday 0, sunday 1, fr
 
 ## Rollout
 Ships with the neuro-overlay branch: deploy + patch25 (re-emitted) as one step; Gabriel regenerates August and verifies Doc A's Friday C1 fills first and blanks (if any) moved to Sunday C2.
+
+---
+
+## Close-out (2026-07-15)
+
+Shipped (merge `d0efa5a`, patch25 applied). `dayTypeFillOrder` is now a
+CallPatternDoc field (absent = old hardcoded order, byte-identical, typos degrade
+to load warnings); Weekend v2 runs saturday→friday→sunday. Doc A anchors on
+Friday C1 with Sun C2 chained +2 (sunday anchor removed from the live doc,
+verified via jsonb inspection). Pinned characterization tests prove dayChains
+fire on link placements in both anchor directions and Thursday-D2 behavior is
+unchanged. The starved-pool failure now lands on Sunday C2 (home call), never
+Friday C1 (in-house). Golden parity 8/8 untouched. Known graceful degradation:
+a holiday Friday doesn't fire the friday anchor; that weekend's Sun C2 fills
+standalone.
