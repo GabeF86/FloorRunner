@@ -438,6 +438,36 @@ describe('WEEKEND_V2_PATTERN — chain call links bypass quota, severance record
     expect(sun?.provider_id).toBe('p2');
     expect(sun?.source).toBe('main-loop');
   });
+
+  it('an OVERRIDDEN chain target whose pinned provider is ineligible records the severance (override path)', () => {
+    // 2026-07-16 PROOF defect 2 observability half: the optimizer pins chain
+    // targets via callOverrides; when the pinned provider can't take the slot
+    // the pairing severs through the OVERRIDE branch of applyBlockChains —
+    // previously silent (invariant-4 gap). It must be recorded with the real
+    // reason, and the slot still surfaces via the main loop's unfilled report.
+    const slots = [
+      callSlot('friC1', '2026-01-09', 'C1', 'friday'),
+      callSlot('sunC2', '2026-01-11', 'C2', 'sunday'),
+    ];
+    // p2 is pinned onto sunC2 but is on PTO that Sunday; p1 wins Fri C1.
+    const ctx = buildCtx(slots, [prov('p1'), prov('p2')], {
+      callPattern: WEEKEND_V2_PATTERN, shiftTypes,
+      availByPid: new Map([['p2', [{
+        availability_type: 'pto', start_date: '2026-01-11', end_date: '2026-01-11',
+        approval_status: 'approved',
+      }]]]),
+    });
+    const plan = solve(ctx, { callOverrides: new Map([['sunC2', 'p2']]) });
+    expect(plan.assignments.find(a => a.slot_id === 'friC1')?.provider_id).toBe('p1');
+    // The severance is recorded against the PINNED provider with the real reason.
+    expect(plan.skippedDerived).toContainEqual({
+      date: '2026-01-11', code: 'C2', provider_id: 'p2', reason: 'pto',
+    });
+    // The slot itself is still honestly reported unfilled by the main loop.
+    expect(plan.unfilled.some(
+      u => u.slot_id === 'sunC2' && u.reason === 'Forced provider ineligible',
+    )).toBe(true);
+  });
 });
 
 // ── friday-first Doc A: the starved-Sunday failure mode moves to Sunday ──────

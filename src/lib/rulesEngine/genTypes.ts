@@ -201,6 +201,13 @@ export interface SolutionPlan {
   // OPTIONAL so the FROZEN solveLegacy.ts (and bare test-plan literals) keep
   // compiling; the v2 solve() always populates it.
   skippedDerived?: SkippedDerived[];
+  // Slot ids whose placement triggered pattern block-chain links (the CHAIN
+  // ANCHORS — e.g. weekend-v2's Friday C1 that chains Sun C2). Recorded by
+  // applyBlockChains, pattern-data-driven. The optimizer must never move an
+  // anchor: its chain partner is pinned separately, so moving the anchor
+  // severs the designed same-provider pairing (2026-07-16 PROOF defect 2).
+  // OPTIONAL for the same frozen-solveLegacy reason as skippedDerived.
+  chainAnchorSlotIds?: string[];
 }
 
 // Mutable in-memory bookkeeping during solve. Never touches I/O.

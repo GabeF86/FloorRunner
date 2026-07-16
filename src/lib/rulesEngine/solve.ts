@@ -35,8 +35,11 @@ function reliefCodesFor(shiftTypes: Map<string, ShiftTypeInfo> | undefined): str
 //   IF-3 quota relaxation                       IF-4 skippedDerived reporting
 //   IF-5 pending PTO drives the pre-PTO Thursday placement (spec §6.7)
 export function solve(ctx: GenerationContext, opts: SolveOptions = {}): SolutionPlan {
-  const plan: SolutionPlan = { assignments: [], unfilled: [], skippedDerived: [] };
+  const plan: SolutionPlan = {
+    assignments: [], unfilled: [], skippedDerived: [], chainAnchorSlotIds: [],
+  };
   const skippedDerived = plan.skippedDerived!;
+  const chainAnchorSlotIds = plan.chainAnchorSlotIds!;
 
   const doc = ctx.callPattern ?? CLASSIC_PATTERN;
   const shiftInfo = (code: string) => ctx.shiftTypes?.get(code);
@@ -164,6 +167,11 @@ export function solve(ctx: GenerationContext, opts: SolveOptions = {}): Solution
   const applyBlockChains = (slot: SlotToFill, chosen: CandidateProvider) => {
     const links = blockChainsFor(doc, slot.derived_day_type).get(slot.shift_type_code);
     if (!links) return;
+    // This placement is a CHAIN ANCHOR: record it on the plan so the optimizer
+    // never moves it (its chain partner is pinned separately — moving the
+    // anchor severs the designed same-provider pairing). Each slot is placed
+    // at most once, so no dedup needed.
+    chainAnchorSlotIds.push(slot.slot_id);
     for (const link of links) {
       const date = addDays(slot.slot_date, link.offset);
       const target = ctx.slotIndex.get(date)?.get(link.code);
@@ -189,7 +197,25 @@ export function solve(ctx: GenerationContext, opts: SolveOptions = {}): Solution
       }
       if (overrides?.has(target.slot_id)) {
         const f = overrideFor(target);
-        if (f) { record(target, f, 'weekend-chain'); applyDayChains(target, f); }
+        if (f) {
+          record(target, f, 'weekend-chain'); applyDayChains(target, f);
+        } else {
+          // Invariant 4 (2026-07-16): the override pins a provider who cannot
+          // take the chain target — the designed pairing severs through the
+          // OVERRIDE path. Record it with the real reason (re-run the same
+          // 'call-no-quota' gate overrideFor used); the slot itself is still
+          // reported by the main loop ('Forced provider ineligible'). This
+          // was previously a silent continue.
+          const pinnedId = overrides.get(target.slot_id)!;
+          const pinned = providerById.get(pinnedId);
+          skippedDerived.push({
+            date: target.slot_date, code: target.shift_type_code,
+            provider_id: pinnedId,
+            reason: pinned
+              ? skipReasonFrom(evaluateEligibility(target, pinned, state, ctx, 'call-no-quota').reason)
+              : 'ineligible',
+          });
+        }
         continue; // overridden slot handled (placed if eligible, else left for main loop/unfilled)
       }
       // Call targets use 'call-no-quota' (2026-07-16): a chain link is a
