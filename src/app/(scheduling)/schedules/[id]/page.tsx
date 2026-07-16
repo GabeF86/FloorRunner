@@ -1162,9 +1162,15 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
               {genResult.errors.length > 0 && ` ${genResult.errors.length} error(s).`}
             </span>
             {genResult.warnings.length > 0 && (
-              <div style={{ marginTop: 4, color: 'var(--text-dim)' }}>
-                {genResult.warnings.length} warning{genResult.warnings.length !== 1 ? 's' : ''}: {genResult.warnings.slice(0, 3).join(' · ')}
-                {genResult.warnings.length > 3 && ` … and ${genResult.warnings.length - 3} more`}
+              // Full list, never truncated (2026-07-16): the quota-coverage
+              // warnings are the fastest structural signal — the ABSENCE of a
+              // friday|C1/C2 line was the tell that Friday slots were never
+              // materialized, and a "… and N more" ellipsis hid exactly that.
+              <div style={{ marginTop: 4, color: 'var(--text-dim)', maxHeight: 160, overflowY: 'auto' }}>
+                <div>{genResult.warnings.length} warning{genResult.warnings.length !== 1 ? 's' : ''}:</div>
+                <ul style={{ margin: '2px 0 0 0', paddingLeft: 18 }}>
+                  {genResult.warnings.map((w, i) => <li key={i}>{w}</li>)}
+                </ul>
               </div>
             )}
             {genResult.skippedDerived.length > 0 && (

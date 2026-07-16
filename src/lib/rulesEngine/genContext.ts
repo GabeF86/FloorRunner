@@ -77,6 +77,52 @@ export function computeBucketTargets(
   return out;
 }
 
+/**
+ * The quota DENOMINATOR the engine actually uses (2026-07-16). A stored
+ * `sites.call_par_level` above the pool's summed FTE makes every FTE-weighted
+ * target proportionally short (Σ targets = bucketTotal × poolFte/par <
+ * bucketTotal) — the schedule is then structurally under-quota'd no matter how
+ * the slots distribute. Clamp DOWN to Σ pool FTE; never up (a par below pool
+ * FTE is a legitimate "spread thinner across more people" choice). An
+ * empty/zero-FTE pool keeps the stored par — nothing to clamp to.
+ *
+ * The stored par still drives the load-time shortfall warning so a stale row
+ * stays visible; this clamp only stops it from starving the quotas.
+ */
+export function effectiveParLevel(parLevel: number, providers: CandidateProvider[]): number {
+  const poolFte = providers.reduce((s, p) => s + p.fte_value, 0);
+  return poolFte > 0 ? Math.min(parLevel, poolFte) : parLevel;
+}
+
+/**
+ * At-least-one-per-bucket floor (2026-07-16). patch24's saturday/sunday split
+ * shrank weekend buckets to a handful of slots, driving per-provider targets
+ * below 1 — and the strict `assigned + 1 > target` check then gave EVERY
+ * provider zero capacity in those buckets (the merged weekend bucket's whole
+ * reason to exist, per the old ALGORITHM.md §4 rationale). Floor each
+ * positive-FTE provider's target to ≥ 1 so quota math can never zero out an
+ * entire bucket; fairness ORDERING is unaffected — scoreCall's lifetime-ratio
+ * sort still decides who actually gets the slot. Zero-FTE providers keep their
+ * raw target (no capacity means no quota grant).
+ *
+ * This lives at target-computation time, NOT in the eligibility gate: parity
+ * fixtures hand-build their target maps, and the only consumer of
+ * ctx.bucketTarget is the eligibility quota check, so flooring here is
+ * production-identical and keeps the frozen-legacy parity net meaningful.
+ */
+export function floorBucketTargets(
+  targets: Map<string, number>,
+  providers: CandidateProvider[],
+): Map<string, number> {
+  const fteById = new Map(providers.map(p => [p.id, p.fte_value]));
+  const out = new Map<string, number>();
+  for (const [k, v] of targets) {
+    const pid = k.slice(0, k.indexOf('|'));
+    out.set(k, (fteById.get(pid) ?? 0) > 0 ? Math.max(1, v) : v);
+  }
+  return out;
+}
+
 // ── Load result ───────────────────────────────────────────────────────────────
 
 export interface LoadResult {
@@ -670,23 +716,45 @@ export async function loadGenerationContext(
   // don't get their block target shrunk — they just get scored worse so the
   // greedy loop hands slots to under-allocated providers first. A hard
   // shrink of their cap could leave slots unfilled for no good reason.
-  const bucketTarget = computeBucketTargets(
+  //
+  // 2026-07-16: targets are computed TWICE. The RAW pass (stored par, no
+  // floor) exists only to keep the shortfall warning honest — a stale
+  // sites.call_par_level must stay visible. The EFFECTIVE pass clamps the
+  // denominator to Σ pool FTE (effectiveParLevel) and floors every
+  // positive-FTE provider's target to ≥ 1 (floorBucketTargets) so quota math
+  // can never structurally starve a bucket. ctx.parLevel stays the STORED
+  // value (display/reporting).
+  const rawTargets = computeBucketTargets(
     bucketTotals,
     historicalTotalByBucket,
     historicalAssignedByPid,
     providers,
     parLevel,
   );
+  const effectivePar = effectiveParLevel(parLevel, providers);
+  const bucketTarget = floorBucketTargets(
+    effectivePar === parLevel
+      ? rawTargets
+      : computeBucketTargets(
+          bucketTotals, historicalTotalByBucket, historicalAssignedByPid,
+          providers, effectivePar,
+        ),
+    providers,
+  );
 
-  // Quota sanity: if the FTE-weighted targets across the whole pool can't sum
-  // to the bucket's slot count, the block is structurally under-staffed for
-  // that bucket (par_level too high, or pool FTE too low). Warn so the human
-  // knows some slots will go unfilled for capacity — not eligibility — reasons.
+  // Quota sanity: if the RAW (stored-par) FTE-weighted targets across the
+  // whole pool can't sum to the bucket's slot count, the stored par is out of
+  // line with the pool (par too high, or pool FTE too low). The engine now
+  // CLAMPS the denominator and floors targets so slots still fill — but the
+  // stale row should be fixed, so warn loudly either way.
   for (const [key, total] of bucketTotals) {
     let sum = 0;
-    for (const p of providers) sum += bucketTarget.get(`${p.id}|${key}`) || 0;
+    for (const p of providers) sum += rawTargets.get(`${p.id}|${key}`) || 0;
     if (sum < total) {
-      warnings.push(`Bucket ${key}: FTE-weighted quota (${sum.toFixed(2)}) cannot cover ${total} slots — check call_par_level vs pool FTE`);
+      warnings.push(
+        `Bucket ${key}: FTE-weighted quota (${sum.toFixed(2)} at stored call_par_level ${parLevel}) cannot cover ${total} slots — ` +
+        `targets clamped to pool FTE (${effectivePar.toFixed(2)}) and floored at 1 so slots still fill; update sites.call_par_level to match the pool`,
+      );
     }
   }
 

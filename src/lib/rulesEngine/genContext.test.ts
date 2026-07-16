@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { emptySolveState } from './genTypes';
-import { loadGenerationContext, computeBucketTargets } from './genContext';
+import { loadGenerationContext, computeBucketTargets, effectiveParLevel, floorBucketTargets } from './genContext';
 import { buildPrePtoByThursday } from './shared';
 import { CLASSIC_PATTERN } from './callPattern';
 import type {
@@ -60,6 +60,44 @@ describe('computeBucketTargets', () => {
       12,
     );
     expect(targets.get('p1|weekday|C1')).toBeCloseTo(1.0);
+  });
+});
+
+// ── 2026-07-16 quota starvation fixes: par clamp + at-least-one floor ─────────
+describe('effectiveParLevel — quota denominator clamped to the pool', () => {
+  it('clamps DOWN to Σ pool FTE when the stored par exceeds it', () => {
+    // Paoli shape: stored par 12, pool 8.82 FTE → Σ targets covered only 73%
+    // of every bucket. The denominator must reflect the real pool.
+    expect(effectiveParLevel(12, [prov('p1', 1), prov('p2', 0.5)])).toBeCloseTo(1.5);
+  });
+  it('never clamps UP — a par below pool FTE is a legitimate spread-thinner choice', () => {
+    expect(effectiveParLevel(2, [prov('p1', 1), prov('p2', 1), prov('p3', 1)])).toBe(2);
+  });
+  it('keeps the stored par when the pool has no FTE (nothing to clamp to)', () => {
+    expect(effectiveParLevel(12, [])).toBe(12);
+    expect(effectiveParLevel(12, [prov('p1', 0)])).toBe(12);
+  });
+});
+
+describe('floorBucketTargets — every positive-FTE provider gets ≥ 1 per bucket', () => {
+  it('floors sub-1 targets to 1 and leaves ≥1 targets untouched', () => {
+    // patch24's sat/sun split shrank weekend buckets to 4-5 slots, driving
+    // per-provider targets to 0.33-0.42 — strict `assigned+1 > target` then
+    // gave EVERY provider zero weekend capacity. The floor restores the
+    // at-least-one-per-bucket guarantee the merged bucket used to provide.
+    const floored = floorBucketTargets(
+      new Map([['p1|saturday|C1', 0.33], ['p1|weekday|C1', 4.2]]),
+      [prov('p1', 1)],
+    );
+    expect(floored.get('p1|saturday|C1')).toBe(1);
+    expect(floored.get('p1|weekday|C1')).toBeCloseTo(4.2);
+  });
+  it('does NOT floor a zero-FTE provider (no capacity means no quota grant)', () => {
+    const floored = floorBucketTargets(
+      new Map([['p0|saturday|C1', 0]]),
+      [prov('p0', 0)],
+    );
+    expect(floored.get('p0|saturday|C1')).toBe(0);
   });
 });
 
@@ -640,6 +678,39 @@ describe('loadGenerationContext — load-time warnings (requirement 6-9)', () =>
     expect(warnings.some(w => w.includes("'ZZ'") && w.includes('not defined'))).toBe(true);
     expect(warnings.some(w => /Bucket .* FTE-weighted quota .* cannot cover .* slots/.test(w))).toBe(true);
     expect(warnings.some(w => w.includes('C1') && w.includes('required_count'))).toBe(true);
+  });
+
+  // 2026-07-16: a stale par must stay VISIBLE but never starve quotas — the
+  // shortfall warning is computed from the STORED par while the actual targets
+  // are clamped to pool FTE and floored at 1.
+  it('stale par: warning fires from the STORED par, targets are clamped + floored', async () => {
+    const { res } = await run({
+      sites: { data: { call_par_level: 12 }, error: null }, // pool FTE is 1.5 (p1 1.0 + p2 0.5)
+      schedule_slots: { data: [
+        rawSlot({ id: 's1', date: '2026-01-07', code: 'C1', category: 'call' }),
+        rawSlot({ id: 's2', date: '2026-01-14', code: 'C1', category: 'call' }),
+      ], error: null },
+    });
+    const ctx = res.ctx!;
+    const warnings = ctx.warnings ?? [];
+    // Raw math at stored par 12: Σ = (2/12)×1.5 = 0.25 < 2 → warning fires and
+    // names both the stored par and the clamp so the operator fixes the row.
+    const w = warnings.find(x => /Bucket weekday\|C1: FTE-weighted quota .* cannot cover 2 slots/.test(x));
+    expect(w).toBeDefined();
+    expect(w).toContain('clamped');
+    // Effective targets: par clamped to 1.5 → p1 (2/1.5)×1 = 1.33 (no floor
+    // needed), p2 (2/1.5)×0.5 = 0.67 → floored to 1.
+    expect(ctx.bucketTarget.get('p1|weekday|C1')).toBeCloseTo(4 / 3);
+    expect(ctx.bucketTarget.get('p2|weekday|C1')).toBe(1);
+  });
+
+  it('honest par: no shortfall warning, floor still guarantees ≥1 per bucket', async () => {
+    const { res } = await run(); // base: par 1, pool FTE 1.5, one C1 slot
+    const ctx = res.ctx!;
+    expect((ctx.warnings ?? []).some(w => w.includes('cannot cover'))).toBe(false);
+    // p2 (0.5 FTE): raw (1/1)×0.5 = 0.5 → floored to 1.
+    expect(ctx.bucketTarget.get('p2|weekday|C1')).toBe(1);
+    expect(ctx.bucketTarget.get('p1|weekday|C1')).toBe(1);
   });
 
   it('required_count>1 warning: one aggregate per shift code, open slots only', async () => {

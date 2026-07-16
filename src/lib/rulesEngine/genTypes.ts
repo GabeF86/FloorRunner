@@ -132,7 +132,8 @@ export type PlacementSource =
   | 'weekend-chain'
   | 'relief-order'
   | 'quota-relaxed'   // v2: filled despite bucket quota (all candidates quota-blocked)
-  | 'span';           // v2: multi-day same-provider obligation (CallPatternDoc spans)
+  | 'span'            // v2: multi-day same-provider obligation (CallPatternDoc spans)
+  | 'day-mop-up';     // 2026-07-16: orphaned call-engine day slot (trigger call unfilled/severed)
 
 // Richer "why this assignment" detail, captured at decision time. The
 // PlacementSource (main-loop / d-chain / weekend-chain / …) stays on

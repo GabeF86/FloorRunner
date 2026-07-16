@@ -143,3 +143,67 @@ describe('POST /api/scheduling/schedules — required_count → sibling slots', 
     expect(json.status).toBe('draft');
   });
 });
+
+// ── Friday template union (2026-07-16 root-cause fix) ────────────────────────
+// The old fallback was ALL-OR-NOTHING: any friday-specific template suppressed
+// the ENTIRE weekday slate on Fridays (patch25 added friday C3/D4 rows and
+// every Friday silently lost C1/C2/D1-D7). The contract is a PER-SHIFT-TYPE
+// union: friday-specific templates override their own shift type; weekday
+// templates whose shift_type_id has no friday-specific row still materialize.
+describe('POST /api/scheduling/schedules — friday template union', () => {
+  const FRIDAY_BODY = { ...BODY, date_start: '2026-01-09', date_end: '2026-01-09' }; // Friday
+
+  it('friday-specific templates override per shift type; other weekday templates still materialize', async () => {
+    const { calls } = setup([
+      template({ id: 'tmpl-c1', shift_type_id: 'st-C1', day_type: 'weekday' }),
+      template({ id: 'tmpl-c2', shift_type_id: 'st-C2', day_type: 'weekday' }),
+      // C3: weekday row (count 0 = none) AND a friday-specific row (count 1).
+      template({ id: 'tmpl-c3-wd', shift_type_id: 'st-C3', day_type: 'weekday', required_count: 0 }),
+      template({ id: 'tmpl-c3-fri', shift_type_id: 'st-C3', day_type: 'friday' }),
+      template({ id: 'tmpl-d4-fri', shift_type_id: 'st-D4', day_type: 'friday' }),
+    ]);
+    const res = await POST(fakeReq(FRIDAY_BODY));
+    expect(res.status).toBe(200);
+
+    const slots = insertedRows(calls, 'schedule_slots');
+    const byShiftType = slots.map(s => s.shift_type_id).sort();
+    // Union: friday C3 + friday D4 PLUS the weekday C1 + C2 (no friday row for
+    // them). The weekday C3 row is shadowed by the friday-specific C3 row.
+    expect(byShiftType).toEqual(['st-C1', 'st-C2', 'st-C3', 'st-D4']);
+    for (const s of slots) expect(s.derived_day_type).toBe('friday');
+  });
+
+  it('a friday-specific row with required_count 0 SUPPRESSES that shift type (override, not union-add)', async () => {
+    const { calls } = setup([
+      template({ id: 'tmpl-c1', shift_type_id: 'st-C1', day_type: 'weekday' }),
+      // Friday-specific C1 row with count 0: "no C1 slots on Fridays".
+      template({ id: 'tmpl-c1-fri', shift_type_id: 'st-C1', day_type: 'friday', required_count: 0 }),
+      template({ id: 'tmpl-c2', shift_type_id: 'st-C2', day_type: 'weekday' }),
+    ]);
+    await POST(fakeReq(FRIDAY_BODY));
+    const slots = insertedRows(calls, 'schedule_slots');
+    expect(slots.map(s => s.shift_type_id)).toEqual(['st-C2']);
+  });
+
+  it('zero friday-specific templates keeps the pure-weekday fallback (existing behavior)', async () => {
+    const { calls } = setup([
+      template({ id: 'tmpl-c1', shift_type_id: 'st-C1', day_type: 'weekday' }),
+      template({ id: 'tmpl-d1', shift_type_id: 'st-D1', day_type: 'weekday' }),
+    ]);
+    await POST(fakeReq(FRIDAY_BODY));
+    const slots = insertedRows(calls, 'schedule_slots');
+    expect(slots.map(s => s.shift_type_id).sort()).toEqual(['st-C1', 'st-D1']);
+    for (const s of slots) expect(s.derived_day_type).toBe('friday');
+  });
+
+  it('saturday/sunday slates are NOT unioned with weekday (friday-only contract)', async () => {
+    const SAT_BODY = { ...BODY, date_start: '2026-01-10', date_end: '2026-01-10' }; // Saturday
+    const { calls } = setup([
+      template({ id: 'tmpl-c1', shift_type_id: 'st-C1', day_type: 'weekday' }),
+      template({ id: 'tmpl-c1-sat', shift_type_id: 'st-C1sat', day_type: 'saturday' }),
+    ]);
+    await POST(fakeReq(SAT_BODY));
+    const slots = insertedRows(calls, 'schedule_slots');
+    expect(slots.map(s => s.shift_type_id)).toEqual(['st-C1sat']);
+  });
+});

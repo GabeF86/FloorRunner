@@ -122,10 +122,25 @@ export async function POST(req: NextRequest) {
       else dayType = 'weekday';
     }
 
-    // Match templates for this day type, falling back to weekday if no specific templates exist
+    // Match templates for this day type.
+    //
+    // FRIDAY PARTIAL-OVERRIDE CONTRACT (2026-07-16): friday-specific templates
+    // override PER SHIFT TYPE; weekday templates whose shift_type_id has no
+    // friday-specific row still materialize. The old fallback was
+    // all-or-nothing (`matching.length === 0`), so the moment ANY friday
+    // template existed (patch25 added friday C3 + D4) every Friday silently
+    // lost its whole weekday slate — C1/C2/D1-D7 slots were never created and
+    // the engine had nothing to fill. Zero friday rows still yields the pure
+    // weekday slate (previous fallback preserved); a friday row with
+    // required_count 0 deliberately suppresses that shift type on Fridays.
+    // Saturday/sunday slates are complete and intentionally distinct — no
+    // union there.
     let matching = (templates || []).filter((t: Record<string, unknown>) => t.day_type === dayType);
-    if (matching.length === 0 && dayType === 'friday') {
-      matching = (templates || []).filter((t: Record<string, unknown>) => t.day_type === 'weekday');
+    if (dayType === 'friday') {
+      const fridaySpecificShiftTypes = new Set(matching.map((t: Record<string, unknown>) => t.shift_type_id));
+      const weekdayFill = (templates || []).filter((t: Record<string, unknown>) =>
+        t.day_type === 'weekday' && !fridaySpecificShiftTypes.has(t.shift_type_id));
+      matching = [...matching, ...weekdayFill];
     }
     // required_count materializes as SIBLING slot rows (slot_index 0..N-1),
     // each with required_count: 1 and its own open assignment row —

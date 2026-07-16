@@ -70,11 +70,16 @@ export function solve(ctx: GenerationContext, opts: SolveOptions = {}): Solution
   const overrides = opts.callOverrides;
   // Resolve a call slot's override: undefined → not overridden; null → forced
   // provider ineligible (leave unfilled); provider → forced and eligible.
+  // Gate 'call-no-quota' (2026-07-16): a pin re-asserts an ALREADY-MADE
+  // placement (the optimizer only pins providers a previous solve chose —
+  // 'quota-relaxed' ones included). Re-validating with the quota-inclusive
+  // gate made every quota-relaxed pin self-reject by construction ('Forced
+  // provider ineligible', no fallback). Every SAFETY gate still runs.
   const overrideFor = (slot: SlotToFill): CandidateProvider | null | undefined => {
     if (!overrides || !overrides.has(slot.slot_id)) return undefined;
     const p = providerById.get(overrides.get(slot.slot_id)!);
     if (!p) return null;
-    return evaluateEligibility(slot, p, state, ctx, 'call').eligible ? p : null;
+    return evaluateEligibility(slot, p, state, ctx, 'call-no-quota').eligible ? p : null;
   };
 
   const record = (
@@ -187,17 +192,23 @@ export function solve(ctx: GenerationContext, opts: SolveOptions = {}): Solution
         if (f) { record(target, f, 'weekend-chain'); applyDayChains(target, f); }
         continue; // overridden slot handled (placed if eligible, else left for main loop/unfilled)
       }
-      // Call targets use the 'call' gate (quota + weekend-call cred + adjacent
-      // PTO); non-call chain fills use 'derived'.
-      const gate = target.shift_type_category === 'call' ? 'call' : 'derived';
+      // Call targets use 'call-no-quota' (2026-07-16): a chain link is a
+      // structural same-provider obligation whose anchor was already
+      // fairness-scored — re-checking the bucket quota on the link severed the
+      // designed pairing exactly when quota math ran dry. Weekend-call
+      // credential, adjacent PTO and every other safety gate still run.
+      // Non-call chain fills use 'derived' (also quota-free).
+      const gate = target.shift_type_category === 'call' ? 'call-no-quota' : 'derived';
       const elig = evaluateEligibility(target, chosen, state, ctx, gate);
       if (!elig.eligible) {
-        if (target.shift_type_category !== 'call') {
-          skippedDerived.push({
-            date: target.slot_date, code: target.shift_type_code,
-            provider_id: chosen.id, reason: skipReasonFrom(elig.reason),
-          });
-        }
+        // Invariant 4, EXTENDED 2026-07-16: record EVERY severed link — call
+        // targets included. A safety-severed call link still falls through to
+        // the main loop (never dropped), but the severance itself must be
+        // observable: it silently destroyed the Doc A pairing before.
+        skippedDerived.push({
+          date: target.slot_date, code: target.shift_type_code,
+          provider_id: chosen.id, reason: skipReasonFrom(elig.reason),
+        });
         continue;
       }
       record(target, chosen, 'weekend-chain');
@@ -300,45 +311,39 @@ export function solve(ctx: GenerationContext, opts: SolveOptions = {}): Solution
     const candidates = sweep.filter(x => x.r.eligible).map(x => x.p);
 
     if (candidates.length === 0) {
-      const rejections = sweep.map(x => x.r.reason ?? 'group-mismatch');
-      // IF-3 quota relaxation: when every sweep rejection is 'bucket-quota',
-      // place the lowest-lifetime-ratio provider anyway — but 'bucket-quota'
-      // is only the FIRST failure (the quota gate runs before credentials/
-      // adjacent-PTO/availability in evaluateEligibility), so re-gate with
-      // the quota waived ('call-no-quota') and relax only within that set.
-      // Relaxation may waive the quota, never a safety gate (invariant 2).
-      if (rejections.length > 0 && rejections.every(r => r === 'bucket-quota')) {
-        const relaxSweep = ctx.providers.map(p => ({
-          p, r: evaluateEligibility(slot, p, state, ctx, 'call-no-quota'),
-        }));
-        const relaxable = relaxSweep.filter(x => x.r.eligible).map(x => x.p);
-        if (relaxable.length > 0) {
-          const winner = scoreCall(relaxable, slot)[0];
-          record(slot, winner.p, 'quota-relaxed', {
-            ratioAtAssignment: winner.ratio,
-            daysSinceLastCall: Number.isFinite(winner.recency) ? winner.recency : null,
-            competingCandidates: relaxable.length,
-          });
-          applyDayChains(slot, winner.p);
-          applyBlockChains(slot, winner.p);
-          continue;
-        }
-        // Nobody is placeable even with the quota waived. Report the REAL
-        // blockers (a quota-only rejection stays 'bucket-quota').
-        plan.unfilled.push({
-          slot_id: slot.slot_id, slot_date: slot.slot_date,
-          shift_type_code: slot.shift_type_code, shift_type_category: slot.shift_type_category,
-          reason: 'No eligible providers',
-          candidates: relaxSweep.map(x => ({
-            provider_id: x.p.id, provider_name: x.p.short_display_name,
-            reason: x.r.reason ?? 'bucket-quota',
-          })),
+      // IF-3 quota relaxation, UNCONDITIONAL since 2026-07-16: quotas must
+      // never leave a fillable slot empty — only hard clinical blocks may.
+      // The old trigger (`every rejection === 'bucket-quota'`) was poisoned by
+      // a single hard-blocked provider in the sweep (one placed C1's post-call
+      // block, one PTO…), permanently stranding slots that quota-blocked-but-
+      // otherwise-eligible providers could legally take. Whenever the full
+      // sweep is empty, re-gate with ONLY the bucket quota waived
+      // ('call-no-quota'): every safety gate still runs (PTO incl. pending,
+      // same-date/post-call, cross-site, weekday availability, credentials,
+      // adjacent-PTO weekend rules). Relaxation may waive the quota, never a
+      // safety gate (invariant 2).
+      const relaxSweep = ctx.providers.map(p => ({
+        p, r: evaluateEligibility(slot, p, state, ctx, 'call-no-quota'),
+      }));
+      const relaxable = relaxSweep.filter(x => x.r.eligible).map(x => x.p);
+      if (relaxable.length > 0) {
+        const winner = scoreCall(relaxable, slot)[0];
+        record(slot, winner.p, 'quota-relaxed', {
+          ratioAtAssignment: winner.ratio,
+          daysSinceLastCall: Number.isFinite(winner.recency) ? winner.recency : null,
+          competingCandidates: relaxable.length,
         });
+        applyDayChains(slot, winner.p);
+        applyBlockChains(slot, winner.p);
         continue;
       }
-      const candidateReasons: CandidateRejection[] = sweep.map(x => ({
+      // Nobody is placeable even with the quota waived. Report the REAL
+      // blockers per candidate (a quota-only rejection stays 'bucket-quota',
+      // though such a provider would have been relaxable — the fallback is
+      // belt-and-suspenders only).
+      const candidateReasons: CandidateRejection[] = relaxSweep.map(x => ({
         provider_id: x.p.id, provider_name: x.p.short_display_name,
-        reason: x.r.reason ?? 'group-mismatch',
+        reason: x.r.reason ?? 'bucket-quota',
       }));
       plan.unfilled.push({
         slot_id: slot.slot_id, slot_date: slot.slot_date,
@@ -359,12 +364,12 @@ export function solve(ctx: GenerationContext, opts: SolveOptions = {}): Solution
     applyBlockChains(slot, winner.p);
   }
 
-  // ── relief pass (codes + day types from the pattern; IF-2 fixes) ──
-  if (doc.reliefPass?.enabled) {
-    const reliefDayTypes = doc.reliefPass.dayTypes as string[];
-    // "Next call" per provider, from this block's assignments + seeds (any call
-    // category, not a code literal).
-    const providerCalls = new Map<string, Array<{ date: string; code: string }>>();
+  // "Next call" per provider, from this block's assignments + seeds (any call
+  // category, not a code literal). Built once after every call placement pass;
+  // shared by the relief pass and the mop-up sweep (both place only NON-call
+  // slots, so the map never goes stale between them).
+  const providerCalls = new Map<string, Array<{ date: string; code: string }>>();
+  {
     const pushCall = (pid: string, date: string, code: string) => {
       if (!providerCalls.has(pid)) providerCalls.set(pid, []);
       providerCalls.get(pid)!.push({ date, code });
@@ -372,7 +377,27 @@ export function solve(ctx: GenerationContext, opts: SolveOptions = {}): Solution
     for (const a of plan.assignments) if (a.shift_type_category === 'call') pushCall(a.provider_id, a.slot_date, a.shift_type_code);
     for (const seed of ctx.seedAssignments) if (seed.shift_type_category === 'call') pushCall(seed.provider_id, seed.slot_date, seed.shift_type_code);
     for (const arr of providerCalls.values()) arr.sort((a, b) => a.date.localeCompare(b.date));
+  }
+  // "First on out-list" ranking (relief + mop-up): soonest next call (most
+  // needs relief), then that call's rank tier, then most-recently-called,
+  // then id.
+  const rankByNextCall = (cands: CandidateProvider[], date: string) =>
+    cands.map(p => {
+      const nextCall = (providerCalls.get(p.id) || []).find(c => c.date > date);
+      return {
+        p,
+        distance: nextCall ? daysBetween(date, nextCall.date) : Infinity,
+        tier: nextCall ? callRank(nextCall.code) : 99,
+        recency: daysSinceLastCall(state, p.id, date),
+      };
+    }).sort((a, b) =>
+      a.distance - b.distance || a.tier - b.tier ||
+      a.recency - b.recency || a.p.id.localeCompare(b.p.id),
+    );
 
+  // ── relief pass (codes + day types from the pattern; IF-2 fixes) ──
+  if (doc.reliefPass?.enabled) {
+    const reliefDayTypes = doc.reliefPass.dayTypes as string[];
     for (const date of scheduleDates) {
       const codeMap = ctx.slotIndex.get(date);
       if (!codeMap) continue;
@@ -384,20 +409,7 @@ export function solve(ctx: GenerationContext, opts: SolveOptions = {}): Solution
 
       const available = ctx.providers.filter(
         p => evaluateEligibility(sampleD, p, state, ctx, 'derived').eligible);
-      const scored = available.map(p => {
-        const nextCall = (providerCalls.get(p.id) || []).find(c => c.date > date);
-        return {
-          p,
-          distance: nextCall ? daysBetween(date, nextCall.date) : Infinity,
-          tier: nextCall ? callRank(nextCall.code) : 99,
-          recency: daysSinceLastCall(state, p.id, date),
-        };
-      }).sort((a, b) =>
-        a.distance - b.distance || a.tier - b.tier ||
-        a.recency - b.recency || a.p.id.localeCompare(b.p.id),
-      );
-      // Rank: soonest next call (most needs relief), then call tier, then
-      // most-recently-called, then id.
+      const scored = rankByNextCall(available, date);
 
       for (const code of reliefCodes) {
         const slot = codeMap.get(code);
@@ -417,6 +429,45 @@ export function solve(ctx: GenerationContext, opts: SolveOptions = {}): Solution
           continue;
         }
         record(slot, pick.p, 'relief-order');
+      }
+    }
+  }
+
+  // ── mop-up sweep: orphaned call-engine-owned day slots (2026-07-16) ──
+  // Non-call slots whose shift type belongs to the CALL engine
+  // (generation_engine 'call': the D-chain + relief codes) are normally
+  // claimed by day chains, block chains, or the relief pass. When the trigger
+  // call goes unfilled or a chain severs, the orphan slot used to vanish from
+  // ALL reporting — the day-pool engine skips call-owned slots, so nothing
+  // ever filled OR reported it. Sweep every remaining open one: fill via the
+  // 'derived' gate (every safety gate runs; no quota) with the relief-style
+  // ranking; report anything still open in plan.unfilled. skippedDerived
+  // records are untouched (invariant 4: the designated provider's suppression
+  // stays observable even when another provider covers the slot). Requires
+  // ctx.shiftTypes — pure legacy fixtures without it keep byte-identical
+  // output (golden parity).
+  if (ctx.shiftTypes) {
+    const alreadyReported = new Set(plan.unfilled.map(u => u.slot_id));
+    for (const date of scheduleDates) {
+      const codeMap = ctx.slotIndex.get(date);
+      if (!codeMap) continue;
+      for (const code of [...codeMap.keys()].sort()) {
+        const slot = codeMap.get(code)!;
+        if (slot.shift_type_category === 'call') continue;           // call slots: main loop reports
+        if (shiftInfo(code)?.generation_engine !== 'call') continue; // day_pool/none: other engines own it
+        if (state.handledSlotIds.has(slot.slot_id)) continue;
+        if (alreadyReported.has(slot.slot_id)) continue;             // relief pass already reported it
+        const available = ctx.providers.filter(
+          p => evaluateEligibility(slot, p, state, ctx, 'derived').eligible);
+        if (available.length === 0) {
+          plan.unfilled.push({
+            slot_id: slot.slot_id, slot_date: slot.slot_date,
+            shift_type_code: slot.shift_type_code, shift_type_category: slot.shift_type_category,
+            reason: 'No eligible provider for call-engine day slot',
+          });
+          continue;
+        }
+        record(slot, rankByNextCall(available, date)[0].p, 'day-mop-up');
       }
     }
   }

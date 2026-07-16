@@ -190,12 +190,13 @@ describe('optimize — eligibility pre-gate, wall-clock budget, movable day type
     expect(plan.unfilled.map(u => u.slot_id)).toEqual(seed.unfilled.map(u => u.slot_id));
   });
 
-  it('does not move a saturday main-loop assignment under the classic pattern', () => {
-    // Two Saturday C1 slots, weekend quota 1 each. Greedy: s1->pX, s2 stranded
-    // (pX quota-full, pY on PTO that day). The eviction fix (s1->pY, s2->pX)
-    // exists but requires MOVING a saturday slot — classic
-    // optimizerMovableDayTypes is weekday+friday, so the optimizer must not
-    // touch it and s2 stays unfilled.
+  it('does not move a saturday placement under the classic pattern (quota-relaxed included)', () => {
+    // Two Saturday C1 slots, weekend quota 1 each. Greedy: s1->pX (main-loop),
+    // then s2->pX via UNCONDITIONAL quota relaxation (pY is on PTO that day, so
+    // the sweep is pX bucket-quota + pY availability — the relax sweep fires
+    // and pX is the only legal fill). Fairness would improve by handing s1 to
+    // pY, but classic optimizerMovableDayTypes is weekday+friday: saturday
+    // placements — main-loop AND quota-relaxed — must not move.
     const mkCtx = (over: Partial<GenerationContext> = {}) => buildCtx(
       [callSlot('s1', '2026-01-03', 'C1', 'saturday'), callSlot('s2', '2026-01-10', 'C1', 'saturday')],
       [prov('pX'), prov('pY')],
@@ -209,17 +210,48 @@ describe('optimize — eligibility pre-gate, wall-clock budget, movable day type
       },
     );
     const classic = optimize(mkCtx()).plan;
+    expect(classic.unfilled).toEqual([]);
     expect(classic.assignments.find(a => a.slot_id === 's1')?.provider_id).toBe('pX');
-    expect(classic.unfilled.map(u => u.slot_id)).toEqual(['s2']);
+    const s2Classic = classic.assignments.find(a => a.slot_id === 's2');
+    expect(s2Classic?.provider_id).toBe('pX');
+    expect(s2Classic?.source).toBe('quota-relaxed');
 
-    // Control (proves the scenario is fixable): a pattern that DOES allow
-    // moving saturday slots lets the eviction fill both.
+    // Control (proves the fairness swap exists): a pattern that DOES allow
+    // moving saturday slots lets the swap hand s1 to pY.
     const saturdayMovable = optimize(mkCtx({
       callPattern: { ...CLASSIC_PATTERN, optimizerMovableDayTypes: ['weekday', 'friday', 'saturday'] },
     })).plan;
     expect(saturdayMovable.unfilled).toEqual([]);
     expect(saturdayMovable.assignments.find(a => a.slot_id === 's1')?.provider_id).toBe('pY');
     expect(saturdayMovable.assignments.find(a => a.slot_id === 's2')?.provider_id).toBe('pX');
+  });
+
+  // 2026-07-16 optimizer/greedy parity: greedy may relax quotas; the optimizer
+  // must (a) treat 'quota-relaxed' placements as movable, (b) not gate eviction
+  // moves into quota-starved slots dead-on-arrival, and (c) re-validate pinned
+  // providers WITHOUT the quota (a pin re-asserts an already-made placement).
+  // Any of the three missing leaves the eviction unreachable or self-rejecting
+  // ('Forced provider ineligible').
+  it('quota starvation: eviction fills a hard-blocked slot without unfilling relaxed placements', () => {
+    const pX = prov('pX');
+    const pY = prov('pY', 1, { available_weekdays: [true, true, true, false, true, true, true] }); // Wed off
+    const s1 = callSlot('s1', '2026-01-06', 'C1'); // Tue
+    const s2 = callSlot('s2', '2026-01-07', 'C1'); // Wed
+    const ctx = buildCtx([s1, s2], [pX, pY], {
+      bucketTarget: new Map(), // quota-exhausted: every target 0
+    });
+    const seed = solve(ctx);
+    // Greedy: s1 relax-fills with pX (id tie); pX's post-call block + pY's
+    // Wednesday unavailability then hard-block s2.
+    expect(seed.assignments.find(a => a.slot_id === 's1')?.source).toBe('quota-relaxed');
+    expect(seed.unfilled.map(u => u.slot_id)).toEqual(['s2']);
+
+    const opt = optimize(ctx).plan;
+    // Eviction (s1->pY frees pX for s2) requires all three fixes above.
+    expect(opt.assignments.some(a => a.slot_id === 's1')).toBe(true);
+    expect(opt.assignments.some(a => a.slot_id === 's2')).toBe(true);
+    expect(opt.unfilled).toEqual([]);
+    expect(opt.unfilled.some(u => u.reason === 'Forced provider ineligible')).toBe(false);
   });
 });
 

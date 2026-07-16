@@ -55,16 +55,19 @@ export function compareMetrics(a: SolutionMetrics, b: SolutionMetrics): number {
   return a.burnout - b.burnout;
 }
 
-// A call slot is movable by the optimizer iff it was placed by the main loop
-// AND its day type is in the pattern's optimizerMovableDayTypes (classic:
-// weekday + friday). Block-chain / pre-PTO placements are structurally coupled
-// and left to deterministic construction.
+// A call slot is movable by the optimizer iff it was placed by the main loop's
+// scoring path — 'main-loop' or 'quota-relaxed' (2026-07-16: a quota-relaxed
+// fill is an ordinary scored placement whose bucket happened to be exhausted;
+// excluding it froze exactly the slots fairness moves want to touch) — AND its
+// day type is in the pattern's optimizerMovableDayTypes (classic: weekday +
+// friday). Block-chain / pre-PTO placements are structurally coupled and left
+// to deterministic construction.
 function movableCallSlotIds(plan: SolutionPlan, doc: CallPatternDoc): string[] {
   const movableDayTypes = doc.optimizerMovableDayTypes as readonly string[];
   return plan.assignments
     .filter(a => a.shift_type_category === 'call'
       && movableDayTypes.includes(a.derived_day_type)
-      && a.source === 'main-loop')
+      && (a.source === 'main-loop' || a.source === 'quota-relaxed'))
     .map(a => a.slot_id)
     .sort(); // deterministic order
 }
@@ -129,8 +132,14 @@ export function optimize(ctx: GenerationContext, opts: OptimizeOptions = {}): Op
     const slot = slotById.get(slotId);
     const p = providerById.get(pid);
     // Unknown slot/provider: don't gate — fall through to the full resolve.
+    // Gate 'call-no-quota' (2026-07-16): the trial's overrideFor re-validates
+    // pins with the same quota-free gate, so gate-monotonicity holds
+    // identically — a pair gated here is STILL guaranteed to self-reject
+    // inside the trial. Gating with the quota-inclusive gate killed every
+    // eviction move INTO a quota-starved slot dead on arrival (exactly the
+    // slots the 2026-07-16 relaxation work needs the optimizer to reach).
     const pass = !slot || !p
-      || evaluateEligibility(slot, p, gateState, ctx, 'call').eligible;
+      || evaluateEligibility(slot, p, gateState, ctx, 'call-no-quota').eligible;
     gateMemo.set(key, pass);
     return pass;
   };

@@ -377,6 +377,82 @@ describe('solve — degraded mode: ctx.shiftTypes undefined (pre-patch18 DB)', (
   });
 });
 
+// ── 2026-07-16: mop-up sweep for orphaned call-engine-owned day slots ─────────
+// Non-call slots whose shift type has generation_engine='call' (D1-D9) are
+// normally claimed by day chains / block chains / relief. When the trigger
+// call goes unfilled, the orphan used to vanish from ALL reporting — the
+// day-pool engine skips call-owned slots, so nothing ever filled OR reported
+// it. The mop-up fills them via the 'derived' gate or reports them unfilled.
+describe('solve — mop-up sweep for orphaned call-engine day slots', () => {
+  const engineShiftTypes = () => new Map([
+    ['C2', { code: 'C2', category: 'call', call_rank: 1, relief_rank: null, is_overlay: false, generation_engine: 'call' as const, requires_post_call_rule: true, call_coverage_type: null }],
+    ['D1', { code: 'D1', category: 'regular', call_rank: null, relief_rank: null, is_overlay: false, generation_engine: 'call' as const, requires_post_call_rule: false, call_coverage_type: null }],
+    ['D8', { code: 'D8', category: 'regular', call_rank: null, relief_rank: null, is_overlay: false, generation_engine: 'day_pool' as const, requires_post_call_rule: false, call_coverage_type: null }],
+  ]);
+
+  it('fills an orphaned D1 whose trigger C2 went unfilled (and reports the C2 honestly)', () => {
+    // p1 is on PTO Monday (C2 date) but free Tuesday: Mon C2 goes unfilled,
+    // its Tue D1 would previously vanish — now the mop-up hands it to p1.
+    const monC2 = callSlot('monC2', '2026-01-05', 'C2'); // Mon
+    const tueD1 = dSlot('tueD1', '2026-01-06', 'D1');    // Tue
+    const ctx = buildCtx([monC2, tueD1], [prov('p1')], {
+      shiftTypes: engineShiftTypes(),
+      availByPid: new Map([['p1', [{
+        availability_type: 'pto', start_date: '2026-01-05', end_date: '2026-01-05',
+        approval_status: 'approved',
+      }]]]),
+    });
+    const plan = solve(ctx);
+    expect(plan.unfilled.map(u => u.slot_id)).toContain('monC2');
+    const d1 = plan.assignments.find(a => a.slot_id === 'tueD1');
+    expect(d1?.provider_id).toBe('p1');
+    expect(d1?.source).toBe('day-mop-up');
+  });
+
+  it('reports an orphaned call-engine day slot unfilled when nobody passes the derived gate', () => {
+    const monC2 = callSlot('monC2', '2026-01-05', 'C2');
+    const tueD1 = dSlot('tueD1', '2026-01-06', 'D1');
+    const ctx = buildCtx([monC2, tueD1], [prov('p1')], {
+      shiftTypes: engineShiftTypes(),
+      availByPid: new Map([['p1', [{
+        availability_type: 'pto', start_date: '2026-01-05', end_date: '2026-01-06',
+        approval_status: 'approved',
+      }]]]),
+    });
+    const plan = solve(ctx);
+    const u = plan.unfilled.find(x => x.slot_id === 'tueD1');
+    expect(u).toBeDefined();
+    expect(u!.reason).toBe('No eligible provider for call-engine day slot');
+  });
+
+  it('leaves day_pool-owned slots alone (they belong to dayShiftAutoGen)', () => {
+    const monC2 = callSlot('monC2', '2026-01-05', 'C2');
+    const tueD8 = dSlot('tueD8', '2026-01-06', 'D8'); // generation_engine day_pool
+    const ctx = buildCtx([monC2, tueD8], [prov('p1')], {
+      shiftTypes: engineShiftTypes(),
+      availByPid: new Map([['p1', [{
+        availability_type: 'pto', start_date: '2026-01-05', end_date: '2026-01-05',
+        approval_status: 'approved',
+      }]]]),
+    });
+    const plan = solve(ctx);
+    expect(plan.assignments.some(a => a.slot_id === 'tueD8')).toBe(false);
+    expect(plan.unfilled.some(u => u.slot_id === 'tueD8')).toBe(false);
+  });
+
+  it('does not double-report a relief slot the relief pass already left unfilled', () => {
+    const d4 = dSlot('d4', '2026-01-07', 'D4');
+    const shiftTypes = new Map([
+      ['D4', { code: 'D4', category: 'regular', call_rank: null, relief_rank: 1, is_overlay: false, generation_engine: 'call' as const, requires_post_call_rule: false, call_coverage_type: null }],
+    ]);
+    // CRNA can't take the physician slot → relief reports it unfilled once.
+    const plan = solve(buildCtx([d4], [{ ...prov('p1'), provider_type: 'crna' }], { shiftTypes }));
+    const entries = plan.unfilled.filter(u => u.slot_id === 'd4');
+    expect(entries).toHaveLength(1);
+    expect(entries[0].reason).toBe('No eligible relief provider');
+  });
+});
+
 describe('solve — explainability (Phase 2a)', () => {
   it('records an explanation with competing-candidate count on a main-loop pick', () => {
     const slots = [callSlot('s1', '2026-01-07', 'C1')];
@@ -443,5 +519,32 @@ describe('solve — callOverrides (re-solve mechanism)', () => {
     const forced = solve(ctx2, { callOverrides: new Map([['s1', 'pA']]) });
     expect(forced.assignments.some(a => a.slot_id === 's1')).toBe(false);
     expect(forced.unfilled.some(u => u.slot_id === 's1')).toBe(true);
+  });
+
+  // 2026-07-16: a pin re-asserts an ALREADY-MADE placement (the optimizer only
+  // ever pins providers a previous solve chose — including 'quota-relaxed'
+  // ones). Re-validating pins with the quota-inclusive gate made every
+  // quota-relaxed placement self-reject by construction ('Forced provider
+  // ineligible') with no fallback. Pins now re-validate 'call-no-quota':
+  // quota waived, every SAFETY gate still enforced.
+  it('a pinned provider who fails ONLY the bucket quota is still placed', () => {
+    const ctx = buildCtx([callSlot('s1', '2026-01-06', 'C1')], [prov('pA')], {
+      bucketTarget: new Map([['pA|weekday|C1', 0]]),
+    });
+    const forced = solve(ctx, { callOverrides: new Map([['s1', 'pA']]) });
+    expect(forced.assignments.find(a => a.slot_id === 's1')?.provider_id).toBe('pA');
+    expect(forced.unfilled).toHaveLength(0);
+  });
+
+  it('a pinned provider who fails a SAFETY gate (PTO) still self-rejects', () => {
+    const ctx = buildCtx([callSlot('s1', '2026-01-06', 'C1')], [prov('pA')], {
+      availByPid: new Map([['pA', [{
+        availability_type: 'pto', start_date: '2026-01-06', end_date: '2026-01-06',
+        approval_status: 'approved',
+      }]]]),
+    });
+    const forced = solve(ctx, { callOverrides: new Map([['s1', 'pA']]) });
+    expect(forced.assignments.some(a => a.slot_id === 's1')).toBe(false);
+    expect(forced.unfilled.find(u => u.slot_id === 's1')?.reason).toBe('Forced provider ineligible');
   });
 });

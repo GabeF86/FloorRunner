@@ -377,6 +377,69 @@ describe('friday-first Doc A — pinned behavior across the re-anchor', () => {
   }
 });
 
+// ── chain call links bypass quota + record severance (2026-07-16) ────────────
+// A block-chain call link is a structural same-provider obligation whose anchor
+// was already fairness-scored: re-checking the bucket quota on the link
+// silently severed the designed Doc A pairing whenever quota math ran dry, and
+// left ZERO record of it. Links now gate 'call-no-quota' (every safety gate
+// still runs) and a safety-severed call link is recorded in skippedDerived
+// (invariant 4 extended — the fall-through to the main loop is unchanged).
+describe('WEEKEND_V2_PATTERN — chain call links bypass quota, severance recorded', () => {
+  const shiftTypes = new Map([
+    ['C1', shiftInfo('C1', { category: 'call', call_rank: 0 })],
+    ['C2', shiftInfo('C2', { category: 'call', call_rank: 1 })],
+  ]);
+
+  it('quota-exhausted pool: the Fri C1 anchor still chains Sun C2 to the SAME provider', () => {
+    const slots = [
+      callSlot('friC1', '2026-01-09', 'C1', 'friday'),
+      callSlot('sunC2', '2026-01-11', 'C2', 'sunday'),
+    ];
+    const ctx = buildCtx(slots, [prov('p1'), prov('p2')], {
+      callPattern: WEEKEND_V2_PATTERN, shiftTypes,
+      bucketTarget: new Map(), // every target 0 — full quota exhaustion
+    });
+    const plan = solve(ctx);
+    const fri = plan.assignments.find(a => a.slot_id === 'friC1');
+    const sun = plan.assignments.find(a => a.slot_id === 'sunC2');
+    expect(fri).toBeDefined();
+    expect(fri!.source).toBe('quota-relaxed'); // anchor itself needed relaxation
+    expect(sun).toBeDefined();
+    // The whole point: the pairing survives quota exhaustion. Under the old
+    // 'call' gate the link failed 'bucket-quota', fell through, and the main
+    // loop's recency sort handed Sun C2 to the OTHER provider.
+    expect(sun!.provider_id).toBe(fri!.provider_id);
+    expect(sun!.source).toBe('weekend-chain');
+    expect(plan.unfilled).toHaveLength(0);
+  });
+
+  it('a PTO-severed call link is RECORDED in skippedDerived and falls through to the main loop', () => {
+    const slots = [
+      callSlot('friC1', '2026-01-09', 'C1', 'friday'),
+      callSlot('sunC2', '2026-01-11', 'C2', 'sunday'),
+    ];
+    // p1 wins Fri C1 (id tie) but is on PTO Sunday: the +2 link must decline
+    // (safety gate — relaxation never waives PTO), be RECORDED, and the slot
+    // must fall through to a standalone main-loop fill by p2.
+    const ctx = buildCtx(slots, [prov('p1'), prov('p2')], {
+      callPattern: WEEKEND_V2_PATTERN, shiftTypes,
+      availByPid: new Map([['p1', [{
+        availability_type: 'pto', start_date: '2026-01-11', end_date: '2026-01-11',
+        approval_status: 'approved',
+      }]]]),
+    });
+    const plan = solve(ctx);
+    const fri = plan.assignments.find(a => a.slot_id === 'friC1');
+    expect(fri?.provider_id).toBe('p1');
+    expect(plan.skippedDerived).toContainEqual({
+      date: '2026-01-11', code: 'C2', provider_id: 'p1', reason: 'pto',
+    });
+    const sun = plan.assignments.find(a => a.slot_id === 'sunC2');
+    expect(sun?.provider_id).toBe('p2');
+    expect(sun?.source).toBe('main-loop');
+  });
+});
+
 // ── friday-first Doc A: the starved-Sunday failure mode moves to Sunday ──────
 // The whole point of the re-anchor (spec 2026-07-15): when the pool cannot
 // cover Doc A's full Fri-C1 + Sun-C2 pair, the IN-HOUSE Friday C1 still fills
