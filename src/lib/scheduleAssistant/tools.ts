@@ -208,6 +208,18 @@ const CALL_PATTERN_DOC_SCHEMA = {
       ],
     },
     optimizerMovableDayTypes: { type: 'array', items: DAY_TYPE_SCHEMA },
+    callFillOrder: {
+      type: 'string',
+      enum: ['call_rank'],
+      description:
+        "Optional within-date call fill order: 'call_rank' fills each date's call slots by shift_types.call_rank ascending (in-house first). Omit for the legacy order.",
+    },
+    dayTypeFillOrder: {
+      type: 'array',
+      items: DAY_TYPE_SCHEMA,
+      description:
+        'Optional across-date fill order: day types listed first fill first (e.g. saturday before friday before sunday). Unlisted day types fill last. Omit for the default (saturday, sunday, friday, weekday, holidays). Composes with callFillOrder (which orders codes WITHIN a date).',
+    },
   },
 };
 

@@ -144,7 +144,12 @@ export function solve(ctx: GenerationContext, opts: SolveOptions = {}): Solution
         tryFillDerived(addDays(slot.slot_date, link.offset), link.code, p);
       }
       for (const block of chain.blocks ?? []) {
-        markAssigned(state, addDays(slot.slot_date, block.offset), p.id);
+        const blockedDate = addDays(slot.slot_date, block.offset);
+        markAssigned(state, blockedDate, p.id);
+        // Also record it as a BLOCK (post-call day off): overlay placements
+        // skip the assignedOnDate budget, so they need this separate map to
+        // still respect blocked days (invariant 1 — review finding 2).
+        markBlocked(state, blockedDate, p.id);
       }
     }
   };
@@ -436,9 +441,14 @@ export function seedSolveState(ctx: GenerationContext, doc: CallPatternDoc): Sol
       addCallDate(state, seed.provider_id, seed.slot_date);
     }
     // IF-1: a seeded call blocks its pattern post-call day(s) before solve runs,
-    // so the same provider can't be scored onto the blocked next day.
+    // so the same provider can't be scored onto the blocked next day. Also
+    // recorded in blockedOnDate so OVERLAY placements (which skip the
+    // assignedOnDate budget) still respect the blocked day (invariant 1 —
+    // review finding 2).
     for (const off of postCallBlockOffsets(doc, seed.shift_type_code, seed.derived_day_type)) {
-      markAssigned(state, addDays(seed.slot_date, off), seed.provider_id);
+      const blockedDate = addDays(seed.slot_date, off);
+      markAssigned(state, blockedDate, seed.provider_id);
+      markBlocked(state, blockedDate, seed.provider_id);
     }
   }
   return state;
@@ -456,6 +466,13 @@ function skipReasonFrom(reason: string | undefined): SkippedDerived['reason'] {
 function markAssigned(s: SolveState, date: string, pid: string) {
   if (!s.assignedOnDate.has(date)) s.assignedOnDate.set(date, new Set());
   s.assignedOnDate.get(date)!.add(pid);
+}
+// Post-call BLOCK marker (day off), kept alongside markAssigned at the two
+// block-marking sites only (applyDayChains blocks; seedSolveState IF-1).
+// Overlay eligibility reads this map because overlays skip assignedOnDate.
+function markBlocked(s: SolveState, date: string, pid: string) {
+  if (!s.blockedOnDate.has(date)) s.blockedOnDate.set(date, new Set());
+  s.blockedOnDate.get(date)!.add(pid);
 }
 function incBucket(s: SolveState, pid: string, dt: string, code: string) {
   const k = `${pid}|${dayTypeBucket(dt)}|${code}`;

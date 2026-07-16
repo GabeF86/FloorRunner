@@ -251,6 +251,148 @@ describe('patternEngine — overlay shift type', () => {
   });
 });
 
+// ── 6b. Overlay block chain: Doc C's neuro block, BOTH link orders ───────────
+// The saturday-C3 anchor carries Fri C3 (overlay evening call) + Fri D4 (the
+// day shift) + Sun C3 onto ONE provider. The two −1 links must land BOTH Friday
+// pieces regardless of order: an overlay placement never marks the date
+// (solve.record), and the REGULAR↔OVERLAY-CALL pair is exactly what the narrow
+// overlay exemption permits (a same-date CALL pair would collide) — so
+// C3-then-D4 and D4-then-C3 both succeed. This is the production Sat-C3 chain
+// shape (weekendV2.ts).
+describe('patternEngine — overlay block chain (Doc C neuro, both link orders)', () => {
+  const orders = [
+    { name: 'C3-then-D4', links: [{ offset: -1, code: 'C3' }, { offset: -1, code: 'D4' }, { offset: 1, code: 'C3' }] },
+    { name: 'D4-then-C3', links: [{ offset: -1, code: 'D4' }, { offset: -1, code: 'C3' }, { offset: 1, code: 'C3' }] },
+  ];
+  for (const order of orders) {
+    it(`places Fri D4 + Fri C3 + Sat C3 + Sun C3 on one provider (${order.name})`, () => {
+      const pattern: CallPatternDoc = {
+        version: 1,
+        blocks: [{ anchorDayType: 'saturday', chains: [{ trigger: 'C3', links: order.links }] }],
+        dayChains: [], spans: [], placementPasses: [], reliefPass: null, optimizerMovableDayTypes: [],
+      };
+      const shiftTypes = new Map<string, ShiftTypeInfo>([
+        ['C3', shiftInfo('C3', { category: 'call', call_rank: 2, is_overlay: true })],
+        ['D4', shiftInfo('D4', { category: 'regular' })],
+      ]);
+      // Saturday anchor listed FIRST so it fires the block chain before the main
+      // loop reaches the other C3 slots. Fri = 2026-01-09, Sat = 10, Sun = 11.
+      const slots = [
+        callSlot('satC3', '2026-01-10', 'C3', 'saturday'),
+        callSlot('friC3', '2026-01-09', 'C3', 'friday'),
+        callSlot('sunC3', '2026-01-11', 'C3', 'sunday'),
+        dSlot('friD4', '2026-01-09', 'D4', 'friday'),
+      ];
+      const plan = solve(buildCtx(slots, [prov('p01'), prov('p02')], { callPattern: pattern, shiftTypes }));
+
+      const byId = Object.fromEntries(plan.assignments.map(a => [a.slot_id, a.provider_id]));
+      const docC = byId['satC3'];
+      expect(docC).toBeDefined();
+      // All four pieces land on ONE provider.
+      expect(byId['friC3']).toBe(docC);
+      expect(byId['sunC3']).toBe(docC);
+      expect(byId['friD4']).toBe(docC);
+      // The crux: Doc C holds BOTH Fri D4 (day) and Fri C3 (overlay call) on the
+      // same Friday — impossible without the overlay same-date exemption working
+      // in BOTH placement directions.
+      expect(plan.assignments.filter(a => a.provider_id === docC && a.slot_date === '2026-01-09')).toHaveLength(2);
+      // Nothing in the block was suppressed/dropped.
+      expect(plan.skippedDerived!.some(s => s.code === 'D4' || s.code === 'C3')).toBe(false);
+    });
+  }
+});
+
+// ── 6c. Overlay collision limits: call-on-call and blocked days (findings 1+2)
+// The overlay exemption must never stack two calls on one provider-date or
+// place an overlay onto a pattern post-call blocked day.
+describe('patternEngine — overlay collision limits', () => {
+  const NO_CHAINS: CallPatternDoc = {
+    version: 1, blocks: [], dayChains: [], spans: [],
+    placementPasses: [], reliefPass: null, optimizerMovableDayTypes: [],
+  };
+  const callShiftTypes = () => new Map<string, ShiftTypeInfo>([
+    ['C1', shiftInfo('C1', { category: 'call', call_rank: 0 })],
+    ['C2', shiftInfo('C2', { category: 'call', call_rank: 1 })],
+    ['C3', shiftInfo('C3', { category: 'call', call_rank: 2, is_overlay: true })],
+  ]);
+
+  it('starved pool: Sat C3 goes UNFILLED rather than stacking on the C1/C2 holders', () => {
+    // Two providers, three Saturday calls. p1 takes C1, p2 takes C2 → both hold
+    // a same-date call, so the overlay C3 must go UNFILLED, never stack.
+    const slots = [
+      callSlot('satC1', '2026-01-10', 'C1', 'saturday'),
+      callSlot('satC2', '2026-01-10', 'C2', 'saturday'),
+      callSlot('satC3', '2026-01-10', 'C3', 'saturday'),
+    ];
+    const plan = solve(buildCtx(slots, [prov('p1'), prov('p2')], {
+      callPattern: NO_CHAINS, shiftTypes: callShiftTypes(),
+    }));
+    expect(plan.assignments.some(a => a.slot_id === 'satC3')).toBe(false);
+    const unfilled = plan.unfilled.find(u => u.slot_id === 'satC3');
+    expect(unfilled).toBeDefined();
+    // Both rejections are the call-on-call same-date collision, not quota etc.
+    expect(unfilled!.candidates?.map(c => c.reason)).toEqual(['same-date', 'same-date']);
+  });
+
+  it('free provider standing by: Sat C3 avoids the C1 holder (repro B shape)', () => {
+    // Per-bucket ratios don't see the same-day C1 (saturday|C3 bucket is 0 for
+    // both) and same-date calls don't move recency, so scoring alone would hand
+    // C3 to p1 by id-tiebreak — the call-on-call check must force p2.
+    const slots = [
+      callSlot('satC1', '2026-01-10', 'C1', 'saturday'),
+      callSlot('satC3', '2026-01-10', 'C3', 'saturday'),
+    ];
+    const plan = solve(buildCtx(slots, [prov('p1'), prov('p2')], {
+      callPattern: NO_CHAINS, shiftTypes: callShiftTypes(),
+    }));
+    expect(plan.assignments.find(a => a.slot_id === 'satC1')?.provider_id).toBe('p1');
+    expect(plan.assignments.find(a => a.slot_id === 'satC3')?.provider_id).toBe('p2');
+  });
+
+  // Sunday-block pattern: Sat C1 blocks the next day (weekendV2's saturday C1
+  // chain shape). The blocked Sunday must refuse the OVERLAY C3 too — overlay
+  // skips the assignedOnDate budget, so it reads blockedOnDate instead
+  // (invariant 1). Both block-marking sites are covered: seedSolveState IF-1
+  // (seeded C1) and applyDayChains blocks (placed C1).
+  const SAT_C1_BLOCKS: CallPatternDoc = {
+    ...NO_CHAINS,
+    dayChains: [{ trigger: 'C1', dayTypes: ['saturday'], blocks: [{ offset: 1 }] }],
+  };
+  const restShiftTypes = () => new Map<string, ShiftTypeInfo>([
+    ['C1', shiftInfo('C1', { category: 'call', call_rank: 0, requires_post_call_rule: true })],
+    ['C3', shiftInfo('C3', { category: 'call', call_rank: 2, is_overlay: true })],
+  ]);
+
+  it('Sun C3 is refused on the post-call day of a SEEDED Sat C1 (seedSolveState site)', () => {
+    const seed: SeedAssignment = {
+      slot_date: '2026-01-10', provider_id: 'p1', shift_type_code: 'C1',
+      shift_type_category: 'call', derived_day_type: 'saturday',
+    };
+    const sunC3 = callSlot('sunC3', '2026-01-11', 'C3', 'sunday');
+    const plan = solve(buildCtx([sunC3], [prov('p1')], {
+      callPattern: SAT_C1_BLOCKS, shiftTypes: restShiftTypes(), seedAssignments: [seed],
+    }));
+    expect(plan.assignments.some(a => a.slot_id === 'sunC3')).toBe(false);
+    const unfilled = plan.unfilled.find(u => u.slot_id === 'sunC3');
+    expect(unfilled).toBeDefined();
+    expect(unfilled!.candidates?.[0]?.reason).toBe('post-call-guard');
+  });
+
+  it('Sun C3 is refused on the post-call day of a PLACED Sat C1 (applyDayChains site)', () => {
+    const slots = [
+      callSlot('satC1', '2026-01-10', 'C1', 'saturday'),
+      callSlot('sunC3', '2026-01-11', 'C3', 'sunday'),
+    ];
+    const plan = solve(buildCtx(slots, [prov('p1')], {
+      callPattern: SAT_C1_BLOCKS, shiftTypes: restShiftTypes(),
+    }));
+    expect(plan.assignments.find(a => a.slot_id === 'satC1')?.provider_id).toBe('p1');
+    expect(plan.assignments.some(a => a.slot_id === 'sunC3')).toBe(false);
+    expect(plan.unfilled.find(u => u.slot_id === 'sunC3')?.candidates?.[0]?.reason)
+      .toBe('post-call-guard');
+  });
+});
+
 // ── 7. Custom call code fairness plumbing (category-driven, not C1/C2/C3) ────
 describe('patternEngine — custom call code call-date tracking', () => {
   it('tracks a custom NC call for recency so a later NC prefers the other provider', () => {
@@ -317,23 +459,42 @@ describe('patternEngine — IF-4 block-chain skip recording', () => {
   });
 });
 
-// ── 10. IF-2 seed budget: an overlay seed does not block the same-day call ────
-describe('patternEngine — overlay seed budget', () => {
-  it('lets a provider with a seeded overlay assignment win an open call slot that day', () => {
-    // Overlay seeds must NOT consume the one-per-day budget (mirrors record()).
-    const seed: SeedAssignment = {
-      slot_date: '2026-01-05', provider_id: 'p1', shift_type_code: 'NB',
-      shift_type_category: 'call', derived_day_type: 'weekday',
-    };
+// ── 10. seed budget: overlay exempts REGULAR↔OVERLAY-CALL coexistence ONLY ───
+// A seeded overlay CALL does not consume the assignedOnDate budget (mirrors
+// record()), so a same-day REGULAR fill still lands on that provider. But the
+// exemption is NARROW: two same-date CALLS never stack (review finding 1), so
+// the same seed DOES block a same-day call placement.
+describe('patternEngine — overlay seed budget (narrow exemption)', () => {
+  const overlaySeed: SeedAssignment = {
+    slot_date: '2026-01-05', provider_id: 'p1', shift_type_code: 'NB',
+    shift_type_category: 'call', derived_day_type: 'weekday',
+  };
+
+  it('a seeded overlay call does NOT block a same-day REGULAR relief fill', () => {
+    // Classic pattern's relief pass (weekday) fills D4; the seeded overlay NB
+    // must not mark p1 busy, so p1 still takes the Monday D4 day shift.
+    const monD4 = dSlot('monD4', '2026-01-05', 'D4', 'weekday');
+    const shiftTypes = new Map<string, ShiftTypeInfo>([
+      ['NB', shiftInfo('NB', { category: 'call', call_rank: 0, is_overlay: true })],
+      ['D4', shiftInfo('D4', { category: 'regular', relief_rank: 1 })],
+    ]);
+    const plan = solve(buildCtx([monD4], [prov('p1')], { shiftTypes, seedAssignments: [overlaySeed] }));
+    expect(plan.assignments.find(a => a.slot_id === 'monD4')?.provider_id).toBe('p1');
+  });
+
+  it('a seeded overlay call DOES block a same-day CALL placement (call-on-call)', () => {
+    // p1 is the only provider and already holds the overlay NB call that day →
+    // the C1 must go UNFILLED, never stack a second call on the neuro doc.
     const monC1 = callSlot('monC1', '2026-01-05', 'C1', 'weekday');
     const shiftTypes = new Map<string, ShiftTypeInfo>([
       ['NB', shiftInfo('NB', { category: 'call', call_rank: 0, is_overlay: true })],
       ['C1', shiftInfo('C1', { category: 'call', call_rank: 0 })],
     ]);
-    const plan = solve(buildCtx([monC1], [prov('p1')], { shiftTypes, seedAssignments: [seed] }));
-    // Without the fix the overlay seed marks p1 busy on 01-05 → C1 goes unfilled.
-    expect(plan.assignments.find(a => a.slot_id === 'monC1')?.provider_id).toBe('p1');
-    expect(plan.unfilled.some(u => u.slot_id === 'monC1')).toBe(false);
+    const plan = solve(buildCtx([monC1], [prov('p1')], { shiftTypes, seedAssignments: [overlaySeed] }));
+    expect(plan.assignments.some(a => a.slot_id === 'monC1')).toBe(false);
+    const unfilled = plan.unfilled.find(u => u.slot_id === 'monC1');
+    expect(unfilled).toBeDefined();
+    expect(unfilled!.candidates?.[0]?.reason).toBe('same-date');
   });
 });
 

@@ -24,7 +24,7 @@ import type {
   ShiftTypeInfo,
 } from './genTypes';
 
-import { CallPatternDocSchema, patternWarnings, callFillOrderWarnings, type CallPatternDoc } from './callPattern';
+import { CallPatternDocSchema, patternWarnings, callFillOrderWarnings, dayTypeFillOrderWarnings, type CallPatternDoc } from './callPattern';
 import { fetchCommittedAssignments, filterPublishedVersions } from './committedAssignments';
 import { embedArray } from '@/lib/embed';
 
@@ -234,6 +234,11 @@ export async function loadGenerationContext(
   if (callPattern && shiftTypes) {
     warnings.push(...callFillOrderWarnings(callPattern, shiftTypes.values()));
   }
+  // dayTypeFillOrder names must be known derived_day_type values — an unknown
+  // name never matches a slot (its position silently does nothing).
+  if (callPattern) {
+    warnings.push(...dayTypeFillOrderWarnings(callPattern));
+  }
 
   // ── 2. Build slot index ───────────────────────────────────────────────────
   // slotsToFill = call-category slots that need assignment (main loop)
@@ -298,31 +303,42 @@ export async function loadGenerationContext(
   // (unless the active pattern sets callFillOrder='call_rank' — solve
   // re-sorts within each date).
   //
+  // The active pattern may override the ACROSS-DATE order with
+  // dayTypeFillOrder (spec 2026-07-15 friday-first Doc A): listed day types
+  // get their list index; unlisted ones fall to the tail — exactly the
+  // default map's `?? 5` semantics. Absent field = the default order below,
+  // byte-identical behavior (classic docs untouched; golden parity holds).
+  //
   // IMPORTANT: this sort reads `derived_day_type` DIRECTLY, and `dayOrder`
-  // enumerates the RAW day types (saturday, sunday, friday, weekday, the two
-  // holiday types). The weekend-first contract needs Saturday and Sunday slots
-  // ordered ahead of Friday so the weekend chain (Sat-C2 → Sun-C1 + Fri-D2,
-  // etc.) runs before the Friday slots get filled by their own normal pass —
-  // otherwise the chain double-books providers across Friday + Saturday.
-  // dayTypeBucket() now splits saturday/sunday into their own fairness buckets
-  // (they used to collapse to 'weekend', which wasn't in dayOrder and sank both
-  // to the `?? 5` default), so routing the sort through it would order weekends
-  // correctly too — but it still merges the two holiday types, and there's no
-  // reason to bucket a raw value the sort already has. Keep the sort on
-  // derived_day_type.
-  const dayOrder: Record<string, number> = {
-    saturday: 0,
-    sunday: 1,
-    friday: 2,
-    weekday: 3,
-    federal_holiday: 4,
-    major_holiday: 4,
-    holiday: 4,
-  };
+  // (default or pattern-supplied) enumerates the RAW day types (saturday,
+  // sunday, friday, weekday, the two holiday types) — dayTypeFillOrder is
+  // keyed on derived_day_type values, NOT dayTypeBucket buckets. The
+  // anchor-before-link contract lives here: a block chain anchored on day
+  // type X can only claim its link slots if X sorts before the link slots'
+  // day types (classic weekend chain: Sat before Fri; friday-first Doc A:
+  // Fri before Sun). dayTypeBucket() now splits saturday/sunday into their
+  // own fairness buckets (they used to collapse to 'weekend', which wasn't
+  // in dayOrder and sank both to the `?? 5` default), so routing the sort
+  // through it would order weekends correctly too — but it still merges the
+  // two holiday types, and there's no reason to bucket a raw value the sort
+  // already has. Keep the sort on derived_day_type.
+  const customDayOrder = callPattern?.dayTypeFillOrder;
+  const dayOrder: Record<string, number> = customDayOrder
+    ? Object.fromEntries(customDayOrder.map((dt, i) => [dt, i]))
+    : {
+        saturday: 0,
+        sunday: 1,
+        friday: 2,
+        weekday: 3,
+        federal_holiday: 4,
+        major_holiday: 4,
+        holiday: 4,
+      };
+  const dayOrderTail = customDayOrder ? customDayOrder.length : 5;
   const codeOrder: Record<string, number> = { C2: 0, C3: 1, C1: 2 };
   slotsToFill.sort((a, b) => {
-    const da = dayOrder[a.derived_day_type] ?? 5;
-    const db = dayOrder[b.derived_day_type] ?? 5;
+    const da = dayOrder[a.derived_day_type] ?? dayOrderTail;
+    const db = dayOrder[b.derived_day_type] ?? dayOrderTail;
     if (da !== db) return da - db;
     if (a.slot_date !== b.slot_date) return a.slot_date.localeCompare(b.slot_date);
     const ca = codeOrder[a.shift_type_code] ?? 9;
