@@ -36,11 +36,32 @@ export function evaluateEligibility(
     return { eligible: false, reason: 'group-mismatch' };
   }
 
-  // Same-date conflict (this schedule). Overlay slots (is_overlay shift types)
-  // neither consume nor collide with the one-assignment-per-day budget.
+  // Same-date conflict (this schedule). The overlay exemption is NARROW:
+  // is_overlay exempts REGULAR↔OVERLAY-CALL coexistence only (Doc C's Fri D4
+  // day shift + Fri C3 evening neuro call). It is NOT a general free pass —
+  // two same-date CALLS never stack, and post-call blocked days always bind
+  // (both checks below; review findings 1+2).
   const slotOverlay = ctx.shiftTypes?.get(slot.shift_type_code)?.is_overlay ?? false;
   if (!slotOverlay && state.assignedOnDate.get(slot.slot_date)?.has(p.id)) {
     return { eligible: false, reason: 'same-date' };
+  }
+  // Call-on-call: a CALL-category placement collides with ANY same-date call,
+  // overlay or not, in either placement order. callDatesByProvider records
+  // every call placement and seed (overlay included), so it sees calls the
+  // assignedOnDate budget missed (overlay ones). For non-overlay pairs this is
+  // shadowed by the assignedOnDate check above (golden parity unaffected).
+  if (slot.shift_type_category === 'call'
+    && state.callDatesByProvider.get(p.id)?.includes(slot.slot_date)) {
+    return { eligible: false, reason: 'same-date' };
+  }
+  // Overlay placements skip the assignedOnDate budget, so they must separately
+  // respect pattern post-call BLOCKED days (day off after a rest-requiring
+  // call — clinical invariant 1). blockedOnDate is written alongside
+  // markAssigned at the two block-marking sites (solve.applyDayChains blocks;
+  // seedSolveState IF-1). Non-overlay placements already collide via
+  // assignedOnDate (blocks are markAssigned entries too).
+  if (slotOverlay && state.blockedOnDate.get(slot.slot_date)?.has(p.id)) {
+    return { eligible: false, reason: 'post-call-guard' };
   }
 
   // Cross-site conflict (preloaded). DELIBERATELY overlay-blind (conservative,

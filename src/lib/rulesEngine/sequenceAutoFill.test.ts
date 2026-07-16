@@ -20,12 +20,15 @@ import {
 import { CLASSIC_PATTERN, type CallPatternDoc } from './callPattern';
 import { makeFakeSupabase, fromCount, callsFor, type TableCfg } from './__fixtures__/fakeSupabase';
 
-// Dates: Sun 2026-03-01, Mon 03-02, Tue 03-03, Wed 03-04, Thu 03-05.
+// Dates: Sun 2026-03-01, Mon 03-02, Tue 03-03, Wed 03-04, Thu 03-05,
+// Fri 03-06, Sat 03-07.
 const SUN = '2026-03-01';
 const MON = '2026-03-02';
 const TUE = '2026-03-03';
 const WED = '2026-03-04';
 const THU = '2026-03-05';
+const FRI = '2026-03-06';
+const SAT = '2026-03-07';
 
 const SKIP_REASONS = ['pto', 'cross-site', 'occupied', 'no-slot', 'ineligible', 'already-handled'];
 
@@ -444,11 +447,12 @@ describe('applySequenceAutoFill — cross-site conflict (clinical invariant 3)',
   });
 });
 
-// ── 2b. overlay coexistence: SAME-SITE overlay does not block, cross-site does ─
-// An is_overlay row (neuro C3) at the CHOSEN slot's site does not consume the
-// one-shift-per-day budget, so it must not block a co-located fill (Doc C's Fri
-// C3 coexists with a Fri day fill). A cross-site overlay STILL blocks
-// (conservative — two places at once).
+// ── 2b. overlay coexistence: two-sided, same-site, regular↔overlay-call only ─
+// The coexists predicate mirrors solve's narrow overlay exemption in BOTH
+// directions (review findings 3+4): an existing same-site OVERLAY row lets a
+// NON-CALL fill land beside it; an incoming OVERLAY fill lands beside an
+// existing same-site REGULAR row (order-independence). Call+call always
+// collides, and ANY cross-site row still blocks (conservative).
 
 describe('applySequenceAutoFill — overlay coexistence (same-site vs cross-site)', () => {
   it('fills D1 even though the provider holds a SAME-SITE overlay call (neuro C3) that day', async () => {
@@ -483,6 +487,67 @@ describe('applySequenceAutoFill — overlay coexistence (same-site vs cross-site
     expect(result.filledSlotIds).toEqual([]);
     expect(result.skips).toContainEqual({ date: TUE, code: 'D1', provider_id: 'p1', reason: 'cross-site' });
     expect(updates(calls)).toHaveLength(0);
+  });
+
+  it('a CALL link fill still collides with a same-site overlay call (never call-on-call)', async () => {
+    // Finding 3: the fill itself is a CALL (C1 link), so the existing same-site
+    // overlay C3 does NOT coexist — the C1 must decline as occupied, never
+    // stack a second call on the neuro doc.
+    const CALL_LINK: CallPatternDoc = {
+      version: 1, blocks: [],
+      dayChains: [{ trigger: 'C2', dayTypes: ['weekday'], links: [{ offset: 1, code: 'C1' }] }],
+      spans: [], placementPasses: [], reliefPass: null, optimizerMovableDayTypes: [],
+    };
+    const { sb, calls } = makeFakeSupabase({
+      tables: tables({
+        trigger: triggerSlot({ date: MON }),
+        slots: [slot({
+          id: 'slot-c1-tue', date: TUE, code: 'C1',
+          stOpts: { category: 'call', call_rank: 0 }, assignments: [openRow('open-1')],
+        })],
+        assignments: [winAssign({
+          id: 'ovl', date: TUE, code: 'C3', site: 'siteA', slotId: 'slot-c3-tue',
+          stOpts: { category: 'call', call_rank: 2, is_overlay: true },
+        })],
+      }),
+    });
+    const result = await applySequenceAutoFill(sb, 'trig', 'p1', CALL_LINK);
+    expect(result.filledSlotIds).toEqual([]);
+    expect(result.skips).toContainEqual({ date: TUE, code: 'C1', provider_id: 'p1', reason: 'occupied' });
+    expect(updates(calls)).toHaveLength(0);
+    expect(inserts(calls)).toHaveLength(0);
+  });
+
+  it('an OVERLAY call link fills over a pre-existing same-site REGULAR row (reverse order, finding 4)', async () => {
+    // Order-independence: Fri D4 (regular) already sits on the provider; the
+    // Sat-C3 trigger's −1 C3 link (overlay call) must land beside it — the
+    // two-sided predicate exempts incoming-OVERLAY + existing-REGULAR too.
+    const C3_PRECALL: CallPatternDoc = {
+      version: 1, blocks: [],
+      dayChains: [{ trigger: 'C3', dayTypes: ['saturday'], links: [{ offset: -1, code: 'C3' }] }],
+      spans: [], placementPasses: [], reliefPass: null, optimizerMovableDayTypes: [],
+    };
+    const { sb, calls } = makeFakeSupabase({
+      tables: tables({
+        trigger: triggerSlot({
+          date: SAT, code: 'C3', dayType: 'saturday',
+          stOpts: { category: 'call', call_rank: 2, is_overlay: true },
+        }),
+        slots: [slot({
+          id: 'slot-c3-fri', date: FRI, code: 'C3',
+          stOpts: { category: 'call', call_rank: 2, is_overlay: true },
+          assignments: [openRow('open-1')],
+        })],
+        assignments: [winAssign({
+          id: 'a-d4', date: FRI, code: 'D4', site: 'siteA', slotId: 'slot-d4-fri',
+          stOpts: { category: 'regular' },
+        })],
+      }),
+    });
+    const result = await applySequenceAutoFill(sb, 'trig', 'p1', C3_PRECALL);
+    expect(result.filledSlotIds).toEqual(['slot-c3-fri']);
+    expect(result.skips.every(s => s.code !== 'C3')).toBe(true);
+    expect(updates(calls)).toHaveLength(1);
   });
 });
 

@@ -8,6 +8,19 @@
 --
 -- IDEMPOTENT: every step is guarded (UPDATE is naturally idempotent; INSERTs use
 -- NOT EXISTS) so this may be re-run safely against the live drafts.
+--
+-- APPLY-TIME VERIFICATION (run BEFORE applying):
+--   The weekday D4 template is expected UNIQUE with required_count = 1. Step 2
+--   mirrors ONE row (ORDER BY + LIMIT 1 for determinism if that expectation is
+--   ever violated), and step 3 backfills exactly ONE Friday D4 slot per date —
+--   consistent with the template only when required_count = 1 (a count > 1
+--   would make FUTURE schedules materialize more Friday D4 sibling slots than
+--   the backfilled drafts have). Spot-check, STOP if it doesn't match:
+--     SELECT t.id, t.required_count FROM scheduling.shift_templates t
+--       JOIN scheduling.shift_types st ON st.id = t.shift_type_id
+--      WHERE t.site_id = '2ddd2427-22fb-4290-9c4c-03a957e5af4e' AND t.day_type = 'weekday' AND t.is_active
+--        AND st.code = 'D4';
+--     -- expect: exactly 1 row, required_count = 1
 BEGIN;
 
 -- 1. C3 becomes an overlay call: its assignment does NOT consume the provider's
@@ -19,6 +32,8 @@ UPDATE scheduling.shift_types
 -- 2. Friday D4 template so FUTURE schedules materialize the slot. Mirrors the
 --    existing WEEKDAY D4 template row (site/layer/required_count/skills/priority),
 --    day_type='friday'. NOT EXISTS guard: never add a second Friday D4 template.
+--    The weekday D4 template is expected unique (apply-time spot-check in the
+--    header); ORDER BY makes the LIMIT 1 deterministic if that ever changes.
 INSERT INTO scheduling.shift_templates
   (site_id, schedule_layer, day_type, weekday_number, applies_on_holiday,
    shift_type_id, required_count, required_skills, generation_priority, is_active)
@@ -32,6 +47,7 @@ SELECT t.site_id, t.schedule_layer, 'friday', t.weekday_number, t.applies_on_hol
      SELECT 1 FROM scheduling.shift_templates fx
       WHERE fx.site_id = t.site_id AND fx.day_type = 'friday'
         AND fx.shift_type_id = t.shift_type_id)
+ ORDER BY t.created_at, t.id
  LIMIT 1;
 
 -- 3. Backfill Friday D4 slots into EXISTING DRAFT versions. Slot creation only

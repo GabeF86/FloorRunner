@@ -10,12 +10,13 @@
 // DAY (D4) on Friday and starts neuro call (C3) that evening, then carries C3
 // Sat + Sun. So the saturday C3 anchor links BOTH Fri C3 (−1) and Fri D4 (−1)
 // onto that one provider — two −1 links on the same anchor. C3 is an
-// is_overlay shift type (patch25), so its Friday assignment does NOT consume
-// that provider's one-shift-per-day budget: Fri D4 and Fri C3 coexist on one
-// person, one block. The two −1 links are order-independent — an overlay
-// placement never marks the date and the overlay same-date check is skipped —
-// so C3-then-D4 and D4-then-C3 both land both pieces (see solve.record /
-// eligibility overlay exemption, and patternEngine.test.ts both-order test).
+// is_overlay shift type (patch25): the overlay exemption is NARROW — it lets
+// a REGULAR shift and an OVERLAY CALL coexist on one date (Fri D4 + Fri C3,
+// one person, one block) and nothing more. Two same-date CALLS still collide
+// (overlay or not) and post-call blocked days still bind (eligibility.ts
+// call-on-call + blockedOnDate checks). Within that rule the two −1 links are
+// order-independent: C3-then-D4 and D4-then-C3 both land both pieces (see
+// patternEngine.test.ts both-order test).
 import { CallPatternDocSchema, type CallPatternDoc } from '../callPattern';
 
 // The upcoming patch19 SQL seed embeds this constant (mirroring how the

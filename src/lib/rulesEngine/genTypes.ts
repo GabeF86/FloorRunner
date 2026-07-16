@@ -208,6 +208,12 @@ export interface SolveState {
   assignedOnDate: Map<string, Set<string>>;  // date -> set of pids
   handledSlotIds: Set<string>;
   callDatesByProvider: Map<string, string[]>; // pid -> sorted call dates
+  // date -> pids whose day this is a pattern post-call BLOCK (day off), as
+  // opposed to an ordinary assignment. Written alongside markAssigned at the
+  // two block-marking sites (applyDayChains blocks; seedSolveState IF-1) so
+  // OVERLAY placements — which skip the assignedOnDate budget — can still see
+  // and respect blocked days (clinical invariant 1).
+  blockedOnDate: Map<string, Set<string>>;
 }
 
 export function emptySolveState(): SolveState {
@@ -216,6 +222,7 @@ export function emptySolveState(): SolveState {
     assignedOnDate: new Map(),
     handledSlotIds: new Set(),
     callDatesByProvider: new Map(),
+    blockedOnDate: new Map(),
   };
 }
 
