@@ -468,6 +468,77 @@ describe('WEEKEND_V2_PATTERN — chain call links bypass quota, severance record
       u => u.slot_id === 'sunC2' && u.reason === 'Forced provider ineligible',
     )).toBe(true);
   });
+
+  it('an OVERRIDDEN chain target whose pinned provider IS eligible still records the DESIGNED partner severance', () => {
+    // 2026-07-16 PROOF final-run residue: optimize() pins EVERY incumbent call
+    // fill as an override on each trial re-solve. When greedy severed a pairing
+    // on a hard block (recorded), the accepted trial refills the target via the
+    // eligible-override branch — which previously recorded NOTHING, so the
+    // severance vanished from the FINAL committed plan (invariant-4 gap, the
+    // eligible-pin half). The designed partner's block must be re-evaluated and
+    // recorded with the real reason.
+    const slots = [
+      callSlot('friC1', '2026-01-09', 'C1', 'friday'),
+      callSlot('sunC2', '2026-01-11', 'C2', 'sunday'),
+    ];
+    // p1 wins Fri C1 but is on PTO that Sunday (designed +2 partner blocked);
+    // p2 — eligible — is pinned onto sunC2, exactly like an optimizer trial
+    // replaying greedy's post-severance fill.
+    const ctx = buildCtx(slots, [prov('p1'), prov('p2')], {
+      callPattern: WEEKEND_V2_PATTERN, shiftTypes,
+      availByPid: new Map([['p1', [{
+        availability_type: 'pto', start_date: '2026-01-11', end_date: '2026-01-11',
+        approval_status: 'approved',
+      }]]]),
+    });
+    const plan = solve(ctx, { callOverrides: new Map([['sunC2', 'p2']]) });
+    expect(plan.assignments.find(a => a.slot_id === 'friC1')?.provider_id).toBe('p1');
+    // The pinned provider fills the slot (no hole)...
+    const sun = plan.assignments.find(a => a.slot_id === 'sunC2');
+    expect(sun?.provider_id).toBe('p2');
+    // ...AND the designed-pairing severance stays observable with its real reason.
+    expect(plan.skippedDerived).toContainEqual({
+      date: '2026-01-11', code: 'C2', provider_id: 'p1', reason: 'pto',
+    });
+  });
+
+  it('an OVERRIDDEN chain target severed with NO hard block on the designed partner records reason overridden', () => {
+    // Defensive: optimize()'s move sets can no longer sever a healthy pairing
+    // (chain anchors are immovable and chain-sourced targets are not movable),
+    // but callOverrides is a public solve() surface — a caller pinning a chain
+    // target away from an eligible designed partner must still leave a record.
+    const slots = [
+      callSlot('friC1', '2026-01-09', 'C1', 'friday'),
+      callSlot('sunC2', '2026-01-11', 'C2', 'sunday'),
+    ];
+    const ctx = buildCtx(slots, [prov('p1'), prov('p2')], {
+      callPattern: WEEKEND_V2_PATTERN, shiftTypes,
+    });
+    const plan = solve(ctx, { callOverrides: new Map([['sunC2', 'p2']]) });
+    expect(plan.assignments.find(a => a.slot_id === 'friC1')?.provider_id).toBe('p1');
+    expect(plan.assignments.find(a => a.slot_id === 'sunC2')?.provider_id).toBe('p2');
+    expect(plan.skippedDerived).toContainEqual({
+      date: '2026-01-11', code: 'C2', provider_id: 'p1', reason: 'overridden',
+    });
+  });
+
+  it('an OVERRIDDEN chain target pinned to the DESIGNED partner records nothing (pairing intact)', () => {
+    // Control: optimize() trials pin the incumbent holder — when that IS the
+    // designed partner the pairing is honored and no severance may be invented.
+    const slots = [
+      callSlot('friC1', '2026-01-09', 'C1', 'friday'),
+      callSlot('sunC2', '2026-01-11', 'C2', 'sunday'),
+    ];
+    const ctx = buildCtx(slots, [prov('p1'), prov('p2')], {
+      callPattern: WEEKEND_V2_PATTERN, shiftTypes,
+    });
+    const plan = solve(ctx, { callOverrides: new Map([['sunC2', 'p1']]) });
+    const fri = plan.assignments.find(a => a.slot_id === 'friC1');
+    const sun = plan.assignments.find(a => a.slot_id === 'sunC2');
+    expect(fri?.provider_id).toBe('p1');
+    expect(sun?.provider_id).toBe('p1');
+    expect((plan.skippedDerived ?? []).filter(s => s.code === 'C2')).toHaveLength(0);
+  });
 });
 
 // ── friday-first Doc A: the starved-Sunday failure mode moves to Sunday ──────

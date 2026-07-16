@@ -198,6 +198,22 @@ export function solve(ctx: GenerationContext, opts: SolveOptions = {}): Solution
       if (overrides?.has(target.slot_id)) {
         const f = overrideFor(target);
         if (f) {
+          // Invariant 4, eligible-pin half (2026-07-16 final PROOF run): the
+          // optimizer pins EVERY incumbent call fill on each trial re-solve,
+          // so a pairing greedy severed on a hard block gets refilled HERE —
+          // and the severance record vanished from the final committed plan.
+          // When the pin differs from the designed chain partner, re-run the
+          // same quota-free gate the un-overridden link would have used and
+          // record the partner's real block ('overridden' when the partner
+          // had no block at all — pin itself severed a healthy pairing).
+          if (f.id !== chosen.id) {
+            const partnerElig = evaluateEligibility(target, chosen, state, ctx, 'call-no-quota');
+            skippedDerived.push({
+              date: target.slot_date, code: target.shift_type_code,
+              provider_id: chosen.id,
+              reason: partnerElig.eligible ? 'overridden' : skipReasonFrom(partnerElig.reason),
+            });
+          }
           record(target, f, 'weekend-chain'); applyDayChains(target, f);
         } else {
           // Invariant 4 (2026-07-16): the override pins a provider who cannot

@@ -192,7 +192,10 @@ export interface SkippedDerived {
   date: string;
   code: string;
   provider_id: string;
-  reason: 'pto' | 'cross-site' | 'occupied' | 'no-slot' | 'ineligible' | 'already-handled';
+  // 'overridden' (2026-07-16): a callOverrides pin severed a chain pairing
+  // whose designed partner had NO hard block — recorded so the severance
+  // stays observable even when the pinned provider fills the slot.
+  reason: 'pto' | 'cross-site' | 'occupied' | 'no-slot' | 'ineligible' | 'already-handled' | 'overridden';
 }
 
 export interface SolutionPlan {
