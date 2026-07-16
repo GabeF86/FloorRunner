@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { CallPatternDocSchema, callFillOrderWarnings } from './callPattern';
-import { CLASSIC_PATTERN } from './callPattern';
+import { CallPatternDocSchema, callFillOrderWarnings, dayTypeFillOrderWarnings } from './callPattern';
+import { CLASSIC_PATTERN, type CallPatternDoc } from './callPattern';
 
 describe('callFillOrder schema field', () => {
   it('accepts call_rank and defaults to absent', () => {
@@ -10,6 +10,36 @@ describe('callFillOrder schema field', () => {
   });
   it('rejects unknown orders', () => {
     expect(() => CallPatternDocSchema.parse({ ...CLASSIC_PATTERN, callFillOrder: 'alphabetical' })).toThrow();
+  });
+});
+
+describe('dayTypeFillOrder schema field', () => {
+  it('accepts an ordered day-type list and defaults to absent', () => {
+    const order = ['saturday', 'friday', 'sunday'];
+    const doc = CallPatternDocSchema.parse({ ...CLASSIC_PATTERN, dayTypeFillOrder: order });
+    expect(doc.dayTypeFillOrder).toEqual(order);
+    expect(CallPatternDocSchema.parse(CLASSIC_PATTERN).dayTypeFillOrder).toBeUndefined();
+  });
+  it('rejects non-string entries (structure is validated; names are only warned)', () => {
+    expect(() => CallPatternDocSchema.parse({ ...CLASSIC_PATTERN, dayTypeFillOrder: [1] })).toThrow();
+    expect(() => CallPatternDocSchema.parse({ ...CLASSIC_PATTERN, dayTypeFillOrder: [''] })).toThrow();
+  });
+  it('unknown day-type NAMES parse fine but produce a load warning', () => {
+    // Deliberately not a hard failure: a typo must not knock the whole live
+    // pattern back to classic — the rest of the order still applies.
+    const doc = CallPatternDocSchema.parse({ ...CLASSIC_PATTERN, dayTypeFillOrder: ['saturady', 'friday'] });
+    const warnings = dayTypeFillOrderWarnings(doc);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain("'saturady'");
+    expect(warnings[0]).toContain('unknown day type');
+  });
+  it('silent when the list is valid or absent', () => {
+    const doc = CallPatternDocSchema.parse({
+      ...CLASSIC_PATTERN,
+      dayTypeFillOrder: ['saturday', 'friday', 'sunday', 'weekday', 'federal_holiday', 'major_holiday'],
+    });
+    expect(dayTypeFillOrderWarnings(doc)).toEqual([]);
+    expect(dayTypeFillOrderWarnings(CLASSIC_PATTERN)).toEqual([]);
   });
 });
 
@@ -70,45 +100,50 @@ describe('callFillOrderWarnings — null call_rank on a call code', () => {
 });
 
 describe('WEEKEND_V2_PATTERN — golden weekend shape (Doc A/B/C/E)', () => {
-  // Slots are listed weekend-first (Sat, Sun, then Fri, Mon) on purpose. The
-  // whole four-person shape depends on the Saturday + Sunday anchors firing
-  // BEFORE the Friday slots, so the back-links (Sat C2 → Fri C2, Sun C2 → Fri C1
-  // via the −2 link) claim those Fridays instead of the main loop filling them
-  // standalone. Feeding these chronologically (Fri first) collapses Doc B's
-  // Fri-C2 back-link and Doc C's Fri-C3 back-link — the main loop claims
-  // Friday slots standalone before the Sat/Sun anchors fire, and
-  // applyBlockChains no-ops on already-handled targets. Doc A happens to
-  // still line up in this fixture via id-tiebreak, not via the −2 chain
-  // firing. Weekend-first order matches production genContext's day-bucket
-  // sort (saturday → sunday → friday → weekday), which the pattern relies on;
-  // the bare `buildCtx` fixture keeps input order verbatim, so we mirror it.
+  // Slots are listed saturday-first, then FRIDAY, then sunday — mirroring the
+  // pattern's dayTypeFillOrder (saturday, friday, sunday, …), which production
+  // genContext applies to slotsToFill; the bare `buildCtx` fixture keeps input
+  // order verbatim, so we mirror it here. The four-person shape depends on it:
+  // the Saturday anchors fire first (claiming Fri C2, Fri C3 + Fri D4, Fri D2,
+  // Sun C1, Sun C3 as links), THEN the friday pass places the in-house Fri C1
+  // whose anchor chains Sun C2 forward (friday-first Doc A, spec 2026-07-15),
+  // and the sunday pass has nothing left but leftovers. Feeding sunday before
+  // friday would let the main loop claim Sun C2 standalone before the friday
+  // anchor fires (applyBlockChains no-ops on already-handled call targets) —
+  // collapsing Doc A exactly the way the old sunday-anchored −2 back-link
+  // collapsed when fed fridays first.
   const slots = [
     callSlot('satC1', '2026-01-10', 'C1', 'saturday'),
     callSlot('satC2', '2026-01-10', 'C2', 'saturday'),
     callSlot('satC3', '2026-01-10', 'C3', 'saturday'),
-    callSlot('sunC1', '2026-01-11', 'C1', 'sunday'),
-    callSlot('sunC2', '2026-01-11', 'C2', 'sunday'),
-    callSlot('sunC3', '2026-01-11', 'C3', 'sunday'),
     callSlot('friC1', '2026-01-09', 'C1', 'friday'),
     callSlot('friC2', '2026-01-09', 'C2', 'friday'),
     callSlot('friC3', '2026-01-09', 'C3', 'friday'),
     dSlot('friD2', '2026-01-09', 'D2', 'friday'),
+    dSlot('friD4', '2026-01-09', 'D4', 'friday'),
+    callSlot('sunC1', '2026-01-11', 'C1', 'sunday'),
+    callSlot('sunC2', '2026-01-11', 'C2', 'sunday'),
+    callSlot('sunC3', '2026-01-11', 'C3', 'sunday'),
     dSlot('monD1', '2026-01-12', 'D1', 'weekday'),
   ];
   const providers = [prov('p1'), prov('p2'), prov('p3'), prov('p4'), prov('p5'), prov('p6')];
+  // C3 is_overlay mirrors patch25 (Doc C: Fri D4 day shift + Fri C3 evening
+  // call coexist on one person).
   const shiftTypes = new Map([
     ['C1', shiftInfo('C1', { call_rank: 0 })],
     ['C2', shiftInfo('C2', { call_rank: 1 })],
-    ['C3', shiftInfo('C3', { call_rank: 2 })],
+    ['C3', shiftInfo('C3', { category: 'call', call_rank: 2, is_overlay: true })],
+    ['D4', shiftInfo('D4', { category: 'regular' })],
   ]);
 
   it('produces the four-person weekend from the approved graphic', () => {
     const plan = solve(buildCtx(slots, providers, { callPattern: WEEKEND_V2_PATTERN, shiftTypes }));
     const byId = Object.fromEntries(plan.assignments.map(a => [a.slot_id, a.provider_id]));
 
-    // Doc A: Sun C2 person carries Fri C1, gets Mon D1, is OFF Saturday.
-    expect(byId['friC1']).toBe(byId['sunC2']);
-    expect(byId['monD1']).toBe(byId['sunC2']);
+    // Doc A: Fri C1 person carries Sun C2 (friday-anchored +2 link), gets
+    // Mon D1, is OFF Saturday.
+    expect(byId['sunC2']).toBe(byId['friC1']);
+    expect(byId['monD1']).toBe(byId['friC1']);
     expect(plan.assignments.some(a => a.provider_id === byId['friC1'] && a.slot_date === '2026-01-10')).toBe(false);
 
     // Doc B: Sat C2 person carries Fri C2 + Sun C1, is OFF Monday.
@@ -116,8 +151,10 @@ describe('WEEKEND_V2_PATTERN — golden weekend shape (Doc A/B/C/E)', () => {
     expect(byId['sunC1']).toBe(byId['satC2']);
     expect(plan.assignments.some(a => a.provider_id === byId['satC2'] && a.slot_date === '2026-01-12')).toBe(false);
 
-    // Doc C: one person covers Neuro Fri→Sun, works Monday (no post-call).
+    // Doc C: one person covers Neuro Fri→Sun INCLUDING the Friday D4 day shift
+    // (overlay coexistence), works Monday (no post-call).
     expect(byId['friC3']).toBe(byId['satC3']);
+    expect(byId['friD4']).toBe(byId['satC3']);
     expect(byId['sunC3']).toBe(byId['satC3']);
 
     // Doc E: Sat C1 person has Fri D2 and is OFF Sunday.
@@ -125,16 +162,18 @@ describe('WEEKEND_V2_PATTERN — golden weekend shape (Doc A/B/C/E)', () => {
     expect(plan.assignments.some(a => a.provider_id === byId['satC1'] && a.slot_date === '2026-01-11')).toBe(false);
 
     // Four distinct people carry the four rows.
-    expect(new Set([byId['sunC2'], byId['satC2'], byId['satC3'], byId['satC1']]).size).toBe(4);
+    expect(new Set([byId['friC1'], byId['satC2'], byId['satC3'], byId['satC1']]).size).toBe(4);
   });
 });
 
 describe('WEEKEND_V2_PATTERN — broken chains still fill (in-house first)', () => {
+  // Input order mirrors the pattern's dayTypeFillOrder: saturday, friday,
+  // sunday (buildCtx preserves input order verbatim).
   const mkSlots = () => [
-    callSlot('friC1', '2026-01-09', 'C1', 'friday'),
-    callSlot('friC2', '2026-01-09', 'C2', 'friday'),
     callSlot('satC1', '2026-01-10', 'C1', 'saturday'),
     callSlot('satC2', '2026-01-10', 'C2', 'saturday'),
+    callSlot('friC1', '2026-01-09', 'C1', 'friday'),
+    callSlot('friC2', '2026-01-09', 'C2', 'friday'),
     callSlot('sunC1', '2026-01-11', 'C1', 'sunday'),
     callSlot('sunC2', '2026-01-11', 'C2', 'sunday'),
   ];
@@ -144,10 +183,14 @@ describe('WEEKEND_V2_PATTERN — broken chains still fill (in-house first)', () 
   ]);
 
   it('every C1 is assigned even when Sunday capacity is scarce', () => {
+    // p4 is on PTO across the whole weekend, so only three providers remain —
+    // exactly the minimum the three-doc C1/C2 structure needs (Doc D: Sat C1
+    // with Sunday off; Doc B: Sat C2 + Fri C2 + Sun C1; Doc A: Fri C1 + Sun
+    // C2). Sunday capacity is fully consumed by the chains; every C1 fills.
     const pto = [{ availability_type: 'pto', start_date: '2026-01-09', end_date: '2026-01-11', approval_status: 'approved' }];
     const ctx = buildCtx(mkSlots(), [prov('p1'), prov('p2'), prov('p3'), prov('p4')], {
       callPattern: WEEKEND_V2_PATTERN, shiftTypes,
-      availByPid: new Map([['p3', pto], ['p4', pto]]),
+      availByPid: new Map([['p4', pto]]),
     });
     const plan = solve(ctx);
     for (const id of ['friC1', 'satC1', 'sunC1']) {
@@ -156,7 +199,11 @@ describe('WEEKEND_V2_PATTERN — broken chains still fill (in-house first)', () 
   });
 
   it('a Sun-C1 link broken by PTO falls through to a standalone fill', () => {
-    const ctx = buildCtx(mkSlots(), [prov('p1'), prov('p2'), prov('p3')], {
+    // p2 wins Sat C2 but is on PTO Sunday, so Doc B's +1 Sun C1 link declines;
+    // the slot must fall through to a standalone main-loop fill. Four
+    // providers: p1 takes Sat C1 (Sunday blocked), p3 takes Fri C1 (and Sun C2
+    // via the friday anchor), leaving p4 as the only legal Sun C1 fill.
+    const ctx = buildCtx(mkSlots(), [prov('p1'), prov('p2'), prov('p3'), prov('p4')], {
       callPattern: WEEKEND_V2_PATTERN, shiftTypes,
       availByPid: new Map([['p2', [{
         availability_type: 'pto', start_date: '2026-01-11', end_date: '2026-01-11',
@@ -216,5 +263,150 @@ describe('WEEKEND_V2_PATTERN — broken chains still fill (in-house first)', () 
       expect.objectContaining({
         date: '2026-01-09', code: 'C3', provider_id: satC3!.provider_id, reason: 'no-slot',
       }));
+  });
+});
+
+// ── friday-first Doc A: behavior pinned across the re-anchor (spec 2026-07-15)
+//
+// The OLD live shape (sunday-anchored, −2 back-link to Fri C1) and the NEW
+// shape (friday-anchored, +2 forward link to Sun C2) must produce the
+// IDENTICAL Doc A artifact set: Fri C1 + Sun C2 on one person, Thursday D2
+// filled (unlessCallWithinDays 2 sees only calls strictly BEFORE Friday —
+// daysBetween is signed, so the Sunday C2 two days AFTER never suppresses, in
+// either anchoring), Saturday blocked, Monday D1 filled. Both variants also
+// pin that dayChains fire on BLOCK-LINK placements: in the old shape Fri C1
+// was the link (its Saturday block + Thursday D2 fired from the link); in the
+// new shape Sun C2 is the link (its Monday D1 fires from the link). The old
+// doc is inlined verbatim below (Doc A pieces of the pre-2026-07-15 live
+// pattern) as the characterization baseline.
+describe('friday-first Doc A — pinned behavior across the re-anchor', () => {
+  const OLD_SUNDAY_ANCHORED: CallPatternDoc = {
+    version: 1,
+    blocks: [{ anchorDayType: 'sunday', chains: [
+      { trigger: 'C2', links: [{ offset: -2, code: 'C1' }] },
+    ] }],
+    dayChains: [
+      { trigger: 'C1', dayTypes: ['weekday', 'friday', 'federal_holiday', 'major_holiday'],
+        links: [{ offset: -1, code: 'D2', unlessCallWithinDays: 2 }], blocks: [{ offset: 1 }] },
+      { trigger: 'C1', dayTypes: ['saturday'], blocks: [{ offset: 1 }] },
+      { trigger: 'C2', dayTypes: ['sunday'], links: [{ offset: 1, code: 'D1' }] },
+    ],
+    spans: [], placementPasses: [], reliefPass: null, optimizerMovableDayTypes: [],
+  };
+  const shiftTypes = new Map([
+    ['C1', shiftInfo('C1', { category: 'call', call_rank: 0 })],
+    ['C2', shiftInfo('C2', { category: 'call', call_rank: 1 })],
+  ]);
+  // Thu 01-08, Fri 01-09, Sat 01-10, Sun 01-11, Mon 01-12. The Saturday C1 is
+  // listed LAST in both variants so Doc A assembles first and the Sat slot
+  // then PROVES the block: Doc A's holder must be skipped for it. Anchor-first
+  // input order per variant (old: sunday first; new: friday first) mirrors
+  // each pattern's production fill order.
+  const mkDerived = () => [
+    dSlot('thuD2', '2026-01-08', 'D2', 'weekday'),
+    dSlot('monD1', '2026-01-12', 'D1', 'weekday'),
+  ];
+  const variants = [
+    {
+      name: 'OLD sunday-anchored (characterization of live-today)',
+      doc: OLD_SUNDAY_ANCHORED,
+      anchorId: 'sunC2', linkId: 'friC1',
+      slots: () => [
+        callSlot('sunC2', '2026-01-11', 'C2', 'sunday'),
+        callSlot('friC1', '2026-01-09', 'C1', 'friday'),
+        callSlot('satC1', '2026-01-10', 'C1', 'saturday'),
+        ...mkDerived(),
+      ],
+    },
+    {
+      name: 'NEW friday-anchored (re-anchored chain)',
+      doc: WEEKEND_V2_PATTERN,
+      anchorId: 'friC1', linkId: 'sunC2',
+      slots: () => [
+        callSlot('friC1', '2026-01-09', 'C1', 'friday'),
+        callSlot('sunC2', '2026-01-11', 'C2', 'sunday'),
+        callSlot('satC1', '2026-01-10', 'C1', 'saturday'),
+        ...mkDerived(),
+      ],
+    },
+  ];
+
+  for (const v of variants) {
+    it(`${v.name}: Fri C1 + Sun C2 one person; Thu D2 filled; Sat blocked; Mon D1 filled`, () => {
+      const plan = solve(buildCtx(v.slots(), [prov('p1'), prov('p2')], {
+        callPattern: v.doc, shiftTypes,
+      }));
+      const byId = Object.fromEntries(plan.assignments.map(a => [a.slot_id, a.provider_id]));
+      const docA = byId[v.anchorId];
+      expect(docA).toBeDefined();
+      // The chained pair lands on one person, whichever side is the anchor.
+      expect(byId[v.linkId]).toBe(docA);
+      // Thursday D2: unlessCallWithinDays 2 does NOT suppress — the paired Sun
+      // C2 is two days AFTER Friday, and hadCallWithin only looks backwards.
+      expect(byId['thuD2']).toBe(docA);
+      // Monday D1 via the sunday C2 dayChain — fires whether Sun C2 was the
+      // anchor (old) or the link (new): dayChains run on block-link placements.
+      expect(byId['monD1']).toBe(docA);
+      // Saturday is Doc A's day off: the Sat C1 slot must go to the OTHER
+      // provider (the block wrote through even when Fri C1 was a mere link).
+      expect(byId['satC1']).toBeDefined();
+      expect(byId['satC1']).not.toBe(docA);
+      expect(plan.assignments.some(a => a.provider_id === docA && a.slot_date === '2026-01-10')).toBe(false);
+    });
+
+    it(`${v.name}: a call 2 days before Friday suppresses Thu D2 identically`, () => {
+      // Wednesday C2 (gap 2 from Friday) trips unlessCallWithinDays in BOTH
+      // anchorings — the suppression is a silent link condition (no skip
+      // record), mirroring solve's semantics. Single provider so Doc A is
+      // deterministically the Wednesday-call holder.
+      const wedSeed = {
+        slot_date: '2026-01-07', provider_id: 'p1', shift_type_code: 'C2',
+        shift_type_category: 'call', derived_day_type: 'weekday',
+      };
+      const slots = v.slots().filter(s => s.slot_id !== 'satC1'); // 1-provider pool
+      const plan = solve(buildCtx(slots, [prov('p1')], {
+        callPattern: v.doc, shiftTypes, seedAssignments: [wedSeed],
+      }));
+      const byId = Object.fromEntries(plan.assignments.map(a => [a.slot_id, a.provider_id]));
+      expect(byId[v.anchorId]).toBe('p1');
+      expect(byId[v.linkId]).toBe('p1');
+      // Suppressed, and silently (link condition, not a recorded skip).
+      expect(byId['thuD2']).toBeUndefined();
+      expect(plan.skippedDerived!.some(s => s.date === '2026-01-08' && s.code === 'D2')).toBe(false);
+    });
+  }
+});
+
+// ── friday-first Doc A: the starved-Sunday failure mode moves to Sunday ──────
+// The whole point of the re-anchor (spec 2026-07-15): when the pool cannot
+// cover Doc A's full Fri-C1 + Sun-C2 pair, the IN-HOUSE Friday C1 still fills
+// and the blank lands on the Sunday home-call — never the other way around
+// (the old sunday anchor starved first and blanked Friday C1 with it).
+describe('friday-first Doc A — starved Sunday leaves Sun C2 (not Fri C1) unfilled', () => {
+  it('fills Fri C1 and reports Sun C2 unfilled when nobody can take Sunday', () => {
+    const sundayPto = [{
+      availability_type: 'pto', start_date: '2026-01-11', end_date: '2026-01-11',
+      approval_status: 'approved',
+    }];
+    const slots = [
+      callSlot('friC1', '2026-01-09', 'C1', 'friday'),
+      callSlot('sunC2', '2026-01-11', 'C2', 'sunday'),
+    ];
+    const shiftTypes = new Map([
+      ['C1', shiftInfo('C1', { category: 'call', call_rank: 0 })],
+      ['C2', shiftInfo('C2', { category: 'call', call_rank: 1 })],
+    ]);
+    const plan = solve(buildCtx(slots, [prov('p1'), prov('p2')], {
+      callPattern: WEEKEND_V2_PATTERN, shiftTypes,
+      availByPid: new Map([['p1', sundayPto], ['p2', sundayPto]]),
+    }));
+    // Friday C1 fills — the anchor never blanks with its starved link.
+    expect(plan.assignments.find(a => a.slot_id === 'friC1')?.provider_id).toBeDefined();
+    expect(plan.unfilled.some(u => u.slot_id === 'friC1')).toBe(false);
+    // The blank is Sunday C2, reported honestly.
+    const sunUnfilled = plan.unfilled.find(u => u.slot_id === 'sunC2');
+    expect(sunUnfilled).toBeDefined();
+    expect(sunUnfilled!.candidates?.every(c => c.reason === 'availability-blocked')).toBe(true);
+    expect(plan.assignments.some(a => a.slot_id === 'sunC2')).toBe(false);
   });
 });

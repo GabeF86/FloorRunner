@@ -1,10 +1,17 @@
 // patterns/weekendV2.ts
 // Weekend call v2 for Paoli (spec 2026-07-12): weekend spread across four
-// people — Sun-C2 person carries Fri C1 (sunday-anchored −2 link; the engine
-// fills weekends before Fridays, so the back-link claims Fri C1 first);
-// Sat-C2 person carries Fri C2 + Sun C1; Neuro (C3) covers Fri→Sun; Sat-C1
-// person gets Fri D2 and Sunday off. callFillOrder makes in-house C1 fill
-// before home-call within each date under pool pressure.
+// people — Fri-C1 person (Doc A) carries Sun C2 (friday-anchored +2 link,
+// spec 2026-07-15 friday-first: the in-house Friday C1 is chosen FIRST and
+// Sunday home-call rides along to the same doc, so a starved pool blanks
+// Sun C2, never Fri C1 — previously sunday-anchored with a −2 back-link,
+// where a starved Sunday anchor blanked Friday C1); Sat-C2 person carries
+// Fri C2 + Sun C1; Neuro (C3) covers Fri→Sun; Sat-C1 person gets Fri D2 and
+// Sunday off. dayTypeFillOrder puts friday BETWEEN saturday and sunday so
+// the friday C1 anchor fires before the sunday slots would fill standalone
+// (saturday still first: its anchors claim Fri C2/C3/D4/D2 ahead of the
+// friday pass). callFillOrder makes in-house C1 fill before home-call within
+// each date under pool pressure — the two fields compose (dayTypeFillOrder =
+// across day types; callFillOrder = within a date).
 //
 // Neuro overlay (Doc C, spec 2026-07-15): the Sat-C3 person works a REGULAR
 // DAY (D4) on Friday and starts neuro call (C3) that evening, then carries C3
@@ -19,11 +26,17 @@
 // patternEngine.test.ts both-order test).
 import { CallPatternDocSchema, type CallPatternDoc } from '../callPattern';
 
-// The upcoming patch19 SQL seed embeds this constant (mirroring how the
-// patch18 seed embeds CLASSIC_PATTERN, callPattern.ts) — keep the two in sync.
+// The patch19/patch25 SQL seeds embed this constant (mirroring how the
+// patch18 seed embeds CLASSIC_PATTERN, callPattern.ts) — keep them in sync
+// via the emit scripts (scripts/emitNeuroOverlayPatch.ts).
 export const WEEKEND_V2_PATTERN: CallPatternDoc = CallPatternDocSchema.parse({
   version: 1,
   callFillOrder: 'call_rank',
+  // Friday-first Doc A: saturday anchors fire first (claiming Fri C2, Fri C3,
+  // Fri D4, Fri D2, Sun C1, Sun C3 as links), then the friday pass places the
+  // in-house Fri C1 whose anchor chains Sun C2 forward, then sunday mops up
+  // leftovers. Holidays keep their default tail position.
+  dayTypeFillOrder: ['saturday', 'friday', 'sunday', 'weekday', 'federal_holiday', 'major_holiday'],
   spans: [],
   blocks: [
     { anchorDayType: 'saturday', chains: [
@@ -34,8 +47,15 @@ export const WEEKEND_V2_PATTERN: CallPatternDoc = CallPatternDocSchema.parse({
       { trigger: 'C1', links: [{ offset: -1, code: 'D2' }] },
       { trigger: 'C2', links: [{ offset: -1, code: 'C2' }, { offset: 1, code: 'C1' }] },
     ]},
-    { anchorDayType: 'sunday', chains: [
-      { trigger: 'C2', links: [{ offset: -2, code: 'C1' }] },
+    // Doc A (friday-first, spec 2026-07-15): the Fri C1 anchor chains Sun C2
+    // forward. Replaces the old sunday-anchored { C2 → −2 C1 } back-link so a
+    // starved Sunday can never blank Friday C1. Saturday off comes from the
+    // friday C1 dayChain block (+1) firing on the anchor placement; Monday D1
+    // comes from the sunday C2 dayChain (+1 D1) firing on the LINK placement
+    // (dayChains fire on block-link placements — pinned in weekendV2Pattern
+    // tests).
+    { anchorDayType: 'friday', chains: [
+      { trigger: 'C1', links: [{ offset: 2, code: 'C2' }] },
     ]},
   ],
   dayChains: [

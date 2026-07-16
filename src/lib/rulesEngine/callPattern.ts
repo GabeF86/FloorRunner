@@ -61,6 +61,18 @@ export const CallPatternDocSchema = z.object({
   // never starves behind home-call under pool pressure. Absent = legacy
   // order (C2, C3, C1) — classic docs are byte-identical in behavior.
   callFillOrder: z.enum(['call_rank']).optional(),
+  // Opt-in ACROSS-DATE fill order: an ordered list of derived_day_type values
+  // (saturday, sunday, friday, weekday, federal_holiday, major_holiday).
+  // genContext sorts slotsToFill so all slots of the first listed day type
+  // fill before the next, and so on; day types NOT listed fall to the tail
+  // (after every listed one — the default order's `?? 5` semantics). Absent =
+  // the default order EXACTLY (saturday, sunday, friday, weekday, holidays) —
+  // classic docs are untouched. Deliberately z.string(), not DayTypeSchema:
+  // unknown names degrade to a load warning (dayTypeFillOrderWarnings), never
+  // a hard validation failure that would knock the whole pattern back to
+  // classic. Composes with callFillOrder: dayTypeFillOrder orders DATES (by
+  // day type); callFillOrder orders call codes WITHIN a date.
+  dayTypeFillOrder: z.array(z.string().min(1)).optional(),
 }).strict();
 
 export type CallPatternDoc = z.infer<typeof CallPatternDocSchema>;
@@ -174,4 +186,15 @@ export function callFillOrderWarnings(
     }
   }
   return out;
+}
+
+// Load-time sanity for dayTypeFillOrder: every listed name should be a known
+// derived_day_type — an unknown name never matches a slot, so its intended
+// position silently does nothing. Warn (pattern-warning conventions, like
+// callFillOrderWarnings), never fail: the rest of the order still applies.
+export function dayTypeFillOrderWarnings(doc: CallPatternDoc): string[] {
+  if (!doc.dayTypeFillOrder) return [];
+  return doc.dayTypeFillOrder
+    .filter(dt => !(DAY_TYPES as readonly string[]).includes(dt))
+    .map(dt => `dayTypeFillOrder lists unknown day type '${dt}' — it will never match a slot (valid: ${DAY_TYPES.join(', ')})`);
 }

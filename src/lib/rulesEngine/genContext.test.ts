@@ -341,6 +341,67 @@ describe('loadGenerationContext — call pattern (requirement 2 + 3)', () => {
   });
 });
 
+// dayTypeFillOrder (spec 2026-07-15 friday-first Doc A): the pattern may
+// re-order the ACROSS-DATE fill; absent = the default order EXACTLY.
+describe('loadGenerationContext — dayTypeFillOrder sort (pattern-data fill order)', () => {
+  // Input rows deliberately shuffled (fri, sun, sat) so the assertion can only
+  // pass if the sort re-ordered them.
+  const daySlots = () => [
+    rawSlot({ id: 'fri', date: '2026-01-09', code: 'C1', category: 'call', dayType: 'friday' }),
+    rawSlot({ id: 'sun', date: '2026-01-11', code: 'C1', category: 'call', dayType: 'sunday' }),
+    rawSlot({ id: 'sat', date: '2026-01-10', code: 'C1', category: 'call', dayType: 'saturday' }),
+  ];
+  const orderOf = (res: Awaited<ReturnType<typeof run>>['res']) =>
+    res.ctx!.slotsToFill.map(s => s.derived_day_type);
+
+  it('absent field → the default order EXACTLY (saturday, sunday, friday)', async () => {
+    const { res } = await run({
+      schedule_slots: { data: daySlots(), error: null },
+      call_patterns: { data: { definition: CLASSIC_PATTERN }, error: null },
+    });
+    expect(orderOf(res)).toEqual(['saturday', 'sunday', 'friday']);
+  });
+
+  it('honors the pattern order (saturday, friday, sunday — the weekendV2 shape)', async () => {
+    const doc = { ...CLASSIC_PATTERN, dayTypeFillOrder: ['saturday', 'friday', 'sunday'] };
+    const { res } = await run({
+      schedule_slots: { data: daySlots(), error: null },
+      call_patterns: { data: { definition: doc }, error: null },
+    });
+    expect(orderOf(res)).toEqual(['saturday', 'friday', 'sunday']);
+  });
+
+  it('unlisted day types fall to the tail (after every listed one)', async () => {
+    const doc = { ...CLASSIC_PATTERN, dayTypeFillOrder: ['friday'] };
+    const { res } = await run({
+      schedule_slots: {
+        data: [
+          rawSlot({ id: 'wk', date: '2026-01-07', code: 'C1', category: 'call', dayType: 'weekday' }),
+          rawSlot({ id: 'fri', date: '2026-01-09', code: 'C1', category: 'call', dayType: 'friday' }),
+          rawSlot({ id: 'sat', date: '2026-01-10', code: 'C1', category: 'call', dayType: 'saturday' }),
+        ],
+        error: null,
+      },
+      call_patterns: { data: { definition: doc }, error: null },
+    });
+    const order = orderOf(res);
+    // friday leads; the two unlisted types share the tail and fall back to
+    // date order among themselves.
+    expect(order[0]).toBe('friday');
+    expect(order.slice(1).sort()).toEqual(['saturday', 'weekday']);
+    expect(order.slice(1)).toEqual(['weekday', 'saturday']); // date tiebreak
+  });
+
+  it('an unknown day-type name surfaces a load warning (wiring)', async () => {
+    const doc = { ...CLASSIC_PATTERN, dayTypeFillOrder: ['saturady', 'friday'] };
+    const { res } = await run({
+      call_patterns: { data: { definition: doc }, error: null },
+    });
+    const warnings = res.ctx!.warnings ?? [];
+    expect(warnings.some(w => w.includes("unknown day type 'saturady'"))).toBe(true);
+  });
+});
+
 describe('loadGenerationContext — historical fairness RPC (requirement 4)', () => {
   // patch24: the RPC now emits split saturday/sunday buckets (not merged
   // 'weekend'). p1's history is on Saturdays, p2's on a Sunday.

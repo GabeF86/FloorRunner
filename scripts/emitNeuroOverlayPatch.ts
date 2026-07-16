@@ -8,11 +8,20 @@ const SITE = '2ddd2427-22fb-4290-9c4c-03a957e5af4e'; // Paoli
 const doc = JSON.stringify(WEEKEND_V2_PATTERN).replace(/'/g, "''");
 
 console.log(`-- supabase_scheduling_patch25_neuro_overlay.sql
--- Neuro overlay (spec docs/superpowers/specs/2026-07-15-neuro-overlay-design.md)
+-- Neuro overlay + friday-first Doc A (ONE pattern-doc rollout):
+--   specs docs/superpowers/specs/2026-07-15-neuro-overlay-design.md
+--       + docs/superpowers/specs/2026-07-15-friday-first-doc-a-design.md
 -- Doc C works a REGULAR DAY (D4) on Friday and carries neuro call (C3) that
 -- evening + Sat + Sun. Makes C3 an is_overlay shift, materializes the Friday D4
 -- slot (template for future schedules + backfill into existing drafts), and
--- updates the active weekend-v2 pattern with the Sat-C3 → Fri-D4 chain link.
+-- updates the active weekend-v2 pattern in one shot with:
+--   * the Sat-C3 -> Fri C3 + Fri D4 + Sun C3 chain (Doc C overlay block);
+--   * the Doc A re-anchor: the sunday-anchored { C2 -> -2 C1 } back-link is
+--     REPLACED by a friday-anchored { C1 -> +2 C2 } forward link, so the
+--     in-house Friday C1 fills FIRST and a starved pool blanks Sun C2,
+--     never Fri C1;
+--   * dayTypeFillOrder ['saturday','friday','sunday','weekday',holidays] so
+--     the friday anchor fires before the sunday pass.
 -- Applies to site ${SITE} (Paoli).
 --
 -- IDEMPOTENT: every step is guarded (UPDATE is naturally idempotent; INSERTs use
@@ -98,9 +107,11 @@ SELECT ss.id, 'open', 'manual'
    AND NOT EXISTS (
      SELECT 1 FROM scheduling.assignments a WHERE a.schedule_slot_id = ss.id);
 
--- 5. Update the active weekend-v2 pattern with the new Sat-C3 → {Fri C3, Fri D4,
---    Sun C3} chain (JSON validated by CallPatternDocSchema at emit time; emitted
---    from the WEEKEND_V2_PATTERN constant, patch19-style).
+-- 5. Update the active weekend-v2 pattern in one shot: the Sat-C3 -> {Fri C3,
+--    Fri D4, Sun C3} chain, the friday-anchored Doc A { C1 -> +2 C2 } (sunday
+--    -2 back-link removed), and dayTypeFillOrder (JSON validated by
+--    CallPatternDocSchema at emit time; emitted from the WEEKEND_V2_PATTERN
+--    constant, patch19-style).
 UPDATE scheduling.call_patterns
    SET definition = '${doc}'::jsonb, updated_at = now()
  WHERE site_id = '${SITE}' AND status = 'active';
@@ -120,7 +131,12 @@ COMMIT;
 --     JOIN scheduling.shift_types st ON st.id = ss.shift_type_id
 --    WHERE ss.site_id = '${SITE}' AND st.code = 'D4' AND ss.derived_day_type = 'friday'
 --    GROUP BY 1;
---   SELECT definition->'blocks'->0->'chains'->0 FROM scheduling.call_patterns
+--   SELECT definition->'blocks', definition->'dayTypeFillOrder'
+--     FROM scheduling.call_patterns
 --    WHERE site_id = '${SITE}' AND status = 'active';
---    -- expect the C3 chain to include a {"offset":-1,"code":"D4"} link
+--    -- expect: the saturday anchor's C3 chain includes {"offset":-1,"code":"D4"};
+--    --         a friday anchor exists with {"trigger":"C1","links":[{"offset":2,"code":"C2"}]};
+--    --         NO sunday anchor remains;
+--    --         dayTypeFillOrder = ["saturday","friday","sunday","weekday",
+--    --                            "federal_holiday","major_holiday"]
 `);
