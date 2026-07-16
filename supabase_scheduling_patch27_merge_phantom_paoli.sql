@@ -1,5 +1,5 @@
 -- ╔══════════════════════════════════════════════════════════════════════════╗
--- ║ STATUS: NOT APPLIED — USER-GATED. Gabriel must confirm the site-row merge  ║
+-- ║ STATUS: NOT APPLIED — HELD 2026-07-16 pending Gabriel's explicit go (changes call eligibility for 13 real existing physicians: enforces 8 can_take_call=false restrictions, activates 5 cross-site helpers; creates no providers) — USER-GATED. Gabriel must confirm the site-row merge  ║
 -- ║ (it repoints 14 provider credentials and deactivates a site row).          ║
 -- ║ Apply to project qhwdbtixhzdsgwwtcfrm ("Floor Runner"), ref verified,      ║
 -- ║ via the project-scoped supabase-floorrunner MCP server (or the dashboard   ║

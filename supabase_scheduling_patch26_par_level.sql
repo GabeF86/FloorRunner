@@ -1,5 +1,5 @@
 -- ╔══════════════════════════════════════════════════════════════════════════╗
--- ║ STATUS: NOT APPLIED — USER-GATED. Gabriel must confirm the par semantics   ║
+-- ║ STATUS: APPLIED 2026-07-16 (value 11 per Gabriel: "you can set the par level at 11 for now but not less" — engine self-clamps quota math to pool ΣFTE, so the stored value is a target, not a fill constraint) — USER-GATED. Gabriel must confirm the par semantics   ║
 -- ║ before this runs: call_par_level 12 may be an intentional recruiting       ║
 -- ║ target, but for fill math the stored value should reflect the actual pool. ║
 -- ║ Apply to project qhwdbtixhzdsgwwtcfrm ("Floor Runner"), ref verified,      ║
@@ -53,5 +53,5 @@ UPDATE scheduling.sites
 --   -- confirm the "cannot cover ... clamped" warnings no longer fire.
 --
 -- ROLLBACK:
---   UPDATE scheduling.sites SET call_par_level = 12, updated_at = now()
+--   UPDATE scheduling.sites SET call_par_level = 11, updated_at = now()
 --    WHERE id = '2ddd2427-22fb-4290-9c4c-03a957e5af4e';

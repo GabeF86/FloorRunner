@@ -1,5 +1,5 @@
 -- ╔══════════════════════════════════════════════════════════════════════════╗
--- ║ STATUS: NOT APPLIED — USER-GATED (touches provider credentials; low risk). ║
+-- ║ STATUS: APPLIED 2026-07-16 (idempotent INSERT..WHERE NOT EXISTS; V.Lin 36800add verified as the 1.0-FTE Paoli call taker with zero credential rows; row 1acd0ff9 created) — USER-GATED (touches provider credentials; low risk). ║
 -- ║ Apply to project qhwdbtixhzdsgwwtcfrm ("Floor Runner"), ref verified,      ║
 -- ║ via the project-scoped supabase-floorrunner MCP server (or the dashboard   ║
 -- ║ SQL editor). Never run through the atlas-staging / chiefos MCP servers.    ║
