@@ -132,7 +132,8 @@ export type PlacementSource =
   | 'weekend-chain'
   | 'relief-order'
   | 'quota-relaxed'   // v2: filled despite bucket quota (all candidates quota-blocked)
-  | 'span';           // v2: multi-day same-provider obligation (CallPatternDoc spans)
+  | 'span'            // v2: multi-day same-provider obligation (CallPatternDoc spans)
+  | 'day-mop-up';     // 2026-07-16: orphaned call-engine day slot (trigger call unfilled/severed)
 
 // Richer "why this assignment" detail, captured at decision time. The
 // PlacementSource (main-loop / d-chain / weekend-chain / …) stays on
@@ -191,7 +192,10 @@ export interface SkippedDerived {
   date: string;
   code: string;
   provider_id: string;
-  reason: 'pto' | 'cross-site' | 'occupied' | 'no-slot' | 'ineligible' | 'already-handled';
+  // 'overridden' (2026-07-16): a callOverrides pin severed a chain pairing
+  // whose designed partner had NO hard block — recorded so the severance
+  // stays observable even when the pinned provider fills the slot.
+  reason: 'pto' | 'cross-site' | 'occupied' | 'no-slot' | 'ineligible' | 'already-handled' | 'overridden';
 }
 
 export interface SolutionPlan {
@@ -200,6 +204,13 @@ export interface SolutionPlan {
   // OPTIONAL so the FROZEN solveLegacy.ts (and bare test-plan literals) keep
   // compiling; the v2 solve() always populates it.
   skippedDerived?: SkippedDerived[];
+  // Slot ids whose placement triggered pattern block-chain links (the CHAIN
+  // ANCHORS — e.g. weekend-v2's Friday C1 that chains Sun C2). Recorded by
+  // applyBlockChains, pattern-data-driven. The optimizer must never move an
+  // anchor: its chain partner is pinned separately, so moving the anchor
+  // severs the designed same-provider pairing (2026-07-16 PROOF defect 2).
+  // OPTIONAL for the same frozen-solveLegacy reason as skippedDerived.
+  chainAnchorSlotIds?: string[];
 }
 
 // Mutable in-memory bookkeeping during solve. Never touches I/O.

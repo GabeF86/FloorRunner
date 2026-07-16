@@ -55,18 +55,34 @@ export function compareMetrics(a: SolutionMetrics, b: SolutionMetrics): number {
   return a.burnout - b.burnout;
 }
 
-// A call slot is movable by the optimizer iff it was placed by the main loop
-// AND its day type is in the pattern's optimizerMovableDayTypes (classic:
-// weekday + friday). Block-chain / pre-PTO placements are structurally coupled
-// and left to deterministic construction.
-function movableCallSlotIds(plan: SolutionPlan, doc: CallPatternDoc): string[] {
+// A call slot is movable by the optimizer iff it was placed by the main loop's
+// scoring path — 'main-loop' or 'quota-relaxed' (2026-07-16: a quota-relaxed
+// fill is an ordinary scored placement whose bucket happened to be exhausted;
+// excluding it froze exactly the slots fairness moves want to touch) — AND its
+// day type is in the pattern's optimizerMovableDayTypes (classic: weekday +
+// friday) — AND it is not a CHAIN ANCHOR (plan.chainAnchorSlotIds, stamped by
+// solve's applyBlockChains: e.g. weekend-v2's Friday C1 whose +2 Sunday C2
+// partner is pinned separately; moving the anchor severed the designed
+// same-provider pairing — 2026-07-16 PROOF defect 2). Block-chain / pre-PTO
+// placements are structurally coupled and left to deterministic construction.
+export function movableCallSlotIds(plan: SolutionPlan, doc: CallPatternDoc): string[] {
   const movableDayTypes = doc.optimizerMovableDayTypes as readonly string[];
+  const anchors = new Set(plan.chainAnchorSlotIds ?? []);
   return plan.assignments
     .filter(a => a.shift_type_category === 'call'
       && movableDayTypes.includes(a.derived_day_type)
-      && a.source === 'main-loop')
+      && (a.source === 'main-loop' || a.source === 'quota-relaxed')
+      && !anchors.has(a.slot_id))
     .map(a => a.slot_id)
     .sort(); // deterministic order
+}
+
+// Every filled slot id in a plan — ALL categories, not just call (derived and
+// relief fills count: trading any of them for a hole is still a hole).
+export function filledSlotIds(plan: SolutionPlan): Set<string> {
+  const ids = new Set<string>();
+  for (const a of plan.assignments) if (a.provider_id) ids.add(a.slot_id);
+  return ids;
 }
 
 // Re-solve from a (perturbed) call assignment and score it.
@@ -99,10 +115,25 @@ export function optimize(ctx: GenerationContext, opts: OptimizeOptions = {}): Op
   let best = solve(ctx);
   let bestMetrics = scoreSolution(best, ctx);
   let bestAssign = extractCallAssignment(best);
+  let bestFilled = filledSlotIds(best);
   let resolvesUsed = 0;
   let gatedSkips = 0;
   const budgetExhausted = () =>
     resolvesUsed >= maxResolves || Date.now() - t0 >= wallClockMs;
+
+  // ── Per-slot fill monotonicity (2026-07-16 PROOF defect 1) ──
+  // A trial is acceptable ONLY if every slot filled in the incumbent stays
+  // filled (fill-set superset-or-equal). The aggregate `skipped` metric alone
+  // let accepted trials TRADE a filled slot for a hole at equal-or-better skip
+  // counts — a pinned provider made ineligible by cascaded shifts dropped its
+  // slot ('Forced provider ineligible') without re-opening it to the pool.
+  // With this gate, optimizer-introduced holes are structurally impossible;
+  // the lexicographic objective still ranks the surviving trials.
+  const keepsEveryIncumbentFill = (trial: SolutionPlan): boolean => {
+    const trialFilled = filledSlotIds(trial);
+    for (const id of bestFilled) if (!trialFilled.has(id)) return false;
+    return true;
+  };
 
   // ── Eligibility pre-gate (built once — its inputs never change) ──
   // The gate state holds ONLY the seeded assignments (+ ctx-derived facts like
@@ -129,8 +160,14 @@ export function optimize(ctx: GenerationContext, opts: OptimizeOptions = {}): Op
     const slot = slotById.get(slotId);
     const p = providerById.get(pid);
     // Unknown slot/provider: don't gate — fall through to the full resolve.
+    // Gate 'call-no-quota' (2026-07-16): the trial's overrideFor re-validates
+    // pins with the same quota-free gate, so gate-monotonicity holds
+    // identically — a pair gated here is STILL guaranteed to self-reject
+    // inside the trial. Gating with the quota-inclusive gate killed every
+    // eviction move INTO a quota-starved slot dead on arrival (exactly the
+    // slots the 2026-07-16 relaxation work needs the optimizer to reach).
     const pass = !slot || !p
-      || evaluateEligibility(slot, p, gateState, ctx, 'call').eligible;
+      || evaluateEligibility(slot, p, gateState, ctx, 'call-no-quota').eligible;
     gateMemo.set(key, pass);
     return pass;
   };
@@ -177,8 +214,9 @@ export function optimize(ctx: GenerationContext, opts: OptimizeOptions = {}): Op
             trial.set(sId, qid);   // Q takes P's vacated slot
             resolvesUsed++;
             const { plan, metrics } = evaluate(ctx, trial);
-            if (compareMetrics(metrics, bestMetrics) < 0) {
+            if (keepsEveryIncumbentFill(plan) && compareMetrics(metrics, bestMetrics) < 0) {
               best = plan; bestMetrics = metrics; bestAssign = extractCallAssignment(plan);
+              bestFilled = filledSlotIds(plan);
               improved = true;
               break outer; // re-start scan from new best (monotone)
             }
@@ -206,8 +244,9 @@ export function optimize(ctx: GenerationContext, opts: OptimizeOptions = {}): Op
         trial.set(sId, pid);
         resolvesUsed++;
         const { plan, metrics } = evaluate(ctx, trial);
-        if (compareMetrics(metrics, bestMetrics) < 0) {
+        if (keepsEveryIncumbentFill(plan) && compareMetrics(metrics, bestMetrics) < 0) {
           best = plan; bestMetrics = metrics; bestAssign = extractCallAssignment(plan);
+          bestFilled = filledSlotIds(plan);
           improved = true;
           break swap;
         }

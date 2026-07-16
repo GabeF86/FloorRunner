@@ -1,8 +1,12 @@
 import { describe, it, expect } from 'vitest';
-import { optimize, extractCallAssignment, compareMetrics } from './optimize';
+import { optimize, extractCallAssignment, compareMetrics, movableCallSlotIds } from './optimize';
 import { solve } from './solve';
 import { scoreSolution } from './metrics';
 import { CLASSIC_PATTERN } from './callPattern';
+import { WEEKEND_V2_PATTERN } from './patterns/weekendV2';
+import {
+  buildCtx as buildFxCtx, prov as fxProv, callSlot as fxCallSlot, shiftInfo,
+} from './__fixtures__/buildContext';
 import type { GenerationContext, SlotToFill, CandidateProvider } from './genTypes';
 
 function prov(id: string, fte = 1, over: Partial<CandidateProvider> = {}): CandidateProvider {
@@ -190,12 +194,13 @@ describe('optimize — eligibility pre-gate, wall-clock budget, movable day type
     expect(plan.unfilled.map(u => u.slot_id)).toEqual(seed.unfilled.map(u => u.slot_id));
   });
 
-  it('does not move a saturday main-loop assignment under the classic pattern', () => {
-    // Two Saturday C1 slots, weekend quota 1 each. Greedy: s1->pX, s2 stranded
-    // (pX quota-full, pY on PTO that day). The eviction fix (s1->pY, s2->pX)
-    // exists but requires MOVING a saturday slot — classic
-    // optimizerMovableDayTypes is weekday+friday, so the optimizer must not
-    // touch it and s2 stays unfilled.
+  it('does not move a saturday placement under the classic pattern (quota-relaxed included)', () => {
+    // Two Saturday C1 slots, weekend quota 1 each. Greedy: s1->pX (main-loop),
+    // then s2->pX via UNCONDITIONAL quota relaxation (pY is on PTO that day, so
+    // the sweep is pX bucket-quota + pY availability — the relax sweep fires
+    // and pX is the only legal fill). Fairness would improve by handing s1 to
+    // pY, but classic optimizerMovableDayTypes is weekday+friday: saturday
+    // placements — main-loop AND quota-relaxed — must not move.
     const mkCtx = (over: Partial<GenerationContext> = {}) => buildCtx(
       [callSlot('s1', '2026-01-03', 'C1', 'saturday'), callSlot('s2', '2026-01-10', 'C1', 'saturday')],
       [prov('pX'), prov('pY')],
@@ -209,17 +214,128 @@ describe('optimize — eligibility pre-gate, wall-clock budget, movable day type
       },
     );
     const classic = optimize(mkCtx()).plan;
+    expect(classic.unfilled).toEqual([]);
     expect(classic.assignments.find(a => a.slot_id === 's1')?.provider_id).toBe('pX');
-    expect(classic.unfilled.map(u => u.slot_id)).toEqual(['s2']);
+    const s2Classic = classic.assignments.find(a => a.slot_id === 's2');
+    expect(s2Classic?.provider_id).toBe('pX');
+    expect(s2Classic?.source).toBe('quota-relaxed');
 
-    // Control (proves the scenario is fixable): a pattern that DOES allow
-    // moving saturday slots lets the eviction fill both.
+    // Control (proves the fairness swap exists): a pattern that DOES allow
+    // moving saturday slots lets the swap hand s1 to pY. blocks: [] because
+    // chain ANCHORS are immovable regardless of day type (2026-07-16 defect-2
+    // fix) — classic saturday C1 triggers the weekend chain, so the control
+    // drops the blocks to isolate the day-type gate this test pins.
     const saturdayMovable = optimize(mkCtx({
-      callPattern: { ...CLASSIC_PATTERN, optimizerMovableDayTypes: ['weekday', 'friday', 'saturday'] },
+      callPattern: { ...CLASSIC_PATTERN, blocks: [], optimizerMovableDayTypes: ['weekday', 'friday', 'saturday'] },
     })).plan;
     expect(saturdayMovable.unfilled).toEqual([]);
     expect(saturdayMovable.assignments.find(a => a.slot_id === 's1')?.provider_id).toBe('pY');
     expect(saturdayMovable.assignments.find(a => a.slot_id === 's2')?.provider_id).toBe('pX');
+  });
+
+  // 2026-07-16 optimizer/greedy parity: greedy may relax quotas; the optimizer
+  // must (a) treat 'quota-relaxed' placements as movable, (b) not gate eviction
+  // moves into quota-starved slots dead-on-arrival, and (c) re-validate pinned
+  // providers WITHOUT the quota (a pin re-asserts an already-made placement).
+  // Any of the three missing leaves the eviction unreachable or self-rejecting
+  // ('Forced provider ineligible').
+  it('quota starvation: eviction fills a hard-blocked slot without unfilling relaxed placements', () => {
+    const pX = prov('pX');
+    const pY = prov('pY', 1, { available_weekdays: [true, true, true, false, true, true, true] }); // Wed off
+    const s1 = callSlot('s1', '2026-01-06', 'C1'); // Tue
+    const s2 = callSlot('s2', '2026-01-07', 'C1'); // Wed
+    const ctx = buildCtx([s1, s2], [pX, pY], {
+      bucketTarget: new Map(), // quota-exhausted: every target 0
+    });
+    const seed = solve(ctx);
+    // Greedy: s1 relax-fills with pX (id tie); pX's post-call block + pY's
+    // Wednesday unavailability then hard-block s2.
+    expect(seed.assignments.find(a => a.slot_id === 's1')?.source).toBe('quota-relaxed');
+    expect(seed.unfilled.map(u => u.slot_id)).toEqual(['s2']);
+
+    const opt = optimize(ctx).plan;
+    // Eviction (s1->pY frees pX for s2) requires all three fixes above.
+    expect(opt.assignments.some(a => a.slot_id === 's1')).toBe(true);
+    expect(opt.assignments.some(a => a.slot_id === 's2')).toBe(true);
+    expect(opt.unfilled).toEqual([]);
+    expect(opt.unfilled.some(u => u.reason === 'Forced provider ineligible')).toBe(false);
+  });
+});
+
+// ── per-slot fill monotonicity (2026-07-16 PROOF defect 1) ───────────────────
+// Accepted trials used to trade FILLED slots for HOLES at equal-or-better
+// aggregate skip counts: a pinned provider made ineligible by cascaded shifts
+// dropped its slot ('Forced provider ineligible') without re-opening it to the
+// pool. A trial is now acceptable ONLY if every slot filled in the incumbent
+// stays filled (fill-set superset-or-equal), making optimizer holes
+// structurally impossible.
+describe('optimize — per-slot fill monotonicity (never trades holes)', () => {
+  it('final fill set ⊇ greedy fill set on a quota-starved block', () => {
+    // Quota-starved (every target 0): greedy relax-fills s1 (Tue) + s3 (Thu)
+    // with pX; s2 (Wed) is a hole (pX post-call-blocked, pY Wed-off). The
+    // eviction trial {s1→pY, s2→pX, s3 pinned→pX} cascades pX's Wed post-call
+    // block onto Thursday, self-rejecting the pinned s3 — equal aggregate
+    // skips (1), better fairness stdev. Accepting it TRADES the s3 fill for
+    // the s2 hole. Monotonicity must reject the trade.
+    const pX = prov('pX');
+    // pY: Wed(3) + Thu(4) off — only ever a candidate for Tuesday.
+    const pY = prov('pY', 1, { available_weekdays: [true, true, true, false, false, true, true] });
+    const s1 = callSlot('s1', '2026-01-06', 'C1'); // Tue
+    const s2 = callSlot('s2', '2026-01-07', 'C1'); // Wed
+    const s3 = callSlot('s3', '2026-01-08', 'C1'); // Thu
+    const ctx = buildCtx([s1, s2, s3], [pX, pY], {
+      bucketTarget: new Map(), // quota-starved: every target 0
+    });
+
+    const greedy = solve(ctx);
+    const greedyFilled = greedy.assignments.map(a => a.slot_id).sort();
+    expect(greedyFilled).toEqual(['s1', 's3']); // scenario sanity: s2 is the hole
+
+    const opt = optimize(ctx).plan;
+    const optFilled = new Set(opt.assignments.map(a => a.slot_id));
+    for (const id of greedyFilled) {
+      expect(optFilled.has(id), `slot ${id} filled by greedy must stay filled`).toBe(true);
+    }
+    // No slot may be dropped via a self-rejecting pin.
+    expect(opt.unfilled.some(u => u.reason === 'Forced provider ineligible')).toBe(false);
+    // And the optimizer still never worsens the aggregate.
+    expect(scoreSolution(opt, ctx).skipped)
+      .toBeLessThanOrEqual(scoreSolution(greedy, ctx).skipped);
+  });
+});
+
+// ── chain anchors are immovable (2026-07-16 PROOF defect 2) ──────────────────
+// optimize() moved Friday C1 anchors (source 'main-loop', friday in
+// optimizerMovableDayTypes) while the +2 Sunday C2 chain partner stayed pinned
+// via the override path — severing the designed same-provider pairing. Slots
+// whose placement triggered block-chain links are now excluded from the
+// movable set; the pairing cannot be severed by optimize().
+describe('movableCallSlotIds — chain anchors are immovable', () => {
+  it('friday C1 anchor (chains Sun C2) is excluded; a plain friday main-loop fill stays movable', () => {
+    const slots = [
+      fxCallSlot('friC1', '2026-01-09', 'C1', 'friday'),
+      fxCallSlot('friC2', '2026-01-09', 'C2', 'friday'),
+      fxCallSlot('sunC2', '2026-01-11', 'C2', 'sunday'),
+    ];
+    const shiftTypes = new Map([
+      ['C1', shiftInfo('C1', { category: 'call', call_rank: 0 })],
+      ['C2', shiftInfo('C2', { category: 'call', call_rank: 1 })],
+    ]);
+    const ctx = buildFxCtx(slots, [fxProv('p1'), fxProv('p2')], {
+      callPattern: WEEKEND_V2_PATTERN, shiftTypes,
+    });
+    const plan = solve(ctx);
+    const byId = Object.fromEntries(plan.assignments.map(a => [a.slot_id, a]));
+    // Scenario sanity: friC1 is a main-loop anchor whose chain claimed sunC2;
+    // friC2 is a plain main-loop friday fill with no block chain.
+    expect(byId['friC1']?.source).toBe('main-loop');
+    expect(byId['friC2']?.source).toBe('main-loop');
+    expect(byId['sunC2']?.source).toBe('weekend-chain');
+    expect(byId['sunC2']?.provider_id).toBe(byId['friC1']?.provider_id);
+
+    // The anchor is NOT movable; the plain friday fill still is; the chained
+    // sunday partner never was (source + day type).
+    expect(movableCallSlotIds(plan, WEEKEND_V2_PATTERN)).toEqual(['friC2']);
   });
 });
 

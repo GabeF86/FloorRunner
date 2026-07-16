@@ -164,6 +164,50 @@ describe('patternEngine — IF-3 quota relaxation', () => {
     // The rejection reports the REAL blocker, not the masking 'bucket-quota'.
     expect(u?.candidates?.[0]).toMatchObject({ provider_id: 'pA', reason: 'availability-blocked' });
   });
+
+  // 2026-07-16 (unconditional relaxation): the relax sweep fires whenever the
+  // full-gate sweep is empty — NOT only when every rejection is 'bucket-quota'.
+  // One hard-blocked provider in the sweep (same-date/post-call, PTO, …) used
+  // to poison the trigger and strand slots that quota-blocked-but-otherwise-
+  // eligible providers could legally take (the Friday/Sunday starvation mode).
+  it('fills via relaxation when the sweep MIXES one hard block with quota blocks', () => {
+    const monC1 = callSlot('monC1', '2026-01-05', 'C1', 'weekday'); // Mon
+    const tueC1 = callSlot('tueC1', '2026-01-06', 'C1', 'weekday'); // Tue
+    // pA wins Mon C1 (generous target) and is post-call-blocked for Tue
+    // ('same-date' rejection). pB + pC are quota-blocked but otherwise fine.
+    const ctx = buildCtx([monC1, tueC1], [prov('pA'), prov('pB'), prov('pC')], {
+      bucketTarget: new Map([
+        ['pA|weekday|C1', 99], ['pB|weekday|C1', 0], ['pC|weekday|C1', 0],
+      ]),
+    });
+    const plan = solve(ctx);
+    expect(plan.assignments.find(a => a.slot_id === 'monC1')?.provider_id).toBe('pA');
+    const tue = plan.assignments.find(a => a.slot_id === 'tueC1');
+    expect(tue?.provider_id).toBe('pB'); // ratio tie → id among the relaxable
+    expect(tue?.source).toBe('quota-relaxed');
+    expect(plan.unfilled).toHaveLength(0);
+  });
+
+  it('mixed hard blocks with an empty relax set still report the REAL reason per provider', () => {
+    const c1 = callSlot('c1', '2026-01-07', 'C1', 'weekday');
+    // Both quota-blocked AND each carries a distinct safety block.
+    const ctx = buildCtx([c1], [prov('pA'), prov('pB')], {
+      bucketTarget: new Map([['pA|weekday|C1', 0], ['pB|weekday|C1', 0]]),
+      availByPid: new Map([['pA', [{
+        availability_type: 'pto', start_date: '2026-01-07', end_date: '2026-01-07',
+        approval_status: 'approved',
+      }]]]),
+      credByPid: new Map([['pB', cred({ excluded_shift_types: ['C1'] })]]),
+    });
+    const plan = solve(ctx);
+    expect(plan.assignments).toHaveLength(0);
+    const u = plan.unfilled.find(x => x.slot_id === 'c1');
+    expect(u?.reason).toBe('No eligible providers');
+    expect(u?.candidates).toContainEqual(
+      expect.objectContaining({ provider_id: 'pA', reason: 'availability-blocked' }));
+    expect(u?.candidates).toContainEqual(
+      expect.objectContaining({ provider_id: 'pB', reason: 'credential' }));
+  });
 });
 
 // ── 5. NEW STRUCTURE (spec §5.3): the proposed weekend doc ───────────────────

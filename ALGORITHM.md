@@ -53,19 +53,22 @@ Slots are grouped by **(bucket, shift_code)**. Buckets come from [`dayTypeBucket
 
 Per provider, per bucket:
 ```
-base     = (block_total_slots / site.call_par_level) × fte_value
-expected = (historical_total_slots / site.call_par_level) × fte_value
+par      = min(site.call_par_level, Σ pool fte_value)   # effectiveParLevel — clamp, never starve
+base     = (block_total_slots / par) × fte_value
+expected = (historical_total_slots / par) × fte_value
 deficit  = max(0, expected − historical_actual)    # past under-allocation
-target   = base + deficit
+target   = max(1, base + deficit)                  # floorBucketTargets (fte > 0 only)
 ```
 
 Eligibility check uses `assigned + 1 > target` — i.e., "would one more push us past target?". Older `assigned >= target` caused 0.5 FTE and 1.0 FTE to both cap at 1 when targets rounded below 2.
 
-**Why Sat+Sun share a bucket**: without the merge, a 12-week block produced target `1.0` for full-timers and `0.5` for half-timers — both integer-capped at 1. Merging doubles bucket totals to 24, giving targets 2.0 vs 1.0 — distinguishable.
+**Par clamp (2026-07-16)**: a stored `call_par_level` above the pool's summed FTE makes every target proportionally short (Σ targets = bucket_total × poolFte/par < bucket_total) — structurally under-quota'd before a single slot is placed. `effectiveParLevel` clamps the denominator down to Σ pool FTE (never up). The load-time shortfall warning is still computed from the STORED par so a stale row stays visible — it now says the targets were clamped instead of predicting unfilled slots.
+
+**At-least-one floor (2026-07-16)**: the saturday/sunday bucket split (patch24) shrank weekend buckets to a handful of slots per block, driving per-provider targets below 1 — and the strict check then gave *every* provider zero capacity in those buckets. (`Sat+Sun` used to share a merged bucket precisely to keep targets above 1; the split is the right fairness mechanism, so the floor now provides that guarantee instead.) Every positive-FTE provider's target is floored to 1 per bucket; fairness *ordering* is untouched — `scoreCall`'s lifetime-ratio sort still decides who actually gets the slot. Both clamp and floor live in genContext target computation, NOT in the eligibility gate — parity fixtures hand-build their target maps and stay meaningful.
 
 **Why historical deficit**: block-local quotas can't represent fractional targets (0.3 FTE → target 0.72 → cap 0 every block forever). Deficit adds past shortfall to the current block's target so part-timers catch up.
 
-**Quota relaxation**: when a call slot's ONLY obstacle is that *every* provider fails the bucket quota, `solve()` places the provider with the lowest lifetime ratio anyway (placement source `'quota-relaxed'`, explanation attached) instead of leaving the slot unfilled. A schedule never goes uncovered purely because quota math ran out. genContext also warns at load time when `Σ FTE-weighted targets < bucket total` — check `call_par_level` vs pool FTE.
+**Quota relaxation (unconditional, 2026-07-16)**: whenever a call slot's full-gate sweep is empty, `solve()` re-gates every provider with ONLY the bucket quota waived (`'call-no-quota'` — every safety gate still runs) and places the lowest-lifetime-ratio survivor (placement source `'quota-relaxed'`, explanation attached). Quota math must never leave a fillable slot empty; only hard clinical blocks may. (The old trigger — *every* rejection is `bucket-quota` — was poisoned by a single hard-blocked provider in the sweep, permanently stranding slots the quota-blocked-but-otherwise-eligible providers could legally take.) When even relaxation finds nobody, the unfilled report carries each provider's REAL blocker.
 
 ## 5. Eligibility pipeline ([`evaluateEligibility`](src/lib/rulesEngine/eligibility.ts))
 
@@ -117,7 +120,7 @@ Data: `doc.blocks` — same-provider multi-day chains anchored on a day type. Ea
 | C2 | Sunday C1, Friday D2 |
 | C3 | Sunday C3 |
 
-Handled when the main loop places the anchor slot (a seeded/manual anchor does NOT trigger chain fills — seeds only mark solve state); target slots are looked up via `slotIndex`. Call-category targets are gated with the full call gate, non-call targets with the derived gate; suppressed non-call fills are recorded in `skippedDerived` (call targets fall through to the main loop — never dropped). A different structure (e.g. Friday-anchored chains) is a pattern edit, not an engine edit.
+Handled when the main loop places the anchor slot (a seeded/manual anchor does NOT trigger chain fills — seeds only mark solve state); target slots are looked up via `slotIndex`. Call-category targets are gated with `'call-no-quota'` (2026-07-16: a chain link is a structural same-provider obligation whose anchor was already fairness-scored — the bucket quota must not sever the designed pairing; every safety gate still runs), non-call targets with the derived gate. EVERY severed link — call targets included — is recorded in `skippedDerived`; a safety-severed call target still falls through to the main loop (never dropped), but the severance itself is observable. A different structure (e.g. Friday-anchored chains) is a pattern edit, not an engine edit.
 
 ## 9. Day chains (post-/pre-call fills and blocks)
 
@@ -141,6 +144,10 @@ Seeded/manual call assignments get the same treatment before solving: [`seedSolv
 
 Data: `doc.reliefPass` (`{enabled, dayTypes}`) + relief codes from `shift_types.relief_rank` ordering (legacy D4–D9 fallback when `ctx.shiftTypes` is absent). For each schedule date with any open relief-code slot on an in-scope day type, providers are ranked "first on out-list": distance to their next call (any call-category code, soonest first), then that call's `call_rank` tier, then most-recently-called, then id. Per code, the scan restarts from rank 0, skipping providers already placed that date or ineligible for that specific slot — a provider skipped for D5 (excluded shift type) is still considered for D6. Un-fillable relief slots land in `unfilled` with reason `'No eligible relief provider'`.
 
+## 10.5. Mop-up sweep (orphaned call-engine day slots)
+
+After relief (2026-07-16): any still-open NON-call slot whose shift type has `generation_engine = 'call'` (the D-chain and relief codes) is an orphan — its trigger call went unfilled or its chain severed, and the day-pool engine deliberately skips call-owned slots, so it used to vanish from every report. The sweep fills each one via the `'derived'` gate (every safety gate; no quota) using the same relief-style ranking (source `'day-mop-up'`), and reports anything still open in `unfilled` (`'No eligible provider for call-engine day slot'`; slots the relief pass already reported are not double-reported). `skippedDerived` records stay untouched — the designated provider's suppression remains observable even when another provider covers the slot (invariant 4). Requires `ctx.shiftTypes` (engine-ownership is a patch18 column); without it the sweep is skipped.
+
 ## 11. Scoring + optimizer
 
 When multiple providers pass eligibility (main loop, spans, quota relaxation — one shared tuple):
@@ -148,7 +155,7 @@ When multiple providers pass eligibility (main loop, spans, quota relaxation —
 2. **Most days since last call** — anti-burnout / anti-back-to-back
 3. Provider id — deterministic for reproducibility given the same DB state
 
-**Optimizer** ([`optimize.ts`](src/lib/rulesEngine/optimize.ts)): bounded hill-climb over the greedy plan. Movable slots = main-loop call placements whose day type ∈ `doc.optimizerMovableDayTypes` (classic: weekday+friday — block-chain/pre-PTO placements are structurally coupled and never moved). Objective is lexicographic: fewer skips, then lower per-FTE fairness stdev, then lower burnout ([`metrics.ts`](src/lib/rulesEngine/metrics.ts); burnout exemption windows are derived from `doc.blocks`, so pattern-designed adjacent calls don't count against a plan). Trials are pre-gated with `evaluateEligibility` against the seed state (a hoisted rejection skips many re-solves) and budgeted by `maxResolves` (5000) and wall clock (`wallClockMs`, default 2000 ms, `SCHEDULING_OPTIMIZE_WALL_MS` env override). Observability: `optimizeStats = {resolves, gatedSkips, wallMs}` on the generation result.
+**Optimizer** ([`optimize.ts`](src/lib/rulesEngine/optimize.ts)): bounded hill-climb over the greedy plan. Movable slots = main-loop **and quota-relaxed** call placements (2026-07-16: a quota-relaxed fill is an ordinary scored placement whose bucket happened to be exhausted) whose day type ∈ `doc.optimizerMovableDayTypes` (classic: weekday+friday — block-chain/pre-PTO placements are structurally coupled and never moved). Objective is lexicographic: fewer skips, then lower per-FTE fairness stdev, then lower burnout ([`metrics.ts`](src/lib/rulesEngine/metrics.ts); burnout exemption windows are derived from `doc.blocks`, so pattern-designed adjacent calls don't count against a plan). Trials are pre-gated with `evaluateEligibility` against the seed state (a hoisted rejection skips many re-solves) and budgeted by `maxResolves` (5000) and wall clock (`wallClockMs`, default 2000 ms, `SCHEDULING_OPTIMIZE_WALL_MS` env override). Pre-gate AND the trial's pin re-validation (`overrideFor`) both use `'call-no-quota'` (2026-07-16): a pin re-asserts an already-made placement, so re-checking the quota made every quota-relaxed pin self-reject ('Forced provider ineligible') and gated eviction moves into quota-starved slots dead on arrival; gate-monotonicity holds identically for the weaker gate. Observability: `optimizeStats = {resolves, gatedSkips, wallMs}` on the generation result.
 
 ## 12. Validation pass
 
