@@ -35,7 +35,7 @@
 // Spans are deliberately NOT ownership: the span pass places and reports its
 // own slots atomically, and unfilled span slots fall to the main loop (call)
 // — they were never mop-up/relief inventory in the first place.
-import { addDays, dayOfWeekUTC } from './shared';
+import { addDays, dayOfWeekUTC, dayTypeFromDow } from './shared';
 import type { CallPatternDoc } from './callPattern';
 import type { SlotToFill } from './genTypes';
 
@@ -68,8 +68,7 @@ export function computeSequenceOwnedSlotIds(
   // has any slot; day-of-week fallback otherwise (out-of-block dates).
   const dayTypeOf = (date: string): string => {
     for (const s of slotIndex.get(date)?.values() ?? []) return s.derived_day_type;
-    const dow = dayOfWeekUTC(date); // 0=Sun .. 6=Sat
-    return dow === 6 ? 'saturday' : dow === 0 ? 'sunday' : dow === 5 ? 'friday' : 'weekday';
+    return dayTypeFromDow(dayOfWeekUTC(date));
   };
 
   const owned = new Set<string>();

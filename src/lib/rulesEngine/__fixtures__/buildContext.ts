@@ -3,7 +3,7 @@
 //     goldenParity.test.ts so both goldenParity and patternEngine reuse it).
 //   buildCtx / prov / callSlot / dSlot / cred / shiftInfo — small targeted
 //     helpers for the pattern-interpreter cases.
-import { addDays, dayOfWeekUTC, dayTypeBucket } from '../shared';
+import { addDays, dayOfWeekUTC, dayTypeBucket, dayTypeFromDow } from '../shared';
 import type {
   GenerationContext, SlotToFill, CandidateProvider, AvailabilityEntry,
   SiteCredentials, ShiftTypeInfo,
@@ -21,11 +21,7 @@ const BLOCK_DAYS = 28;
 const PAR_LEVEL = 4;
 
 export function derivedDayType(date: string): string {
-  const dow = dayOfWeekUTC(date); // 0=Sun .. 6=Sat
-  if (dow === 6) return 'saturday';
-  if (dow === 0) return 'sunday';
-  if (dow === 5) return 'friday';
-  return 'weekday';
+  return dayTypeFromDow(dayOfWeekUTC(date)); // single-homed DOW mapping (shared.ts)
 }
 
 function blockDates(): string[] {

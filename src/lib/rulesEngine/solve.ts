@@ -85,6 +85,13 @@ export function solve(ctx: GenerationContext, opts: SolveOptions = {}): Solution
   // unconditionally (pure, pattern-data-driven): under the classic pattern no
   // relief code is ever a chain target, so parity-era fixtures are untouched.
   const sequenceOwnedSlotIds = computeSequenceOwnedSlotIds(doc, ctx.slotIndex);
+  // (date|code) keys of chain links WAIVED by unlessCallWithinDays: the anchor
+  // filled but the link deliberately did not fire (the holder had a recent
+  // call). NOT a suppression event — no skippedDerived record (that would
+  // repurpose invariant-4's vocabulary and shift the golden plan pin) — but
+  // the mop-up needs it to report the open slot honestly: the chain source is
+  // NOT unfilled and no link was severed.
+  const waivedLinkKeys = new Set<string>();
 
   const providerById = ctx.providerById ?? new Map(ctx.providers.map(p => [p.id, p]));
 
@@ -272,7 +279,10 @@ export function solve(ctx: GenerationContext, opts: SolveOptions = {}): Solution
     for (const chain of dayChainsFor(doc, slot.shift_type_code, slot.derived_day_type)) {
       for (const link of chain.links ?? []) {
         if (link.unlessCallWithinDays != null
-          && hadCallWithin(state, p.id, slot.slot_date, link.unlessCallWithinDays)) continue;
+          && hadCallWithin(state, p.id, slot.slot_date, link.unlessCallWithinDays)) {
+          waivedLinkKeys.add(`${addDays(slot.slot_date, link.offset)}|${link.code}`);
+          continue;
+        }
         tryFillDerived(addDays(slot.slot_date, link.offset), link.code, p);
       }
       for (const block of chain.blocks ?? []) {
@@ -666,12 +676,14 @@ export function solve(ctx: GenerationContext, opts: SolveOptions = {}): Solution
   //     to yesterday's C2 person, D2/D3 to tomorrow's C1/C2 person, Friday D4
   //     to the Sat-C3 chain provider; a broken chain leaves them open. They
   //     are reported in plan.unfilled (the single reporting home for open
-  //     slots) exactly once, with an honest reason: 'sequence-orphan: chain
-  //     link severed' when skippedDerived already records the designated
-  //     provider's suppression for that (date, code), else 'sequence-orphan:
-  //     chain source unfilled'. skippedDerived keeps its existing role (the
-  //     suppression event itself, invariant 4) — a different fact about the
-  //     same slot, not a duplicate open-slot report.
+  //     slots) exactly once, with an honest reason (precedence: severed >
+  //     waived > source unfilled): 'sequence-orphan: chain link severed' when
+  //     skippedDerived records the designated provider's suppression for that
+  //     (date, code); 'sequence-orphan: pre-call fill waived' when the link
+  //     was skipped by unlessCallWithinDays (anchor filled, by-design skip);
+  //     else 'sequence-orphan: chain source unfilled'. skippedDerived keeps
+  //     its existing role (the suppression event itself, invariant 4) — a
+  //     different fact about the same slot, not a duplicate open-slot report.
   //   • everything else is filled via the 'derived' gate (every safety gate
   //     runs; no quota) with the relief-style ranking; anything still open is
   //     reported in plan.unfilled.
@@ -690,12 +702,15 @@ export function solve(ctx: GenerationContext, opts: SolveOptions = {}): Solution
         if (state.handledSlotIds.has(slot.slot_id)) continue;
         if (alreadyReported.has(slot.slot_id)) continue;             // relief pass already reported it
         if (sequenceOwnedSlotIds.has(slot.slot_id)) {
+          const key = `${slot.slot_date}|${slot.shift_type_code}`;
           plan.unfilled.push({
             slot_id: slot.slot_id, slot_date: slot.slot_date,
             shift_type_code: slot.shift_type_code, shift_type_category: slot.shift_type_category,
-            reason: skippedKeys.has(`${slot.slot_date}|${slot.shift_type_code}`)
+            reason: skippedKeys.has(key)
               ? 'sequence-orphan: chain link severed'
-              : 'sequence-orphan: chain source unfilled',
+              : waivedLinkKeys.has(key)
+                ? 'sequence-orphan: pre-call fill waived'
+                : 'sequence-orphan: chain source unfilled',
           });
           continue;
         }

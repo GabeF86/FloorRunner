@@ -82,6 +82,36 @@ describe('sequence integrity — mop-up must not fill sequence-owned slots', () 
     expect(orphans[0].reason).toBe('sequence-orphan: chain link severed');
   });
 
+  it('reports a WAIVED pre-call fill honestly (unlessCallWithinDays: anchor filled, link deliberately not fired)', () => {
+    // p1 had a seeded Sun C2 (2026-01-04). p1 takes Tue C2 (p2 is
+    // credential-excluded from C2); the −1 D3 pre-fill link carries
+    // unlessCallWithinDays: 2 and p1's Sunday call is 2 days back, so the
+    // link is WAIVED by design — anchor filled, no suppression event.
+    // Pre-fix the mop-up filled Mon D3 with p2, and post-fix (pre-label) the
+    // reason misread as 'chain source unfilled' though the C2 source IS
+    // filled. The slot stays open with the honest waived reason.
+    const monD3 = dSlot('monD3', '2026-01-05', 'D3');
+    const tueC2 = callSlot('tueC2', '2026-01-06', 'C2');
+    const ctx = buildCtx([monD3, tueC2], [prov('p1'), prov('p2')], {
+      shiftTypes: engineShiftTypes(),
+      credByPid: new Map([['p2', cred({ excluded_shift_types: ['C2'] })]]),
+      seedAssignments: [{
+        slot_date: '2026-01-04', provider_id: 'p1',
+        shift_type_code: 'C2', shift_type_category: 'call', derived_day_type: 'sunday',
+      }],
+    });
+    const plan = solve(ctx);
+    expect(plan.assignments.find(a => a.slot_id === 'tueC2')?.provider_id).toBe('p1');
+    // The waiver is a designed condition, not a suppression: no skippedDerived
+    // record for Mon D3 (keeps skippedDerived's meaning — and the golden plan
+    // pin — byte-stable).
+    expect((plan.skippedDerived ?? []).some(s => s.date === '2026-01-05' && s.code === 'D3')).toBe(false);
+    expect(plan.assignments.some(a => a.slot_id === 'monD3')).toBe(false);
+    const orphans = plan.unfilled.filter(u => u.slot_id === 'monD3');
+    expect(orphans).toHaveLength(1);
+    expect(orphans[0].reason).toBe('sequence-orphan: pre-call fill waived');
+  });
+
   it('still mop-up-fills an engine-call day slot that no chain could ever target (control)', () => {
     // D5 is engine-call but relief_rank null here and never a chain target →
     // legitimately mop-up-eligible.

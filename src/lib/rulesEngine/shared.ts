@@ -80,6 +80,14 @@ export function dayOfWeekUTC(iso: string): number {
   return new Date(iso + 'T00:00:00Z').getUTCDay(); // 0=Sun..6=Sat
 }
 
+// Day-of-week → derived day type. Single home for the DOW fallback mapping
+// (sequenceOwnership's out-of-block anchors; test fixtures). Holiday typing is
+// unknowable from the DOW alone — callers relying on this fallback must scope
+// holiday day types together with 'weekday' (every shipped pattern does).
+export function dayTypeFromDow(dow: number): string {
+  return dow === 6 ? 'saturday' : dow === 0 ? 'sunday' : dow === 5 ? 'friday' : 'weekday';
+}
+
 // Monday of the (Mon-Sun) week containing `iso`. If iso is a Sunday,
 // returns the Monday 6 days prior.
 export function mondayOfWeek(iso: string): string {
