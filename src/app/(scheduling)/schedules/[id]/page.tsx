@@ -9,6 +9,7 @@ import {
 } from '@/lib/fteTarget';
 import AssistantPanel from './AssistantPanel';
 import { PageHeader, Badge, Button, Banner, scheduleStatusTone } from '@/components/ui';
+import { reasonCodeLabel } from '@/lib/validation/providers';
 // Pure, client-safe helper shared with the grid API route — one bucket rule
 // (hard / soft / warning-never-soft) for both server and client counting.
 import { validationSummaryFor, type ValidationSummary } from '@/app/api/scheduling/schedules/[id]/grid/route.helpers';
@@ -56,7 +57,9 @@ interface AvailabilityEntry {
   start_date: string;
   end_date: string;
   approval_status: string;
-  reason: string | null;
+  // NOTE: the grid route selects `reason_code` (the actual column name) —
+  // this field previously said `reason` and silently read as undefined.
+  reason_code: string | null;
 }
 
 interface Version {
@@ -313,7 +316,7 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
 
   /* ── Derived Data ───────────────────────────────────────────────────────── */
 
-  const { shiftTypes, allDates, slotMap, holidayMap, assignedOnDate, availableByDate, offByDate, ptoByDate, postCallByDate, maxAvailable, maxOff, maxPto, maxPostCall, callTakerIds } = useMemo(() => {
+  const { shiftTypes, allDates, slotMap, holidayMap, assignedOnDate, availableByDate, offByDate, offTitleByDate, ptoByDate, postCallByDate, maxAvailable, maxOff, maxPto, maxPostCall, callTakerIds } = useMemo(() => {
     const empty = {
       shiftTypes: [] as ShiftTypeInfo[], allDates: [] as string[],
       slotMap: {} as Record<string, Record<string, Slot>>,
@@ -321,6 +324,7 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
       assignedOnDate: {} as Record<string, Set<string>>,
       availableByDate: {} as Record<string, Provider[]>,
       offByDate: {} as Record<string, Provider[]>,
+      offTitleByDate: {} as Record<string, Record<string, string>>,
       ptoByDate: {} as Record<string, Provider[]>,
       postCallByDate: {} as Record<string, Provider[]>,
       maxAvailable: 0, maxOff: 0, maxPto: 0, maxPostCall: 0,
@@ -387,6 +391,10 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
     // entries (used to mark a part-timer's regular off days).
     const ptoByDate: Record<string, Provider[]> = {};
     const scheduledOffByDate: Record<string, Set<string>> = {};
+    // Off-row hover labels keyed by date→provider. Currently only reason-coded
+    // blocked entries (icu_week / icu_post_call) get one, so an ICU doc's Off
+    // cell reads "ICU Week" instead of looking like a generic day off.
+    const offTitleByDate: Record<string, Record<string, string>> = {};
     const allDatesSet = new Set(allDates);
     for (const avail of grid.availability || []) {
       // Only approved entries show up in virtual rows — pending/denied
@@ -414,6 +422,11 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
         if (isOff) {
           if (!scheduledOffByDate[ds]) scheduledOffByDate[ds] = new Set();
           scheduledOffByDate[ds].add(provider.id);
+          const label = reasonCodeLabel(avail.reason_code);
+          if (label && label !== avail.reason_code) {
+            if (!offTitleByDate[ds]) offTitleByDate[ds] = {};
+            offTitleByDate[ds][provider.id] = label;
+          }
         }
       }
     }
@@ -495,7 +508,7 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
     const maxPto = Math.max(0, ...Object.values(ptoByDate).map(v => v.length));
     const maxPostCall = Math.max(0, ...Object.values(postCallByDate).map(v => v.length));
 
-    return { shiftTypes, allDates, slotMap, holidayMap, assignedOnDate, availableByDate, offByDate, ptoByDate, postCallByDate, maxAvailable, maxOff, maxPto, maxPostCall, callTakerIds };
+    return { shiftTypes, allDates, slotMap, holidayMap, assignedOnDate, availableByDate, offByDate, offTitleByDate, ptoByDate, postCallByDate, maxAvailable, maxOff, maxPto, maxPostCall, callTakerIds };
   }, [grid]);
 
   /* ── Per-date working roster + over-par detection ───────────────────────── */
@@ -1532,6 +1545,10 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
             label: 'Off',
             count: maxOff,
             dataByDate: offByDate,
+            // Reason-coded blocked entries (ICU Week / ICU Post-Call) show
+            // their label on hover so ICU docs read distinctly from generic
+            // days off.
+            titleByDate: offTitleByDate,
             color: gridTokens.category.Off,
             visibleDates,
             todayStr,
@@ -1781,11 +1798,14 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
 
 function renderVirtualRows({
   label, count, dataByDate, color, visibleDates, todayStr, holidayMap, getDayOfWeek,
-  alwaysRender = false, zoneTop = false,
+  titleByDate, alwaysRender = false, zoneTop = false,
 }: {
   label: string;
   count: number;
   dataByDate: Record<string, Provider[]>;
+  // Optional hover labels (date → provider → title), e.g. "ICU Week" on the
+  // Off row so reason-coded blocks read distinctly.
+  titleByDate?: Record<string, Record<string, string>>;
   color: string;
   visibleDates: string[];
   todayStr: string;
@@ -1841,11 +1861,14 @@ function renderVirtualRows({
           display: 'flex', alignItems: 'center', justifyContent: 'center',
         }}>
           {provider ? (
-            <span style={{
-              fontSize: 11.5, fontWeight: 500,
-              color: gridTokens.statusName,
-              whiteSpace: 'nowrap',
-            }}>
+            <span
+              title={titleByDate?.[date]?.[provider.id]}
+              style={{
+                fontSize: 11.5, fontWeight: 500,
+                color: gridTokens.statusName,
+                whiteSpace: 'nowrap',
+              }}
+            >
               {provider.short_display_name}
             </span>
           ) : null}
