@@ -1,4 +1,7 @@
-import { addDays, daysBetween, dayTypeBucket, buildPrePtoByThursday } from './shared';
+import {
+  addDays, daysBetween, dayTypeBucket, buildPrePtoByThursday,
+  datesOverlap, isActiveNoCallRequest,
+} from './shared';
 import { evaluateEligibility } from './eligibility';
 import { computeObligations } from './obligation';
 import { emptySolveState } from './genTypes';
@@ -71,6 +74,42 @@ export function solve(ctx: GenerationContext, opts: SolveOptions = {}): Solution
 
   const providerById = ctx.providerById ?? new Map(ctx.providers.map(p => [p.id, p]));
 
+  // ── no-call request soft avoidance (2026-07-17) ──
+  // LIVE (non-dismissed) no_call_request entries per provider
+  // (isActiveNoCallRequest — the same single-home predicate validation's
+  // soft flag uses). NOT a gate: a live request on the slot date drops the
+  // candidate a SORT TIER in scoreCall, so a requester is chosen only when
+  // no unpenalized candidate passes the safety gates ("grant if possible" —
+  // explicitly SOFT, avoid but allow). With zero live request rows every
+  // tier is 0 and the ordering tuple degenerates to the pre-change
+  // ratio/recency/id sort — byte-identical plans (pinned against
+  // fillAllPlan.golden.json in obligatoryMode + noCallRequests tests).
+  const noCallByPid = new Map<string, Array<{ start_date: string; end_date: string }>>();
+  for (const [pid, entries] of ctx.availByPid) {
+    const live = entries.filter(isActiveNoCallRequest);
+    if (live.length > 0) noCallByPid.set(pid, live);
+  }
+  const hasNoCallRequest = (pid: string, date: string): boolean => {
+    const live = noCallByPid.get(pid);
+    if (!live) return false;
+    return live.some(e => datesOverlap(e.start_date, e.end_date, date));
+  };
+  // Fairness of denial: per-provider count of requests already VIOLATED in
+  // this run (a call landed on a requested date). Among penalized candidates
+  // the fewest-violated wins; existing scoring breaks ties. Seeded/manual
+  // calls on requested dates count — that provider has already absorbed a
+  // denial this block. Every real call placement (chain links, spans,
+  // pre-PTO, relaxation included) increments via record().
+  const noCallViolated = new Map<string, number>();
+  const noteViolation = (pid: string, date: string) => {
+    if (hasNoCallRequest(pid, date)) {
+      noCallViolated.set(pid, (noCallViolated.get(pid) || 0) + 1);
+    }
+  };
+  for (const seed of ctx.seedAssignments) {
+    if (seed.shift_type_category === 'call') noteViolation(seed.provider_id, seed.slot_date);
+  }
+
   // ── obligatory fill mode (2026-07-17) ──
   // Cap each provider's CALL assignments at their rounded TOTAL obligation
   // (obligation.ts). Seeded/manual calls consume the cap too — the obligation
@@ -134,6 +173,12 @@ export function solve(ctx: GenerationContext, opts: SolveOptions = {}): Solution
       // Obligatory mode: every REAL call placement (any source — chain links
       // included) consumes the provider's cap.
       if (obligatory) callCountByPid.set(p.id, (callCountByPid.get(p.id) || 0) + 1);
+      // Fair denial: a call landing on the provider's live no-call-request
+      // date is a violated request — count it so later penalized-vs-penalized
+      // choices prefer someone not yet denied. In obligatory mode the same
+      // placement ALSO consumed the cap above: a violated request is still an
+      // obligation call.
+      noteViolation(p.id, slot.slot_date);
     }
     state.handledSlotIds.add(slot.slot_id);
     plan.assignments.push({
@@ -146,19 +191,29 @@ export function solve(ctx: GenerationContext, opts: SolveOptions = {}): Solution
     });
   };
 
-  // Main-loop scoring tuple: lowest lifetime bucket-ratio, then least-recently
-  // called, then id. Shared by the main loop, spans, and quota relaxation.
+  // Main-loop scoring tuple: no-call-request sort tier first (soft avoidance
+  // — never a gate), then fair-denial count within the penalized tier, then
+  // lowest lifetime bucket-ratio, then least-recently called, then id.
+  // Shared by the main loop, spans, and quota relaxation. `violated` is 0 for
+  // every unpenalized candidate by construction, so both new keys are inert
+  // outside the penalized tier — and with no live requests at all the tuple
+  // is the pre-change ratio/recency/id sort, byte for byte.
   const scoreCall = (cands: CandidateProvider[], slot: SlotToFill) => {
     const k = `${dayTypeBucket(slot.derived_day_type)}|${slot.shift_type_code}`;
     return cands.map(p => {
       const lifetime = (ctx.historicalAssignedByPid.get(p.id)?.get(k) || 0)
         + (state.bucketAssigned.get(`${p.id}|${k}`) || 0);
+      const penalized = hasNoCallRequest(p.id, slot.slot_date);
       return {
         p,
+        tier: penalized ? 1 : 0,
+        violated: penalized ? (noCallViolated.get(p.id) || 0) : 0,
         ratio: lifetime / Math.max(p.fte_value, 0.01),
         recency: daysSinceLastCall(state, p.id, slot.slot_date),
       };
     }).sort((a, b) =>
+      a.tier - b.tier ||
+      a.violated - b.violated ||
       a.ratio - b.ratio ||
       b.recency - a.recency ||
       a.p.id.localeCompare(b.p.id),

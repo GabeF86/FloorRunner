@@ -6,6 +6,8 @@ import { solve } from './solve';
 import { optimize } from './optimize';
 import { commitPlan, commitValidation, commitMetadata, hasGenerationMetadataColumn } from './commit';
 import { scoreSolution } from './metrics';
+import { computeRequestGrants } from './requestGrants';
+import type { RequestGrant } from './requestGrants';
 import type { OptimizeStats } from './optimize';
 import type { SupabaseClient } from './shared';
 import type { UnfilledSlot, PlannedAssignment, AssignmentExplanation, SolutionMetrics, PlacementSource, SkippedDerived, FillMode } from './genTypes';
@@ -70,6 +72,11 @@ export interface GenerationResult {
   // Load-time advisories (missing patch18 objects, unknown pattern codes, quota
   // shortfalls, unsupported multi-fill slots). Non-fatal; surfaced to the UI.
   warnings: string[];
+  // No-call request grant report (2026-07-17): per provider with a live
+  // no_call_request in the block — requested/granted/violated dates, computed
+  // from the FINAL (post-optimize) plan. Empty when nobody requested. The UI
+  // banner renders "N/M no-call requests honored" + the violated detail.
+  requestGrants: RequestGrant[];
   // Distinguishes a hard failure (no slots / empty pool / DB error) from a
   // legitimate partial fill. The route maps this to an HTTP status.
   ok: boolean;
@@ -99,7 +106,8 @@ export async function autoGenerate(
 ): Promise<GenerationResult> {
   const t0 = Date.now();
   const result: GenerationResult = {
-    filled: 0, skipped: 0, errors: [], assignments: [], unfilled: [], warnings: [], ok: false,
+    filled: 0, skipped: 0, errors: [], assignments: [], unfilled: [],
+    warnings: [], requestGrants: [], ok: false,
   };
 
   const load = await loadGenerationContext(sb, scheduleVersionId, options);
@@ -143,6 +151,10 @@ export async function autoGenerate(
     result.skippedDerived = plan.skippedDerived ?? [];
     return result; // commit failure -> ok false (assignments not reliably written)
   }
+
+  // Grant report from the FINAL plan (post-optimize when it ran) — computed
+  // after commit succeeds so it always describes what was actually written.
+  result.requestGrants = computeRequestGrants(ctx, plan);
 
   // Validation is best-effort: the assignments are ALREADY committed at this
   // point, so a validation-pass failure must NOT flip the run to ok=false — it

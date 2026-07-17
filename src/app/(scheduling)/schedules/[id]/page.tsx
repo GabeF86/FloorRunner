@@ -800,6 +800,11 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
     filled: number; skipped: number; errors: string[];
     warnings: string[];                              // load-time advisories (apply patch18, quota shortfalls, …)
     skippedDerived: Array<{ reason: string }>;       // suppressed derived fills (clinical invariant 4)
+    // No-call request grant report — "N/M honored" + violated detail.
+    requestGrants: Array<{
+      provider_id: string; provider_name: string;
+      requested_dates: string[]; granted: string[]; violated: string[];
+    }>;
   } | null>(null);
   const [showPoolModal, setShowPoolModal] = useState(false);
 
@@ -840,6 +845,7 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
         filled: data.filled, skipped: data.skipped, errors: data.errors,
         warnings: Array.isArray(data.warnings) ? data.warnings : [],
         skippedDerived: Array.isArray(data.skippedDerived) ? data.skippedDerived : [],
+        requestGrants: Array.isArray(data.requestGrants) ? data.requestGrants : [],
       });
       await loadGrid();
     } catch (e) {
@@ -1228,6 +1234,28 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
                   return m;
                 }, {})).map(([reason, n]) => `${n} ${reason}`).join(', ')}
                 ) — left unassigned, see unfilled/derived report.
+              </div>
+            )}
+            {/* No-call request grant report: soft avoidance is best-effort, so
+                the scheduler is told exactly which requests the engine could
+                not honor (a violated date also carries the soft validation
+                flag on its assignment). Hidden when nobody requested. */}
+            {genResult.requestGrants.length > 0 && (
+              <div style={{ marginTop: 4, color: 'var(--text-dim)' }}>
+                <div>
+                  {genResult.requestGrants.reduce((n, g) => n + g.granted.length, 0)}
+                  /{genResult.requestGrants.reduce((n, g) => n + g.requested_dates.length, 0)}{' '}
+                  no-call request{genResult.requestGrants.reduce((n, g) => n + g.requested_dates.length, 0) !== 1 ? 's' : ''} honored.
+                </div>
+                {genResult.requestGrants.some(g => g.violated.length > 0) && (
+                  <ul style={{ margin: '2px 0 0 0', paddingLeft: 18 }}>
+                    {genResult.requestGrants.filter(g => g.violated.length > 0).map(g => (
+                      <li key={g.provider_id}>
+                        {g.provider_name}: call landed on {g.violated.join(', ')} (requested no call)
+                      </li>
+                    ))}
+                  </ul>
+                )}
               </div>
             )}
           </Banner>
