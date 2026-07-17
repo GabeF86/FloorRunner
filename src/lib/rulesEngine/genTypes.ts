@@ -117,7 +117,11 @@ export type RejectionReason =
   | 'bucket-quota'
   | 'credential'
   | 'weekend-adjacent-pto'
-  | 'availability-blocked';
+  | 'availability-blocked'
+  // 2026-07-17, obligatory fill mode only: the provider passed every gate but
+  // has no cap-room left under their rounded TOTAL obligation (or not enough
+  // room for a whole chain block / span). Never emitted in fill-all mode.
+  | 'obligation-cap';
 
 export interface EligibilityResult {
   readonly eligible: boolean;
@@ -237,9 +241,23 @@ export function emptySolveState(): SolveState {
   };
 }
 
+// Generation fill mode (2026-07-17). 'all' (default) fills every fillable
+// call slot — the pre-change engine byte for byte. 'obligatory' caps each
+// provider at their rounded TOTAL obligation (computeObligations in
+// obligation.ts): chain blocks are charged against the cap upfront, the
+// quota-relaxation sweep never runs, and remaining call slots are left open
+// with reason 'obligation-cap'. Non-call placements are never capped; the
+// day-shift engine is unaffected.
+export type FillMode = 'all' | 'obligatory';
+
 // Options for solve(). callOverrides forces a provider onto a CALL slot (by
 // slot_id -> provider_id) when that provider passes the canonical 'call' gate;
 // used by the local-search optimizer to re-solve a perturbed call assignment.
+// fillMode: see FillMode. The optimizer never runs in obligatory mode
+// (autoGenerate skips it), so callOverrides and 'obligatory' don't combine in
+// production; if a caller does combine them, a pin takes precedence over the
+// cap (overrides are an optimizer re-assertion seam, not a placement policy).
 export interface SolveOptions {
   callOverrides?: Map<string, string>;
+  fillMode?: FillMode;
 }

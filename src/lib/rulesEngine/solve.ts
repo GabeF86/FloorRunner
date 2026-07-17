@@ -1,5 +1,6 @@
 import { addDays, daysBetween, dayTypeBucket, buildPrePtoByThursday } from './shared';
 import { evaluateEligibility } from './eligibility';
+import { computeObligations } from './obligation';
 import { emptySolveState } from './genTypes';
 import { CLASSIC_PATTERN, dayChainsFor, postCallBlockOffsets, blockChainsFor } from './callPattern';
 import type { CallPatternDoc } from './callPattern';
@@ -70,6 +71,40 @@ export function solve(ctx: GenerationContext, opts: SolveOptions = {}): Solution
 
   const providerById = ctx.providerById ?? new Map(ctx.providers.map(p => [p.id, p]));
 
+  // ── obligatory fill mode (2026-07-17) ──
+  // Cap each provider's CALL assignments at their rounded TOTAL obligation
+  // (obligation.ts). Seeded/manual calls consume the cap too — the obligation
+  // is the provider's total call load for the block, however it got there.
+  // Everything below is gated on the flag: fillMode 'all' (default) is the
+  // pre-change engine byte for byte (pinned in obligatoryMode.test.ts).
+  const obligatory = opts.fillMode === 'obligatory';
+  const obligationByPid = obligatory ? computeObligations(ctx) : null;
+  const callCountByPid = new Map<string, number>();
+  if (obligatory) {
+    for (const seed of ctx.seedAssignments) {
+      if (seed.shift_type_category === 'call') {
+        callCountByPid.set(seed.provider_id, (callCountByPid.get(seed.provider_id) || 0) + 1);
+      }
+    }
+  }
+  const capRoom = (pid: string): number =>
+    (obligationByPid!.get(pid) ?? 0) - (callCountByPid.get(pid) || 0);
+  // Chain-block atomicity: the WHOLE block counts against the cap upfront —
+  // an anchor is only eligible when cap-room >= 1 + its LIVE call-category
+  // links (target slot exists, unhandled, category 'call'). Links that later
+  // sever don't consume the cap (only real placements increment the counter),
+  // so reserved-but-unused room frees back up for later slots.
+  const chainCallNeeds = (slot: SlotToFill): number => {
+    const links = blockChainsFor(doc, slot.derived_day_type).get(slot.shift_type_code);
+    if (!links) return 0;
+    let n = 0;
+    for (const link of links) {
+      const t = ctx.slotIndex.get(addDays(slot.slot_date, link.offset))?.get(link.code);
+      if (t && !state.handledSlotIds.has(t.slot_id) && t.shift_type_category === 'call') n++;
+    }
+    return n;
+  };
+
   const overrides = opts.callOverrides;
   // Resolve a call slot's override: undefined → not overridden; null → forced
   // provider ineligible (leave unfilled); provider → forced and eligible.
@@ -96,6 +131,9 @@ export function solve(ctx: GenerationContext, opts: SolveOptions = {}): Solution
     if (slot.shift_type_category === 'call') {
       incBucket(state, p.id, slot.derived_day_type, slot.shift_type_code);
       addCallDate(state, p.id, slot.slot_date);
+      // Obligatory mode: every REAL call placement (any source — chain links
+      // included) consumes the provider's cap.
+      if (obligatory) callCountByPid.set(p.id, (callCountByPid.get(p.id) || 0) + 1);
     }
     state.handledSlotIds.add(slot.slot_id);
     plan.assignments.push({
@@ -269,6 +307,10 @@ export function solve(ctx: GenerationContext, opts: SolveOptions = {}): Solution
     if (!slot) return false;
     if (overrides?.has(slot.slot_id)) return false; // override authoritative; main loop handles it
     if (state.handledSlotIds.has(slot.slot_id)) return false;
+    // Obligatory mode: a pre-PTO placement is a call assignment like any
+    // other — it needs cap-room. (tryPlacePrePto never fires block chains,
+    // so one slot of room suffices.)
+    if (obligatory && capRoom(p.id) < 1) return false;
     if (!evaluateEligibility(slot, p, state, ctx, 'call').eligible) return false;
     record(slot, p, 'pre-pto-thursday');
     applyDayChains(slot, p);
@@ -308,15 +350,27 @@ export function solve(ctx: GenerationContext, opts: SolveOptions = {}): Solution
         if (s && !state.handledSlotIds.has(s.slot_id)) spanSlots.push(s);
       }
       if (spanSlots.length === 0) continue;
-      const candidates = ctx.providers.filter(p => spanSlots.every(
+      const eligibleForSpan = ctx.providers.filter(p => spanSlots.every(
         s => evaluateEligibility(s, p, state, ctx,
           s.shift_type_category === 'call' ? 'call' : 'derived').eligible));
+      // Obligatory mode: a span is one atomic multi-call obligation — charge
+      // its call slots against the cap upfront, same rule as chain blocks.
+      const spanCallCount = spanSlots.filter(s => s.shift_type_category === 'call').length;
+      const candidates = obligatory
+        ? eligibleForSpan.filter(p => capRoom(p.id) >= spanCallCount)
+        : eligibleForSpan;
       if (candidates.length === 0) {
+        // 'obligation-cap' only when the cap was the sole blocker (someone
+        // was otherwise able to cover the whole span). The slots stay in
+        // slotsToFill, so the main loop still attempts them individually
+        // (within caps) — mirroring the existing severed-span fallback.
+        const reason = obligatory && eligibleForSpan.length > 0
+          ? 'obligation-cap' : 'No provider can cover full span';
         for (const s of spanSlots) {
           plan.unfilled.push({
             slot_id: s.slot_id, slot_date: s.slot_date,
             shift_type_code: s.shift_type_code, shift_type_category: s.shift_type_category,
-            reason: 'No provider can cover full span',
+            reason,
           });
         }
         continue;
@@ -350,7 +404,27 @@ export function solve(ctx: GenerationContext, opts: SolveOptions = {}): Solution
     // Single eligibility sweep: capture each provider's result once, reuse it
     // for both candidate selection and (if none) rejection reporting.
     const sweep = ctx.providers.map(p => ({ p, r: evaluateEligibility(slot, p, state, ctx, 'call') }));
-    const candidates = sweep.filter(x => x.r.eligible).map(x => x.p);
+    const eligible = sweep.filter(x => x.r.eligible).map(x => x.p);
+
+    // Obligatory mode: charge the whole prospective block against the cap
+    // upfront (1 for this slot + its live call-category chain links). When
+    // nobody has room, the slot is DELIBERATELY left open — no relaxation,
+    // reason 'obligation-cap' when the cap was the binding constraint.
+    const candidates = obligatory
+      ? eligible.filter(p => capRoom(p.id) >= 1 + chainCallNeeds(slot))
+      : eligible;
+    if (obligatory && candidates.length === 0) {
+      plan.unfilled.push({
+        slot_id: slot.slot_id, slot_date: slot.slot_date,
+        shift_type_code: slot.shift_type_code, shift_type_category: slot.shift_type_category,
+        reason: eligible.length > 0 ? 'obligation-cap' : 'No eligible providers',
+        candidates: sweep.map(x => ({
+          provider_id: x.p.id, provider_name: x.p.short_display_name,
+          reason: x.r.eligible ? 'obligation-cap' as const : (x.r.reason ?? 'bucket-quota'),
+        })),
+      });
+      continue;
+    }
 
     if (candidates.length === 0) {
       // IF-3 quota relaxation, UNCONDITIONAL since 2026-07-16: quotas must
