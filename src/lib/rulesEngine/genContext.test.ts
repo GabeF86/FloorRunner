@@ -801,3 +801,74 @@ describe('loadGenerationContext — one-to-one assignments embed', () => {
     expect(res.ctx!.slotsToFill.map(s => s.slot_id)).toContain('s1');
   });
 });
+
+// ── FTE working-days budget (2026-07-17) ─────────────────────────────────────
+// A block spanning 2026-05-22 (Fri) .. 2026-05-29 (Fri). Memorial Day
+// 2026-05-25 (Mon) is a MAJOR holiday. Working days = 22, 26, 27, 28, 29 = 5
+// (weekends + the major Monday excluded; minor holidays would stay in).
+describe('loadGenerationContext — workDayBudget', () => {
+  const budgetSlots = [
+    rawSlot({ id: 'm22', date: '2026-05-22', code: 'C1', category: 'call', dayType: 'friday' }),
+    rawSlot({ id: 'm25', date: '2026-05-25', code: 'C1', category: 'call', dayType: 'major_holiday' }),
+    rawSlot({ id: 'm26', date: '2026-05-26', code: 'C1', category: 'call' }),
+    rawSlot({ id: 'm27', date: '2026-05-27', code: 'C1', category: 'call' }),
+    rawSlot({ id: 'm28', date: '2026-05-28', code: 'C1', category: 'call' }),
+    rawSlot({ id: 'm29', date: '2026-05-29', code: 'C1', category: 'call', dayType: 'friday' }),
+  ];
+  const withSite = {
+    schedule_slots: { data: budgetSlots, error: null },
+    sites: { data: { call_par_level: 1, organization_id: 'org1' }, error: null },
+    holiday_calendars: {
+      data: [{ holiday_date: '2026-05-25', holiday_name: 'Memorial Day', is_major_holiday: true }],
+      error: null,
+    },
+  };
+
+  it('stamps working days minus major holidays, per-provider required + entitledOff', async () => {
+    const { res } = await run({
+      ...withSite,
+      // p1 PTO Tue+Wed (both working days) → nets 2.
+      provider_availability: { data: [
+        { provider_id: 'p1', availability_type: 'pto', start_date: '2026-05-26', end_date: '2026-05-27', approval_status: 'approved' },
+      ], error: null },
+    });
+    const b = res.ctx!.workDayBudget!;
+    expect(b).toBeTruthy();
+    expect(b.workingDays).toBe(5);
+    expect(b.majorHolidayDates.has('2026-05-25')).toBe(true);
+    expect(b.workingDaySet.has('2026-05-22')).toBe(true);
+    expect(b.workingDaySet.has('2026-05-25')).toBe(false); // major holiday
+    expect(b.workingDaySet.has('2026-05-23')).toBe(false); // Saturday
+
+    // p1 (1.0): round(1×5) − 2 PTO = 3; entitledOff 5 − 5 = 0.
+    expect(b.byProvider.get('p1')).toEqual({
+      fte: 1.0, workingDays: 5, ptoWeekdays: 2, required: 3, entitledOff: 0,
+    });
+    // p2 (0.5): round(0.5×5)=round(2.5)=3; no PTO; entitledOff 5 − 3 = 2.
+    expect(b.byProvider.get('p2')).toEqual({
+      fte: 0.5, workingDays: 5, ptoWeekdays: 0, required: 3, entitledOff: 2,
+    });
+  });
+
+  it('ICU (blocked/icu_week) rows do NOT net against required (they credit as worked, not PTO)', async () => {
+    const { res } = await run({
+      ...withSite,
+      provider_availability: { data: [
+        { provider_id: 'p2', availability_type: 'blocked', reason_code: 'icu_week', start_date: '2026-05-26', end_date: '2026-05-28', approval_status: 'approved' },
+      ], error: null },
+    });
+    const b = res.ctx!.workDayBudget!;
+    expect(b.byProvider.get('p2')!.ptoWeekdays).toBe(0); // ICU is not netting PTO
+    expect(b.byProvider.get('p2')!.required).toBe(3);
+  });
+
+  it('carries reason_code through availByPid so solve can credit ICU', async () => {
+    const { res } = await run({
+      ...withSite,
+      provider_availability: { data: [
+        { provider_id: 'p2', availability_type: 'blocked', reason_code: 'icu_week', start_date: '2026-05-26', end_date: '2026-05-28', approval_status: 'approved' },
+      ], error: null },
+    });
+    expect(res.ctx!.availByPid.get('p2')![0].reason_code).toBe('icu_week');
+  });
+});

@@ -7,6 +7,8 @@ import { optimize } from './optimize';
 import { commitPlan, commitValidation, commitMetadata, hasGenerationMetadataColumn } from './commit';
 import { scoreSolution } from './metrics';
 import { computeRequestGrants } from './requestGrants';
+import { computeWorkDayReport } from './workDayReport';
+import type { WorkDayReportRow } from './workDayReport';
 import type { RequestGrant } from './requestGrants';
 import type { OptimizeStats } from './optimize';
 import type { SupabaseClient } from './shared';
@@ -77,6 +79,11 @@ export interface GenerationResult {
   // from the FINAL (post-optimize) plan. Empty when nobody requested. The UI
   // banner renders "N/M no-call requests honored" + the violated detail.
   requestGrants: RequestGrant[];
+  // FTE working-days report (2026-07-17): per call-taker, the working-days
+  // obligation vs credited-days accounting (fte / workingDays / pto / required /
+  // credited breakdown / entitledOff / delta). Empty when ctx carries no
+  // budget. Surfaced in the UI near the fairness/grant banner.
+  workDayReport: WorkDayReportRow[];
   // Distinguishes a hard failure (no slots / empty pool / DB error) from a
   // legitimate partial fill. The route maps this to an HTTP status.
   ok: boolean;
@@ -107,7 +114,7 @@ export async function autoGenerate(
   const t0 = Date.now();
   const result: GenerationResult = {
     filled: 0, skipped: 0, errors: [], assignments: [], unfilled: [],
-    warnings: [], requestGrants: [], ok: false,
+    warnings: [], requestGrants: [], workDayReport: [], ok: false,
   };
 
   const load = await loadGenerationContext(sb, scheduleVersionId, options);
@@ -196,6 +203,9 @@ export async function autoGenerate(
   result.skippedDerived = plan.skippedDerived ?? [];
   result.metrics = scoreSolution(plan, ctx);
   result.seedMetrics = seedMetrics;
+  // Working-days report from the FINAL (post-optimize) plan + seeds — describes
+  // what was committed. Empty unless ctx carries a workDayBudget (production).
+  result.workDayReport = computeWorkDayReport(ctx, plan);
   result.ok = true;
   result.perf = {
     par_level: ctx.parLevel,

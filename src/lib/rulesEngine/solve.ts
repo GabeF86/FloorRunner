@@ -4,13 +4,14 @@ import {
 } from './shared';
 import { evaluateEligibility } from './eligibility';
 import { computeObligations } from './obligation';
+import { exceedsWorkDayCap, creditsAsWorkedAvailability } from './workDays';
 import { emptySolveState } from './genTypes';
 import { CLASSIC_PATTERN, dayChainsFor, postCallBlockOffsets, blockChainsFor } from './callPattern';
 import type { CallPatternDoc } from './callPattern';
 import type {
   GenerationContext, SlotToFill, CandidateProvider, SolveState,
   SolutionPlan, PlacementSource, AssignmentExplanation, CandidateRejection,
-  SolveOptions, SkippedDerived, ShiftTypeInfo,
+  SolveOptions, SkippedDerived, ShiftTypeInfo, WorkDayBudget,
 } from './genTypes';
 
 // Relief codes are derived from ctx.shiftTypes (relief_rank ordering). That map
@@ -73,6 +74,19 @@ export function solve(ctx: GenerationContext, opts: SolveOptions = {}): Solution
   const state = seedSolveState(ctx, doc);
 
   const providerById = ctx.providerById ?? new Map(ctx.providers.map(p => [p.id, p]));
+
+  // ── FTE working-days cap (2026-07-17) ──
+  // budget present ⇒ every WEEKDAY placement credits a worked day and the cap
+  // binds (eligibility gate). Absent ⇒ nothing here fires, byte-identical.
+  const budget = ctx.workDayBudget;
+  // Would placing pid on `date` be refused by the cap? Mirrors the eligibility
+  // gate; used to re-apply the cap inside quota relaxation (which runs on the
+  // cap-waiving 'call-no-quota' gate).
+  const workDayCapped = (pid: string, date: string): boolean => {
+    if (!budget) return false;
+    const b = budget.byProvider.get(pid);
+    return !!b && exceedsWorkDayCap(date, budget.workingDaySet, state.creditedWorkDays.get(pid), b.required);
+  };
 
   // ── no-call request soft avoidance (2026-07-17) ──
   // LIVE (non-dismissed) no_call_request entries per provider
@@ -181,6 +195,10 @@ export function solve(ctx: GenerationContext, opts: SolveOptions = {}): Solution
       noteViolation(p.id, slot.slot_date);
     }
     state.handledSlotIds.add(slot.slot_id);
+    // Working-days credit: any placement (call / d-chain / relief / mop-up /
+    // span) on a WORKING day is a worked day. Weekend / major-holiday dates are
+    // not in workingDaySet, so they consume nothing (weekend-call exemption).
+    creditWorkDay(state, budget, p.id, slot.slot_date);
     plan.assignments.push({
       slot_id: slot.slot_id, slot_date: slot.slot_date,
       shift_type_code: slot.shift_type_code,
@@ -251,6 +269,11 @@ export function solve(ctx: GenerationContext, opts: SolveOptions = {}): Solution
         // skip the assignedOnDate budget, so they need this separate map to
         // still respect blocked days (invariant 1 — review finding 2).
         markBlocked(state, blockedDate, p.id);
+        // A post-call rest day on a WORKING day is credited as worked (mandated
+        // rest is earned). This is the "weekend call's post-call Monday consumes
+        // a credit when marked" rule — the block itself bypasses the cap, but
+        // the credit still lands so later placements see it.
+        creditWorkDay(state, budget, p.id, blockedDate);
       }
     }
   };
@@ -497,29 +520,39 @@ export function solve(ctx: GenerationContext, opts: SolveOptions = {}): Solution
         p, r: evaluateEligibility(slot, p, state, ctx, 'call-no-quota'),
       }));
       const relaxable = relaxSweep.filter(x => x.r.eligible).map(x => x.p);
-      if (relaxable.length > 0) {
-        const winner = scoreCall(relaxable, slot)[0];
+      // Re-apply the workdays cap here: eligibility waives it under
+      // 'call-no-quota' (so optimizer pins never self-reject), but quota
+      // relaxation must still honor it — a slot left open by the cap is
+      // legitimate, exactly like obligatory mode's obligation-cap. Weekend /
+      // holiday slots are never capped (workDayCapped short-circuits).
+      const relaxableUncapped = budget
+        ? relaxable.filter(p => !workDayCapped(p.id, slot.slot_date))
+        : relaxable;
+      if (relaxableUncapped.length > 0) {
+        const winner = scoreCall(relaxableUncapped, slot)[0];
         record(slot, winner.p, 'quota-relaxed', {
           ratioAtAssignment: winner.ratio,
           daysSinceLastCall: Number.isFinite(winner.recency) ? winner.recency : null,
-          competingCandidates: relaxable.length,
+          competingCandidates: relaxableUncapped.length,
         });
         applyDayChains(slot, winner.p);
         applyBlockChains(slot, winner.p);
         continue;
       }
-      // Nobody is placeable even with the quota waived. Report the REAL
-      // blockers per candidate (a quota-only rejection stays 'bucket-quota',
-      // though such a provider would have been relaxable — the fallback is
-      // belt-and-suspenders only).
+      // Nobody is placeable even with the quota waived. When the ONLY reason the
+      // relaxable set emptied is the workdays cap (relaxable existed pre-filter,
+      // all capped), the binding reason is 'workdays-cap' — otherwise report the
+      // REAL per-candidate blockers (a quota-only rejection stays 'bucket-quota',
+      // though such a provider would have been relaxable — belt-and-suspenders).
+      const capBound = !!budget && relaxable.length > 0;
       const candidateReasons: CandidateRejection[] = relaxSweep.map(x => ({
         provider_id: x.p.id, provider_name: x.p.short_display_name,
-        reason: x.r.reason ?? 'bucket-quota',
+        reason: capBound && x.r.eligible ? 'workdays-cap' : (x.r.reason ?? 'bucket-quota'),
       }));
       plan.unfilled.push({
         slot_id: slot.slot_id, slot_date: slot.slot_date,
         shift_type_code: slot.shift_type_code, shift_type_category: slot.shift_type_category,
-        reason: 'No eligible providers', candidates: candidateReasons,
+        reason: capBound ? 'workdays-cap' : 'No eligible providers', candidates: candidateReasons,
       });
       continue;
     }
@@ -653,6 +686,7 @@ export function solve(ctx: GenerationContext, opts: SolveOptions = {}): Solution
 // re-solve, no matter what call overrides the trial forces.
 export function seedSolveState(ctx: GenerationContext, doc: CallPatternDoc): SolveState {
   const state = emptySolveState();
+  const budget = ctx.workDayBudget;
   const isOverlay = (code: string) => ctx.shiftTypes?.get(code)?.is_overlay ?? false;
   for (const seed of ctx.seedAssignments) {
     // Overlay seeds do NOT consume the one-assignment-per-day budget (mirrors
@@ -662,6 +696,9 @@ export function seedSolveState(ctx: GenerationContext, doc: CallPatternDoc): Sol
       incBucket(state, seed.provider_id, seed.derived_day_type, seed.shift_type_code);
       addCallDate(state, seed.provider_id, seed.slot_date);
     }
+    // Working-days credit: a seeded/manual assignment on a working day is a
+    // worked day (any category — a seeded day shift counts too).
+    creditWorkDay(state, budget, seed.provider_id, seed.slot_date);
     // IF-1: a seeded call blocks its pattern post-call day(s) before solve runs,
     // so the same provider can't be scored onto the blocked next day. Also
     // recorded in blockedOnDate so OVERLAY placements (which skip the
@@ -671,6 +708,23 @@ export function seedSolveState(ctx: GenerationContext, doc: CallPatternDoc): Sol
       const blockedDate = addDays(seed.slot_date, off);
       markAssigned(state, blockedDate, seed.provider_id);
       markBlocked(state, blockedDate, seed.provider_id);
+      // The post-call rest day on a working day is credited (mandated rest is
+      // earned), mirroring applyDayChains.
+      creditWorkDay(state, budget, seed.provider_id, blockedDate);
+    }
+  }
+  // ICU-week weekdays credit as worked (the provider is working the ICU
+  // elsewhere / on earned ICU post-call rest). These come from availability
+  // rows, not placements, so they are seeded up front. Only when a budget is
+  // present (bare fixtures never carry ICU credit).
+  if (budget) {
+    for (const p of ctx.providers) {
+      for (const a of ctx.availByPid.get(p.id) ?? []) {
+        if (!creditsAsWorkedAvailability(a)) continue;
+        for (const d of budget.workingDaySet) {
+          if (a.start_date <= d && d <= a.end_date) creditWorkDay(state, budget, p.id, d);
+        }
+      }
     }
   }
   return state;
@@ -695,6 +749,15 @@ function markAssigned(s: SolveState, date: string, pid: string) {
 function markBlocked(s: SolveState, date: string, pid: string) {
   if (!s.blockedOnDate.has(date)) s.blockedOnDate.set(date, new Set());
   s.blockedOnDate.get(date)!.add(pid);
+}
+// FTE working-days credit ledger (single home). A no-op unless a budget is
+// present AND `date` is a working day — so weekend / major-holiday placements
+// consume nothing and the no-budget path is byte-identical.
+function creditWorkDay(s: SolveState, budget: WorkDayBudget | undefined, pid: string, date: string) {
+  if (!budget || !budget.workingDaySet.has(date)) return;
+  let set = s.creditedWorkDays.get(pid);
+  if (!set) { set = new Set(); s.creditedWorkDays.set(pid, set); }
+  set.add(date);
 }
 function incBucket(s: SolveState, pid: string, dt: string, code: string) {
   const k = `${pid}|${dayTypeBucket(dt)}|${code}`;

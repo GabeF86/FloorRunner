@@ -805,6 +805,14 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
       provider_id: string; provider_name: string;
       requested_dates: string[]; granted: string[]; violated: string[];
     }>;
+    // FTE working-days report — per call-taker, required vs credited days,
+    // over/under highlighted.
+    workDayReport: Array<{
+      provider_id: string; provider_name: string;
+      fte: number; workingDays: number; ptoDays: number; required: number;
+      credited: { assignments: number; postCall: number; icu: number; total: number };
+      entitledOff: number; delta: number;
+    }>;
   } | null>(null);
   const [showPoolModal, setShowPoolModal] = useState(false);
 
@@ -846,6 +854,7 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
         warnings: Array.isArray(data.warnings) ? data.warnings : [],
         skippedDerived: Array.isArray(data.skippedDerived) ? data.skippedDerived : [],
         requestGrants: Array.isArray(data.requestGrants) ? data.requestGrants : [],
+        workDayReport: Array.isArray(data.workDayReport) ? data.workDayReport : [],
       });
       await loadGrid();
     } catch (e) {
@@ -1258,6 +1267,40 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
                 )}
               </div>
             )}
+            {/* FTE working-days report: per call-taker, credited days vs the
+                round(FTE × workingDays) − PTO obligation. Over/under flagged so
+                the scheduler can rebalance. Hidden when the engine produced no
+                budget (e.g. pre-holiday-data blocks). */}
+            {genResult.workDayReport.length > 0 && (() => {
+              const over = genResult.workDayReport.filter(r => r.delta > 0);
+              const under = genResult.workDayReport.filter(r => r.delta < 0);
+              return (
+                <div style={{ marginTop: 4, color: 'var(--text-dim)' }}>
+                  <div>
+                    Working days: {genResult.workDayReport.length} provider{genResult.workDayReport.length !== 1 ? 's' : ''} —{' '}
+                    <span style={{ color: over.length ? 'var(--danger, #c0392b)' : 'inherit' }}>{over.length} over</span>,{' '}
+                    <span style={{ color: under.length ? 'var(--warn, #b8860b)' : 'inherit' }}>{under.length} under</span>{' '}
+                    required.
+                  </div>
+                  {(over.length > 0 || under.length > 0) && (
+                    <ul style={{ margin: '2px 0 0 0', paddingLeft: 18 }}>
+                      {[...over, ...under]
+                        .sort((a, b) => b.delta - a.delta)
+                        .map(r => (
+                          <li key={r.provider_id}>
+                            {r.provider_name} (FTE {r.fte}): worked {r.credited.total} of {r.required} required{' '}
+                            ({r.credited.assignments} assigned + {r.credited.postCall} post-call + {r.credited.icu} ICU),{' '}
+                            entitled off {r.entitledOff} —{' '}
+                            <b style={{ color: r.delta > 0 ? 'var(--danger, #c0392b)' : 'var(--warn, #b8860b)' }}>
+                              {r.delta > 0 ? `over ${r.delta}` : `under ${-r.delta}`}
+                            </b>
+                          </li>
+                        ))}
+                    </ul>
+                  )}
+                </div>
+              );
+            })()}
           </Banner>
         </div>
       )}

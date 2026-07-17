@@ -382,6 +382,14 @@ export async function applySequenceAutoFill(
   triggerSlotId: string,
   providerId: string,
   doc?: CallPatternDoc,
+  opts: {
+    // Working-days cap seam (2026-07-17). When provided, a link fill on a date
+    // the predicate reports capped is skipped (recorded, never dropped). The
+    // caller builds this from the single-homed workDays.exceedsWorkDayCap; the
+    // manual-edit route passes none — manual edits follow the scheduler, the cap
+    // governs auto-generation.
+    capExceeded?: (providerId: string, date: string) => boolean;
+  } = {},
 ): Promise<SequenceAutoFillResult> {
   const result: SequenceAutoFillResult = {
     filledSlotIds: [], evictedSlotIds: [], skips: [], patternWarnings: [],
@@ -567,6 +575,12 @@ export async function applySequenceAutoFill(
       && !evictedIds.has(a.id)
       && a.st?.requires_post_call_rule === true);
     if (restBlocked) { skip(linkedDate, code, 'ineligible'); continue; }
+
+    // Working-days cap (opt-in seam): the provider is already credited their
+    // required working days for the block, so this link fill on a working day is
+    // refused. Recorded like any other suppression (invariant 4). No predicate
+    // ⇒ no cap (default), so existing behavior is byte-identical.
+    if (opts.capExceeded?.(providerId, linkedDate)) { skip(linkedDate, code, 'ineligible'); continue; }
 
     // Write the fill. One assignment row per slot (UNIQUE on schedule_slot_id):
     // update the existing open row when present, insert otherwise.

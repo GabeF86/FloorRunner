@@ -181,6 +181,33 @@ describe('applySequenceAutoFill — pattern-driven fill', () => {
   // Live DB: UNIQUE(schedule_slot_id) → PostgREST returns the slot's
   // assignments embed as ONE OBJECT, not an array. The candidate-slot parse
   // seam must normalize (an object here used to throw in the fill pass).
+  it('workdays-cap seam: skips a link fill when the threaded predicate reports the provider capped', async () => {
+    const { sb, calls } = makeFakeSupabase({
+      tables: tables({
+        trigger: triggerSlot({ date: MON }),
+        slots: [slot({ id: 'slot-d1-tue', date: TUE, code: 'D1', assignments: [openRow('open-1')] })],
+      }),
+    });
+    const result = await applySequenceAutoFill(sb, 'trig', 'p1', CLASSIC_PATTERN, {
+      capExceeded: (pid, date) => pid === 'p1' && date === TUE,
+    });
+    expect(result.filledSlotIds).toEqual([]);
+    expect(result.skips).toContainEqual({ date: TUE, code: 'D1', provider_id: 'p1', reason: 'ineligible' });
+    expect(callsFor(calls, 'assignments', 'update')).toHaveLength(0);
+    expect(callsFor(calls, 'assignments', 'insert')).toHaveLength(0);
+  });
+
+  it('no cap predicate (default) fills as before — the seam is opt-in', async () => {
+    const { sb } = makeFakeSupabase({
+      tables: tables({
+        trigger: triggerSlot({ date: MON }),
+        slots: [slot({ id: 'slot-d1-tue', date: TUE, code: 'D1', assignments: [openRow('open-1')] })],
+      }),
+    });
+    const result = await applySequenceAutoFill(sb, 'trig', 'p1', CLASSIC_PATTERN);
+    expect(result.filledSlotIds).toEqual(['slot-d1-tue']);
+  });
+
   it('single-OBJECT assignments embed (live one-to-one shape) still fills via the open row', async () => {
     const { sb, calls } = makeFakeSupabase({
       tables: tables({

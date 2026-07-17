@@ -22,12 +22,15 @@ import type {
   AvailabilityEntry,
   SeedAssignment,
   ShiftTypeInfo,
+  WorkDayBudget,
+  ProviderWorkDayBudget,
 } from './genTypes';
 
 import { CallPatternDocSchema, patternWarnings, callFillOrderWarnings, dayTypeFillOrderWarnings, type CallPatternDoc } from './callPattern';
 import { fetchCommittedAssignments, filterPublishedVersions } from './committedAssignments';
 import { embedArray } from '@/lib/embed';
 import { clampParToPoolFte } from '@/lib/fteTarget';
+import { isWorkingDay, ptoWeekdaysCovered, requiredWorkDays, entitledOffDays } from './workDays';
 
 const DEFAULT_PAR_LEVEL = 12; // fallback when site.call_par_level isn't set
 const NEIGHBOR_WINDOW_DAYS = 31;
@@ -173,13 +176,19 @@ export async function loadGenerationContext(
   }
   const siteId = (rawSlots[0] as { site_id: string }).site_id;
 
-  // Load site to get call_par_level (gracefully fallback if column doesn't exist yet)
+  // Load site to get call_par_level (gracefully fallback if column doesn't exist
+  // yet) + organization_id (scopes the holiday_calendars query for the
+  // working-days budget below — holiday rows are org-wide, site_id NULL).
   let parLevel = DEFAULT_PAR_LEVEL;
+  let organizationId: string | null = null;
   try {
     countQ();
-    const { data: site } = await sb.from('sites').select('call_par_level').eq('id', siteId).single();
-    if (site && typeof site.call_par_level === 'number' && site.call_par_level > 0) {
-      parLevel = site.call_par_level;
+    const { data: site } = await sb.from('sites').select('call_par_level, organization_id').eq('id', siteId).single();
+    if (site) {
+      if (typeof site.call_par_level === 'number' && site.call_par_level > 0) {
+        parLevel = site.call_par_level;
+      }
+      organizationId = (site.organization_id as string | null) ?? null;
     }
   } catch { /* column may not exist yet — use default */ }
 
@@ -534,7 +543,7 @@ export async function loadGenerationContext(
   countQ();
   const { data: avail } = await sb
     .from('provider_availability')
-    .select('provider_id, availability_type, start_date, end_date, approval_status')
+    .select('provider_id, availability_type, start_date, end_date, approval_status, reason_code')
     .in('provider_id', providerIds)
     .lte('start_date', availRangeEnd)
     .gte('end_date', availRangeStart);
@@ -547,6 +556,9 @@ export async function loadGenerationContext(
       start_date: a.start_date as string,
       end_date: a.end_date as string,
       approval_status: a.approval_status as string,
+      // ICU rotation rows carry reason_code 'icu_week' / 'icu_post_call' — the
+      // working-days model credits them as worked (creditsAsWorkedAvailability).
+      reason_code: (a.reason_code as string | null) ?? null,
     });
     availByPid.set(a.provider_id as string, list);
   }
@@ -787,6 +799,52 @@ export async function loadGenerationContext(
     }
   }
 
+  // ── 9. FTE working-days budget (2026-07-17) ───────────────────────────────
+  // Load the block's MAJOR federal holidays and compute a per-provider
+  // working-days budget: required = round(fte × workingDays) − nettingPtoWeekdays
+  // (floored at 0), entitledOff = workingDays − round(fte × workingDays). The
+  // budget's presence on ctx OPTS the whole run into the workdays cap (bare /
+  // parity fixtures never set it → byte-identical no-cap behavior). Enumerated
+  // over the true block span [blockMin, blockMax] from rawSlots (ordered by
+  // slot_date), not just open dates, so a partial regenerate still sees the full
+  // span. A missing/failed holiday query degrades to "no majors" (all weekdays
+  // count) rather than aborting the whole load.
+  const blockMin = (rawSlots[0] as { slot_date: string }).slot_date;
+  const blockMax = (rawSlots[rawSlots.length - 1] as { slot_date: string }).slot_date;
+  const majorHolidayDates = new Set<string>();
+  if (organizationId) {
+    try {
+      countQ();
+      const { data: holidays } = await sb
+        .from('holiday_calendars')
+        .select('holiday_date, is_major_holiday')
+        .eq('organization_id', organizationId)
+        .eq('is_major_holiday', true)
+        .gte('holiday_date', blockMin)
+        .lte('holiday_date', blockMax);
+      for (const h of ((holidays as Array<Record<string, unknown>> | null) || [])) {
+        if (h.is_major_holiday && h.holiday_date) majorHolidayDates.add(h.holiday_date as string);
+      }
+    } catch { /* holiday table missing/unreadable — treat every weekday as a working day */ }
+  }
+  const workingDaySet = new Set<string>();
+  for (let d = blockMin; d <= blockMax; d = addDays(d, 1)) {
+    if (isWorkingDay(d, majorHolidayDates)) workingDaySet.add(d);
+  }
+  const workingDays = workingDaySet.size;
+  const byProvider = new Map<string, ProviderWorkDayBudget>();
+  for (const p of providers) {
+    const pto = ptoWeekdaysCovered(availByPid.get(p.id) ?? [], workingDaySet).size;
+    byProvider.set(p.id, {
+      fte: p.fte_value,
+      workingDays,
+      ptoWeekdays: pto,
+      required: requiredWorkDays(p.fte_value, workingDays, pto),
+      entitledOff: entitledOffDays(p.fte_value, workingDays),
+    });
+  }
+  const workDayBudget: WorkDayBudget = { workingDays, workingDaySet, majorHolidayDates, byProvider };
+
   return {
     ctx: {
       scheduleVersionId,
@@ -810,6 +868,7 @@ export async function loadGenerationContext(
       providerById: new Map(providers.map(p => [p.id, p])),
       prePtoByThursday: buildPrePtoByThursday(providers, availByPid, slotIndex),
       scheduleDates: allSlotDates,
+      workDayBudget,
     },
     dbQueries,
     totalSlots: rawSlots.length,
