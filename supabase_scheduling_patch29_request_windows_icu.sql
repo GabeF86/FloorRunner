@@ -1,5 +1,5 @@
 -- ╔══════════════════════════════════════════════════════════════════════════╗
--- ║ STATUS: NOT APPLIED.                                                      ║
+-- ║ STATUS: APPLIED 2026-07-17 (proof-phase apply via Management API; verification queries passed: table + partial unique index request_windows_one_open + is_icu_doc column confirmed).                                                      ║
 -- ║ Apply to project qhwdbtixhzdsgwwtcfrm ("Floor Runner"), ref verified,     ║
 -- ║ via the project-scoped supabase-floorrunner MCP server (or the dashboard  ║
 -- ║ SQL editor). Never run through the atlas-staging / chiefos MCP servers.   ║
