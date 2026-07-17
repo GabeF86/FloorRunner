@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback } from 'react';
 import Link from 'next/link';
 import { PageHeader, Card, Badge, Button, Table, EmptyState, Banner, Modal, scheduleStatusTone, scheduleStatusLabel, SCHEDULE_STATUSES } from '@/components/ui';
 import AssistantPanel from './[id]/AssistantPanel';
+import RequestWindowCard from './RequestWindowCard';
 
 interface Schedule {
   id: string;
@@ -213,6 +214,11 @@ export default function SchedulesPage() {
           }
         />
       </Card>
+
+      {/* Request-intake window management (patch29) — kept below the table so
+          the schedule list stays the page's focus; see RequestWindowCard for
+          the placement rationale. */}
+      <RequestWindowCard sites={sites} initialSiteId={siteFilter || undefined} />
 
       {showCreate && <CreateScheduleModal orgId={orgId} sites={sites} onClose={() => setShowCreate(false)} onCreated={() => { setShowCreate(false); loadSchedules(); }} />}
       {showAssistantPicker && (

@@ -13,7 +13,7 @@ Both are idempotent. Neither overwrites manual or already-assigned slots. Shared
 
 **Structure is data, not code.** Weekend/block chains, post-/pre-call fills, post-call day-off blocks, spans, placement passes, relief config and optimizer scope all come from the site's active `scheduling.call_patterns` row; `solve()` interprets whatever the doc says. No active pattern row → `CLASSIC_PATTERN` fallback (identical behavior to the pre-v2 hard-coded engine). Validation constraints stay in `rule_definitions` (§12) — patterns say how schedules are *built*, rules say what they must *satisfy*.
 
-**What comes back** (`GenerationResult`): `assignments` (with placement `source` + scoring `explanation`), `unfilled` (per-slot candidate rejections, trimmed to 3 + `omittedCandidates` by [`trimUnfilled`](src/lib/rulesEngine/trimUnfilled.ts)), `skippedDerived` (§9), `warnings` (load-time advisories, §15), `optimizeStats` (§11), `metrics`/`seedMetrics`, `perf`.
+**What comes back** (`GenerationResult`): `assignments` (with placement `source` + scoring `explanation`), `unfilled` (per-slot candidate rejections, trimmed to 3 + `omittedCandidates` by [`trimUnfilled`](src/lib/rulesEngine/trimUnfilled.ts)), `skippedDerived` (§9), `warnings` (load-time advisories, §15), `requestGrants` (no-call request grant report, §11), `optimizeStats` (§11), `metrics`/`seedMetrics`, `perf`.
 
 ## 2. Data touched
 
@@ -163,6 +163,7 @@ After relief (2026-07-16): any still-open NON-call slot whose shift type has `ge
 ## 11. Scoring + optimizer
 
 When multiple providers pass eligibility (main loop, spans, quota relaxation — one shared tuple):
+0. **No-call-request sort tier** (2026-07-17, SOFT — never a gate): candidates with a live `no_call_request` covering the slot date (`isActiveNoCallRequest`, shared.ts — pending counts, denied/canceled don't) sort behind every unpenalized candidate, so a requester is chosen only when nobody without a request passes the gates. Among penalized candidates, the fewest requests already violated this run wins (**fair denial** — the counter includes seeded calls on requested dates and every real placement path). Zero live requests ⇒ the tuple degenerates to 1–3 below, byte-identical plans (pinned against `fillAllPlan.golden.json`). Applies in BOTH fill modes; in obligatory mode a violated placement still consumes the cap. `GenerationResult.requestGrants` reports per provider the requested block dates split into granted/violated (computed from the FINAL plan in [`requestGrants.ts`](src/lib/rulesEngine/requestGrants.ts)); validation independently soft-flags violated assignments ("No-call request")
 1. **Lowest lifetime ratio** = (historical assignments + this-block assignments) / fte_value — part-timers catch up across blocks (clinical invariant 5)
 2. **Most days since last call** — anti-burnout / anti-back-to-back
 3. Provider id — deterministic for reproducibility given the same DB state

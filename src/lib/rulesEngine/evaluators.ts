@@ -13,7 +13,7 @@ import type {
 import {
   BOOKEND_EXTENDING_TYPES,
   isBlockingAvailability,
-  isDismissedAvailability,
+  isActiveNoCallRequest,
 } from './shared';
 
 // ── Helpers ────────────────────────────────────────────────────────────────
@@ -254,11 +254,7 @@ const timeOff: Evaluator = ctx => {
         severity: 'hard',
         message: `Provider has ${a.availability_type} from ${a.start_date} to ${a.end_date}.`,
       });
-    } else if (
-      a.availability_type === 'no_call_request' &&
-      ctx.shiftType.category === 'call' &&
-      !isDismissedAvailability(a)
-    ) {
+    } else if (isActiveNoCallRequest(a) && ctx.shiftType.category === 'call') {
       violations.push({
         rule_id: null,
         rule_name: 'No-call request',

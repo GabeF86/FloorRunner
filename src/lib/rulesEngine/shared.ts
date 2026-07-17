@@ -26,6 +26,18 @@ export function isDismissedAvailability(entry: { approval_status: string }): boo
   return entry.approval_status === 'denied' || entry.approval_status === 'canceled';
 }
 
+// Single-home predicate for a LIVE no-call request (2026-07-17). NOT a
+// blocking type — the request is algorithm-arbitrated (soft): the call
+// engine's scoreCall drops live requesters a sort tier (solve.ts) and
+// validation soft-flags any call that still lands on one (evaluators.ts
+// timeOff). Both consumers route through here so they can never disagree
+// about which requests are live (pending counts; denied/canceled don't).
+export function isActiveNoCallRequest(
+  entry: { availability_type: string; approval_status: string },
+): boolean {
+  return entry.availability_type === 'no_call_request' && !isDismissedAvailability(entry);
+}
+
 // Canonical "does this availability entry block scheduling?" predicate
 // (clinical invariant 2 / spec §6.7): PENDING requests BLOCK — only entries
 // explicitly denied or canceled are ignored. Every engine (call gen, day-shift
