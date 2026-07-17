@@ -8,7 +8,7 @@ import { commitPlan, commitValidation, commitMetadata, hasGenerationMetadataColu
 import { scoreSolution } from './metrics';
 import type { OptimizeStats } from './optimize';
 import type { SupabaseClient } from './shared';
-import type { UnfilledSlot, PlannedAssignment, AssignmentExplanation, SolutionMetrics, PlacementSource, SkippedDerived } from './genTypes';
+import type { UnfilledSlot, PlannedAssignment, AssignmentExplanation, SolutionMetrics, PlacementSource, SkippedDerived, FillMode } from './genTypes';
 
 export interface AutoGenerateOptions {
   overrideProviderIds?: string[];
@@ -16,11 +16,27 @@ export interface AutoGenerateOptions {
   // Optimizer wall-clock budget (ms). Falls back to the
   // SCHEDULING_OPTIMIZE_WALL_MS env var, then the optimizer default (2000).
   wallClockMs?: number;
+  // Generation fill mode (2026-07-17): 'all' (default) fills every fillable
+  // call slot; 'obligatory' caps each provider at their rounded total
+  // obligation and leaves the rest open ('obligation-cap'). See genTypes
+  // FillMode. Obligatory mode never runs the optimizer: its objective
+  // (fewer unfilled slots) fights deliberately-open cap slots, and its
+  // 'call-no-quota' pin re-validation knows nothing of caps — a pinned
+  // eviction could push a provider past their obligation. The deterministic
+  // greedy plan IS the obligatory answer.
+  fillMode?: FillMode;
 }
 
 // Pure: optimization is on by default; an explicit boolean overrides.
 export function resolveOptimizeEnabled(flag: boolean | undefined): boolean {
   return flag !== false;
+}
+
+// Pure: only the exact string 'obligatory' opts in; everything else — absent,
+// 'all', wrong case, wrong type — degrades to the default 'all'. Shared by
+// the generate route's body parsing and the engine option resolution.
+export function resolveFillMode(v: unknown): FillMode {
+  return v === 'obligatory' ? 'obligatory' : 'all';
 }
 
 // Pure: explicit param wins, then the env var; undefined lets optimize()
@@ -98,9 +114,12 @@ export async function autoGenerate(
   let commit;
   let seedMetrics;
   try {
-    const seedPlan = solve(ctx);
+    const fillMode = resolveFillMode(options.fillMode);
+    const seedPlan = solve(ctx, { fillMode });
     seedMetrics = scoreSolution(seedPlan, ctx);
-    if (resolveOptimizeEnabled(options.optimize)) {
+    // Obligatory mode always returns the deterministic greedy plan — see the
+    // AutoGenerateOptions.fillMode note for why the optimizer must not run.
+    if (fillMode !== 'obligatory' && resolveOptimizeEnabled(options.optimize)) {
       const optimized = optimize(ctx, {
         wallClockMs: resolveWallClockMs(options.wallClockMs, process.env.SCHEDULING_OPTIMIZE_WALL_MS),
       });
