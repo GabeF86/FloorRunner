@@ -40,6 +40,10 @@ export interface AvailabilityEntry {
   start_date: string;
   end_date: string;
   approval_status: string;
+  // ICU rotation rows are availability_type 'blocked' with a reason_code
+  // ('icu_week' / 'icu_post_call'); the working-days model credits them as
+  // worked (creditsAsWorkedAvailability). Optional so bare fixtures stay small.
+  reason_code?: string | null;
 }
 
 // Pre-existing assignment carried into solve to seed runtime state.
@@ -100,6 +104,30 @@ export interface GenerationContext {
   providerById?: Map<string, CandidateProvider>;
   prePtoByThursday?: Map<string, Set<string>>; // Thursday-of-prior-week -> pids on blocking leave (pending included, §6.7)
   scheduleDates?: string[];                    // sorted slotIndex date keys
+  // ── FTE working-days budget (2026-07-17; OPT-IN enforcement) ──
+  // Present on production ctx (genContext always computes it); ABSENT on bare
+  // fixtures, parity fixtures, and solveLegacy comparisons so the workdays cap
+  // never fires there — the no-budget path is byte-identical to the pre-change
+  // engine (fillAllPlan.golden.json pin). When present, every placement engine
+  // enforces the per-provider `required` cap on WEEKDAY placements.
+  workDayBudget?: WorkDayBudget;
+}
+
+// Per-provider working-days accounting for a block. `required` is the placement
+// cap (credited weekday count may not exceed it); the rest feed the report.
+export interface ProviderWorkDayBudget {
+  fte: number;
+  workingDays: number;   // block working days (weekday, not major holiday)
+  ptoWeekdays: number;   // working days covered by PTO-netting leave (nets 1:1)
+  required: number;      // round(fte × workingDays) − ptoWeekdays, floored at 0
+  entitledOff: number;   // workingDays − round(fte × workingDays)
+}
+
+export interface WorkDayBudget {
+  workingDays: number;                     // |workingDaySet|
+  workingDaySet: ReadonlySet<string>;      // block dates that are working days
+  majorHolidayDates: ReadonlySet<string>;  // major-holiday dates within the block
+  byProvider: Map<string, ProviderWorkDayBudget>;
 }
 
 // 'call' = the full set; 'call-no-quota' = every call gate EXCEPT the bucket
@@ -121,7 +149,12 @@ export type RejectionReason =
   // 2026-07-17, obligatory fill mode only: the provider passed every gate but
   // has no cap-room left under their rounded TOTAL obligation (or not enough
   // room for a whole chain block / span). Never emitted in fill-all mode.
-  | 'obligation-cap';
+  | 'obligation-cap'
+  // 2026-07-17, FTE working-days cap: the provider passed every safety gate but
+  // has already been credited their `required` working days for the block, so a
+  // further WEEKDAY placement is refused. Additive; only emitted when ctx
+  // carries a workDayBudget (production). Never overrides a safety gate.
+  | 'workdays-cap';
 
 export interface EligibilityResult {
   readonly eligible: boolean;
@@ -229,6 +262,11 @@ export interface SolveState {
   // OVERLAY placements — which skip the assignedOnDate budget — can still see
   // and respect blocked days (clinical invariant 1).
   blockedOnDate: Map<string, Set<string>>;
+  // FTE working-days credit ledger (2026-07-17): pid -> set of WORKING dates
+  // credited as worked (weekday assignments from any pass, post-call rest days
+  // on weekdays, ICU-week weekdays). Single home for the credited counter the
+  // workdays cap consults; only populated when ctx carries a workDayBudget.
+  creditedWorkDays: Map<string, Set<string>>;
 }
 
 export function emptySolveState(): SolveState {
@@ -238,6 +276,7 @@ export function emptySolveState(): SolveState {
     handledSlotIds: new Set(),
     callDatesByProvider: new Map(),
     blockedOnDate: new Map(),
+    creditedWorkDays: new Map(),
   };
 }
 

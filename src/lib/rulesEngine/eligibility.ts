@@ -8,6 +8,7 @@ import {
   isBlockingAvailability,
 } from './shared';
 import { CLASSIC_PATTERN, postCallBlockOffsets } from './callPattern';
+import { exceedsWorkDayCap } from './workDays';
 import type {
   GenerationContext, SlotToFill, CandidateProvider, SolveState,
   GateSet, EligibilityResult,
@@ -167,6 +168,29 @@ export function evaluateEligibility(
     const { start, end } = effectivePtoRange(a);
     if (datesOverlap(start, end, slot.slot_date)) {
       return { eligible: false, reason: 'availability-blocked' };
+    }
+  }
+
+  // FTE working-days cap (2026-07-17). Opt-in via ctx.workDayBudget (absent on
+  // bare/parity fixtures → this gate never fires → byte-identical no-cap path).
+  // Placed AFTER every safety gate so a safety block always wins the reported
+  // reason: the cap is a NEW restriction that only ever ADDS ineligibility, it
+  // must never override a safety gate (all gates are AND).
+  //   • Applies to the full 'call' gate AND the 'derived' gate (relief, mop-up,
+  //     d-chains — every weekday placement).
+  //   • WAIVED under 'call-no-quota': that gate re-asserts an already-made
+  //     placement (optimizer pins, chain call links) — enforcing the cap there
+  //     would self-reject an incumbent. Quota relaxation, which also uses
+  //     'call-no-quota', re-applies the cap explicitly in solve() instead.
+  //   • Weekend / major-holiday slots are exempt (not working days → the
+  //     placement consumes no credit → exceedsWorkDayCap returns false).
+  if ((gate === 'call' || gate === 'derived') && ctx.workDayBudget) {
+    const b = ctx.workDayBudget.byProvider.get(p.id);
+    if (b && exceedsWorkDayCap(
+      slot.slot_date, ctx.workDayBudget.workingDaySet,
+      state.creditedWorkDays.get(p.id), b.required,
+    )) {
+      return { eligible: false, reason: 'workdays-cap' };
     }
   }
 
