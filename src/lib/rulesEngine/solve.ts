@@ -4,6 +4,7 @@ import {
 } from './shared';
 import { evaluateEligibility } from './eligibility';
 import { computeObligations } from './obligation';
+import { computeSequenceOwnedSlotIds } from './sequenceOwnership';
 import { exceedsWorkDayCap, creditsAsWorkedAvailability } from './workDays';
 import { emptySolveState } from './genTypes';
 import { CLASSIC_PATTERN, dayChainsFor, postCallBlockOffsets, blockChainsFor } from './callPattern';
@@ -72,6 +73,18 @@ export function solve(ctx: GenerationContext, opts: SolveOptions = {}): Solution
 
   // Seed pre-existing assignments into state (shared with optimize's pre-gate).
   const state = seedSolveState(ctx, doc);
+
+  // ── sequence-owned slots (2026-07-17, live bug: 27 violating rows) ──
+  // Slots the ACTIVE pattern doc could target as a chain link (dayChains /
+  // block-chain links — computeSequenceOwnedSlotIds, single home). They belong
+  // to the chain's provider and NOBODY else: when the chain breaks (source
+  // call unfilled, holder blocked next day) they stay UNASSIGNED and the
+  // orphan is REPORTED — the relief pass and the mop-up sweep below must
+  // never hand them out. Chain fills (applyDayChains/applyBlockChains),
+  // sequenceAutoFill and seeds remain the only legitimate writers. Computed
+  // unconditionally (pure, pattern-data-driven): under the classic pattern no
+  // relief code is ever a chain target, so parity-era fixtures are untouched.
+  const sequenceOwnedSlotIds = computeSequenceOwnedSlotIds(doc, ctx.slotIndex);
 
   const providerById = ctx.providerById ?? new Map(ctx.providers.map(p => [p.id, p]));
 
@@ -619,6 +632,11 @@ export function solve(ctx: GenerationContext, opts: SolveOptions = {}): Solution
         const slot = codeMap.get(code);
         if (!slot) continue;
         if (state.handledSlotIds.has(slot.slot_id)) continue;
+        // Sequence-owned relief-code slot (e.g. weekend-v2's Friday D4, the
+        // Sat-C3 block-chain link): NOT relief inventory. If its chain fired,
+        // it is already handled above; if the chain broke, it must stay open
+        // — the mop-up sweep reports the orphan (never fills it).
+        if (sequenceOwnedSlotIds.has(slot.slot_id)) continue;
         // IF-2: rescan from rank 0 per code — skip anyone already placed this
         // date or ineligible for THIS specific slot (per-code credential lists
         // differ). A provider skipped for one code is reconsidered for later ones.
@@ -643,15 +661,25 @@ export function solve(ctx: GenerationContext, opts: SolveOptions = {}): Solution
   // claimed by day chains, block chains, or the relief pass. When the trigger
   // call goes unfilled or a chain severs, the orphan slot used to vanish from
   // ALL reporting — the day-pool engine skips call-owned slots, so nothing
-  // ever filled OR reported it. Sweep every remaining open one: fill via the
-  // 'derived' gate (every safety gate runs; no quota) with the relief-style
-  // ranking; report anything still open in plan.unfilled. skippedDerived
-  // records are untouched (invariant 4: the designated provider's suppression
-  // stays observable even when another provider covers the slot). Requires
-  // ctx.shiftTypes — pure legacy fixtures without it keep byte-identical
-  // output (golden parity).
+  // ever filled OR reported it. Sweep every remaining open one:
+  //   • SEQUENCE-OWNED slots (2026-07-17) are NEVER filled here — D1 belongs
+  //     to yesterday's C2 person, D2/D3 to tomorrow's C1/C2 person, Friday D4
+  //     to the Sat-C3 chain provider; a broken chain leaves them open. They
+  //     are reported in plan.unfilled (the single reporting home for open
+  //     slots) exactly once, with an honest reason: 'sequence-orphan: chain
+  //     link severed' when skippedDerived already records the designated
+  //     provider's suppression for that (date, code), else 'sequence-orphan:
+  //     chain source unfilled'. skippedDerived keeps its existing role (the
+  //     suppression event itself, invariant 4) — a different fact about the
+  //     same slot, not a duplicate open-slot report.
+  //   • everything else is filled via the 'derived' gate (every safety gate
+  //     runs; no quota) with the relief-style ranking; anything still open is
+  //     reported in plan.unfilled.
+  // Requires ctx.shiftTypes — pure legacy fixtures without it keep
+  // byte-identical output (golden parity).
   if (ctx.shiftTypes) {
     const alreadyReported = new Set(plan.unfilled.map(u => u.slot_id));
+    const skippedKeys = new Set(skippedDerived.map(s => `${s.date}|${s.code}`));
     for (const date of scheduleDates) {
       const codeMap = ctx.slotIndex.get(date);
       if (!codeMap) continue;
@@ -661,6 +689,16 @@ export function solve(ctx: GenerationContext, opts: SolveOptions = {}): Solution
         if (shiftInfo(code)?.generation_engine !== 'call') continue; // day_pool/none: other engines own it
         if (state.handledSlotIds.has(slot.slot_id)) continue;
         if (alreadyReported.has(slot.slot_id)) continue;             // relief pass already reported it
+        if (sequenceOwnedSlotIds.has(slot.slot_id)) {
+          plan.unfilled.push({
+            slot_id: slot.slot_id, slot_date: slot.slot_date,
+            shift_type_code: slot.shift_type_code, shift_type_category: slot.shift_type_category,
+            reason: skippedKeys.has(`${slot.slot_date}|${slot.shift_type_code}`)
+              ? 'sequence-orphan: chain link severed'
+              : 'sequence-orphan: chain source unfilled',
+          });
+          continue;
+        }
         const available = ctx.providers.filter(
           p => evaluateEligibility(slot, p, state, ctx, 'derived').eligible);
         if (available.length === 0) {
