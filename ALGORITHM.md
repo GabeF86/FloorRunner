@@ -70,6 +70,18 @@ Eligibility check uses `assigned + 1 > target` — i.e., "would one more push us
 
 **Quota relaxation (unconditional, 2026-07-16)**: whenever a call slot's full-gate sweep is empty, `solve()` re-gates every provider with ONLY the bucket quota waived (`'call-no-quota'` — every safety gate still runs) and places the lowest-lifetime-ratio survivor (placement source `'quota-relaxed'`, explanation attached). Quota math must never leave a fillable slot empty; only hard clinical blocks may. (The old trigger — *every* rejection is `bucket-quota` — was poisoned by a single hard-blocked provider in the sweep, permanently stranding slots the quota-blocked-but-otherwise-eligible providers could legally take.) When even relaxation finds nobody, the unfilled report carries each provider's REAL blocker.
 
+## 4.5. Fill modes + whole-number obligations (2026-07-17)
+
+The generate route accepts `{ fillMode: 'all' | 'obligatory' }` (body, default `'all'`; UI: the fill-mode select beside Auto-Generate, persisted in localStorage).
+
+**Whole-number obligations (accounting):** each provider's obligatory call count = `round(totalCallSlots / effectivePar × FTE)` — TOTAL level, round-half-up (1.5→2, 1.3→1, 0.45→0). Single-homed: rounding + extra math + the effective-par clamp in [`src/lib/fteTarget.ts`](src/lib/fteTarget.ts) (`roundedObligation`, `extraCalls`, `selectOverParAssignmentIds`, `clampParToPoolFte`), engine census in [`obligation.ts`](src/lib/rulesEngine/obligation.ts) (`computeObligations`), UI census in `computeCallObligationCensus` (same file). `effectivePar = min(stored call_par_level, generation-pool ΣFTE)` **everywhere** — `genContext.effectiveParLevel` delegates to the shared clamp, and the schedule grid's over-par memo and the Call Counts modal consume ONE census (every call-category slot: holiday-dated included, any call code, filled or not — the engine's open-slots + call-seeds count), so engine cap and UI labeling cannot disagree on what's obligatory. Calls up to the rounded obligation are never counted or labeled extra; only the provider's LAST N calls (chronological, code tiebreak; N = actual − obligation) get the grid/modal OVER treatment. Category-level fairness (fractional `bucketTarget` + deficits, §4) is untouched — rounding defines accounting and the obligatory-mode cap, never fill order.
+
+**`fillMode: 'obligatory'`** (`SolveOptions.fillMode`, a flag-gated code path — `'all'` is the pre-change engine byte for byte, pinned against `__fixtures__/fillAllPlan.golden.json`):
+- Each provider receives at most their rounded total obligation in CALL assignments; seeded/manual calls consume the cap; every real call placement (chain links included) increments it.
+- **Chain atomicity:** the whole block counts against the cap upfront — an anchor is eligible only when cap-room ≥ 1 + its live call-category links (target exists, unhandled, category call). Severed links free the reserved room back up. Spans are charged atomically the same way.
+- NO quota-relaxation sweep (§4). Capped slots stay open, reported in `unfilled` with reason `'obligation-cap'` (new additive `RejectionReason`; slot-level reason is `'obligation-cap'` when the cap was the binding constraint, real gate reasons otherwise).
+- The optimizer never runs (its fewer-unfilled objective fights deliberately-open cap slots, and the `'call-no-quota'` pin gate would bypass the cap) — the deterministic greedy plan is the obligatory answer. Non-call placements (d-chains, relief, mop-up) are never capped; the day-shift engine is unaffected.
+
 ## 5. Eligibility pipeline ([`evaluateEligibility`](src/lib/rulesEngine/eligibility.ts))
 
 One canonical gate for every placement. `gate === 'call'` applies the full set; `gate === 'derived'` (D-chains, non-call block fills, relief) drops the quota + post-call gates but keeps every safety gate. Ordered for early return:
@@ -186,6 +198,7 @@ Evaluator notes:
 | Add a new shift category (e.g. "backup") | New pass, not a branch inside the call engine — model it like `dayShiftAutoGen` |
 | Exclude a call code from the post-call row | [`NON_POST_CALL_CODES`](src/app/(scheduling)/schedules/[id]/page.tsx) — purely UI |
 | Change FTE quota math | `bucketTarget` computation in [`genContext.ts`](src/lib/rulesEngine/genContext.ts) |
+| Change obligation rounding / extra-call accounting / OVER selection | [`src/lib/fteTarget.ts`](src/lib/fteTarget.ts) (+ [`obligation.ts`](src/lib/rulesEngine/obligation.ts) for the engine census) — §4.5 |
 | Add a new rule type | [`evaluators.ts`](src/lib/rulesEngine/evaluators.ts) — runtime checks on existing assignments |
 | Add a new eligibility gate | [`evaluateEligibility`](src/lib/rulesEngine/eligibility.ts) — pre-placement filter (mind the call/derived gate split) |
 | Add CRNA scheduling | New engine in parallel — call gen is physician-only by design |

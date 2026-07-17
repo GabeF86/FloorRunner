@@ -1,0 +1,2274 @@
+{
+  "assignments": [
+    {
+      "slot_id": "2026-01-08|C1",
+      "slot_date": "2026-01-08",
+      "shift_type_code": "C1",
+      "shift_type_category": "call",
+      "derived_day_type": "weekday",
+      "provider_id": "p05",
+      "provider_name": "p05",
+      "existing_assignment_id": null,
+      "source": "pre-pto-thursday"
+    },
+    {
+      "slot_id": "2026-01-07|D2",
+      "slot_date": "2026-01-07",
+      "shift_type_code": "D2",
+      "shift_type_category": "regular",
+      "derived_day_type": "weekday",
+      "provider_id": "p05",
+      "provider_name": "p05",
+      "existing_assignment_id": null,
+      "source": "d-chain"
+    },
+    {
+      "slot_id": "2026-01-10|C2",
+      "slot_date": "2026-01-10",
+      "shift_type_code": "C2",
+      "shift_type_category": "call",
+      "derived_day_type": "saturday",
+      "provider_id": "p01",
+      "provider_name": "p01",
+      "existing_assignment_id": null,
+      "source": "main-loop",
+      "explanation": {
+        "ratioAtAssignment": 0,
+        "daysSinceLastCall": null,
+        "competingCandidates": 5
+      }
+    },
+    {
+      "slot_id": "2026-01-11|C1",
+      "slot_date": "2026-01-11",
+      "shift_type_code": "C1",
+      "shift_type_category": "call",
+      "derived_day_type": "sunday",
+      "provider_id": "p01",
+      "provider_name": "p01",
+      "existing_assignment_id": null,
+      "source": "weekend-chain"
+    },
+    {
+      "slot_id": "2026-01-09|D2",
+      "slot_date": "2026-01-09",
+      "shift_type_code": "D2",
+      "shift_type_category": "regular",
+      "derived_day_type": "friday",
+      "provider_id": "p01",
+      "provider_name": "p01",
+      "existing_assignment_id": null,
+      "source": "weekend-chain"
+    },
+    {
+      "slot_id": "2026-01-10|C3",
+      "slot_date": "2026-01-10",
+      "shift_type_code": "C3",
+      "shift_type_category": "call",
+      "derived_day_type": "saturday",
+      "provider_id": "p02",
+      "provider_name": "p02",
+      "existing_assignment_id": null,
+      "source": "main-loop",
+      "explanation": {
+        "ratioAtAssignment": 0,
+        "daysSinceLastCall": null,
+        "competingCandidates": 4
+      }
+    },
+    {
+      "slot_id": "2026-01-11|C3",
+      "slot_date": "2026-01-11",
+      "shift_type_code": "C3",
+      "shift_type_category": "call",
+      "derived_day_type": "sunday",
+      "provider_id": "p02",
+      "provider_name": "p02",
+      "existing_assignment_id": null,
+      "source": "weekend-chain"
+    },
+    {
+      "slot_id": "2026-01-10|C1",
+      "slot_date": "2026-01-10",
+      "shift_type_code": "C1",
+      "shift_type_category": "call",
+      "derived_day_type": "saturday",
+      "provider_id": "p03",
+      "provider_name": "p03",
+      "existing_assignment_id": null,
+      "source": "main-loop",
+      "explanation": {
+        "ratioAtAssignment": 0,
+        "daysSinceLastCall": null,
+        "competingCandidates": 3
+      }
+    },
+    {
+      "slot_id": "2026-01-11|C2",
+      "slot_date": "2026-01-11",
+      "shift_type_code": "C2",
+      "shift_type_category": "call",
+      "derived_day_type": "sunday",
+      "provider_id": "p03",
+      "provider_name": "p03",
+      "existing_assignment_id": null,
+      "source": "weekend-chain"
+    },
+    {
+      "slot_id": "2026-01-12|D1",
+      "slot_date": "2026-01-12",
+      "shift_type_code": "D1",
+      "shift_type_category": "regular",
+      "derived_day_type": "weekday",
+      "provider_id": "p03",
+      "provider_name": "p03",
+      "existing_assignment_id": null,
+      "source": "d-chain"
+    },
+    {
+      "slot_id": "2026-01-09|C2",
+      "slot_date": "2026-01-09",
+      "shift_type_code": "C2",
+      "shift_type_category": "call",
+      "derived_day_type": "friday",
+      "provider_id": "p03",
+      "provider_name": "p03",
+      "existing_assignment_id": null,
+      "source": "weekend-chain"
+    },
+    {
+      "slot_id": "2026-01-08|D3",
+      "slot_date": "2026-01-08",
+      "shift_type_code": "D3",
+      "shift_type_category": "regular",
+      "derived_day_type": "weekday",
+      "provider_id": "p03",
+      "provider_name": "p03",
+      "existing_assignment_id": null,
+      "source": "d-chain"
+    },
+    {
+      "slot_id": "2026-01-17|C2",
+      "slot_date": "2026-01-17",
+      "shift_type_code": "C2",
+      "shift_type_category": "call",
+      "derived_day_type": "saturday",
+      "provider_id": "p04",
+      "provider_name": "p04",
+      "existing_assignment_id": null,
+      "source": "main-loop",
+      "explanation": {
+        "ratioAtAssignment": 0,
+        "daysSinceLastCall": null,
+        "competingCandidates": 4
+      }
+    },
+    {
+      "slot_id": "2026-01-18|C1",
+      "slot_date": "2026-01-18",
+      "shift_type_code": "C1",
+      "shift_type_category": "call",
+      "derived_day_type": "sunday",
+      "provider_id": "p04",
+      "provider_name": "p04",
+      "existing_assignment_id": null,
+      "source": "weekend-chain"
+    },
+    {
+      "slot_id": "2026-01-16|D2",
+      "slot_date": "2026-01-16",
+      "shift_type_code": "D2",
+      "shift_type_category": "regular",
+      "derived_day_type": "friday",
+      "provider_id": "p04",
+      "provider_name": "p04",
+      "existing_assignment_id": null,
+      "source": "weekend-chain"
+    },
+    {
+      "slot_id": "2026-01-17|C3",
+      "slot_date": "2026-01-17",
+      "shift_type_code": "C3",
+      "shift_type_category": "call",
+      "derived_day_type": "saturday",
+      "provider_id": "p06",
+      "provider_name": "p06",
+      "existing_assignment_id": null,
+      "source": "main-loop",
+      "explanation": {
+        "ratioAtAssignment": 0,
+        "daysSinceLastCall": null,
+        "competingCandidates": 3
+      }
+    },
+    {
+      "slot_id": "2026-01-18|C3",
+      "slot_date": "2026-01-18",
+      "shift_type_code": "C3",
+      "shift_type_category": "call",
+      "derived_day_type": "sunday",
+      "provider_id": "p06",
+      "provider_name": "p06",
+      "existing_assignment_id": null,
+      "source": "weekend-chain"
+    },
+    {
+      "slot_id": "2026-01-17|C1",
+      "slot_date": "2026-01-17",
+      "shift_type_code": "C1",
+      "shift_type_category": "call",
+      "derived_day_type": "saturday",
+      "provider_id": "p01",
+      "provider_name": "p01",
+      "existing_assignment_id": null,
+      "source": "main-loop",
+      "explanation": {
+        "ratioAtAssignment": 0,
+        "daysSinceLastCall": 6,
+        "competingCandidates": 2
+      }
+    },
+    {
+      "slot_id": "2026-01-18|C2",
+      "slot_date": "2026-01-18",
+      "shift_type_code": "C2",
+      "shift_type_category": "call",
+      "derived_day_type": "sunday",
+      "provider_id": "p01",
+      "provider_name": "p01",
+      "existing_assignment_id": null,
+      "source": "weekend-chain"
+    },
+    {
+      "slot_id": "2026-01-19|D1",
+      "slot_date": "2026-01-19",
+      "shift_type_code": "D1",
+      "shift_type_category": "regular",
+      "derived_day_type": "weekday",
+      "provider_id": "p01",
+      "provider_name": "p01",
+      "existing_assignment_id": null,
+      "source": "d-chain"
+    },
+    {
+      "slot_id": "2026-01-16|C2",
+      "slot_date": "2026-01-16",
+      "shift_type_code": "C2",
+      "shift_type_category": "call",
+      "derived_day_type": "friday",
+      "provider_id": "p01",
+      "provider_name": "p01",
+      "existing_assignment_id": null,
+      "source": "weekend-chain"
+    },
+    {
+      "slot_id": "2026-01-15|D3",
+      "slot_date": "2026-01-15",
+      "shift_type_code": "D3",
+      "shift_type_category": "regular",
+      "derived_day_type": "weekday",
+      "provider_id": "p01",
+      "provider_name": "p01",
+      "existing_assignment_id": null,
+      "source": "d-chain"
+    },
+    {
+      "slot_id": "2026-01-24|C2",
+      "slot_date": "2026-01-24",
+      "shift_type_code": "C2",
+      "shift_type_category": "call",
+      "derived_day_type": "saturday",
+      "provider_id": "p05",
+      "provider_name": "p05",
+      "existing_assignment_id": null,
+      "source": "main-loop",
+      "explanation": {
+        "ratioAtAssignment": 0,
+        "daysSinceLastCall": 16,
+        "competingCandidates": 4
+      }
+    },
+    {
+      "slot_id": "2026-01-25|C1",
+      "slot_date": "2026-01-25",
+      "shift_type_code": "C1",
+      "shift_type_category": "call",
+      "derived_day_type": "sunday",
+      "provider_id": "p05",
+      "provider_name": "p05",
+      "existing_assignment_id": null,
+      "source": "weekend-chain"
+    },
+    {
+      "slot_id": "2026-01-23|D2",
+      "slot_date": "2026-01-23",
+      "shift_type_code": "D2",
+      "shift_type_category": "regular",
+      "derived_day_type": "friday",
+      "provider_id": "p05",
+      "provider_name": "p05",
+      "existing_assignment_id": null,
+      "source": "weekend-chain"
+    },
+    {
+      "slot_id": "2026-01-24|C3",
+      "slot_date": "2026-01-24",
+      "shift_type_code": "C3",
+      "shift_type_category": "call",
+      "derived_day_type": "saturday",
+      "provider_id": "p03",
+      "provider_name": "p03",
+      "existing_assignment_id": null,
+      "source": "main-loop",
+      "explanation": {
+        "ratioAtAssignment": 0,
+        "daysSinceLastCall": 13,
+        "competingCandidates": 3
+      }
+    },
+    {
+      "slot_id": "2026-01-25|C3",
+      "slot_date": "2026-01-25",
+      "shift_type_code": "C3",
+      "shift_type_category": "call",
+      "derived_day_type": "sunday",
+      "provider_id": "p03",
+      "provider_name": "p03",
+      "existing_assignment_id": null,
+      "source": "weekend-chain"
+    },
+    {
+      "slot_id": "2026-01-24|C1",
+      "slot_date": "2026-01-24",
+      "shift_type_code": "C1",
+      "shift_type_category": "call",
+      "derived_day_type": "saturday",
+      "provider_id": "p02",
+      "provider_name": "p02",
+      "existing_assignment_id": null,
+      "source": "main-loop",
+      "explanation": {
+        "ratioAtAssignment": 0,
+        "daysSinceLastCall": 13,
+        "competingCandidates": 3
+      }
+    },
+    {
+      "slot_id": "2026-01-25|C2",
+      "slot_date": "2026-01-25",
+      "shift_type_code": "C2",
+      "shift_type_category": "call",
+      "derived_day_type": "sunday",
+      "provider_id": "p02",
+      "provider_name": "p02",
+      "existing_assignment_id": null,
+      "source": "weekend-chain"
+    },
+    {
+      "slot_id": "2026-01-26|D1",
+      "slot_date": "2026-01-26",
+      "shift_type_code": "D1",
+      "shift_type_category": "regular",
+      "derived_day_type": "weekday",
+      "provider_id": "p02",
+      "provider_name": "p02",
+      "existing_assignment_id": null,
+      "source": "d-chain"
+    },
+    {
+      "slot_id": "2026-01-23|C2",
+      "slot_date": "2026-01-23",
+      "shift_type_code": "C2",
+      "shift_type_category": "call",
+      "derived_day_type": "friday",
+      "provider_id": "p02",
+      "provider_name": "p02",
+      "existing_assignment_id": null,
+      "source": "weekend-chain"
+    },
+    {
+      "slot_id": "2026-01-22|D3",
+      "slot_date": "2026-01-22",
+      "shift_type_code": "D3",
+      "shift_type_category": "regular",
+      "derived_day_type": "weekday",
+      "provider_id": "p02",
+      "provider_name": "p02",
+      "existing_assignment_id": null,
+      "source": "d-chain"
+    },
+    {
+      "slot_id": "2026-01-31|C2",
+      "slot_date": "2026-01-31",
+      "shift_type_code": "C2",
+      "shift_type_category": "call",
+      "derived_day_type": "saturday",
+      "provider_id": "p06",
+      "provider_name": "p06",
+      "existing_assignment_id": null,
+      "source": "main-loop",
+      "explanation": {
+        "ratioAtAssignment": 0,
+        "daysSinceLastCall": 13,
+        "competingCandidates": 3
+      }
+    },
+    {
+      "slot_id": "2026-02-01|C1",
+      "slot_date": "2026-02-01",
+      "shift_type_code": "C1",
+      "shift_type_category": "call",
+      "derived_day_type": "sunday",
+      "provider_id": "p06",
+      "provider_name": "p06",
+      "existing_assignment_id": null,
+      "source": "weekend-chain"
+    },
+    {
+      "slot_id": "2026-01-31|C3",
+      "slot_date": "2026-01-31",
+      "shift_type_code": "C3",
+      "shift_type_category": "call",
+      "derived_day_type": "saturday",
+      "provider_id": "p01",
+      "provider_name": "p01",
+      "existing_assignment_id": null,
+      "source": "main-loop",
+      "explanation": {
+        "ratioAtAssignment": 0,
+        "daysSinceLastCall": 13,
+        "competingCandidates": 3
+      }
+    },
+    {
+      "slot_id": "2026-02-01|C3",
+      "slot_date": "2026-02-01",
+      "shift_type_code": "C3",
+      "shift_type_category": "call",
+      "derived_day_type": "sunday",
+      "provider_id": "p01",
+      "provider_name": "p01",
+      "existing_assignment_id": null,
+      "source": "weekend-chain"
+    },
+    {
+      "slot_id": "2026-01-31|C1",
+      "slot_date": "2026-01-31",
+      "shift_type_code": "C1",
+      "shift_type_category": "call",
+      "derived_day_type": "saturday",
+      "provider_id": "p04",
+      "provider_name": "p04",
+      "existing_assignment_id": null,
+      "source": "main-loop",
+      "explanation": {
+        "ratioAtAssignment": 0,
+        "daysSinceLastCall": 13,
+        "competingCandidates": 2
+      }
+    },
+    {
+      "slot_id": "2026-02-01|C2",
+      "slot_date": "2026-02-01",
+      "shift_type_code": "C2",
+      "shift_type_category": "call",
+      "derived_day_type": "sunday",
+      "provider_id": "p04",
+      "provider_name": "p04",
+      "existing_assignment_id": null,
+      "source": "weekend-chain"
+    },
+    {
+      "slot_id": "2026-01-30|C2",
+      "slot_date": "2026-01-30",
+      "shift_type_code": "C2",
+      "shift_type_category": "call",
+      "derived_day_type": "friday",
+      "provider_id": "p04",
+      "provider_name": "p04",
+      "existing_assignment_id": null,
+      "source": "weekend-chain"
+    },
+    {
+      "slot_id": "2026-01-29|D3",
+      "slot_date": "2026-01-29",
+      "shift_type_code": "D3",
+      "shift_type_category": "regular",
+      "derived_day_type": "weekday",
+      "provider_id": "p04",
+      "provider_name": "p04",
+      "existing_assignment_id": null,
+      "source": "d-chain"
+    },
+    {
+      "slot_id": "2026-01-09|C1",
+      "slot_date": "2026-01-09",
+      "shift_type_code": "C1",
+      "shift_type_category": "call",
+      "derived_day_type": "friday",
+      "provider_id": "p04",
+      "provider_name": "p04",
+      "existing_assignment_id": null,
+      "source": "main-loop",
+      "explanation": {
+        "ratioAtAssignment": 0,
+        "daysSinceLastCall": null,
+        "competingCandidates": 1
+      }
+    },
+    {
+      "slot_id": "2026-01-08|D2",
+      "slot_date": "2026-01-08",
+      "shift_type_code": "D2",
+      "shift_type_category": "regular",
+      "derived_day_type": "weekday",
+      "provider_id": "p04",
+      "provider_name": "p04",
+      "existing_assignment_id": null,
+      "source": "d-chain"
+    },
+    {
+      "slot_id": "2026-01-16|C1",
+      "slot_date": "2026-01-16",
+      "shift_type_code": "C1",
+      "shift_type_category": "call",
+      "derived_day_type": "friday",
+      "provider_id": "p02",
+      "provider_name": "p02",
+      "existing_assignment_id": null,
+      "source": "main-loop",
+      "explanation": {
+        "ratioAtAssignment": 0,
+        "daysSinceLastCall": 5,
+        "competingCandidates": 2
+      }
+    },
+    {
+      "slot_id": "2026-01-15|D2",
+      "slot_date": "2026-01-15",
+      "shift_type_code": "D2",
+      "shift_type_category": "regular",
+      "derived_day_type": "weekday",
+      "provider_id": "p02",
+      "provider_name": "p02",
+      "existing_assignment_id": null,
+      "source": "d-chain"
+    },
+    {
+      "slot_id": "2026-01-23|C1",
+      "slot_date": "2026-01-23",
+      "shift_type_code": "C1",
+      "shift_type_category": "call",
+      "derived_day_type": "friday",
+      "provider_id": "p01",
+      "provider_name": "p01",
+      "existing_assignment_id": null,
+      "source": "main-loop",
+      "explanation": {
+        "ratioAtAssignment": 0,
+        "daysSinceLastCall": 5,
+        "competingCandidates": 1
+      }
+    },
+    {
+      "slot_id": "2026-01-22|D2",
+      "slot_date": "2026-01-22",
+      "shift_type_code": "D2",
+      "shift_type_category": "regular",
+      "derived_day_type": "weekday",
+      "provider_id": "p01",
+      "provider_name": "p01",
+      "existing_assignment_id": null,
+      "source": "d-chain"
+    },
+    {
+      "slot_id": "2026-01-30|C1",
+      "slot_date": "2026-01-30",
+      "shift_type_code": "C1",
+      "shift_type_category": "call",
+      "derived_day_type": "friday",
+      "provider_id": "p03",
+      "provider_name": "p03",
+      "existing_assignment_id": null,
+      "source": "main-loop",
+      "explanation": {
+        "ratioAtAssignment": 0,
+        "daysSinceLastCall": 5,
+        "competingCandidates": 2
+      }
+    },
+    {
+      "slot_id": "2026-01-29|D2",
+      "slot_date": "2026-01-29",
+      "shift_type_code": "D2",
+      "shift_type_category": "regular",
+      "derived_day_type": "weekday",
+      "provider_id": "p03",
+      "provider_name": "p03",
+      "existing_assignment_id": null,
+      "source": "d-chain"
+    },
+    {
+      "slot_id": "2026-01-05|C2",
+      "slot_date": "2026-01-05",
+      "shift_type_code": "C2",
+      "shift_type_category": "call",
+      "derived_day_type": "weekday",
+      "provider_id": "p01",
+      "provider_name": "p01",
+      "existing_assignment_id": null,
+      "source": "main-loop",
+      "explanation": {
+        "ratioAtAssignment": 0,
+        "daysSinceLastCall": null,
+        "competingCandidates": 10
+      }
+    },
+    {
+      "slot_id": "2026-01-06|D1",
+      "slot_date": "2026-01-06",
+      "shift_type_code": "D1",
+      "shift_type_category": "regular",
+      "derived_day_type": "weekday",
+      "provider_id": "p01",
+      "provider_name": "p01",
+      "existing_assignment_id": null,
+      "source": "d-chain"
+    },
+    {
+      "slot_id": "2026-01-05|C1",
+      "slot_date": "2026-01-05",
+      "shift_type_code": "C1",
+      "shift_type_category": "call",
+      "derived_day_type": "weekday",
+      "provider_id": "p02",
+      "provider_name": "p02",
+      "existing_assignment_id": null,
+      "source": "main-loop",
+      "explanation": {
+        "ratioAtAssignment": 0,
+        "daysSinceLastCall": null,
+        "competingCandidates": 9
+      }
+    },
+    {
+      "slot_id": "2026-01-06|C2",
+      "slot_date": "2026-01-06",
+      "shift_type_code": "C2",
+      "shift_type_category": "call",
+      "derived_day_type": "weekday",
+      "provider_id": "p03",
+      "provider_name": "p03",
+      "existing_assignment_id": null,
+      "source": "main-loop",
+      "explanation": {
+        "ratioAtAssignment": 0,
+        "daysSinceLastCall": null,
+        "competingCandidates": 8
+      }
+    },
+    {
+      "slot_id": "2026-01-05|D3",
+      "slot_date": "2026-01-05",
+      "shift_type_code": "D3",
+      "shift_type_category": "regular",
+      "derived_day_type": "weekday",
+      "provider_id": "p03",
+      "provider_name": "p03",
+      "existing_assignment_id": null,
+      "source": "d-chain"
+    },
+    {
+      "slot_id": "2026-01-07|D1",
+      "slot_date": "2026-01-07",
+      "shift_type_code": "D1",
+      "shift_type_category": "regular",
+      "derived_day_type": "weekday",
+      "provider_id": "p03",
+      "provider_name": "p03",
+      "existing_assignment_id": null,
+      "source": "d-chain"
+    },
+    {
+      "slot_id": "2026-01-06|C1",
+      "slot_date": "2026-01-06",
+      "shift_type_code": "C1",
+      "shift_type_category": "call",
+      "derived_day_type": "weekday",
+      "provider_id": "p04",
+      "provider_name": "p04",
+      "existing_assignment_id": null,
+      "source": "main-loop",
+      "explanation": {
+        "ratioAtAssignment": 0,
+        "daysSinceLastCall": null,
+        "competingCandidates": 6
+      }
+    },
+    {
+      "slot_id": "2026-01-05|D2",
+      "slot_date": "2026-01-05",
+      "shift_type_code": "D2",
+      "shift_type_category": "regular",
+      "derived_day_type": "weekday",
+      "provider_id": "p04",
+      "provider_name": "p04",
+      "existing_assignment_id": null,
+      "source": "d-chain"
+    },
+    {
+      "slot_id": "2026-01-07|C2",
+      "slot_date": "2026-01-07",
+      "shift_type_code": "C2",
+      "shift_type_category": "call",
+      "derived_day_type": "weekday",
+      "provider_id": "p06",
+      "provider_name": "p06",
+      "existing_assignment_id": null,
+      "source": "main-loop",
+      "explanation": {
+        "ratioAtAssignment": 0,
+        "daysSinceLastCall": null,
+        "competingCandidates": 7
+      }
+    },
+    {
+      "slot_id": "2026-01-06|D3",
+      "slot_date": "2026-01-06",
+      "shift_type_code": "D3",
+      "shift_type_category": "regular",
+      "derived_day_type": "weekday",
+      "provider_id": "p06",
+      "provider_name": "p06",
+      "existing_assignment_id": null,
+      "source": "d-chain"
+    },
+    {
+      "slot_id": "2026-01-08|D1",
+      "slot_date": "2026-01-08",
+      "shift_type_code": "D1",
+      "shift_type_category": "regular",
+      "derived_day_type": "weekday",
+      "provider_id": "p06",
+      "provider_name": "p06",
+      "existing_assignment_id": null,
+      "source": "d-chain"
+    },
+    {
+      "slot_id": "2026-01-07|C1",
+      "slot_date": "2026-01-07",
+      "shift_type_code": "C1",
+      "shift_type_category": "call",
+      "derived_day_type": "weekday",
+      "provider_id": "p07",
+      "provider_name": "p07",
+      "existing_assignment_id": null,
+      "source": "main-loop",
+      "explanation": {
+        "ratioAtAssignment": 0,
+        "daysSinceLastCall": null,
+        "competingCandidates": 6
+      }
+    },
+    {
+      "slot_id": "2026-01-06|D2",
+      "slot_date": "2026-01-06",
+      "shift_type_code": "D2",
+      "shift_type_category": "regular",
+      "derived_day_type": "weekday",
+      "provider_id": "p07",
+      "provider_name": "p07",
+      "existing_assignment_id": null,
+      "source": "d-chain"
+    },
+    {
+      "slot_id": "2026-01-08|C2",
+      "slot_date": "2026-01-08",
+      "shift_type_code": "C2",
+      "shift_type_category": "call",
+      "derived_day_type": "weekday",
+      "provider_id": "p08",
+      "provider_name": "p08",
+      "existing_assignment_id": null,
+      "source": "main-loop",
+      "explanation": {
+        "ratioAtAssignment": 0,
+        "daysSinceLastCall": null,
+        "competingCandidates": 5
+      }
+    },
+    {
+      "slot_id": "2026-01-07|D3",
+      "slot_date": "2026-01-07",
+      "shift_type_code": "D3",
+      "shift_type_category": "regular",
+      "derived_day_type": "weekday",
+      "provider_id": "p08",
+      "provider_name": "p08",
+      "existing_assignment_id": null,
+      "source": "d-chain"
+    },
+    {
+      "slot_id": "2026-01-09|D1",
+      "slot_date": "2026-01-09",
+      "shift_type_code": "D1",
+      "shift_type_category": "regular",
+      "derived_day_type": "friday",
+      "provider_id": "p08",
+      "provider_name": "p08",
+      "existing_assignment_id": null,
+      "source": "d-chain"
+    },
+    {
+      "slot_id": "2026-01-12|C2",
+      "slot_date": "2026-01-12",
+      "shift_type_code": "C2",
+      "shift_type_category": "call",
+      "derived_day_type": "weekday",
+      "provider_id": "p09",
+      "provider_name": "p09",
+      "existing_assignment_id": null,
+      "source": "main-loop",
+      "explanation": {
+        "ratioAtAssignment": 0,
+        "daysSinceLastCall": null,
+        "competingCandidates": 8
+      }
+    },
+    {
+      "slot_id": "2026-01-11|D3",
+      "slot_date": "2026-01-11",
+      "shift_type_code": "D3",
+      "shift_type_category": "regular",
+      "derived_day_type": "sunday",
+      "provider_id": "p09",
+      "provider_name": "p09",
+      "existing_assignment_id": null,
+      "source": "d-chain"
+    },
+    {
+      "slot_id": "2026-01-13|D1",
+      "slot_date": "2026-01-13",
+      "shift_type_code": "D1",
+      "shift_type_category": "regular",
+      "derived_day_type": "weekday",
+      "provider_id": "p09",
+      "provider_name": "p09",
+      "existing_assignment_id": null,
+      "source": "d-chain"
+    },
+    {
+      "slot_id": "2026-01-12|C1",
+      "slot_date": "2026-01-12",
+      "shift_type_code": "C1",
+      "shift_type_category": "call",
+      "derived_day_type": "weekday",
+      "provider_id": "p10",
+      "provider_name": "p10",
+      "existing_assignment_id": null,
+      "source": "main-loop",
+      "explanation": {
+        "ratioAtAssignment": 0,
+        "daysSinceLastCall": null,
+        "competingCandidates": 7
+      }
+    },
+    {
+      "slot_id": "2026-01-11|D2",
+      "slot_date": "2026-01-11",
+      "shift_type_code": "D2",
+      "shift_type_category": "regular",
+      "derived_day_type": "sunday",
+      "provider_id": "p10",
+      "provider_name": "p10",
+      "existing_assignment_id": null,
+      "source": "d-chain"
+    },
+    {
+      "slot_id": "2026-01-13|C2",
+      "slot_date": "2026-01-13",
+      "shift_type_code": "C2",
+      "shift_type_category": "call",
+      "derived_day_type": "weekday",
+      "provider_id": "p07",
+      "provider_name": "p07",
+      "existing_assignment_id": null,
+      "source": "main-loop",
+      "explanation": {
+        "ratioAtAssignment": 0,
+        "daysSinceLastCall": 6,
+        "competingCandidates": 8
+      }
+    },
+    {
+      "slot_id": "2026-01-12|D3",
+      "slot_date": "2026-01-12",
+      "shift_type_code": "D3",
+      "shift_type_category": "regular",
+      "derived_day_type": "weekday",
+      "provider_id": "p07",
+      "provider_name": "p07",
+      "existing_assignment_id": null,
+      "source": "d-chain"
+    },
+    {
+      "slot_id": "2026-01-14|D1",
+      "slot_date": "2026-01-14",
+      "shift_type_code": "D1",
+      "shift_type_category": "regular",
+      "derived_day_type": "weekday",
+      "provider_id": "p07",
+      "provider_name": "p07",
+      "existing_assignment_id": null,
+      "source": "d-chain"
+    },
+    {
+      "slot_id": "2026-01-13|C1",
+      "slot_date": "2026-01-13",
+      "shift_type_code": "C1",
+      "shift_type_category": "call",
+      "derived_day_type": "weekday",
+      "provider_id": "p06",
+      "provider_name": "p06",
+      "existing_assignment_id": null,
+      "source": "main-loop",
+      "explanation": {
+        "ratioAtAssignment": 0,
+        "daysSinceLastCall": 6,
+        "competingCandidates": 7
+      }
+    },
+    {
+      "slot_id": "2026-01-12|D2",
+      "slot_date": "2026-01-12",
+      "shift_type_code": "D2",
+      "shift_type_category": "regular",
+      "derived_day_type": "weekday",
+      "provider_id": "p06",
+      "provider_name": "p06",
+      "existing_assignment_id": null,
+      "source": "d-chain"
+    },
+    {
+      "slot_id": "2026-01-14|C2",
+      "slot_date": "2026-01-14",
+      "shift_type_code": "C2",
+      "shift_type_category": "call",
+      "derived_day_type": "weekday",
+      "provider_id": "p04",
+      "provider_name": "p04",
+      "existing_assignment_id": null,
+      "source": "main-loop",
+      "explanation": {
+        "ratioAtAssignment": 0,
+        "daysSinceLastCall": 5,
+        "competingCandidates": 7
+      }
+    },
+    {
+      "slot_id": "2026-01-13|D3",
+      "slot_date": "2026-01-13",
+      "shift_type_code": "D3",
+      "shift_type_category": "regular",
+      "derived_day_type": "weekday",
+      "provider_id": "p04",
+      "provider_name": "p04",
+      "existing_assignment_id": null,
+      "source": "d-chain"
+    },
+    {
+      "slot_id": "2026-01-15|D1",
+      "slot_date": "2026-01-15",
+      "shift_type_code": "D1",
+      "shift_type_category": "regular",
+      "derived_day_type": "weekday",
+      "provider_id": "p04",
+      "provider_name": "p04",
+      "existing_assignment_id": null,
+      "source": "d-chain"
+    },
+    {
+      "slot_id": "2026-01-14|C1",
+      "slot_date": "2026-01-14",
+      "shift_type_code": "C1",
+      "shift_type_category": "call",
+      "derived_day_type": "weekday",
+      "provider_id": "p08",
+      "provider_name": "p08",
+      "existing_assignment_id": null,
+      "source": "main-loop",
+      "explanation": {
+        "ratioAtAssignment": 0,
+        "daysSinceLastCall": 6,
+        "competingCandidates": 4
+      }
+    },
+    {
+      "slot_id": "2026-01-13|D2",
+      "slot_date": "2026-01-13",
+      "shift_type_code": "D2",
+      "shift_type_category": "regular",
+      "derived_day_type": "weekday",
+      "provider_id": "p08",
+      "provider_name": "p08",
+      "existing_assignment_id": null,
+      "source": "d-chain"
+    },
+    {
+      "slot_id": "2026-01-15|C2",
+      "slot_date": "2026-01-15",
+      "shift_type_code": "C2",
+      "shift_type_category": "call",
+      "derived_day_type": "weekday",
+      "provider_id": "p10",
+      "provider_name": "p10",
+      "existing_assignment_id": null,
+      "source": "main-loop",
+      "explanation": {
+        "ratioAtAssignment": 0,
+        "daysSinceLastCall": 3,
+        "competingCandidates": 5
+      }
+    },
+    {
+      "slot_id": "2026-01-14|D3",
+      "slot_date": "2026-01-14",
+      "shift_type_code": "D3",
+      "shift_type_category": "regular",
+      "derived_day_type": "weekday",
+      "provider_id": "p10",
+      "provider_name": "p10",
+      "existing_assignment_id": null,
+      "source": "d-chain"
+    },
+    {
+      "slot_id": "2026-01-16|D1",
+      "slot_date": "2026-01-16",
+      "shift_type_code": "D1",
+      "shift_type_category": "regular",
+      "derived_day_type": "friday",
+      "provider_id": "p10",
+      "provider_name": "p10",
+      "existing_assignment_id": null,
+      "source": "d-chain"
+    },
+    {
+      "slot_id": "2026-01-15|C1",
+      "slot_date": "2026-01-15",
+      "shift_type_code": "C1",
+      "shift_type_category": "call",
+      "derived_day_type": "weekday",
+      "provider_id": "p03",
+      "provider_name": "p03",
+      "existing_assignment_id": null,
+      "source": "main-loop",
+      "explanation": {
+        "ratioAtAssignment": 0,
+        "daysSinceLastCall": 4,
+        "competingCandidates": 4
+      }
+    },
+    {
+      "slot_id": "2026-01-14|D2",
+      "slot_date": "2026-01-14",
+      "shift_type_code": "D2",
+      "shift_type_category": "regular",
+      "derived_day_type": "weekday",
+      "provider_id": "p03",
+      "provider_name": "p03",
+      "existing_assignment_id": null,
+      "source": "d-chain"
+    },
+    {
+      "slot_id": "2026-01-19|C2",
+      "slot_date": "2026-01-19",
+      "shift_type_code": "C2",
+      "shift_type_category": "call",
+      "derived_day_type": "weekday",
+      "provider_id": "p05",
+      "provider_name": "p05",
+      "existing_assignment_id": null,
+      "source": "main-loop",
+      "explanation": {
+        "ratioAtAssignment": 0,
+        "daysSinceLastCall": 11,
+        "competingCandidates": 8
+      }
+    },
+    {
+      "slot_id": "2026-01-20|D1",
+      "slot_date": "2026-01-20",
+      "shift_type_code": "D1",
+      "shift_type_category": "regular",
+      "derived_day_type": "weekday",
+      "provider_id": "p05",
+      "provider_name": "p05",
+      "existing_assignment_id": null,
+      "source": "d-chain"
+    },
+    {
+      "slot_id": "2026-01-19|C1",
+      "slot_date": "2026-01-19",
+      "shift_type_code": "C1",
+      "shift_type_category": "call",
+      "derived_day_type": "weekday",
+      "provider_id": "p09",
+      "provider_name": "p09",
+      "existing_assignment_id": null,
+      "source": "main-loop",
+      "explanation": {
+        "ratioAtAssignment": 0,
+        "daysSinceLastCall": 7,
+        "competingCandidates": 7
+      }
+    },
+    {
+      "slot_id": "2026-01-18|D2",
+      "slot_date": "2026-01-18",
+      "shift_type_code": "D2",
+      "shift_type_category": "regular",
+      "derived_day_type": "sunday",
+      "provider_id": "p09",
+      "provider_name": "p09",
+      "existing_assignment_id": null,
+      "source": "d-chain"
+    },
+    {
+      "slot_id": "2026-01-20|C2",
+      "slot_date": "2026-01-20",
+      "shift_type_code": "C2",
+      "shift_type_category": "call",
+      "derived_day_type": "weekday",
+      "provider_id": "p02",
+      "provider_name": "p02",
+      "existing_assignment_id": null,
+      "source": "main-loop",
+      "explanation": {
+        "ratioAtAssignment": 0,
+        "daysSinceLastCall": 4,
+        "competingCandidates": 7
+      }
+    },
+    {
+      "slot_id": "2026-01-19|D3",
+      "slot_date": "2026-01-19",
+      "shift_type_code": "D3",
+      "shift_type_category": "regular",
+      "derived_day_type": "weekday",
+      "provider_id": "p02",
+      "provider_name": "p02",
+      "existing_assignment_id": null,
+      "source": "d-chain"
+    },
+    {
+      "slot_id": "2026-01-21|D1",
+      "slot_date": "2026-01-21",
+      "shift_type_code": "D1",
+      "shift_type_category": "regular",
+      "derived_day_type": "weekday",
+      "provider_id": "p02",
+      "provider_name": "p02",
+      "existing_assignment_id": null,
+      "source": "d-chain"
+    },
+    {
+      "slot_id": "2026-01-20|C1",
+      "slot_date": "2026-01-20",
+      "shift_type_code": "C1",
+      "shift_type_category": "call",
+      "derived_day_type": "weekday",
+      "provider_id": "p01",
+      "provider_name": "p01",
+      "existing_assignment_id": null,
+      "source": "main-loop",
+      "explanation": {
+        "ratioAtAssignment": 0,
+        "daysSinceLastCall": 2,
+        "competingCandidates": 6
+      }
+    },
+    {
+      "slot_id": "2026-01-21|C2",
+      "slot_date": "2026-01-21",
+      "shift_type_code": "C2",
+      "shift_type_category": "call",
+      "derived_day_type": "weekday",
+      "provider_id": "p03",
+      "provider_name": "p03",
+      "existing_assignment_id": null,
+      "source": "main-loop",
+      "explanation": {
+        "ratioAtAssignment": 1,
+        "daysSinceLastCall": 6,
+        "competingCandidates": 7
+      }
+    },
+    {
+      "slot_id": "2026-01-20|D3",
+      "slot_date": "2026-01-20",
+      "shift_type_code": "D3",
+      "shift_type_category": "regular",
+      "derived_day_type": "weekday",
+      "provider_id": "p03",
+      "provider_name": "p03",
+      "existing_assignment_id": null,
+      "source": "d-chain"
+    },
+    {
+      "slot_id": "2026-01-22|D1",
+      "slot_date": "2026-01-22",
+      "shift_type_code": "D1",
+      "shift_type_category": "regular",
+      "derived_day_type": "weekday",
+      "provider_id": "p03",
+      "provider_name": "p03",
+      "existing_assignment_id": null,
+      "source": "d-chain"
+    },
+    {
+      "slot_id": "2026-01-21|C1",
+      "slot_date": "2026-01-21",
+      "shift_type_code": "C1",
+      "shift_type_category": "call",
+      "derived_day_type": "weekday",
+      "provider_id": "p06",
+      "provider_name": "p06",
+      "existing_assignment_id": null,
+      "source": "main-loop",
+      "explanation": {
+        "ratioAtAssignment": 1,
+        "daysSinceLastCall": 3,
+        "competingCandidates": 6
+      }
+    },
+    {
+      "slot_id": "2026-01-20|D2",
+      "slot_date": "2026-01-20",
+      "shift_type_code": "D2",
+      "shift_type_category": "regular",
+      "derived_day_type": "weekday",
+      "provider_id": "p06",
+      "provider_name": "p06",
+      "existing_assignment_id": null,
+      "source": "d-chain"
+    },
+    {
+      "slot_id": "2026-01-22|C2",
+      "slot_date": "2026-01-22",
+      "shift_type_code": "C2",
+      "shift_type_category": "call",
+      "derived_day_type": "weekday",
+      "provider_id": "p04",
+      "provider_name": "p04",
+      "existing_assignment_id": null,
+      "source": "main-loop",
+      "explanation": {
+        "ratioAtAssignment": 1,
+        "daysSinceLastCall": 4,
+        "competingCandidates": 6
+      }
+    },
+    {
+      "slot_id": "2026-01-23|D1",
+      "slot_date": "2026-01-23",
+      "shift_type_code": "D1",
+      "shift_type_category": "regular",
+      "derived_day_type": "friday",
+      "provider_id": "p04",
+      "provider_name": "p04",
+      "existing_assignment_id": null,
+      "source": "d-chain"
+    },
+    {
+      "slot_id": "2026-01-22|C1",
+      "slot_date": "2026-01-22",
+      "shift_type_code": "C1",
+      "shift_type_category": "call",
+      "derived_day_type": "weekday",
+      "provider_id": "p07",
+      "provider_name": "p07",
+      "existing_assignment_id": null,
+      "source": "main-loop",
+      "explanation": {
+        "ratioAtAssignment": 1.25,
+        "daysSinceLastCall": 9,
+        "competingCandidates": 4
+      }
+    },
+    {
+      "slot_id": "2026-01-21|D2",
+      "slot_date": "2026-01-21",
+      "shift_type_code": "D2",
+      "shift_type_category": "regular",
+      "derived_day_type": "weekday",
+      "provider_id": "p07",
+      "provider_name": "p07",
+      "existing_assignment_id": null,
+      "source": "d-chain"
+    },
+    {
+      "slot_id": "2026-01-26|C2",
+      "slot_date": "2026-01-26",
+      "shift_type_code": "C2",
+      "shift_type_category": "call",
+      "derived_day_type": "weekday",
+      "provider_id": "p06",
+      "provider_name": "p06",
+      "existing_assignment_id": null,
+      "source": "main-loop",
+      "explanation": {
+        "ratioAtAssignment": 1,
+        "daysSinceLastCall": 5,
+        "competingCandidates": 8
+      }
+    },
+    {
+      "slot_id": "2026-01-25|D3",
+      "slot_date": "2026-01-25",
+      "shift_type_code": "D3",
+      "shift_type_category": "regular",
+      "derived_day_type": "sunday",
+      "provider_id": "p06",
+      "provider_name": "p06",
+      "existing_assignment_id": null,
+      "source": "d-chain"
+    },
+    {
+      "slot_id": "2026-01-27|D1",
+      "slot_date": "2026-01-27",
+      "shift_type_code": "D1",
+      "shift_type_category": "regular",
+      "derived_day_type": "weekday",
+      "provider_id": "p06",
+      "provider_name": "p06",
+      "existing_assignment_id": null,
+      "source": "d-chain"
+    },
+    {
+      "slot_id": "2026-01-26|C1",
+      "slot_date": "2026-01-26",
+      "shift_type_code": "C1",
+      "shift_type_category": "call",
+      "derived_day_type": "weekday",
+      "provider_id": "p04",
+      "provider_name": "p04",
+      "existing_assignment_id": null,
+      "source": "main-loop",
+      "explanation": {
+        "ratioAtAssignment": 1,
+        "daysSinceLastCall": 4,
+        "competingCandidates": 7
+      }
+    },
+    {
+      "slot_id": "2026-01-25|D2",
+      "slot_date": "2026-01-25",
+      "shift_type_code": "D2",
+      "shift_type_category": "regular",
+      "derived_day_type": "sunday",
+      "provider_id": "p04",
+      "provider_name": "p04",
+      "existing_assignment_id": null,
+      "source": "d-chain"
+    },
+    {
+      "slot_id": "2026-01-27|C2",
+      "slot_date": "2026-01-27",
+      "shift_type_code": "C2",
+      "shift_type_category": "call",
+      "derived_day_type": "weekday",
+      "provider_id": "p01",
+      "provider_name": "p01",
+      "existing_assignment_id": null,
+      "source": "main-loop",
+      "explanation": {
+        "ratioAtAssignment": 1,
+        "daysSinceLastCall": 4,
+        "competingCandidates": 8
+      }
+    },
+    {
+      "slot_id": "2026-01-26|D3",
+      "slot_date": "2026-01-26",
+      "shift_type_code": "D3",
+      "shift_type_category": "regular",
+      "derived_day_type": "weekday",
+      "provider_id": "p01",
+      "provider_name": "p01",
+      "existing_assignment_id": null,
+      "source": "d-chain"
+    },
+    {
+      "slot_id": "2026-01-28|D1",
+      "slot_date": "2026-01-28",
+      "shift_type_code": "D1",
+      "shift_type_category": "regular",
+      "derived_day_type": "weekday",
+      "provider_id": "p01",
+      "provider_name": "p01",
+      "existing_assignment_id": null,
+      "source": "d-chain"
+    },
+    {
+      "slot_id": "2026-01-27|C1",
+      "slot_date": "2026-01-27",
+      "shift_type_code": "C1",
+      "shift_type_category": "call",
+      "derived_day_type": "weekday",
+      "provider_id": "p02",
+      "provider_name": "p02",
+      "existing_assignment_id": null,
+      "source": "main-loop",
+      "explanation": {
+        "ratioAtAssignment": 1,
+        "daysSinceLastCall": 2,
+        "competingCandidates": 7
+      }
+    },
+    {
+      "slot_id": "2026-01-28|C2",
+      "slot_date": "2026-01-28",
+      "shift_type_code": "C2",
+      "shift_type_category": "call",
+      "derived_day_type": "weekday",
+      "provider_id": "p05",
+      "provider_name": "p05",
+      "existing_assignment_id": null,
+      "source": "main-loop",
+      "explanation": {
+        "ratioAtAssignment": 1,
+        "daysSinceLastCall": 3,
+        "competingCandidates": 8
+      }
+    },
+    {
+      "slot_id": "2026-01-27|D3",
+      "slot_date": "2026-01-27",
+      "shift_type_code": "D3",
+      "shift_type_category": "regular",
+      "derived_day_type": "weekday",
+      "provider_id": "p05",
+      "provider_name": "p05",
+      "existing_assignment_id": null,
+      "source": "d-chain"
+    },
+    {
+      "slot_id": "2026-01-29|D1",
+      "slot_date": "2026-01-29",
+      "shift_type_code": "D1",
+      "shift_type_category": "regular",
+      "derived_day_type": "weekday",
+      "provider_id": "p05",
+      "provider_name": "p05",
+      "existing_assignment_id": null,
+      "source": "d-chain"
+    },
+    {
+      "slot_id": "2026-01-28|C1",
+      "slot_date": "2026-01-28",
+      "shift_type_code": "C1",
+      "shift_type_category": "call",
+      "derived_day_type": "weekday",
+      "provider_id": "p08",
+      "provider_name": "p08",
+      "existing_assignment_id": null,
+      "source": "main-loop",
+      "explanation": {
+        "ratioAtAssignment": 1.25,
+        "daysSinceLastCall": 14,
+        "competingCandidates": 5
+      }
+    },
+    {
+      "slot_id": "2026-01-27|D2",
+      "slot_date": "2026-01-27",
+      "shift_type_code": "D2",
+      "shift_type_category": "regular",
+      "derived_day_type": "weekday",
+      "provider_id": "p08",
+      "provider_name": "p08",
+      "existing_assignment_id": null,
+      "source": "d-chain"
+    },
+    {
+      "slot_id": "2026-01-29|C2",
+      "slot_date": "2026-01-29",
+      "shift_type_code": "C2",
+      "shift_type_category": "call",
+      "derived_day_type": "weekday",
+      "provider_id": "p02",
+      "provider_name": "p02",
+      "existing_assignment_id": null,
+      "source": "main-loop",
+      "explanation": {
+        "ratioAtAssignment": 1,
+        "daysSinceLastCall": 2,
+        "competingCandidates": 6
+      }
+    },
+    {
+      "slot_id": "2026-01-30|D1",
+      "slot_date": "2026-01-30",
+      "shift_type_code": "D1",
+      "shift_type_category": "regular",
+      "derived_day_type": "friday",
+      "provider_id": "p02",
+      "provider_name": "p02",
+      "existing_assignment_id": null,
+      "source": "d-chain"
+    },
+    {
+      "slot_id": "2026-01-29|C1",
+      "slot_date": "2026-01-29",
+      "shift_type_code": "C1",
+      "shift_type_category": "call",
+      "derived_day_type": "weekday",
+      "provider_id": "p01",
+      "provider_name": "p01",
+      "existing_assignment_id": null,
+      "source": "main-loop",
+      "explanation": {
+        "ratioAtAssignment": 1,
+        "daysSinceLastCall": 2,
+        "competingCandidates": 5
+      }
+    },
+    {
+      "slot_id": "2026-01-05|D4",
+      "slot_date": "2026-01-05",
+      "shift_type_code": "D4",
+      "shift_type_category": "regular",
+      "derived_day_type": "weekday",
+      "provider_id": "p07",
+      "provider_name": "p07",
+      "existing_assignment_id": null,
+      "source": "relief-order"
+    },
+    {
+      "slot_id": "2026-01-05|D5",
+      "slot_date": "2026-01-05",
+      "shift_type_code": "D5",
+      "shift_type_category": "regular",
+      "derived_day_type": "weekday",
+      "provider_id": "p06",
+      "provider_name": "p06",
+      "existing_assignment_id": null,
+      "source": "relief-order"
+    },
+    {
+      "slot_id": "2026-01-05|D6",
+      "slot_date": "2026-01-05",
+      "shift_type_code": "D6",
+      "shift_type_category": "regular",
+      "derived_day_type": "weekday",
+      "provider_id": "p05",
+      "provider_name": "p05",
+      "existing_assignment_id": null,
+      "source": "relief-order"
+    },
+    {
+      "slot_id": "2026-01-06|D4",
+      "slot_date": "2026-01-06",
+      "shift_type_code": "D4",
+      "shift_type_category": "regular",
+      "derived_day_type": "weekday",
+      "provider_id": "p05",
+      "provider_name": "p05",
+      "existing_assignment_id": null,
+      "source": "relief-order"
+    },
+    {
+      "slot_id": "2026-01-06|D5",
+      "slot_date": "2026-01-06",
+      "shift_type_code": "D5",
+      "shift_type_category": "regular",
+      "derived_day_type": "weekday",
+      "provider_id": "p08",
+      "provider_name": "p08",
+      "existing_assignment_id": null,
+      "source": "relief-order"
+    },
+    {
+      "slot_id": "2026-01-06|D6",
+      "slot_date": "2026-01-06",
+      "shift_type_code": "D6",
+      "shift_type_category": "regular",
+      "derived_day_type": "weekday",
+      "provider_id": "p10",
+      "provider_name": "p10",
+      "existing_assignment_id": null,
+      "source": "relief-order"
+    },
+    {
+      "slot_id": "2026-01-07|D4",
+      "slot_date": "2026-01-07",
+      "shift_type_code": "D4",
+      "shift_type_category": "regular",
+      "derived_day_type": "weekday",
+      "provider_id": "p01",
+      "provider_name": "p01",
+      "existing_assignment_id": null,
+      "source": "relief-order"
+    },
+    {
+      "slot_id": "2026-01-07|D5",
+      "slot_date": "2026-01-07",
+      "shift_type_code": "D5",
+      "shift_type_category": "regular",
+      "derived_day_type": "weekday",
+      "provider_id": "p02",
+      "provider_name": "p02",
+      "existing_assignment_id": null,
+      "source": "relief-order"
+    },
+    {
+      "slot_id": "2026-01-07|D6",
+      "slot_date": "2026-01-07",
+      "shift_type_code": "D6",
+      "shift_type_category": "regular",
+      "derived_day_type": "weekday",
+      "provider_id": "p10",
+      "provider_name": "p10",
+      "existing_assignment_id": null,
+      "source": "relief-order"
+    },
+    {
+      "slot_id": "2026-01-08|D4",
+      "slot_date": "2026-01-08",
+      "shift_type_code": "D4",
+      "shift_type_category": "regular",
+      "derived_day_type": "weekday",
+      "provider_id": "p01",
+      "provider_name": "p01",
+      "existing_assignment_id": null,
+      "source": "relief-order"
+    },
+    {
+      "slot_id": "2026-01-08|D5",
+      "slot_date": "2026-01-08",
+      "shift_type_code": "D5",
+      "shift_type_category": "regular",
+      "derived_day_type": "weekday",
+      "provider_id": "p02",
+      "provider_name": "p02",
+      "existing_assignment_id": null,
+      "source": "relief-order"
+    },
+    {
+      "slot_id": "2026-01-08|D6",
+      "slot_date": "2026-01-08",
+      "shift_type_code": "D6",
+      "shift_type_category": "regular",
+      "derived_day_type": "weekday",
+      "provider_id": "p10",
+      "provider_name": "p10",
+      "existing_assignment_id": null,
+      "source": "relief-order"
+    },
+    {
+      "slot_id": "2026-01-09|D4",
+      "slot_date": "2026-01-09",
+      "shift_type_code": "D4",
+      "shift_type_category": "regular",
+      "derived_day_type": "friday",
+      "provider_id": "p02",
+      "provider_name": "p02",
+      "existing_assignment_id": null,
+      "source": "relief-order"
+    },
+    {
+      "slot_id": "2026-01-09|D5",
+      "slot_date": "2026-01-09",
+      "shift_type_code": "D5",
+      "shift_type_category": "regular",
+      "derived_day_type": "friday",
+      "provider_id": "p10",
+      "provider_name": "p10",
+      "existing_assignment_id": null,
+      "source": "relief-order"
+    },
+    {
+      "slot_id": "2026-01-09|D6",
+      "slot_date": "2026-01-09",
+      "shift_type_code": "D6",
+      "shift_type_category": "regular",
+      "derived_day_type": "friday",
+      "provider_id": "p09",
+      "provider_name": "p09",
+      "existing_assignment_id": null,
+      "source": "relief-order"
+    },
+    {
+      "slot_id": "2026-01-12|D4",
+      "slot_date": "2026-01-12",
+      "shift_type_code": "D4",
+      "shift_type_category": "regular",
+      "derived_day_type": "weekday",
+      "provider_id": "p08",
+      "provider_name": "p08",
+      "existing_assignment_id": null,
+      "source": "relief-order"
+    },
+    {
+      "slot_id": "2026-01-12|D5",
+      "slot_date": "2026-01-12",
+      "shift_type_code": "D5",
+      "shift_type_category": "regular",
+      "derived_day_type": "weekday",
+      "provider_id": "p04",
+      "provider_name": "p04",
+      "existing_assignment_id": null,
+      "source": "relief-order"
+    },
+    {
+      "slot_id": "2026-01-12|D6",
+      "slot_date": "2026-01-12",
+      "shift_type_code": "D6",
+      "shift_type_category": "regular",
+      "derived_day_type": "weekday",
+      "provider_id": "p02",
+      "provider_name": "p02",
+      "existing_assignment_id": null,
+      "source": "relief-order"
+    },
+    {
+      "slot_id": "2026-01-13|D4",
+      "slot_date": "2026-01-13",
+      "shift_type_code": "D4",
+      "shift_type_category": "regular",
+      "derived_day_type": "weekday",
+      "provider_id": "p03",
+      "provider_name": "p03",
+      "existing_assignment_id": null,
+      "source": "relief-order"
+    },
+    {
+      "slot_id": "2026-01-13|D5",
+      "slot_date": "2026-01-13",
+      "shift_type_code": "D5",
+      "shift_type_category": "regular",
+      "derived_day_type": "weekday",
+      "provider_id": "p02",
+      "provider_name": "p02",
+      "existing_assignment_id": null,
+      "source": "relief-order"
+    },
+    {
+      "slot_id": "2026-01-13|D6",
+      "slot_date": "2026-01-13",
+      "shift_type_code": "D6",
+      "shift_type_category": "regular",
+      "derived_day_type": "weekday",
+      "provider_id": "p01",
+      "provider_name": "p01",
+      "existing_assignment_id": null,
+      "source": "relief-order"
+    },
+    {
+      "slot_id": "2026-01-14|D4",
+      "slot_date": "2026-01-14",
+      "shift_type_code": "D4",
+      "shift_type_category": "regular",
+      "derived_day_type": "weekday",
+      "provider_id": "p02",
+      "provider_name": "p02",
+      "existing_assignment_id": null,
+      "source": "relief-order"
+    },
+    {
+      "slot_id": "2026-01-14|D5",
+      "slot_date": "2026-01-14",
+      "shift_type_code": "D5",
+      "shift_type_category": "regular",
+      "derived_day_type": "weekday",
+      "provider_id": "p01",
+      "provider_name": "p01",
+      "existing_assignment_id": null,
+      "source": "relief-order"
+    },
+    {
+      "slot_id": "2026-01-14|D6",
+      "slot_date": "2026-01-14",
+      "shift_type_code": "D6",
+      "shift_type_category": "regular",
+      "derived_day_type": "weekday",
+      "provider_id": "p09",
+      "provider_name": "p09",
+      "existing_assignment_id": null,
+      "source": "relief-order"
+    },
+    {
+      "slot_id": "2026-01-15|D4",
+      "slot_date": "2026-01-15",
+      "shift_type_code": "D4",
+      "shift_type_category": "regular",
+      "derived_day_type": "weekday",
+      "provider_id": "p06",
+      "provider_name": "p06",
+      "existing_assignment_id": null,
+      "source": "relief-order"
+    },
+    {
+      "slot_id": "2026-01-15|D5",
+      "slot_date": "2026-01-15",
+      "shift_type_code": "D5",
+      "shift_type_category": "regular",
+      "derived_day_type": "weekday",
+      "provider_id": "p09",
+      "provider_name": "p09",
+      "existing_assignment_id": null,
+      "source": "relief-order"
+    },
+    {
+      "slot_id": "2026-01-15|D6",
+      "slot_date": "2026-01-15",
+      "shift_type_code": "D6",
+      "shift_type_category": "regular",
+      "derived_day_type": "weekday",
+      "provider_id": "p07",
+      "provider_name": "p07",
+      "existing_assignment_id": null,
+      "source": "relief-order"
+    },
+    {
+      "slot_id": "2026-01-16|D4",
+      "slot_date": "2026-01-16",
+      "shift_type_code": "D4",
+      "shift_type_category": "regular",
+      "derived_day_type": "friday",
+      "provider_id": "p09",
+      "provider_name": "p09",
+      "existing_assignment_id": null,
+      "source": "relief-order"
+    },
+    {
+      "slot_id": "2026-01-16|D5",
+      "slot_date": "2026-01-16",
+      "shift_type_code": "D5",
+      "shift_type_category": "regular",
+      "derived_day_type": "friday",
+      "provider_id": "p07",
+      "provider_name": "p07",
+      "existing_assignment_id": null,
+      "source": "relief-order"
+    },
+    {
+      "slot_id": "2026-01-16|D6",
+      "slot_date": "2026-01-16",
+      "shift_type_code": "D6",
+      "shift_type_category": "regular",
+      "derived_day_type": "friday",
+      "provider_id": "p08",
+      "provider_name": "p08",
+      "existing_assignment_id": null,
+      "source": "relief-order"
+    },
+    {
+      "slot_id": "2026-01-19|D4",
+      "slot_date": "2026-01-19",
+      "shift_type_code": "D4",
+      "shift_type_category": "regular",
+      "derived_day_type": "weekday",
+      "provider_id": "p06",
+      "provider_name": "p06",
+      "existing_assignment_id": null,
+      "source": "relief-order"
+    },
+    {
+      "slot_id": "2026-01-19|D5",
+      "slot_date": "2026-01-19",
+      "shift_type_code": "D5",
+      "shift_type_category": "regular",
+      "derived_day_type": "weekday",
+      "provider_id": "p03",
+      "provider_name": "p03",
+      "existing_assignment_id": null,
+      "source": "relief-order"
+    },
+    {
+      "slot_id": "2026-01-19|D6",
+      "slot_date": "2026-01-19",
+      "shift_type_code": "D6",
+      "shift_type_category": "regular",
+      "derived_day_type": "weekday",
+      "provider_id": "p07",
+      "provider_name": "p07",
+      "existing_assignment_id": null,
+      "source": "relief-order"
+    },
+    {
+      "slot_id": "2026-01-20|D4",
+      "slot_date": "2026-01-20",
+      "shift_type_code": "D4",
+      "shift_type_category": "regular",
+      "derived_day_type": "weekday",
+      "provider_id": "p07",
+      "provider_name": "p07",
+      "existing_assignment_id": null,
+      "source": "relief-order"
+    },
+    {
+      "slot_id": "2026-01-20|D5",
+      "slot_date": "2026-01-20",
+      "shift_type_code": "D5",
+      "shift_type_category": "regular",
+      "derived_day_type": "weekday",
+      "provider_id": "p08",
+      "provider_name": "p08",
+      "existing_assignment_id": null,
+      "source": "relief-order"
+    },
+    {
+      "slot_id": "2026-01-20|D6",
+      "slot_date": "2026-01-20",
+      "shift_type_code": "D6",
+      "shift_type_category": "regular",
+      "derived_day_type": "weekday",
+      "provider_id": "p10",
+      "provider_name": "p10",
+      "existing_assignment_id": null,
+      "source": "relief-order"
+    },
+    {
+      "slot_id": "2026-01-21|D4",
+      "slot_date": "2026-01-21",
+      "shift_type_code": "D4",
+      "shift_type_category": "regular",
+      "derived_day_type": "weekday",
+      "provider_id": "p05",
+      "provider_name": "p05",
+      "existing_assignment_id": null,
+      "source": "relief-order"
+    },
+    {
+      "slot_id": "2026-01-21|D5",
+      "slot_date": "2026-01-21",
+      "shift_type_code": "D5",
+      "shift_type_category": "regular",
+      "derived_day_type": "weekday",
+      "provider_id": "p08",
+      "provider_name": "p08",
+      "existing_assignment_id": null,
+      "source": "relief-order"
+    },
+    {
+      "slot_id": "2026-01-21|D6",
+      "slot_date": "2026-01-21",
+      "shift_type_code": "D6",
+      "shift_type_category": "regular",
+      "derived_day_type": "weekday",
+      "provider_id": "p09",
+      "provider_name": "p09",
+      "existing_assignment_id": null,
+      "source": "relief-order"
+    },
+    {
+      "slot_id": "2026-01-22|D4",
+      "slot_date": "2026-01-22",
+      "shift_type_code": "D4",
+      "shift_type_category": "regular",
+      "derived_day_type": "weekday",
+      "provider_id": "p05",
+      "provider_name": "p05",
+      "existing_assignment_id": null,
+      "source": "relief-order"
+    },
+    {
+      "slot_id": "2026-01-22|D5",
+      "slot_date": "2026-01-22",
+      "shift_type_code": "D5",
+      "shift_type_category": "regular",
+      "derived_day_type": "weekday",
+      "provider_id": "p08",
+      "provider_name": "p08",
+      "existing_assignment_id": null,
+      "source": "relief-order"
+    },
+    {
+      "slot_id": "2026-01-22|D6",
+      "slot_date": "2026-01-22",
+      "shift_type_code": "D6",
+      "shift_type_category": "regular",
+      "derived_day_type": "weekday",
+      "provider_id": "p09",
+      "provider_name": "p09",
+      "existing_assignment_id": null,
+      "source": "relief-order"
+    },
+    {
+      "slot_id": "2026-01-23|D4",
+      "slot_date": "2026-01-23",
+      "shift_type_code": "D4",
+      "shift_type_category": "regular",
+      "derived_day_type": "friday",
+      "provider_id": "p03",
+      "provider_name": "p03",
+      "existing_assignment_id": null,
+      "source": "relief-order"
+    },
+    {
+      "slot_id": "2026-01-23|D5",
+      "slot_date": "2026-01-23",
+      "shift_type_code": "D5",
+      "shift_type_category": "regular",
+      "derived_day_type": "friday",
+      "provider_id": "p08",
+      "provider_name": "p08",
+      "existing_assignment_id": null,
+      "source": "relief-order"
+    },
+    {
+      "slot_id": "2026-01-23|D6",
+      "slot_date": "2026-01-23",
+      "shift_type_code": "D6",
+      "shift_type_category": "regular",
+      "derived_day_type": "friday",
+      "provider_id": "p09",
+      "provider_name": "p09",
+      "existing_assignment_id": null,
+      "source": "relief-order"
+    },
+    {
+      "slot_id": "2026-01-26|D4",
+      "slot_date": "2026-01-26",
+      "shift_type_code": "D4",
+      "shift_type_category": "regular",
+      "derived_day_type": "weekday",
+      "provider_id": "p08",
+      "provider_name": "p08",
+      "existing_assignment_id": null,
+      "source": "relief-order"
+    },
+    {
+      "slot_id": "2026-01-26|D5",
+      "slot_date": "2026-01-26",
+      "shift_type_code": "D5",
+      "shift_type_category": "regular",
+      "derived_day_type": "weekday",
+      "provider_id": "p03",
+      "provider_name": "p03",
+      "existing_assignment_id": null,
+      "source": "relief-order"
+    },
+    {
+      "slot_id": "2026-01-26|D6",
+      "slot_date": "2026-01-26",
+      "shift_type_code": "D6",
+      "shift_type_category": "regular",
+      "derived_day_type": "weekday",
+      "provider_id": "p07",
+      "provider_name": "p07",
+      "existing_assignment_id": null,
+      "source": "relief-order"
+    },
+    {
+      "slot_id": "2026-01-27|D4",
+      "slot_date": "2026-01-27",
+      "shift_type_code": "D4",
+      "shift_type_category": "regular",
+      "derived_day_type": "weekday",
+      "provider_id": "p03",
+      "provider_name": "p03",
+      "existing_assignment_id": null,
+      "source": "relief-order"
+    },
+    {
+      "slot_id": "2026-01-27|D5",
+      "slot_date": "2026-01-27",
+      "shift_type_code": "D5",
+      "shift_type_category": "regular",
+      "derived_day_type": "weekday",
+      "provider_id": "p07",
+      "provider_name": "p07",
+      "existing_assignment_id": null,
+      "source": "relief-order"
+    },
+    {
+      "slot_id": "2026-01-27|D6",
+      "slot_date": "2026-01-27",
+      "shift_type_code": "D6",
+      "shift_type_category": "regular",
+      "derived_day_type": "weekday",
+      "provider_id": "p09",
+      "provider_name": "p09",
+      "existing_assignment_id": null,
+      "source": "relief-order"
+    },
+    {
+      "slot_id": "2026-01-28|D4",
+      "slot_date": "2026-01-28",
+      "shift_type_code": "D4",
+      "shift_type_category": "regular",
+      "derived_day_type": "weekday",
+      "provider_id": "p03",
+      "provider_name": "p03",
+      "existing_assignment_id": null,
+      "source": "relief-order"
+    },
+    {
+      "slot_id": "2026-01-28|D5",
+      "slot_date": "2026-01-28",
+      "shift_type_code": "D5",
+      "shift_type_category": "regular",
+      "derived_day_type": "weekday",
+      "provider_id": "p04",
+      "provider_name": "p04",
+      "existing_assignment_id": null,
+      "source": "relief-order"
+    },
+    {
+      "slot_id": "2026-01-28|D6",
+      "slot_date": "2026-01-28",
+      "shift_type_code": "D6",
+      "shift_type_category": "regular",
+      "derived_day_type": "weekday",
+      "provider_id": "p06",
+      "provider_name": "p06",
+      "existing_assignment_id": null,
+      "source": "relief-order"
+    },
+    {
+      "slot_id": "2026-01-29|D4",
+      "slot_date": "2026-01-29",
+      "shift_type_code": "D4",
+      "shift_type_category": "regular",
+      "derived_day_type": "weekday",
+      "provider_id": "p06",
+      "provider_name": "p06",
+      "existing_assignment_id": null,
+      "source": "relief-order"
+    },
+    {
+      "slot_id": "2026-01-29|D5",
+      "slot_date": "2026-01-29",
+      "shift_type_code": "D5",
+      "shift_type_category": "regular",
+      "derived_day_type": "weekday",
+      "provider_id": "p07",
+      "provider_name": "p07",
+      "existing_assignment_id": null,
+      "source": "relief-order"
+    },
+    {
+      "slot_id": "2026-01-29|D6",
+      "slot_date": "2026-01-29",
+      "shift_type_code": "D6",
+      "shift_type_category": "regular",
+      "derived_day_type": "weekday",
+      "provider_id": "p09",
+      "provider_name": "p09",
+      "existing_assignment_id": null,
+      "source": "relief-order"
+    },
+    {
+      "slot_id": "2026-01-30|D4",
+      "slot_date": "2026-01-30",
+      "shift_type_code": "D4",
+      "shift_type_category": "regular",
+      "derived_day_type": "friday",
+      "provider_id": "p05",
+      "provider_name": "p05",
+      "existing_assignment_id": null,
+      "source": "relief-order"
+    },
+    {
+      "slot_id": "2026-01-30|D5",
+      "slot_date": "2026-01-30",
+      "shift_type_code": "D5",
+      "shift_type_category": "regular",
+      "derived_day_type": "friday",
+      "provider_id": "p08",
+      "provider_name": "p08",
+      "existing_assignment_id": null,
+      "source": "relief-order"
+    },
+    {
+      "slot_id": "2026-01-30|D6",
+      "slot_date": "2026-01-30",
+      "shift_type_code": "D6",
+      "shift_type_category": "regular",
+      "derived_day_type": "friday",
+      "provider_id": "p07",
+      "provider_name": "p07",
+      "existing_assignment_id": null,
+      "source": "relief-order"
+    }
+  ],
+  "unfilled": [],
+  "skippedDerived": [
+    {
+      "date": "2026-01-10",
+      "code": "D1",
+      "provider_id": "p03",
+      "reason": "occupied"
+    },
+    {
+      "date": "2026-01-17",
+      "code": "D1",
+      "provider_id": "p01",
+      "reason": "occupied"
+    },
+    {
+      "date": "2026-01-24",
+      "code": "D1",
+      "provider_id": "p02",
+      "reason": "occupied"
+    },
+    {
+      "date": "2026-01-30",
+      "code": "D2",
+      "provider_id": "p06",
+      "reason": "ineligible"
+    },
+    {
+      "date": "2026-02-02",
+      "code": "D1",
+      "provider_id": "p04",
+      "reason": "no-slot"
+    },
+    {
+      "date": "2026-01-31",
+      "code": "D1",
+      "provider_id": "p04",
+      "reason": "occupied"
+    },
+    {
+      "date": "2026-01-04",
+      "code": "D3",
+      "provider_id": "p01",
+      "reason": "no-slot"
+    },
+    {
+      "date": "2026-01-04",
+      "code": "D2",
+      "provider_id": "p02",
+      "reason": "no-slot"
+    },
+    {
+      "date": "2026-01-18",
+      "code": "D3",
+      "provider_id": "p05",
+      "reason": "pto"
+    },
+    {
+      "date": "2026-01-21",
+      "code": "D3",
+      "provider_id": "p04",
+      "reason": "cross-site"
+    }
+  ],
+  "chainAnchorSlotIds": [
+    "2026-01-10|C2",
+    "2026-01-10|C3",
+    "2026-01-10|C1",
+    "2026-01-17|C2",
+    "2026-01-17|C3",
+    "2026-01-17|C1",
+    "2026-01-24|C2",
+    "2026-01-24|C3",
+    "2026-01-24|C1",
+    "2026-01-31|C2",
+    "2026-01-31|C3",
+    "2026-01-31|C1"
+  ]
+}
