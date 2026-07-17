@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { computeObligations, totalExpectedCalls } from './obligation';
+import { computeCallObligationCensus, roundedObligation, type CensusSlot } from '@/lib/fteTarget';
 import { buildCtx, prov, callSlot, dSlot } from './__fixtures__/buildContext';
 
 // Whole-number TOTAL-level obligations (2026-07-17): per provider,
@@ -89,5 +90,79 @@ describe('computeObligations — rounded total-level obligation per provider', (
     const frac = totalExpectedCalls(ctx);
     expect(frac.get('p2')).toBeCloseTo(0.75, 9);
     expect(computeObligations(ctx).get('p2')).toBe(1);
+  });
+});
+
+describe('engine ↔ UI agreement — computeCallObligationCensus mirrors totalExpectedCalls', () => {
+  // The obligatory-mode cap (engine) and the OVER/extra labeling (grid + Call
+  // Counts modal) must agree on every provider's obligation, or the UI labels
+  // calls the engine placed WITHIN obligation as extra. Same stored par, same
+  // pool, same slot census — the two formulations must be numerically equal.
+  const censusProfiles = (providers: Array<{ id: string; fte_value: number }>) =>
+    providers.map(p => ({
+      provider_id: p.id, home_site_id: 'site1',
+      call_taker: true, partial_call_taker: false, fte_value: p.fte_value,
+    }));
+
+  it('matches on open call slots with a par above pool FTE (the live 11-vs-8.82 shape)', () => {
+    const providers = [prov('p1'), prov('p2', 0.5)];
+    const slots = Array.from({ length: 6 }, (_, i) =>
+      callSlot(`c${i}`, `2026-01-${String(5 + i).padStart(2, '0')}`, 'C1'));
+    const ctx = buildCtx(slots, providers, { parLevel: 11 });
+    const engine = totalExpectedCalls(ctx);
+    const engineObl = computeObligations(ctx);
+
+    const census = computeCallObligationCensus({
+      storedParLevel: 11, siteId: 'site1', includedProviderIds: null,
+      profiles: censusProfiles(providers),
+      slots: slots.map<CensusSlot>(s => ({
+        slot_date: s.slot_date,
+        shift_types: { category: s.shift_type_category, code: s.shift_type_code },
+        assignments: [],
+      })),
+    });
+
+    for (const p of providers) {
+      expect(census.totalExpectedFor(p.id)).toBeCloseTo(engine.get(p.id)!, 9);
+      expect(roundedObligation(census.totalExpectedFor(p.id))).toBe(engineObl.get(p.id));
+    }
+  });
+
+  it('matches when call seeds exist — engine seeds ≡ UI slots that already hold assignments', () => {
+    const providers = [prov('p1'), prov('p2', 0.5)];
+    const openSlots = [
+      callSlot('c1', '2026-01-05', 'C1'),
+      callSlot('c2', '2026-01-06', 'C1'),
+    ];
+    const ctx = buildCtx(openSlots, providers, {
+      parLevel: 11,
+      seedAssignments: [{
+        slot_date: '2026-01-07', provider_id: 'p1',
+        shift_type_code: 'C1', shift_type_category: 'call', derived_day_type: 'weekday',
+      }],
+    });
+    const engine = totalExpectedCalls(ctx);
+
+    const census = computeCallObligationCensus({
+      storedParLevel: 11, siteId: 'site1', includedProviderIds: null,
+      profiles: censusProfiles(providers),
+      slots: [
+        ...openSlots.map<CensusSlot>(s => ({
+          slot_date: s.slot_date,
+          shift_types: { category: s.shift_type_category, code: s.shift_type_code },
+          assignments: [],
+        })),
+        // The seeded call, as the grid sees it: a call slot WITH an assignment.
+        {
+          slot_date: '2026-01-07', shift_types: { category: 'call', code: 'C1' },
+          assignments: [{ id: 'seeded', provider_id: 'p1' }],
+        },
+      ],
+    });
+
+    expect(census.totalCallSlots).toBe(3);
+    for (const p of providers) {
+      expect(census.totalExpectedFor(p.id)).toBeCloseTo(engine.get(p.id)!, 9);
+    }
   });
 });

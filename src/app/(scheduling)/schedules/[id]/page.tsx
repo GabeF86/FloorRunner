@@ -4,7 +4,8 @@ import { useState, useEffect, useCallback, useRef, useMemo, Fragment } from 'rea
 import Link from 'next/link';
 import { gridTokens, cellBackground } from './gridTheme';
 import {
-  fteWeightedTarget, roundedObligation, selectOverParAssignmentIds, type OverParCall,
+  fteWeightedTarget, roundedObligation, computeCallObligationCensus,
+  type CallObligationCensus,
 } from '@/lib/fteTarget';
 import AssistantPanel from './AssistantPanel';
 import { PageHeader, Badge, Button, Banner, scheduleStatusTone } from '@/components/ui';
@@ -195,6 +196,27 @@ function allDatesInRange(start: string, end: string): string[] {
     cur.setDate(cur.getDate() + 1);
   }
   return dates;
+}
+
+// THE obligation inputs for this page (2026-07-17): one adapter feeding the
+// grid over-par memo AND the Call Counts modal, so the two surfaces literally
+// cannot diverge on denominator or call census. computeCallObligationCensus
+// (src/lib/fteTarget.ts) mirrors the engine:
+//   - effectivePar = min(stored call_par_level, generation-pool ΣFTE) — the
+//     same clamp solve()'s obligatory-mode cap uses (genContext
+//     .effectiveParLevel). Pool = included_provider_ids override when set,
+//     else home-site call/partial-call takers (loadGenerationContext's rule).
+//   - totalCallSlots = every call-category slot — holiday-dated included, any
+//     call code, filled or not (the engine's open-slots + call-seeds census).
+function callCensusFromGrid(grid: GridData): CallObligationCensus {
+  return computeCallObligationCensus({
+    // ?? 12 matches the engine's DEFAULT_PAR_LEVEL fallback.
+    storedParLevel: grid.schedule.sites?.call_par_level ?? 12,
+    siteId: grid.schedule.site_id,
+    includedProviderIds: grid.schedule.included_provider_ids,
+    profiles: grid.profiles || [],
+    slots: grid.slots,
+  });
 }
 
 function getWeekStart(dates: string[], offset: number): number {
@@ -479,16 +501,20 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
   /* ── Per-date working roster + over-par detection ───────────────────────── */
 
   // Whole-number obligations, TOTAL level (2026-07-17): a provider's
-  // obligation = round(total call slots ÷ call_par_level × FTE) — summed
-  // across every call code and day bucket, then rounded half-up. When their
-  // actual call count exceeds it, only their LAST N call assignments
-  // (chronological by slot_date, shift-code tiebreak) get the OVER treatment,
-  // N = actual − rounded obligation. Calls up to the rounded obligation are
-  // NEVER labeled extra. Selection is single-homed in
-  // selectOverParAssignmentIds (src/lib/fteTarget.ts) — the Call Counts modal
-  // uses the same helper, so grid and modal can't drift. Deficit
-  // carry-forward (which the engine adds to its quota caps) is still NOT
-  // included here — it requires historical data outside this schedule; a
+  // obligation = round(total call slots ÷ effective par × FTE) — summed
+  // across every call code and day bucket, then rounded half-up. Effective
+  // par clamps the stored call_par_level to the generation pool's ΣFTE, the
+  // SAME denominator the engine's obligatory-mode cap uses — at the stored
+  // par (live: 11 vs pool 8.82) the UI would owe less than the engine and
+  // mislabel in-obligation calls as extra. When actual count exceeds the
+  // obligation, only the LAST N call assignments (chronological by slot_date,
+  // shift-code tiebreak) get the OVER treatment, N = actual − rounded
+  // obligation. Calls up to the rounded obligation are NEVER labeled extra.
+  // Census + selection are single-homed in callCensusFromGrid /
+  // computeCallObligationCensus (src/lib/fteTarget.ts) — the Call Counts
+  // modal consumes the identical census, so grid and modal can't drift.
+  // Deficit carry-forward (which the engine adds to its quota caps) is still
+  // NOT included here — it requires historical data outside this schedule; a
   // provider catching up from a prior block may legitimately exceed their
   // base obligation. Treat OVER as a "look at this" flag, not a violation.
   const { mdCountByDate, crnaCountByDate, workingByDate, overParAssignmentIds } = useMemo(() => {
@@ -513,34 +539,12 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
     };
     if (!grid) return empty;
 
-    const parLevel = grid.schedule.sites?.call_par_level ?? 12;
-    const fteByPid = new Map<string, number>();
-    for (const p of grid.profiles || []) {
-      fteByPid.set(p.provider_id, p.fte_value ?? 1);
-    }
     const providerById = new Map<string, Provider>();
     for (const p of grid.providers) providerById.set(p.id, p);
 
-    // Total call-slot census (every call slot, holiday dates included) —
-    // the denominator input for the TOTAL-level obligation — plus one record
-    // per call assignment for the last-N OVER selection.
-    let totalCallSlots = 0;
-    const callRecords: OverParCall[] = [];
-    for (const slot of grid.slots) {
-      if (slot.shift_types.category !== 'call') continue;
-      totalCallSlots++;
-      for (const a of slot.assignments) {
-        if (!a.provider_id) continue;
-        callRecords.push({
-          id: a.id, provider_id: a.provider_id,
-          slot_date: slot.slot_date, shift_type_code: slot.shift_types.code,
-        });
-      }
-    }
-    const overParAssignmentIds = selectOverParAssignmentIds(
-      callRecords,
-      pid => fteWeightedTarget(totalCallSlots, parLevel, fteByPid.get(pid) ?? 1),
-    );
+    // Shared census (see callCensusFromGrid): effective-par denominator +
+    // every-call-slot totals + last-N OVER selection, identical to the modal.
+    const overParAssignmentIds = callCensusFromGrid(grid).overParAssignmentIds;
 
     // Per-date working roster. The list INCLUDES every assignment so the
     // viewer sees who's nominally on the schedule. The MD/CRNA totals are
@@ -2197,10 +2201,17 @@ function CallCountsModal({ grid, onClose }: { grid: GridData; onClose: () => voi
   const providerById: Record<string, Provider> = {};
   for (const p of grid.providers) providerById[p.id] = p;
 
+  // Shared obligation census — the IDENTICAL inputs the grid's over-par memo
+  // uses (callCensusFromGrid): effective-par denominator (stored par clamped
+  // to the generation pool's ΣFTE, matching the engine's obligatory-mode cap)
+  // and an every-call-slot count — holiday-dated slots and non-C1/C2/C3 call
+  // codes included. The bucketed columns below are DISPLAY grouping only
+  // (C1–C3 across the four day-type buckets; holiday-dated calls have no
+  // column) — they never feed the obligation/extra/OVER math.
+  const census = callCensusFromGrid(grid);
+
   const providersWithCalls = new Set<string>();
-  // One record per call assignment — feeds the shared last-N OVER selection
-  // (same helper as the grid's red cells, so modal and grid can't drift).
-  const callRecords: OverParCall[] = [];
+  for (const rec of census.callRecords) providersWithCalls.add(rec.provider_id);
 
   for (const slot of grid.slots) {
     const code = slot.shift_types?.code;
@@ -2211,18 +2222,13 @@ function CallCountsModal({ grid, onClose }: { grid: GridData; onClose: () => voi
     else if (dt === 'friday') bucket = 'friday';
     else if (dt === 'saturday') bucket = 'saturday';
     else if (dt === 'sunday') bucket = 'sunday';
-    else continue; // skip holidays for now
+    else continue; // no holiday display column — the census above still counts these slots
     const key = `${bucket}|${code}`;
     blockTotals[key] = (blockTotals[key] || 0) + 1;
     for (const a of slot.assignments || []) {
       if (!a.provider_id) continue;
       if (!counts[a.provider_id]) counts[a.provider_id] = {};
       counts[a.provider_id][key] = (counts[a.provider_id][key] || 0) + 1;
-      providersWithCalls.add(a.provider_id);
-      callRecords.push({
-        id: a.id, provider_id: a.provider_id,
-        slot_date: slot.slot_date, shift_type_code: code,
-      });
     }
   }
 
@@ -2266,11 +2272,10 @@ function CallCountsModal({ grid, onClose }: { grid: GridData; onClose: () => voi
   const getCount = (pid: string, bucket: string, code: string) =>
     counts[pid]?.[`${bucket}|${code}`] || 0;
 
-  const rowTotal = (pid: string) => {
-    let t = 0;
-    for (const b of BUCKETS) for (const c of CODES) t += getCount(pid, b.key, c);
-    return t;
-  };
+  // Call Total = EVERY call assignment (census), not just the bucketed C1–C3
+  // columns — a holiday-dated call counts here (and in the obligation math)
+  // even though it has no bucket column of its own.
+  const rowTotal = (pid: string) => census.actualCallsFor(pid);
 
   const colTotal = (bucket: string, code: string) => {
     let t = 0;
@@ -2280,23 +2285,25 @@ function CallCountsModal({ grid, onClose }: { grid: GridData; onClose: () => voi
 
   const ptoDaysForPid = (pid: string) => ptoDaysByPid[pid] || 0;
 
-  const parLevel = grid.schedule.sites?.call_par_level ?? 12;
+  // FTE display beside the provider name only — every calculation below goes
+  // through census.fteFor (engine coercion) so display quirks can't skew math.
   const fteByPid: Record<string, number> = {};
   for (const p of grid.profiles || []) {
     fteByPid[p.provider_id] = p.fte_value ?? 1;
   }
 
   // Expected = FTE-weighted base target per (provider, bucket, code) —
-  // (block_total_in_bucket / call_par_level) × fte_value. Category-level
-  // values stay FRACTIONAL by design (they drive the engine's fairness
-  // ordering); only the TOTAL-level obligation below is rounded.
+  // (block_total_in_bucket / effective par) × fte_value, using the census's
+  // clamped denominator (the engine's computeBucketTargets uses the same
+  // clamp for its category targets). Category-level values stay FRACTIONAL
+  // by design (they drive the engine's fairness ordering); only the
+  // TOTAL-level obligation below is rounded.
   const expectedFor = (pid: string, bucket: string, code: string) =>
-    fteWeightedTarget(blockTotals[`${bucket}|${code}`] || 0, parLevel, fteByPid[pid] ?? 1);
-  const rowExpected = (pid: string) => {
-    let t = 0;
-    for (const b of BUCKETS) for (const c of CODES) t += expectedFor(pid, b.key, c);
-    return t;
-  };
+    fteWeightedTarget(blockTotals[`${bucket}|${code}`] || 0, census.effectivePar, census.fteFor(pid));
+  // TOTAL-level fractional expected — straight from the shared census (all
+  // call slots ÷ effective par × FTE), NOT a sum of the display buckets: the
+  // buckets exclude holiday-dated calls, the obligation never does.
+  const rowExpected = (pid: string) => census.totalExpectedFor(pid);
   const colExpected = (bucket: string, code: string) => {
     let t = 0;
     for (const p of providers) t += expectedFor(p.id, bucket, code);
@@ -2304,19 +2311,22 @@ function CallCountsModal({ grid, onClose }: { grid: GridData; onClose: () => voi
   };
 
   // Whole-number obligations, TOTAL level (2026-07-17): a provider's
-  // obligation = round(Σ fractional expected) — round-half-up. Extra Calls =
-  // only their LAST N call assignments beyond that rounded obligation
+  // obligation = round(total expected) — round-half-up. Extra Calls = only
+  // their LAST N call assignments beyond that rounded obligation
   // (chronological, shift-code tiebreak; N = actual − obligation), grouped by
-  // code for the columns below. Same shared selection as the grid's red OVER
-  // cells (selectOverParAssignmentIds), so the two views always agree.
+  // code for the columns below. The over set comes straight from the shared
+  // census — the SAME set that paints the grid's red OVER cells, computed
+  // once from identical inputs, so the two views always agree. (An over call
+  // with a code outside C1–C3 counts in the math but has no Extra column —
+  // live call codes are only C1–C3 today.)
   //
   // Deficit carry-forward is NOT included (we don't have historical data
   // here), so this can over-report for part-timers legitimately catching
   // up from a prior block. Documented in the column tooltip.
   const rowObligation = (pid: string) => roundedObligation(rowExpected(pid));
-  const overIds = selectOverParAssignmentIds(callRecords, pid => rowExpected(pid));
+  const overIds = census.overParAssignmentIds;
   const overByPidCode: Record<string, number> = {};
-  for (const rec of callRecords) {
+  for (const rec of census.callRecords) {
     if (!overIds.has(rec.id)) continue;
     const k = `${rec.provider_id}|${rec.shift_type_code}`;
     overByPidCode[k] = (overByPidCode[k] || 0) + 1;
@@ -2411,13 +2421,13 @@ function CallCountsModal({ grid, onClose }: { grid: GridData; onClose: () => voi
                 padding: '6px 10px', textAlign: 'center',
                 borderBottom: '1px solid var(--border)', borderLeft: '1px solid var(--border)',
                 color: '#ef4444',
-              }} title="Calls beyond the provider's ROUNDED total obligation — round(total call slots ÷ call par level × FTE). Only their LAST N calls (chronological) count as extra, N = actual − obligation; calls up to the obligation are never extra. Same selection as the red grid cells. Deficit carry-forward is not included.">
+              }} title="Calls beyond the provider's ROUNDED total obligation — round(total call slots ÷ effective par × FTE). Effective par = call par level clamped down to the generation pool's summed FTE (the engine's obligatory-mode denominator). Every call slot counts — holiday-dated included. Only their LAST N calls (chronological) count as extra, N = actual − obligation; calls up to the obligation are never extra. Same selection as the red grid cells. Deficit carry-forward is not included.">
                 Extra Calls
               </th>
               <th rowSpan={2} style={{
                 padding: '6px 10px', textAlign: 'center', fontWeight: 700,
                 borderBottom: '1px solid var(--border)', borderLeft: '1px solid var(--border)',
-              }} title="Rounded total obligation: round(total call slots ÷ call par level × FTE), rounding half up — 1.5 owes 2, 1.3 owes 1. Hover a value for the fractional expected behind it.">
+              }} title="Rounded total obligation: round(total call slots ÷ effective par × FTE), rounding half up — 1.5 owes 2, 1.3 owes 1. Effective par = call par level clamped down to the generation pool's summed FTE, matching the engine's obligatory-mode cap. Hover a value for the fractional expected behind it.">
                 Obligation
               </th>
               <th rowSpan={2} style={{
@@ -2541,10 +2551,12 @@ function CallCountsModal({ grid, onClose }: { grid: GridData; onClose: () => voi
                 color: '#fbbf24',
               }}>{providers.reduce((s, p) => s + ptoDaysForPid(p.id), 0) || '—'}</td>
             </tr>
-            {/* Expected row — Σ of per-provider FTE-weighted targets (from slot counts).
-                A gap vs Total means roster FTE < par level OR unfilled slots in that column. */}
+            {/* Expected row — Σ of per-provider FTE-weighted targets (from slot counts,
+                at the effective par). A gap vs Total means unfilled slots in that column,
+                a stored par below the pool's FTE, or holiday-dated calls (counted in the
+                Call Total column but carrying no bucket column). */}
             <tr style={{ color: 'var(--text-dim)', fontWeight: 600 }}
-                title="Sum of each provider's FTE-weighted obligation: (bucket slot count ÷ call par level) × FTE. A gap versus Total means the roster's summed FTE is below the par level, or slots in that column are unfilled — check the grid for open slots before concluding under-staffing.">
+                title="Sum of each provider's FTE-weighted target: (bucket slot count ÷ effective par) × FTE, where effective par = call par level clamped down to the generation pool's summed FTE. A gap versus Total means slots in that column are unfilled, the stored par is below the pool's FTE, or calls sit on holiday dates (no bucket column) — check the grid for open slots before concluding under-staffing.">
               <td style={{ padding: '6px 10px' }}>Expected</td>
               {BUCKETS.map(b => CODES.map(c => {
                 const exp = colExpected(b.key, c);

@@ -27,6 +27,7 @@ import type {
 import { CallPatternDocSchema, patternWarnings, callFillOrderWarnings, dayTypeFillOrderWarnings, type CallPatternDoc } from './callPattern';
 import { fetchCommittedAssignments, filterPublishedVersions } from './committedAssignments';
 import { embedArray } from '@/lib/embed';
+import { clampParToPoolFte } from '@/lib/fteTarget';
 
 const DEFAULT_PAR_LEVEL = 12; // fallback when site.call_par_level isn't set
 const NEIGHBOR_WINDOW_DAYS = 31;
@@ -88,10 +89,14 @@ export function computeBucketTargets(
  *
  * The stored par still drives the load-time shortfall warning so a stale row
  * stays visible; this clamp only stops it from starving the quotas.
+ *
+ * The clamp itself is single-homed in `clampParToPoolFte` (src/lib/fteTarget.ts)
+ * because the schedule page's obligation census must apply the IDENTICAL clamp
+ * (2026-07-17) — a UI denominator at the stored par would label calls the
+ * obligatory-mode cap placed within obligation as extra.
  */
 export function effectiveParLevel(parLevel: number, providers: CandidateProvider[]): number {
-  const poolFte = providers.reduce((s, p) => s + p.fte_value, 0);
-  return poolFte > 0 ? Math.min(parLevel, poolFte) : parLevel;
+  return clampParToPoolFte(parLevel, providers.reduce((s, p) => s + p.fte_value, 0));
 }
 
 /**

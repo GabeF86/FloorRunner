@@ -28,6 +28,19 @@ export function extraCalls(actualCalls: number, totalExpected: number): number {
   return Math.max(0, actualCalls - roundedObligation(totalExpected));
 }
 
+// ── Effective par: the clamp shared by engine and UI (2026-07-17) ────────────
+// A stored `sites.call_par_level` above the pool's summed FTE would make every
+// FTE share proportionally short, so the engine clamps its quota denominator
+// DOWN to Σ pool FTE (genContext.effectiveParLevel, which delegates here) —
+// never up. The UI's obligation math MUST use the same clamp: with the live
+// data (par 11, pool ΣFTE 8.82) a stored-par denominator makes every UI
+// obligation ~20-25% lower than the engine's cap, so an obligatory-mode
+// generation would render OVER labels on calls the engine placed WITHIN
+// obligation. Zero/empty pool keeps the stored par (nothing to clamp to).
+export function clampParToPoolFte(parLevel: number, poolFte: number): number {
+  return poolFte > 0 ? Math.min(parLevel, poolFte) : parLevel;
+}
+
 // One call assignment as the OVER-selection helper sees it.
 export interface OverParCall {
   id: string;           // assignment id
@@ -62,4 +75,105 @@ export function selectOverParAssignmentIds(
     for (const c of list.slice(-extra)) over.add(c.id);
   }
   return over;
+}
+
+// ── Shared grid/modal obligation census (2026-07-17) ─────────────────────────
+// ONE derivation of every obligation input the schedule page needs, consumed
+// by BOTH the grid over-par memo and the Call Counts modal so the two surfaces
+// cannot feed different denominators or call lists into the shared selector.
+// (Before this, the grid counted every call-category slot while the modal
+// skipped holiday day types and restricted to C1/C2/C3 — same selector,
+// different inputs, disagreeing red cells.)
+//
+// Census rules (mirrors the engine, src/lib/rulesEngine/obligation.ts):
+//   - totalCallSlots = EVERY call-category slot instance — holiday-dated
+//     included, ANY call code (CB/beeper etc.), filled or not. Engine
+//     equivalent: open call slots + call seeds.
+//   - effectivePar  = clampParToPoolFte(stored par, generation-pool ΣFTE).
+//     Pool mirrors loadGenerationContext: `included_provider_ids` override
+//     when non-empty (exactly those, gates skipped), else home-site
+//     call/partial-call takers. Grid profiles are already restricted to
+//     active providers of the schedule's provider group.
+//   - fte coercion `|| 1` matches genContext's profile load (null/0 → 1);
+//     providers with no profile default to 1 (pre-existing UI semantics —
+//     expected stays blind to eligibility by design).
+
+export interface CensusProfile {
+  provider_id: string;
+  home_site_id: string | null;
+  call_taker: boolean;
+  partial_call_taker: boolean;
+  fte_value: number | null;
+}
+
+export interface CensusSlot {
+  slot_date: string;
+  shift_types: { category: string; code: string } | null;
+  assignments?: Array<{ id: string; provider_id: string | null }> | null;
+}
+
+export interface CallObligationCensusInput {
+  storedParLevel: number;              // sites.call_par_level (caller applies the ?? 12 fallback)
+  siteId: string;                      // schedule.site_id — scopes the default pool
+  includedProviderIds?: string[] | null; // schedule.included_provider_ids override pool
+  profiles: CensusProfile[];
+  slots: CensusSlot[];
+}
+
+export interface CallObligationCensus {
+  poolFte: number;
+  effectivePar: number;
+  totalCallSlots: number;
+  callRecords: OverParCall[];
+  fteFor: (providerId: string) => number;
+  totalExpectedFor: (providerId: string) => number;  // fractional — callers round via roundedObligation
+  actualCallsFor: (providerId: string) => number;
+  overParAssignmentIds: Set<string>;
+}
+
+export function computeCallObligationCensus(input: CallObligationCensusInput): CallObligationCensus {
+  const override = input.includedProviderIds && input.includedProviderIds.length > 0
+    ? new Set(input.includedProviderIds)
+    : null;
+
+  let poolFte = 0;
+  const fteByPid = new Map<string, number>();
+  for (const prof of input.profiles) {
+    const fte = prof.fte_value || 1; // engine coercion (genContext profile load)
+    fteByPid.set(prof.provider_id, fte);
+    const inPool = override
+      ? override.has(prof.provider_id)
+      : prof.home_site_id === input.siteId && (prof.call_taker || prof.partial_call_taker);
+    if (inPool) poolFte += fte;
+  }
+  const effectivePar = clampParToPoolFte(input.storedParLevel, poolFte);
+
+  let totalCallSlots = 0;
+  const callRecords: OverParCall[] = [];
+  const actualByPid = new Map<string, number>();
+  for (const slot of input.slots) {
+    if (slot.shift_types?.category !== 'call') continue;
+    totalCallSlots++;
+    for (const a of slot.assignments || []) {
+      if (!a.provider_id) continue;
+      callRecords.push({
+        id: a.id, provider_id: a.provider_id,
+        slot_date: slot.slot_date, shift_type_code: slot.shift_types.code,
+      });
+      actualByPid.set(a.provider_id, (actualByPid.get(a.provider_id) || 0) + 1);
+    }
+  }
+
+  const fteFor = (pid: string) => fteByPid.get(pid) ?? 1;
+  const totalExpectedFor = (pid: string) => fteWeightedTarget(totalCallSlots, effectivePar, fteFor(pid));
+  return {
+    poolFte,
+    effectivePar,
+    totalCallSlots,
+    callRecords,
+    fteFor,
+    totalExpectedFor,
+    actualCallsFor: pid => actualByPid.get(pid) || 0,
+    overParAssignmentIds: selectOverParAssignmentIds(callRecords, totalExpectedFor),
+  };
 }
