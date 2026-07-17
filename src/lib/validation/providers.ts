@@ -21,6 +21,19 @@ export type AvailabilityType = typeof AVAILABILITY_TYPES[number];
 export const APPROVAL_STATUSES = ['pending', 'approved', 'denied', 'waitlisted', 'canceled'] as const;
 export type ApprovalStatus = typeof APPROVAL_STATUSES[number];
 
+// Display labels for provider_availability.reason_code values written by the
+// app (free-text column — unknown codes fall back to the raw string).
+// icu_week / icu_post_call come from the profile ICU Rotation section
+// (src/lib/icuRotation.ts).
+export const REASON_CODE_LABELS: Record<string, string> = {
+  icu_week: 'ICU Week',
+  icu_post_call: 'ICU Post-Call',
+};
+export function reasonCodeLabel(code: string | null | undefined): string | null {
+  if (!code) return null;
+  return REASON_CODE_LABELS[code] || code;
+}
+
 // DB column is numeric(3,2): max 9.99. Practical range is 0.01..1.5 (rare >1),
 // but we allow up to 2.00 for the odd partner working two jobs at the group.
 export const FTE_MIN = 0;
@@ -41,7 +54,7 @@ export const PROVIDER_COLUMNS = [
 // garbage columns via upsert.
 export const PROFILE_COLUMNS = [
   'employment_status', 'fte_value', 'is_shareholder', 'is_partner_track',
-  'is_day_doc',
+  'is_day_doc', 'is_icu_doc',
   'pto_weeks', 'max_weekly_hours', 'max_monthly_calls',
   'call_taker', 'partial_call_taker', 'holiday_call_eligible',
   'weekend_call_eligible', 'night_call_eligible', 'backup_call_eligible',
