@@ -383,36 +383,32 @@ describe('solve — degraded mode: ctx.shiftTypes undefined (pre-patch18 DB)', (
 // call goes unfilled, the orphan used to vanish from ALL reporting — the
 // day-pool engine skips call-owned slots, so nothing ever filled OR reported
 // it. The mop-up fills them via the 'derived' gate or reports them unfilled.
+// 2026-07-17: the mop-up may only fill call-engine day slots that NO chain
+// could target — SEQUENCE-OWNED slots (D1 post-C2, D2/D3 pre-call, chain-link
+// D4) stay unassigned and are reported as sequence orphans instead
+// (sequenceIntegrity.test.ts pins that; the earlier tests here used D1 as the
+// mop-up example, which pinned the live bug).
 describe('solve — mop-up sweep for orphaned call-engine day slots', () => {
   const engineShiftTypes = () => new Map([
     ['C2', { code: 'C2', category: 'call', call_rank: 1, relief_rank: null, is_overlay: false, generation_engine: 'call' as const, requires_post_call_rule: true, call_coverage_type: null }],
-    ['D1', { code: 'D1', category: 'regular', call_rank: null, relief_rank: null, is_overlay: false, generation_engine: 'call' as const, requires_post_call_rule: false, call_coverage_type: null }],
+    ['D5', { code: 'D5', category: 'regular', call_rank: null, relief_rank: null, is_overlay: false, generation_engine: 'call' as const, requires_post_call_rule: false, call_coverage_type: null }],
     ['D8', { code: 'D8', category: 'regular', call_rank: null, relief_rank: null, is_overlay: false, generation_engine: 'day_pool' as const, requires_post_call_rule: false, call_coverage_type: null }],
   ]);
 
-  it('fills an orphaned D1 whose trigger C2 went unfilled (and reports the C2 honestly)', () => {
-    // p1 is on PTO Monday (C2 date) but free Tuesday: Mon C2 goes unfilled,
-    // its Tue D1 would previously vanish — now the mop-up hands it to p1.
-    const monC2 = callSlot('monC2', '2026-01-05', 'C2'); // Mon
-    const tueD1 = dSlot('tueD1', '2026-01-06', 'D1');    // Tue
-    const ctx = buildCtx([monC2, tueD1], [prov('p1')], {
-      shiftTypes: engineShiftTypes(),
-      availByPid: new Map([['p1', [{
-        availability_type: 'pto', start_date: '2026-01-05', end_date: '2026-01-05',
-        approval_status: 'approved',
-      }]]]),
-    });
+  it('fills an open non-chain call-engine day slot (D5, relief_rank null) via the mop-up', () => {
+    // D5 is call-engine-owned but not a relief code here and never a chain
+    // target — without the mop-up it would vanish from all reporting.
+    const tueD5 = dSlot('tueD5', '2026-01-06', 'D5'); // Tue
+    const ctx = buildCtx([tueD5], [prov('p1')], { shiftTypes: engineShiftTypes() });
     const plan = solve(ctx);
-    expect(plan.unfilled.map(u => u.slot_id)).toContain('monC2');
-    const d1 = plan.assignments.find(a => a.slot_id === 'tueD1');
-    expect(d1?.provider_id).toBe('p1');
-    expect(d1?.source).toBe('day-mop-up');
+    const d5 = plan.assignments.find(a => a.slot_id === 'tueD5');
+    expect(d5?.provider_id).toBe('p1');
+    expect(d5?.source).toBe('day-mop-up');
   });
 
   it('reports an orphaned call-engine day slot unfilled when nobody passes the derived gate', () => {
-    const monC2 = callSlot('monC2', '2026-01-05', 'C2');
-    const tueD1 = dSlot('tueD1', '2026-01-06', 'D1');
-    const ctx = buildCtx([monC2, tueD1], [prov('p1')], {
+    const tueD5 = dSlot('tueD5', '2026-01-06', 'D5');
+    const ctx = buildCtx([tueD5], [prov('p1')], {
       shiftTypes: engineShiftTypes(),
       availByPid: new Map([['p1', [{
         availability_type: 'pto', start_date: '2026-01-05', end_date: '2026-01-06',
@@ -420,7 +416,7 @@ describe('solve — mop-up sweep for orphaned call-engine day slots', () => {
       }]]]),
     });
     const plan = solve(ctx);
-    const u = plan.unfilled.find(x => x.slot_id === 'tueD1');
+    const u = plan.unfilled.find(x => x.slot_id === 'tueD5');
     expect(u).toBeDefined();
     expect(u!.reason).toBe('No eligible provider for call-engine day slot');
   });
