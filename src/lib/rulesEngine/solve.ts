@@ -1,6 +1,4 @@
-import {
-  addDays, buildPrePtoByThursday, isActiveNoCallRequest,
-} from './shared';
+import { addDays, isActiveNoCallRequest } from './shared';
 import { evaluateEligibility } from './eligibility';
 import { computeObligations } from './obligation';
 import { computeSequenceOwnedSlotIds } from './sequenceOwnership';
@@ -13,12 +11,15 @@ import { CLASSIC_PATTERN, postCallBlockOffsets } from './callPattern';
 import type { CallPatternDoc } from './callPattern';
 import {
   record, overrideFor, scoreCall, applyDayChains, applyBlockChains,
-  capRoom, chainCallNeeds, noteViolation,
-  buildProviderCalls, rankByNextCall,
+  capRoom, chainCallNeeds, noteViolation, buildProviderCalls,
 } from './solveKernel';
 import type { SolverRun } from './solveKernel';
+import { runPrePtoPass } from './passes/prePto';
+import { runSpansPass } from './passes/spans';
+import { runReliefPass } from './passes/relief';
+import { runMopUpPass } from './passes/mopUp';
 import type {
-  GenerationContext, SlotToFill, CandidateProvider, SolveState,
+  GenerationContext, SolveState,
   SolutionPlan, CandidateRejection,
   SolveOptions, ShiftTypeInfo,
 } from './genTypes';
@@ -163,97 +164,18 @@ export function solve(ctx: GenerationContext, opts: SolveOptions = {}): Solution
     chainAnchorSlotIds: plan.chainAnchorSlotIds!,
     providerCalls: new Map(),
   };
-  const { skippedDerived, waivedLinkKeys } = run;
-
   // Fair denial seeding: seeded/manual calls on requested dates count — that
   // provider has already absorbed a denial this block.
   for (const seed of ctx.seedAssignments) {
     if (seed.shift_type_category === 'call') noteViolation(run, seed.provider_id, seed.slot_date);
   }
 
-  // ── configurable placement passes (pre-PTO Thursday, etc.) ──
-  // Thursday -> providers with blocking PTO that week — PENDING included
-  // (isBlockingAvailability, spec §6.7: pending blocks everywhere, so pending
-  // also drives placement). genContext precomputes this; bare fixtures don't,
-  // so fall back to the shared builder (identical predicate).
-  const prePtoByThursday = ctx.prePtoByThursday
-    ?? buildPrePtoByThursday(ctx.providers, ctx.availByPid, ctx.slotIndex);
-  const tryPlacePrePto = (slot: SlotToFill | undefined, p: CandidateProvider): boolean => {
-    if (!slot) return false;
-    if (run.overrides?.has(slot.slot_id)) return false; // override authoritative; main loop handles it
-    if (state.handledSlotIds.has(slot.slot_id)) return false;
-    // Obligatory mode: a pre-PTO placement is a call assignment like any
-    // other — it needs cap-room. (tryPlacePrePto never fires block chains,
-    // so one slot of room suffices.)
-    if (obligatory && capRoom(run, p.id) < 1) return false;
-    if (!evaluateEligibility(slot, p, state, ctx, 'call').eligible) return false;
-    record(run, slot, p, 'pre-pto-thursday');
-    applyDayChains(run, slot, p);
-    return true;
-  };
-  for (const pass of doc.placementPasses) {
-    if (pass.kind !== 'pre_pto' || !pass.enabled) continue;
-    for (const [thuDate, pidSet] of prePtoByThursday) {
-      const codeMap = ctx.slotIndex.get(thuDate);
-      if (!codeMap) continue;
-      const ranked = Array.from(pidSet).sort()
-        .map(pid => providerById.get(pid))
-        .filter((p): p is CandidateProvider => !!p);
-      // Each PTO-bound provider (up to maxProviders) takes the first available
-      // pass code (classic: C1 preferred, else C2). See ALGORITHM.md §7.
-      for (const p of ranked.slice(0, pass.maxProviders)) {
-        for (const code of pass.codes) {
-          if (tryPlacePrePto(codeMap.get(code), p)) break;
-        }
-      }
-    }
-  }
+  // Configurable placement passes (pre-PTO Thursday — passes/prePto.ts, §7),
+  // then spans (multi-day same-provider obligations — passes/spans.ts).
+  runPrePtoPass(run);
 
   const scheduleDates = ctx.scheduleDates ?? Array.from(ctx.slotIndex.keys()).sort();
-  const dayTypeOfDate = (date: string): string | undefined => {
-    for (const s of ctx.slotIndex.get(date)?.values() ?? []) return s.derived_day_type;
-    return undefined;
-  };
-
-  // ── spans: multi-day same-provider obligations (e.g. Neuro beeper) ──
-  for (const span of doc.spans) {
-    for (const date of scheduleDates) {
-      if (dayTypeOfDate(date) !== span.anchorDayType) continue;
-      const spanSlots: SlotToFill[] = [];
-      for (const off of span.offsets) {
-        const s = ctx.slotIndex.get(addDays(date, off))?.get(span.code);
-        if (s && !state.handledSlotIds.has(s.slot_id)) spanSlots.push(s);
-      }
-      if (spanSlots.length === 0) continue;
-      const eligibleForSpan = ctx.providers.filter(p => spanSlots.every(
-        s => evaluateEligibility(s, p, state, ctx,
-          s.shift_type_category === 'call' ? 'call' : 'derived').eligible));
-      // Obligatory mode: a span is one atomic multi-call obligation — charge
-      // its call slots against the cap upfront, same rule as chain blocks.
-      const spanCallCount = spanSlots.filter(s => s.shift_type_category === 'call').length;
-      const candidates = obligatory
-        ? eligibleForSpan.filter(p => capRoom(run, p.id) >= spanCallCount)
-        : eligibleForSpan;
-      if (candidates.length === 0) {
-        // 'obligation-cap' only when the cap was the sole blocker (someone
-        // was otherwise able to cover the whole span). The slots stay in
-        // slotsToFill, so the main loop still attempts them individually
-        // (within caps) — mirroring the existing severed-span fallback.
-        const reason = obligatory && eligibleForSpan.length > 0
-          ? 'obligation-cap' : 'No provider can cover full span';
-        for (const s of spanSlots) {
-          plan.unfilled.push({
-            slot_id: s.slot_id, slot_date: s.slot_date,
-            shift_type_code: s.shift_type_code, shift_type_category: s.shift_type_category,
-            reason,
-          });
-        }
-        continue;
-      }
-      const winner = scoreCall(run, candidates, spanSlots[0])[0].p;
-      for (const s of spanSlots) { record(run, s, winner, 'span'); applyDayChains(run, s, winner); }
-    }
-  }
+  runSpansPass(run, scheduleDates);
 
   // ── main construction loop (CALL slots only) ──
   for (const slot of slotsToFill) {
@@ -371,112 +293,11 @@ export function solve(ctx: GenerationContext, opts: SolveOptions = {}): Solution
   // between them).
   buildProviderCalls(run);
 
-  // ── relief pass (codes + day types from the pattern; IF-2 fixes) ──
-  if (doc.reliefPass?.enabled) {
-    const reliefDayTypes = doc.reliefPass.dayTypes as string[];
-    for (const date of scheduleDates) {
-      const codeMap = ctx.slotIndex.get(date);
-      if (!codeMap) continue;
-      // IF-2: sample from ANY open relief slot (not just D4/D5) so dates whose
-      // only relief slots are D6-D9 are no longer skipped.
-      const sampleD = reliefCodes.map(c => codeMap.get(c)).find((s): s is SlotToFill => !!s);
-      if (!sampleD) continue;
-      if (!reliefDayTypes.includes(sampleD.derived_day_type)) continue;
-
-      const available = ctx.providers.filter(
-        p => evaluateEligibility(sampleD, p, state, ctx, 'derived').eligible);
-      const scored = rankByNextCall(run, available, date);
-
-      for (const code of reliefCodes) {
-        const slot = codeMap.get(code);
-        if (!slot) continue;
-        if (state.handledSlotIds.has(slot.slot_id)) continue;
-        // Sequence-owned relief-code slot (e.g. weekend-v2's Friday D4, the
-        // Sat-C3 block-chain link): NOT relief inventory. If its chain fired,
-        // it is already handled above; if the chain broke, it must stay open
-        // — the mop-up sweep reports the orphan (never fills it).
-        if (sequenceOwnedSlotIds.has(slot.slot_id)) continue;
-        // IF-2: rescan from rank 0 per code — skip anyone already placed this
-        // date or ineligible for THIS specific slot (per-code credential lists
-        // differ). A provider skipped for one code is reconsidered for later ones.
-        const pick = scored.find(s => !state.assignedOnDate.get(date)?.has(s.p.id)
-          && evaluateEligibility(slot, s.p, state, ctx, 'derived').eligible);
-        if (!pick) {
-          plan.unfilled.push({
-            slot_id: slot.slot_id, slot_date: slot.slot_date,
-            shift_type_code: slot.shift_type_code, shift_type_category: slot.shift_type_category,
-            reason: 'No eligible relief provider',
-          });
-          continue;
-        }
-        record(run, slot, pick.p, 'relief-order');
-      }
-    }
-  }
-
-  // ── mop-up sweep: orphaned call-engine-owned day slots (2026-07-16) ──
-  // Non-call slots whose shift type belongs to the CALL engine
-  // (generation_engine 'call': the D-chain + relief codes) are normally
-  // claimed by day chains, block chains, or the relief pass. When the trigger
-  // call goes unfilled or a chain severs, the orphan slot used to vanish from
-  // ALL reporting — the day-pool engine skips call-owned slots, so nothing
-  // ever filled OR reported it. Sweep every remaining open one:
-  //   • SEQUENCE-OWNED slots (2026-07-17) are NEVER filled here — D1 belongs
-  //     to yesterday's C2 person, D2/D3 to tomorrow's C1/C2 person, Friday D4
-  //     to the Sat-C3 chain provider; a broken chain leaves them open. They
-  //     are reported in plan.unfilled (the single reporting home for open
-  //     slots) exactly once, with an honest reason (precedence: severed >
-  //     waived > source unfilled): 'sequence-orphan: chain link severed' when
-  //     skippedDerived records the designated provider's suppression for that
-  //     (date, code); 'sequence-orphan: pre-call fill waived' when the link
-  //     was skipped by unlessCallWithinDays (anchor filled, by-design skip);
-  //     else 'sequence-orphan: chain source unfilled'. skippedDerived keeps
-  //     its existing role (the suppression event itself, invariant 4) — a
-  //     different fact about the same slot, not a duplicate open-slot report.
-  //   • everything else is filled via the 'derived' gate (every safety gate
-  //     runs; no quota) with the relief-style ranking; anything still open is
-  //     reported in plan.unfilled.
-  // Requires ctx.shiftTypes — pure legacy fixtures without it keep
-  // byte-identical output (golden parity).
-  if (ctx.shiftTypes) {
-    const alreadyReported = new Set(plan.unfilled.map(u => u.slot_id));
-    const skippedKeys = new Set(skippedDerived.map(s => `${s.date}|${s.code}`));
-    for (const date of scheduleDates) {
-      const codeMap = ctx.slotIndex.get(date);
-      if (!codeMap) continue;
-      for (const code of [...codeMap.keys()].sort()) {
-        const slot = codeMap.get(code)!;
-        if (slot.shift_type_category === 'call') continue;           // call slots: main loop reports
-        if (shiftInfo(code)?.generation_engine !== 'call') continue; // day_pool/none: other engines own it
-        if (state.handledSlotIds.has(slot.slot_id)) continue;
-        if (alreadyReported.has(slot.slot_id)) continue;             // relief pass already reported it
-        if (sequenceOwnedSlotIds.has(slot.slot_id)) {
-          const key = `${slot.slot_date}|${slot.shift_type_code}`;
-          plan.unfilled.push({
-            slot_id: slot.slot_id, slot_date: slot.slot_date,
-            shift_type_code: slot.shift_type_code, shift_type_category: slot.shift_type_category,
-            reason: skippedKeys.has(key)
-              ? 'sequence-orphan: chain link severed'
-              : waivedLinkKeys.has(key)
-                ? 'sequence-orphan: pre-call fill waived'
-                : 'sequence-orphan: chain source unfilled',
-          });
-          continue;
-        }
-        const available = ctx.providers.filter(
-          p => evaluateEligibility(slot, p, state, ctx, 'derived').eligible);
-        if (available.length === 0) {
-          plan.unfilled.push({
-            slot_id: slot.slot_id, slot_date: slot.slot_date,
-            shift_type_code: slot.shift_type_code, shift_type_category: slot.shift_type_category,
-            reason: 'No eligible provider for call-engine day slot',
-          });
-          continue;
-        }
-        record(run, slot, rankByNextCall(run, available, date)[0].p, 'day-mop-up');
-      }
-    }
-  }
+  // Relief pass (passes/relief.ts, §10 + IF-2 fixes), then the mop-up sweep
+  // for orphaned call-engine-owned day slots (passes/mopUp.ts, §10.5 — incl.
+  // the sequence-orphan reporting).
+  runReliefPass(run, scheduleDates);
+  runMopUpPass(run, scheduleDates);
 
   return plan;
 }
