@@ -1,6 +1,7 @@
 // Shared types for the call-schedule generation pipeline.
 // Lifted from the interfaces formerly inline in autoGenerate.ts.
 import type { CallPatternDoc } from './callPattern';
+import type { WorkDayBudget } from './workDays';
 
 export interface SlotToFill {
   slot_id: string;
@@ -113,22 +114,10 @@ export interface GenerationContext {
   workDayBudget?: WorkDayBudget;
 }
 
-// Per-provider working-days accounting for a block. `required` is the placement
-// cap (credited weekday count may not exceed it); the rest feed the report.
-export interface ProviderWorkDayBudget {
-  fte: number;
-  workingDays: number;   // block working days (weekday, not major holiday)
-  ptoWeekdays: number;   // working days covered by PTO-netting leave (nets 1:1)
-  required: number;      // round(fte × workingDays) − ptoWeekdays, floored at 0
-  entitledOff: number;   // workingDays − round(fte × workingDays)
-}
-
-export interface WorkDayBudget {
-  workingDays: number;                     // |workingDaySet|
-  workingDaySet: ReadonlySet<string>;      // block dates that are working days
-  majorHolidayDates: ReadonlySet<string>;  // major-holiday dates within the block
-  byProvider: Map<string, ProviderWorkDayBudget>;
-}
+// WorkDayBudget / ProviderWorkDayBudget live beside their arithmetic in
+// workDays.ts (2026-07-20 decomposition) and are RE-EXPORTED here so existing
+// imports — test files included — stay unchanged.
+export type { WorkDayBudget, ProviderWorkDayBudget } from './workDays';
 
 // 'call' = the full set; 'call-no-quota' = every call gate EXCEPT the bucket
 // quota — and it also WAIVES the FTE workdays cap (eligibility applies the cap

@@ -65,6 +65,24 @@ export async function loadMajorHolidayDates(
 //   • plain blocked / jury_duty — treated like sick (honest "under").
 export const PTO_NETTING_TYPES: ReadonlySet<string> = BOOKEND_EXTENDING_TYPES;
 
+// Per-provider working-days accounting for a block. `required` is the placement
+// cap (credited weekday count may not exceed it); the rest feed the report.
+// (Moved beside the arithmetic below; genTypes re-exports both types.)
+export interface ProviderWorkDayBudget {
+  fte: number;
+  workingDays: number;   // block working days (weekday, not major holiday)
+  ptoWeekdays: number;   // working days covered by PTO-netting leave (nets 1:1)
+  required: number;      // round(fte × workingDays) − ptoWeekdays, floored at 0
+  entitledOff: number;   // workingDays − round(fte × workingDays)
+}
+
+export interface WorkDayBudget {
+  workingDays: number;                     // |workingDaySet|
+  workingDaySet: ReadonlySet<string>;      // block dates that are working days
+  majorHolidayDates: ReadonlySet<string>;  // major-holiday dates within the block
+  byProvider: Map<string, ProviderWorkDayBudget>;
+}
+
 // A `blocked` availability row carrying an ICU reason_code: the provider is
 // working the ICU rotation (icu_week) or on their earned ICU post-call rest
 // (icu_post_call). Both CREDIT as a worked day. Independent of blocking —
