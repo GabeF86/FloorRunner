@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { collapseDatesToRanges, countDaysInYear } from './dateRanges';
+import { collapseDatesToRanges, countDaysInYear, countWeekdays, ptoCounterStats } from './dateRanges';
 
 describe('collapseDatesToRanges', () => {
   it('returns empty for empty input', () => {
@@ -74,5 +74,62 @@ describe('countDaysInYear', () => {
 
   it('empty input counts 0', () => {
     expect(countDaysInYear([], 2026)).toBe(0);
+  });
+});
+
+describe('countWeekdays', () => {
+  it('counts Mon–Fri only', () => {
+    // Mon Jul 20 – Sun Jul 26 2026: 5 weekdays.
+    const days = ['2026-07-20', '2026-07-21', '2026-07-22', '2026-07-23', '2026-07-24', '2026-07-25', '2026-07-26'];
+    expect(countWeekdays(days)).toBe(5);
+  });
+  it('a weekend-only set counts 0', () => {
+    expect(countWeekdays(['2026-07-25', '2026-07-26'])).toBe(0);
+  });
+});
+
+describe('ptoCounterStats', () => {
+  // Judge case (round 2): Sat Jun 6 – Sun Jun 14 2026 is 9 calendar days but
+  // debits 5 from a physician's PTO bank — the counter's headline must be the
+  // weekday number so it can be compared to the annual entitlement.
+  it('Sat–Sun PTO week: 5 weekdays booked, 9 calendar days', () => {
+    const s = ptoCounterStats([{ start_date: '2026-06-06', end_date: '2026-06-14' }], [], 2026);
+    expect(s).toEqual({ weekdaysBooked: 5, weekdaysSold: 0, weekdaysNet: 5, calendarNet: 9 });
+  });
+
+  it('sell-back overlapping PTO nets those weekdays out of the PTO count', () => {
+    // PTO Mon Jun 8 – Fri Jun 12; chief buys back Thu–Fri.
+    const s = ptoCounterStats(
+      [{ start_date: '2026-06-08', end_date: '2026-06-12' }],
+      [{ start_date: '2026-06-11', end_date: '2026-06-12' }],
+      2026,
+    );
+    expect(s).toEqual({ weekdaysBooked: 5, weekdaysSold: 2, weekdaysNet: 3, calendarNet: 3 });
+  });
+
+  it('standalone sell-back (no PTO underneath) changes nothing', () => {
+    const s = ptoCounterStats(
+      [{ start_date: '2026-06-08', end_date: '2026-06-12' }],
+      [{ start_date: '2026-09-01', end_date: '2026-09-03' }],
+      2026,
+    );
+    expect(s).toEqual({ weekdaysBooked: 5, weekdaysSold: 0, weekdaysNet: 5, calendarNet: 5 });
+  });
+
+  it('sell-back covering a PTO weekend day nets the calendar count but not weekdays', () => {
+    // PTO Sat Jun 6 – Sun Jun 14; sell back Sat Jun 6 (e.g. a weekend call).
+    const s = ptoCounterStats(
+      [{ start_date: '2026-06-06', end_date: '2026-06-14' }],
+      [{ start_date: '2026-06-06', end_date: '2026-06-06' }],
+      2026,
+    );
+    expect(s).toEqual({ weekdaysBooked: 5, weekdaysSold: 0, weekdaysNet: 5, calendarNet: 8 });
+  });
+
+  it('clips to the requested year', () => {
+    const s = ptoCounterStats([{ start_date: '2025-12-29', end_date: '2026-01-02' }], [], 2026);
+    // Jan 1 (Thu) + Jan 2 (Fri) 2026.
+    expect(s.weekdaysBooked).toBe(2);
+    expect(s.calendarNet).toBe(2);
   });
 });

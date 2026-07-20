@@ -37,6 +37,12 @@ export const gridTokens = {
   sellback: 'rgba(220,38,38,0.14)',
   sellbackHover: 'rgba(220,38,38,0.24)',
   sellbackMark: '#dc2626',
+  // Hover-free disambiguation from the over-par wash (rgba(239,68,68,0.15) is
+  // visually near-identical to `sellback` at scan speed, and red elsewhere in
+  // the grid means a problem): sell-back cells in the Available row carry a
+  // SOLID inset outline + the same "SB" tag assignment cells use, so the
+  // informational red never reads as a flat problem-wash.
+  sellbackOutline: 'inset 0 0 0 1.5px rgba(220,38,38,0.5)',
   // virtual-row category accents (label border only)
   category: { Available: '#10b981', 'Post-Call': '#8b5cf6', Off: '#94a3b8', PTO: '#f59e0b' } as Record<string, string>,
 } as const;

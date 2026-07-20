@@ -50,6 +50,19 @@ describe('validateAvailabilityPatch', () => {
     }
   });
 
+  it('rejects format-valid but impossible calendar dates (JS Date rollover)', () => {
+    // Date('2026-02-30') would roll over to Mar 2 and reach Postgres, which
+    // rejects it with a 500 instead of the promised 400. The round-trip guard
+    // in isValidDate catches these.
+    for (const bad of ['2026-02-30', '2026-02-29', '2026-04-31', '2026-06-31', '2026-00-10', '2026-01-00']) {
+      expect(validateAvailabilityPatch({ start_date: bad }).ok, bad).toBe(false);
+      expect(validateAvailabilityPatch({ end_date: bad }).ok, bad).toBe(false);
+    }
+    // Real leap day stays valid.
+    expect(validateAvailabilityPatch({ start_date: '2024-02-29' }).ok).toBe(true);
+    expect(validateAvailabilityPatch({ end_date: '2028-02-29' }).ok).toBe(true);
+  });
+
   it('rejects availability_type outside the allowed set; accepts every member incl. pto_sellback', () => {
     expect(validateAvailabilityPatch({ availability_type: 'vacation' }).ok).toBe(false);
     expect(validateAvailabilityPatch({ availability_type: 7 }).ok).toBe(false);

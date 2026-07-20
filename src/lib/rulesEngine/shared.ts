@@ -123,8 +123,12 @@ export function isSellbackOverridden(
 // blocking rows — pass true where the consumer historically bookended
 // (eligibility, dayShiftAutoGen); omit for RAW-range consumers (validation
 // timeOff, sequence linked-day, hints). With zero sell-back rows this is
-// exactly the pre-change any-blocking-row-covers decision (byte-identical
-// engine output — pinned by golden parity + the fill-mode golden plans).
+// exactly the pre-change any-blocking-row-covers decision. Byte-identical
+// engine output is pinned by the FILL-MODE GOLDEN PLANS (fillAllPlan.golden
+// + the obligatoryMode/noCallRequests plan pins), which run solve() with the
+// live shared eligibility path. Golden parity alone CANNOT catch a change
+// here: solveLegacy imports the live evaluateEligibility, so a shared-
+// eligibility mutation shifts both sides identically and parity stays green.
 export function isDateBlocked(
   entries: ReadonlyArray<{ availability_type: string; start_date: string; end_date: string; approval_status: string }>,
   date: string,

@@ -1982,7 +1982,11 @@ function renderVirtualRows({
       // Sell-back cell: red tint + red name (Gabriel's explicit ask) — the
       // provider is here because they're WORKING a date PTO would otherwise
       // block. Applied directly (not via cellBackground, whose precedence is
-      // pinned by gridTheme.test.ts).
+      // pinned by gridTheme.test.ts). Because the tint is near-identical to
+      // the over-par wash and red elsewhere means a problem, the cell ALSO
+      // carries two hover-free identifiers: the same "SB" tag assignment
+      // cells use, and a solid inset outline (gridTokens.sellbackOutline)
+      // no flat status wash has.
       const isSellback = !!provider && !!sellbackByDate?.[date]?.has(provider.id);
       const virtCellBg = isSellback
         ? gridTokens.sellback
@@ -1990,6 +1994,7 @@ function renderVirtualRows({
       rows.push(
         <div key={`virt-cell-${label}-${idx}-${date}`} style={{
           background: virtCellBg,
+          ...(isSellback ? { boxShadow: gridTokens.sellbackOutline } : {}),
           borderBottom: '1px solid ' + gridTokens.line,
           borderRight: '1px solid ' + gridTokens.line,
           borderLeft: isToday ? '2px solid ' + gridTokens.accentStrong : isSatBorder ? '2px solid #1e3a5f' : 'none',
@@ -2010,6 +2015,12 @@ function renderVirtualRows({
               {provider.short_display_name}
             </span>
           ) : null}
+          {isSellback && (
+            <span aria-label="Selling back PTO — working" style={{
+              fontSize: 8, fontWeight: 800, letterSpacing: '0.5px',
+              color: gridTokens.sellbackMark, marginLeft: 3, pointerEvents: 'none',
+            }}>SB</span>
+          )}
         </div>
       );
     }

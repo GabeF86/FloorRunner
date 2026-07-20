@@ -64,6 +64,15 @@ describe('PATCH /api/scheduling/availability/[id]', () => {
     expect(updateCalls(calls).length).toBe(0);
   });
 
+  it('400s on a format-valid but impossible calendar date (2026-02-30) with no write', async () => {
+    // JS Date would roll this over to Mar 2; without the round-trip guard it
+    // reached Postgres and came back as a 500 with a raw DB message.
+    const { calls } = setup();
+    const res = await PATCH(fakeReq({ start_date: '2026-02-30' }), params);
+    expect(res.status).toBe(400);
+    expect(updateCalls(calls).length).toBe(0);
+  });
+
   it('400s on an availability_type outside the enum with no write', async () => {
     const { calls } = setup();
     const res = await PATCH(fakeReq({ availability_type: 'vacation' }), params);

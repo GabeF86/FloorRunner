@@ -132,7 +132,7 @@ Interactions, kept deliberately simple in v1 (all stated, none silent):
 - **Standalone rows:** a sell-back row overlapping no blocking time is legal and changes nothing (the UI hints this).
 - **Validation:** `timeOff` must not flag a PTO violation on a sold-back date (the assignment is exactly what the sell-back sanctions); `no_call_request` soft flags still apply.
 
-Zero-sellback inputs are byte-identical to the pre-change engine (golden parity + the fill-mode golden plans pin this).
+Zero-sellback inputs are byte-identical to the pre-change engine. The pin that actually guards this is the **fill-mode golden plans** (`fillAllPlan.golden.json` + the obligatory-mode / no-call-request plan pins), which run `solve()` through the live shared eligibility path. Golden parity is structurally incapable of catching a shared-eligibility change — `solveLegacy` imports the live `evaluateEligibility`, so a mutation there shifts both sides identically and parity stays green.
 
 ## 6.5. Sat/Sun adjacent-week PTO exclusion
 

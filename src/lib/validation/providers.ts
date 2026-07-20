@@ -104,8 +104,14 @@ export function isValidEmail(s: string): boolean {
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 export function isValidDate(s: string): boolean {
   if (!DATE_RE.test(s)) return false;
-  const d = new Date(s + 'T00:00:00');
-  return !Number.isNaN(d.getTime());
+  const d = new Date(s + 'T00:00:00Z');
+  if (Number.isNaN(d.getTime())) return false;
+  // Round-trip guard: JS Date silently rolls impossible calendar days over
+  // ('2026-02-30' parses as Mar 2, '2026-04-31' as May 1), so a format-valid
+  // but nonexistent date would sail through here, then blow up as a Postgres
+  // date-column error (500) instead of the promised 400. Only accept strings
+  // the parsed date maps straight back to.
+  return d.toISOString().slice(0, 10) === s;
 }
 
 export type ValidationResult =

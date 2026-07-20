@@ -21,9 +21,10 @@ import {
 } from '@/lib/icuRotation';
 // Pure engine predicates reused so the availability-tab counters and the
 // sell-back "standalone" hint can never disagree with the scheduler about
-// which rows are live (denied/canceled = dismissed) or blocking.
-import { BLOCKING_AVAIL, isDismissedAvailability } from '@/lib/rulesEngine/shared';
-import { collapseDatesToRanges, countDaysInYear, type DateRange } from '@/lib/dateRanges';
+// which rows are live (denied/canceled = dismissed), blocking, or
+// bookend-extended (effectivePtoRange).
+import { BLOCKING_AVAIL, effectivePtoRange, isDismissedAvailability } from '@/lib/rulesEngine/shared';
+import { collapseDatesToRanges, countDaysInYear, ptoCounterStats, type DateRange, type PtoCounterStats } from '@/lib/dateRanges';
 import { CalendarMultiPicker } from '@/components/CalendarMultiPicker';
 import { SiteShiftTypePicker } from '@/components/ShiftTypePicker';
 
@@ -1686,6 +1687,13 @@ function AvailabilityTab({ providerId, profile }: { providerId: string; profile:
       icuIds.add(r.id);
     }
   }
+  // …but they must not be INVISIBLE either: an orphaned post-ICU Monday still
+  // blocks its date, so render it in the ICU section with a warning + delete
+  // (previously it was excluded from every section with no UI way to see or
+  // remove it). Weeks-without-Mondays already render via pairIcuRows.
+  const icuOrphans = rows.filter(r =>
+    r.availability_type === 'blocked' && r.reason_code === ICU_POST_CALL_REASON &&
+    !icuPairs.some(p => p.monday?.id === r.id));
   const ptoRows = rows.filter(r => r.availability_type === 'pto');
   const sellbackRows = rows.filter(r => r.availability_type === 'pto_sellback');
   const daysOffRows = rows.filter(r => r.availability_type === 'unavailable');
@@ -1693,28 +1701,39 @@ function AvailabilityTab({ providerId, profile }: { providerId: string; profile:
   const otherRows = rows.filter(r =>
     !['pto', 'pto_sellback', 'unavailable', 'no_call_request'].includes(r.availability_type) && !icuIds.has(r.id));
 
-  // ── Category counters: CURRENT-CALENDAR-YEAR calendar-day counts ─────────
-  // Deliberate choice (documented in the InfoTip): every covered day in the
-  // year counts once — weekends and weekdays alike. The scheduler's Mon–Fri
-  // PTO-netting math (workDays.ts) is a different number on purpose. Only
-  // non-dismissed rows count (denied/canceled excluded; pending counts — it
-  // still blocks, clinical invariant 2).
+  // ── Category counters: CURRENT-CALENDAR-YEAR counts ──────────────────────
+  // Only non-dismissed rows count (denied/canceled excluded; pending counts —
+  // it still blocks, clinical invariant 2). Two deliberate counting rules,
+  // both documented in each counter's InfoTip:
+  //   • PTO — WEEKDAYS (Mon–Fri), NET of sell-back: PTO banks are debited in
+  //     working days, so the headline must be comparable to the annual
+  //     entitlement, and a sold-back date is a working date, not PTO taken
+  //     (same netting the engine does in workDays.ts ptoWeekdaysCovered).
+  //     A calendar-day figure rides along as secondary context.
+  //   • Sell-Back / Days Off / Other — calendar days: each sold-back day
+  //     (weekend call included) is a discrete transaction, and days-off /
+  //     leave spans read naturally as calendar days.
   const counterYear = new Date().getFullYear();
   const live = (rs: AvailabilityRow[]) => rs.filter(r => !isDismissedAvailability(r));
-  const ptoDayCount = countDaysInYear(live(ptoRows), counterYear);
+  const ptoStats = ptoCounterStats(live(ptoRows), live(sellbackRows), counterYear);
   const sellbackDayCount = countDaysInYear(live(sellbackRows), counterYear);
   const daysOffCount = countDaysInYear(live(daysOffRows), counterYear);
   const otherDayCount = countDaysInYear(live(otherRows), counterYear);
 
   // Sell-back rows that don't overlap ANY live blocking row are legal but
   // inert — flag them so the chief sees they change nothing yet. Uses the
-  // engine's own BLOCKING_AVAIL + dismissed semantics.
+  // engine's own BLOCKING_AVAIL + dismissed semantics, and the engine's
+  // bookend-EXTENDED blocking coverage (effectivePtoRange): a sell-back on
+  // the Saturday a Monday-start PTO bookends over DOES unblock that Saturday
+  // (shared.test.ts pins it), so it must not be labeled inert.
   const liveBlockingRows = rows.filter(r =>
     BLOCKING_AVAIL.has(r.availability_type) && !isDismissedAvailability(r));
   const sellbackNotes: Record<string, string> = {};
   for (const s of sellbackRows) {
-    const overlaps = liveBlockingRows.some(b =>
-      b.start_date <= s.end_date && b.end_date >= s.start_date);
+    const overlaps = liveBlockingRows.some(b => {
+      const eff = effectivePtoRange(b);
+      return eff.start <= s.end_date && eff.end >= s.start_date;
+    });
     if (!overlaps) {
       sellbackNotes[s.id] = 'standalone — no overlapping PTO/leave; changes nothing until it overlaps blocking time';
     }
@@ -1725,7 +1744,7 @@ function AvailabilityTab({ providerId, profile }: { providerId: string; profile:
       {/* ── PTO Schedule ─────────────────────────────────────────────────── */}
       <AvailSection
         title="PTO Schedule"
-        counter={<CategoryCounter label="Total PTO Days" year={counterYear} days={ptoDayCount} />}
+        counter={<PtoCounter year={counterYear} stats={ptoStats} />}
         hint="Vacation / paid time off. Counts toward PTO; blocks scheduling for the range (flanking weekends are handled by the scheduler's bookend rule)."
       >
         <PtoAddForm providerId={providerId} onAdded={loadAvailability} />
@@ -1796,14 +1815,18 @@ function AvailabilityTab({ providerId, profile }: { providerId: string; profile:
         </AvailSection>
       )}
 
-      {/* ── ICU Rotation — only for flagged ICU docs ─────────────────────── */}
-      {profile?.is_icu_doc && (
+      {/* ── ICU Rotation — for flagged ICU docs, and always when an orphaned
+             post-ICU Monday exists (it blocks a date and must stay visible/
+             deletable even if the doc's ICU flag was later cleared). ──────── */}
+      {(profile?.is_icu_doc || icuOrphans.length > 0) && (
         <AvailSection
           title="ICU Rotation"
           hint="Entering an ICU week blocks the week AND the Monday immediately after it (post-ICU recovery day). Both pieces delete together."
         >
-          <IcuAddForm providerId={providerId} rows={rows} onAdded={loadAvailability} />
-          {icuPairs.length === 0 ? (
+          {profile?.is_icu_doc && (
+            <IcuAddForm providerId={providerId} rows={rows} onAdded={loadAvailability} />
+          )}
+          {icuPairs.length === 0 && icuOrphans.length === 0 ? (
             <div style={{ color: 'var(--text-dim)', fontStyle: 'italic', fontSize: 12, padding: '6px 0' }}>
               No ICU weeks entered yet.
             </div>
@@ -1823,6 +1846,31 @@ function AvailabilityTab({ providerId, profile }: { providerId: string; profile:
               />
             ))
           )}
+          {icuOrphans.map(o => (
+            <div key={o.id} style={{
+              display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10,
+              padding: '7px 10px', marginBottom: 6,
+              background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.35)',
+              borderRadius: 6,
+            }}>
+              <div style={{ fontSize: 12, lineHeight: 1.45 }}>
+                <span style={{ fontWeight: 700, color: '#f59e0b' }}>Orphaned post-ICU Monday</span>
+                <span style={{ color: 'var(--text)' }}> — {formatDate(o.start_date)}</span>
+                <div style={{ color: 'var(--text-dim)', fontSize: 11 }}>
+                  Its ICU week entry no longer exists, but this day still blocks scheduling. Delete it if the rest day no longer applies.
+                </div>
+              </div>
+              <button
+                onClick={() => deleteEntry(o.id)}
+                style={{
+                  background: 'none', border: '1px solid var(--border)', borderRadius: 5,
+                  color: 'var(--text-dim)', fontSize: 11, padding: '3px 9px', cursor: 'pointer', flexShrink: 0,
+                }}
+              >
+                Delete
+              </button>
+            </div>
+          ))}
         </AvailSection>
       )}
 
@@ -1863,20 +1911,40 @@ function AvailSection({ title, hint, counter, children }: {
   );
 }
 
-// Current-calendar-year day counter shown beside a category header. The
-// counting rule (calendar days, weekends included, non-dismissed entries
-// only) is documented in the tooltip so nobody mistakes it for the
-// scheduler's Mon–Fri PTO math.
+const COUNTER_STYLE: React.CSSProperties = {
+  display: 'inline-flex', alignItems: 'center', gap: 5,
+  fontSize: 10, fontWeight: 700, color: 'var(--text-muted)',
+  letterSpacing: 0.3, textTransform: 'none',
+  fontFamily: 'var(--font-mono), ui-monospace, monospace',
+};
+
+// Current-calendar-year day counter shown beside the Sell-Back / Days Off /
+// Other Leave headers. The counting rule (calendar days, weekends included,
+// non-dismissed entries only) is documented in the tooltip so nobody mistakes
+// it for the scheduler's Mon–Fri PTO math.
 function CategoryCounter({ label, year, days }: { label: string; year: number; days: number }) {
   return (
-    <span style={{
-      display: 'inline-flex', alignItems: 'center', gap: 5,
-      fontSize: 10, fontWeight: 700, color: 'var(--text-muted)',
-      letterSpacing: 0.3, textTransform: 'none',
-      fontFamily: 'var(--font-mono), ui-monospace, monospace',
-    }}>
+    <span style={COUNTER_STYLE}>
       {label} · {year}: {days} day{days === 1 ? '' : 's'}
       <InfoTip text={`Calendar-day count for ${year}: every covered day counts once — weekends and weekdays alike (the scheduler's Mon–Fri PTO netting is a separate number). Denied/canceled entries are excluded; pending and approved both count. Entries spanning year boundaries count only their ${year} days.`} />
+    </span>
+  );
+}
+
+// The PTO header counter: WEEKDAYS (Mon–Fri), net of sell-back — the number a
+// chief compares to the annual entitlement (PTO banks are debited in working
+// days; a sold-back date is a working date, not PTO taken). When any weekdays
+// were sold back the booked − sold breakdown is shown inline so the netting
+// is auditable at a glance. Calendar days (also net of sell-back) ride along
+// as secondary context.
+function PtoCounter({ year, stats }: { year: number; stats: PtoCounterStats }) {
+  const { weekdaysBooked, weekdaysSold, weekdaysNet, calendarNet } = stats;
+  return (
+    <span style={COUNTER_STYLE}>
+      Total PTO Days · {year}: {weekdaysNet} weekday{weekdaysNet === 1 ? '' : 's'}
+      {weekdaysSold > 0 ? ` (${weekdaysBooked} booked − ${weekdaysSold} sold back)` : ''}
+      {' · '}{calendarNet} calendar
+      <InfoTip text={`Weekday (Mon–Fri) PTO count for ${year}, NET of sell-back: sold-back dates are working days, not PTO taken — those weekdays are subtracted (and owed again), matching the scheduler's netting. PTO banks are debited in working days, so compare THIS number to the annual entitlement. The calendar figure counts every covered day including weekends, also net of sell-back. Major-holiday exclusion (the scheduler's finer working-days budget) is not applied here. Denied/canceled entries are excluded; pending and approved both count; entries spanning year boundaries count only their ${year} days.`} />
     </span>
   );
 }
