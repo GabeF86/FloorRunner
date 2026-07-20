@@ -614,6 +614,10 @@ export async function loadGenerationContext(
   }
 
   // ── 5. Availability for the schedule date range (loaded in the wave) ──────
+  // ALL availability types ride along un-filtered — pto_sellback rows included
+  // (2026-07-20): the per-date consumers downstream (eligibility's
+  // isDateBlocked gate, the §9 netting via ptoWeekdaysCovered) need them to
+  // apply the date-level override. Never type-filter this load.
   const minDate = waveDates[0];
   const avail = (availRes as { data: unknown }).data;
 
@@ -877,6 +881,8 @@ export async function loadGenerationContext(
   const workingDays = workingDaySet.size;
   const byProvider = new Map<string, ProviderWorkDayBudget>();
   for (const p of providers) {
+    // ptoWeekdaysCovered subtracts sell-back-covered weekdays (2026-07-20):
+    // a sold-back day is owed again, so `required` rises back accordingly.
     const pto = ptoWeekdaysCovered(availByPid.get(p.id) ?? [], workingDaySet).size;
     byProvider.set(p.id, {
       fte: p.fte_value,

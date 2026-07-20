@@ -275,7 +275,9 @@ export async function loadContext(
       .map(row => mapNeighborRow(row, shiftTypesById, slotId))
       .filter((x): x is NonNullable<typeof x> => x !== null);
 
-    // Availability overlapping the immediate ±AVAIL_WINDOW_DAYS window
+    // Availability overlapping the immediate ±AVAIL_WINDOW_DAYS window.
+    // ALL types un-filtered — pto_sellback rows must ride along so the timeOff
+    // evaluator can apply the date-level override (isSellbackOverridden).
     const availStart = addDays(slotRow.slot_date, -AVAIL_WINDOW_DAYS);
     const availEnd = addDays(slotRow.slot_date, AVAIL_WINDOW_DAYS);
     const { data: avail, error: availErr } = await sb

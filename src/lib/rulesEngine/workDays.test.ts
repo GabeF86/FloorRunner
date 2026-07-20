@@ -126,6 +126,33 @@ describe('ptoWeekdaysCovered — netting set only, working days only, deduped', 
       ['fmla', 'military_leave', 'parental_leave', 'pto'],
     );
   });
+
+  // pto_sellback (2026-07-20): a sold-back weekday is OWED AGAIN — it must not
+  // net the working-days obligation. The day credits as worked only when an
+  // assignment actually lands on it (normal placement credit path).
+  it('sell-back-covered weekdays are excluded from netting (owed again)', () => {
+    const entries = [
+      { availability_type: 'pto', start_date: '2026-01-05', end_date: '2026-01-09', approval_status: 'approved' }, // Mon..Fri
+      { availability_type: 'pto_sellback', start_date: '2026-01-06', end_date: '2026-01-06', approval_status: 'approved' }, // Tue
+    ];
+    const covered = ptoWeekdaysCovered(entries, wd);
+    expect(covered.size).toBe(4); // Mon, Wed, Thu, Fri
+    expect(covered.has('2026-01-06')).toBe(false);
+    // requiredWorkDays consumes the netted count: 1.0 FTE × 10 WD − 4 = 6.
+    expect(requiredWorkDays(1, wd.size, covered.size)).toBe(6);
+  });
+  it('a dismissed sell-back row nets nothing back', () => {
+    const entries = [
+      { availability_type: 'pto', start_date: '2026-01-05', end_date: '2026-01-09', approval_status: 'approved' },
+      { availability_type: 'pto_sellback', start_date: '2026-01-06', end_date: '2026-01-06', approval_status: 'canceled' },
+    ];
+    expect(ptoWeekdaysCovered(entries, wd).size).toBe(5);
+  });
+  it('a standalone sell-back row (no PTO overlap) nets nothing', () => {
+    expect(ptoWeekdaysCovered(
+      [{ availability_type: 'pto_sellback', start_date: '2026-01-06', end_date: '2026-01-06', approval_status: 'approved' }], wd,
+    ).size).toBe(0);
+  });
 });
 
 describe('creditsAsWorkedAvailability — ICU rows credit as worked', () => {

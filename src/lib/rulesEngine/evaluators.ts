@@ -16,6 +16,7 @@ import {
   daysBetween,
   isBlockingAvailability,
   isActiveNoCallRequest,
+  isSellbackOverridden,
 } from './shared';
 
 // ── Helpers ────────────────────────────────────────────────────────────────
@@ -233,16 +234,25 @@ const eligibility: Evaluator = ctx => {
 // date is a hard violation (isBlockingAvailability — the canonical predicate
 // from shared.ts: pending blocks, only denied/canceled are ignored).
 // no_call_request isn't a blocking type; it soft-flags call assignments only.
+//
+// pto_sellback date-level override (2026-07-20): a LIVE sell-back row covering
+// the slot date means the provider IS WORKING — an assignment there is exactly
+// what the sell-back sanctions, so blocking rows (pending PTO included) must
+// NOT flag it. The date decision is the single-homed isSellbackOverridden
+// (shared.ts — same home isDateBlocked composes); the per-row loop is kept so
+// each violation still names its own row's type and dates.
 
 const timeOff: Evaluator = ctx => {
   if (!ctx.providerId) return [];
   const violations: RuleViolation[] = [];
   const date = ctx.slot.slot_date;
+  const soldBack = isSellbackOverridden(ctx.availability, date);
 
   for (const a of ctx.availability) {
     if (a.start_date > date || a.end_date < date) continue;
 
     if (isBlockingAvailability(a)) {
+      if (soldBack) continue; // sold-back date: the provider is working
       violations.push({
         rule_id: null,
         rule_name: `Conflicts with ${a.availability_type.toUpperCase()}`,

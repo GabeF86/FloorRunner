@@ -211,6 +211,8 @@ export async function batchValidateVersion(
     }
 
     // ── 3. Availability for all assigned providers over the version range ──
+    // ALL types un-filtered — pto_sellback rows must ride along so the timeOff
+    // evaluator can apply the date-level override (isSellbackOverridden).
     if (availRes.error) return bail('provider_availability', availRes.error.message);
     for (const row of (availRes.data || []) as AvailabilityRow[]) {
       const list = availByPid.get(row.provider_id) || [];

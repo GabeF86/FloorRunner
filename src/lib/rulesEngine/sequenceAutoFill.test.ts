@@ -607,6 +607,43 @@ describe('applySequenceAutoFill — PTO (clinical invariant 2)', () => {
     const result = await applySequenceAutoFill(sb, 'trig', 'p1', CLASSIC_PATTERN);
     expect(result.filledSlotIds).toEqual(['slot-d1-tue']);
   });
+
+  // pto_sellback date-level override (2026-07-20, ALGORITHM.md §6): a live
+  // sell-back row covering the linked date means the provider is WORKING —
+  // the derived fill may land despite PTO (pending included) covering it.
+  it('a live sell-back on the linked day overrides PTO — the D1 fill lands', async () => {
+    const { sb } = makeFakeSupabase({
+      tables: tables({
+        trigger: triggerSlot({ date: MON }),
+        slots: [slot({ id: 'slot-d1-tue', date: TUE, code: 'D1', assignments: [openRow('open-1')] })],
+        availability: [
+          { availability_type: 'pto', approval_status: 'pending', start_date: TUE, end_date: TUE },
+          { availability_type: 'pto_sellback', approval_status: 'approved', start_date: TUE, end_date: TUE },
+        ],
+      }),
+    });
+    const result = await applySequenceAutoFill(sb, 'trig', 'p1', CLASSIC_PATTERN);
+    expect(result.filledSlotIds).toEqual(['slot-d1-tue']);
+    // No pto skip for the sold-back linked day (the fixture's absent D3
+    // pre-fill slot still records its unrelated 'no-slot' skip).
+    expect(result.skips.filter(s => s.reason === 'pto')).toEqual([]);
+  });
+
+  it('a canceled sell-back does not override — skip reason stays pto', async () => {
+    const { sb } = makeFakeSupabase({
+      tables: tables({
+        trigger: triggerSlot({ date: MON }),
+        slots: [slot({ id: 'slot-d1-tue', date: TUE, code: 'D1', assignments: [openRow('open-1')] })],
+        availability: [
+          { availability_type: 'pto', approval_status: 'approved', start_date: TUE, end_date: TUE },
+          { availability_type: 'pto_sellback', approval_status: 'canceled', start_date: TUE, end_date: TUE },
+        ],
+      }),
+    });
+    const result = await applySequenceAutoFill(sb, 'trig', 'p1', CLASSIC_PATTERN);
+    expect(result.filledSlotIds).toEqual([]);
+    expect(result.skips).toContainEqual({ date: TUE, code: 'D1', provider_id: 'p1', reason: 'pto' });
+  });
 });
 
 // ── 4. result shape / vocabulary ─────────────────────────────────────────────

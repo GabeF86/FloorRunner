@@ -58,13 +58,17 @@ describe('intake tools — registry', () => {
     }
   });
 
-  it('record_availability writable types = BLOCKING_AVAIL ∪ {no_call_request}, all valid AVAILABILITY_TYPES', () => {
+  it('record_availability writable types = BLOCKING_AVAIL ∪ {no_call_request, pto_sellback}, all valid AVAILABILITY_TYPES', () => {
     const tool = assistantTools.find(t => t.name === 'record_availability')!;
     const schema = tool.input_schema as { properties: { availability_type: { enum: string[] } } };
     const enumVals = schema.properties.availability_type.enum;
-    // Set-equality with the engine's canonical blocking set + the one soft-flag
-    // lever — the write set is DERIVED from BLOCKING_AVAIL, so it cannot drift.
-    expect(new Set(enumVals)).toEqual(new Set([...BLOCKING_AVAIL, 'no_call_request']));
+    // Set-equality with the engine's canonical blocking set + the two
+    // engine-meaningful non-blocking levers — the write set is DERIVED from
+    // BLOCKING_AVAIL, so it cannot drift. DELIBERATE EXTENSION (2026-07-20):
+    // pto_sellback joins no_call_request as an explicit addition — it is
+    // neither blocking nor a request; it is the date-level blocking OVERRIDE
+    // (chief-entered sell-back — isDateBlocked, shared.ts; ALGORITHM.md §6).
+    expect(new Set(enumVals)).toEqual(new Set([...BLOCKING_AVAIL, 'no_call_request', 'pto_sellback']));
     for (const v of enumVals) expect(AVAILABILITY_TYPES as readonly string[]).toContain(v);
     expect(enumVals).not.toContain('call_request'); // consumer-less type excluded
     expect(enumVals).not.toContain('available'); // informational, not engine-meaningful
