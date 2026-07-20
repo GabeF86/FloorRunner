@@ -20,7 +20,7 @@
 // Suppressed fills are returned as `skips` using the SkippedDerived vocabulary
 // (clinical invariant 4: left unassigned AND recorded, never silently dropped).
 
-import { addDays, daysBetween, isBlockingAvailability, isMissingColumnError } from './shared';
+import { addDays, daysBetween, isBlockingAvailability, isMissingColumnError, overlayMayCoexist } from './shared';
 import { fetchCommittedAssignments } from './committedAssignments';
 import { embedArray } from '@/lib/embed';
 import {
@@ -527,23 +527,16 @@ export async function applySequenceAutoFill(
     // (clinical invariant 3). Labeled relative to the CHOSEN slot's site
     // (where the fill would land), not the trigger's.
     //
-    // Overlay coexistence is SAME-SITE and TWO-SIDED, mirroring solve's narrow
-    // exemption (review findings 3+4): is_overlay exempts REGULAR↔OVERLAY-CALL
-    // pairs only, checked in BOTH directions —
-    //   existing OVERLAY row + incoming NON-CALL fill  → coexist (Doc C's Fri
-    //     C3 already placed, day fill lands beside it);
-    //   incoming OVERLAY fill + existing REGULAR row   → coexist (Fri D4
-    //     already placed, the Fri C3 link lands beside it — order-independent);
-    //   call + call (either overlay)                   → collide (never stack);
-    //   cross-site anything                            → collide (conservative,
-    //     spec 2026-07-15 §Changes/2 — two places at once).
+    // Overlay coexistence is SAME-SITE (kept local — cross-site anything
+    // collides, conservative per spec 2026-07-15 §Changes/2) and TWO-SIDED:
+    // the shared overlayMayCoexist decision table (shared.ts), mirroring
+    // solve's narrow REGULAR↔OVERLAY-CALL exemption (review findings 3+4).
     // Narrow-retry degradation stays conservative: without is_overlay both
-    // branches are false and every row conflicts (pre-overlay behavior).
+    // predicate branches are false and every row conflicts (pre-overlay
+    // behavior).
     const fillSt = chosen.st;
-    const coexists = (a: WindowAssignment) => a.site_id === chosen!.site_id && (
-      (a.st?.is_overlay === true && fillSt?.category !== 'call')
-      || (fillSt?.is_overlay === true && a.st?.category === 'regular')
-    );
+    const coexists = (a: WindowAssignment) =>
+      a.site_id === chosen!.site_id && overlayMayCoexist(a.st ?? {}, fillSt ?? {});
     const conflicts = windowAssignments.filter(a =>
       a.slot_date === linkedDate
       && !evictedIds.has(a.id)

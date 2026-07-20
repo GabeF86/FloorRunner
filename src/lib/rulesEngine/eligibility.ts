@@ -48,6 +48,14 @@ export function evaluateEligibility(
   // day shift + Fri C3 evening neuro call). It is NOT a general free pass —
   // two same-date CALLS never stack, and post-call blocked days always bind
   // (both checks below; review findings 1+2).
+  //
+  // This trio realizes the canonical overlayMayCoexist decision table
+  // (shared.ts) INCREMENTALLY against SolveState maps — the existing side is
+  // implicit in map membership (overlay placements never enter assignedOnDate;
+  // callDatesByProvider holds every call, overlay included; blockedOnDate
+  // holds post-call blocks, which aren't assignments at all), so the
+  // two-object predicate cannot be consumed literally here. Keep the three
+  // checks in sync with that table.
   const slotOverlay = ctx.shiftTypes?.get(slot.shift_type_code)?.is_overlay ?? false;
   if (!slotOverlay && state.assignedOnDate.get(slot.slot_date)?.has(p.id)) {
     return { eligible: false, reason: 'same-date' };

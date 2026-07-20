@@ -75,6 +75,32 @@ export function isBlockingAvailability(
   return !isDismissedAvailability(entry) && BLOCKING_AVAIL.has(entry.availability_type);
 }
 
+// ── Overlay coexistence (single home for the decision table) ────────────────
+// May an EXISTING same-site, same-date assignment and an INCOMING placement
+// coexist? The is_overlay exemption is deliberately NARROW and two-sided —
+// it exempts REGULAR↔OVERLAY-CALL pairs only (Doc C's Fri D4 day shift + Fri
+// C3 evening neuro overlay call), in either placement order:
+//   existing OVERLAY row + incoming NON-CALL  → coexist
+//   incoming OVERLAY     + existing REGULAR   → coexist
+//   call + call (either overlay)              → collide (never stack)
+//   everything else                           → collide
+// Missing/undefined is_overlay ⇒ non-overlay — the conservative pre-overlay
+// behavior (degraded pre-patch18 loads therefore collide on every pair).
+// Cross-site pairs are NEVER exempt (a genuine two-places conflict) — callers
+// keep same-site scoping local.
+// Consumers: sequenceAutoFill's coexists() routes through this directly.
+// eligibility's same-date / call-on-call / blockedOnDate trio and
+// dayShiftAutoGen's seed-time occupancy skip realize the SAME table
+// incrementally against their own state shapes (SolveState maps / occupancy
+// sets) where the existing side is implicit — see the cross-references there.
+export function overlayMayCoexist(
+  existing: { category?: string | null; is_overlay?: boolean | null },
+  incoming: { category?: string | null; is_overlay?: boolean | null },
+): boolean {
+  return (existing.is_overlay === true && incoming.category !== 'call')
+    || (incoming.is_overlay === true && existing.category === 'regular');
+}
+
 // Multi-day planned-leave types that also trigger a weekend-bookend
 // extension. Ad-hoc single-day types (sick, jury_duty, unavailable,
 // blocked) are intentionally left out — extending them would swallow
