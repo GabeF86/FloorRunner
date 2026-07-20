@@ -16,6 +16,7 @@
 // clean), and 'warning' severity never counts as a hard violation.
 
 import { validationSummaryFor } from '@/app/api/scheduling/schedules/[id]/grid/route.helpers';
+import { assignmentFills } from '@/lib/plannerMath';
 
 // Same loose client type the other DB-coupled modules use at this seam
 // (rulesEngine/shared.ts, scheduleAssistant/assistant.ts) — supabase-js's
@@ -119,18 +120,11 @@ export function summarizeSchedules(rows: Array<{ status: string }>): Record<stri
 }
 
 // An assignment "fills" its slot only when it carries a provider and hasn't
-// been canceled/declined (mirrors the grid's OPEN-cell rendering).
-//
-// CROSS-LINK: the assistant's read tools use `provider_id && status ===
-// 'assigned'` as their filled-predicate (loadVersionSlotRows / get_grid in
-// src/lib/scheduleAssistant/tools.ts). The two agree on all data the app
-// writes today — assignment rows only ever carry 'assigned' or 'open' — but
-// they diverge on hypothetical statuses (e.g. pending, external_fill would be
-// "filled" here and "open" there). If any new status is ever written, revisit
-// BOTH predicates together.
-function fills(a: { provider_id: string | null; assignment_status: string }): boolean {
-  return !!a.provider_id && a.assignment_status !== 'canceled' && a.assignment_status !== 'declined';
-}
+// been canceled/declined (mirrors the grid's OPEN-cell rendering). The
+// predicate moved to lib/plannerMath.ts (assignmentFills, imported above) so
+// the Physician Planner's actuals share it — the CROSS-LINK note about the
+// assistant's divergent filled-predicate lives with it there.
+const fills = assignmentFills;
 
 // Natural-order code compare so C2 sorts before C10.
 const codeCompare = new Intl.Collator('en', { numeric: true, sensitivity: 'base' });

@@ -34,7 +34,10 @@ import { embedArray } from '@/lib/embed';
 import { clampParToPoolFte } from '@/lib/fteTarget';
 import { isWorkingDay, ptoWeekdaysCovered, requiredWorkDays, entitledOffDays, loadMajorHolidayDates } from './workDays';
 
-const DEFAULT_PAR_LEVEL = 12; // fallback when site.call_par_level isn't set
+// Fallback when site.call_par_level isn't set (or is 0/negative). Exported
+// (2026-07-20) so the planner API resolves the same default the engine does —
+// the schedule page's `?? 12` is this same convention.
+export const DEFAULT_PAR_LEVEL = 12;
 
 // Missing-relation detection (pre-patch18 live DB) is the shared
 // isMissingRelationError; missing-COLUMN errors (patch18 partly applied) are
