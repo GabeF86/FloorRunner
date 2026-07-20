@@ -121,15 +121,35 @@ export const NEIGHBOR_WINDOW_DAYS = 31;
 export const AVAIL_WINDOW_DAYS = 14;
 
 // ── Date math (YYYY-MM-DD strings, no Date objects leaking) ─────────────────
+// Memoized (2026-07-20 perf): Date-string parsing was ~74% of all engine CPU
+// (daysBetween via daysSinceLastCall/hadCallWithin, addDays via
+// evaluateEligibility + sequenceOwnership, dayOfWeekUTC). Module-level Map
+// caches are observably behavior-free — pure functions of their string
+// inputs, cached values computed by exactly the pre-memo expression on first
+// use. Growth is bounded: a block touches only ~30-90 distinct date strings
+// (plus small offset sets), and serverless processes are short-lived.
 
+const addDaysCache = new Map<string, string>();
 export function addDays(iso: string, n: number): string {
-  const d = new Date(iso + 'T00:00:00Z');
-  d.setUTCDate(d.getUTCDate() + n);
-  return d.toISOString().slice(0, 10);
+  const key = iso + '|' + n;
+  let v = addDaysCache.get(key);
+  if (v === undefined) {
+    const d = new Date(iso + 'T00:00:00Z');
+    d.setUTCDate(d.getUTCDate() + n);
+    v = d.toISOString().slice(0, 10);
+    addDaysCache.set(key, v);
+  }
+  return v;
 }
 
+const dayOfWeekCache = new Map<string, number>();
 export function dayOfWeekUTC(iso: string): number {
-  return new Date(iso + 'T00:00:00Z').getUTCDay(); // 0=Sun..6=Sat
+  let v = dayOfWeekCache.get(iso);
+  if (v === undefined) {
+    v = new Date(iso + 'T00:00:00Z').getUTCDay(); // 0=Sun..6=Sat
+    dayOfWeekCache.set(iso, v);
+  }
+  return v;
 }
 
 // Day-of-week → derived day type. Single home for the DOW fallback mapping
@@ -160,10 +180,18 @@ export function datesOverlap(rangeStart: string, rangeEnd: string, date: string)
 
 // Whole-day difference (to - from) in UTC days. Positive when `to` is later.
 // Inputs are YYYY-MM-DD strings parsed at UTC midnight, so this is DST-safe.
+// The iso→epoch-ms parse is memoized (see the date-math header note).
+const epochCache = new Map<string, number>();
+function epochUTC(iso: string): number {
+  let v = epochCache.get(iso);
+  if (v === undefined) {
+    v = new Date(iso + 'T00:00:00Z').getTime();
+    epochCache.set(iso, v);
+  }
+  return v;
+}
 export function daysBetween(from: string, to: string): number {
-  const f = new Date(from + 'T00:00:00Z').getTime();
-  const t = new Date(to + 'T00:00:00Z').getTime();
-  return Math.round((t - f) / 86400000);
+  return Math.round((epochUTC(to) - epochUTC(from)) / 86400000);
 }
 
 // ── PTO bookend extension ──────────────────────────────────────────────────
