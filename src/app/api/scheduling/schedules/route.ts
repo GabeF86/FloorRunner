@@ -117,8 +117,9 @@ export async function POST(req: NextRequest) {
       dayType = 'federal_holiday';
     } else {
       // Single-homed DOW→dayType map (shared.dayTypeFromDow). dateStr is the
-      // valid ISO date the loop just derived, and its UTC DOW equals the old
-      // local-noon getDay() for date-only strings at any deployed UTC offset.
+      // valid ISO date the loop just derived; its UTC DOW equals the old
+      // local-noon getDay() for offsets in (-12,+12] — every deployed target.
+      // (UTC+13/+14 would differ, where UTC DOW is the self-consistent choice.)
       dayType = dayTypeFromDow(dayOfWeekUTC(dateStr));
     }
 
