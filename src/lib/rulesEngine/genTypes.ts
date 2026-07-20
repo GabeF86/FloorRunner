@@ -257,35 +257,11 @@ export interface SolutionPlan {
   chainAnchorSlotIds?: string[];
 }
 
-// Mutable in-memory bookkeeping during solve. Never touches I/O.
-export interface SolveState {
-  bucketAssigned: Map<string, number>;       // "pid|bucket|code" -> count
-  assignedOnDate: Map<string, Set<string>>;  // date -> set of pids
-  handledSlotIds: Set<string>;
-  callDatesByProvider: Map<string, string[]>; // pid -> sorted call dates
-  // date -> pids whose day this is a pattern post-call BLOCK (day off), as
-  // opposed to an ordinary assignment. Written alongside markAssigned at the
-  // two block-marking sites (applyDayChains blocks; seedSolveState IF-1) so
-  // OVERLAY placements — which skip the assignedOnDate budget — can still see
-  // and respect blocked days (clinical invariant 1).
-  blockedOnDate: Map<string, Set<string>>;
-  // FTE working-days credit ledger (2026-07-17): pid -> set of WORKING dates
-  // credited as worked (weekday assignments from any pass, post-call rest days
-  // on weekdays, ICU-week weekdays). Single home for the credited counter the
-  // workdays cap consults; only populated when ctx carries a workDayBudget.
-  creditedWorkDays: Map<string, Set<string>>;
-}
-
-export function emptySolveState(): SolveState {
-  return {
-    bucketAssigned: new Map(),
-    assignedOnDate: new Map(),
-    handledSlotIds: new Set(),
-    callDatesByProvider: new Map(),
-    blockedOnDate: new Map(),
-    creditedWorkDays: new Map(),
-  };
-}
+// SolveState + emptySolveState live in solveState.ts (2026-07-20 solve
+// decomposition, alongside the pure state mutators) and are RE-EXPORTED here
+// so existing imports — test files included — stay unchanged.
+export type { SolveState } from './solveState';
+export { emptySolveState } from './solveState';
 
 // Generation fill mode (2026-07-17). 'all' (default) fills every fillable
 // call slot — the pre-change engine byte for byte. 'obligatory' caps each

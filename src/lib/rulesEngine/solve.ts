@@ -5,14 +5,17 @@ import {
 import { evaluateEligibility } from './eligibility';
 import { computeObligations } from './obligation';
 import { computeSequenceOwnedSlotIds } from './sequenceOwnership';
-import { exceedsWorkDayCap, creditsAsWorkedAvailability, creditWorkedDay } from './workDays';
-import { emptySolveState } from './genTypes';
+import { exceedsWorkDayCap, creditsAsWorkedAvailability } from './workDays';
+import {
+  emptySolveState, markAssigned, markBlocked, creditWorkDay,
+  incBucket, addCallDate, daysSinceLastCall, hadCallWithin,
+} from './solveState';
 import { CLASSIC_PATTERN, dayChainsFor, postCallBlockOffsets, blockChainsFor } from './callPattern';
 import type { CallPatternDoc } from './callPattern';
 import type {
   GenerationContext, SlotToFill, CandidateProvider, SolveState,
   SolutionPlan, PlacementSource, AssignmentExplanation, CandidateRejection,
-  SolveOptions, SkippedDerived, ShiftTypeInfo, WorkDayBudget,
+  SolveOptions, SkippedDerived, ShiftTypeInfo,
 } from './genTypes';
 
 // Relief codes are derived from ctx.shiftTypes (relief_rank ordering). That map
@@ -789,56 +792,4 @@ function skipReasonFrom(reason: string | undefined): SkippedDerived['reason'] {
   if (reason === 'cross-site') return 'cross-site';
   if (reason === 'same-date') return 'occupied';
   return 'ineligible';
-}
-
-// ── pure state helpers ──
-function markAssigned(s: SolveState, date: string, pid: string) {
-  if (!s.assignedOnDate.has(date)) s.assignedOnDate.set(date, new Set());
-  s.assignedOnDate.get(date)!.add(pid);
-}
-// Post-call BLOCK marker (day off), kept alongside markAssigned at the two
-// block-marking sites only (applyDayChains blocks; seedSolveState IF-1).
-// Overlay eligibility reads this map because overlays skip assignedOnDate.
-function markBlocked(s: SolveState, date: string, pid: string) {
-  if (!s.blockedOnDate.has(date)) s.blockedOnDate.set(date, new Set());
-  s.blockedOnDate.get(date)!.add(pid);
-}
-// FTE working-days credit wrapper. A no-op unless a budget is present — the
-// no-budget path is byte-identical; the working-day filter + (provider, date)
-// dedupe live in the shared creditWorkedDay ledger writer (workDays.ts).
-function creditWorkDay(s: SolveState, budget: WorkDayBudget | undefined, pid: string, date: string) {
-  if (!budget) return;
-  creditWorkedDay(s.creditedWorkDays, budget.workingDaySet, pid, date);
-}
-function incBucket(s: SolveState, pid: string, dt: string, code: string) {
-  const k = `${pid}|${dayTypeBucket(dt)}|${code}`;
-  s.bucketAssigned.set(k, (s.bucketAssigned.get(k) || 0) + 1);
-}
-function addCallDate(s: SolveState, pid: string, date: string) {
-  const list = s.callDatesByProvider.get(pid) || [];
-  if (list.includes(date)) return;
-  list.push(date); list.sort();
-  s.callDatesByProvider.set(pid, list);
-}
-function daysSinceLastCall(s: SolveState, pid: string, date: string): number {
-  const list = s.callDatesByProvider.get(pid) || [];
-  let best = Infinity;
-  for (const d of list) {
-    if (d >= date) break;
-    const gap = daysBetween(d, date);
-    if (gap < best) best = gap;
-  }
-  return best;
-}
-// Did the provider have a call within `n` days BEFORE `date`? Generalizes the
-// legacy "had a call exactly two days before" suppression check.
-// NOTE: wider than legacy's exact-gap check (gap ∈ 1..n, not gap === n). Parity
-// holds because classic uses this only on offset:-1 links where gap===1 is masked
-// by the same-date guard — keep in mind for positive-offset links.
-function hadCallWithin(s: SolveState, pid: string, date: string, n: number): boolean {
-  for (const d of s.callDatesByProvider.get(pid) || []) {
-    const gap = daysBetween(d, date);
-    if (gap > 0 && gap <= n) return true;
-  }
-  return false;
 }
