@@ -12,6 +12,9 @@ export interface ButtonProps {
   onClick?: React.MouseEventHandler<HTMLButtonElement>;
   type?: 'button' | 'submit' | 'reset';
   title?: string;
+  /** For disclosure buttons (aria-expanded / aria-controls passthrough). */
+  ariaExpanded?: boolean;
+  ariaControls?: string;
   style?: CSSProperties;
   children?: ReactNode;
 }
@@ -68,6 +71,8 @@ export function Button({
   onClick,
   type = 'button',
   title,
+  ariaExpanded,
+  ariaControls,
   style,
   children,
 }: ButtonProps) {
@@ -78,6 +83,8 @@ export function Button({
     <button
       type={type}
       title={title}
+      aria-expanded={ariaExpanded}
+      aria-controls={ariaControls}
       disabled={disabled}
       onClick={onClick}
       className="fr-focus"

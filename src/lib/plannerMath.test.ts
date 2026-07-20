@@ -7,24 +7,31 @@ import {
   MAX_PLANNER_RANGE_DAYS,
   aggregateTemplateSlotCounts,
   assignmentFills,
+  buildPlannerContext,
   callObligationFor,
   computeScheduleActuals,
   enumerateRange,
   estimateCallSlots,
   liveAvailabilityRows,
+  plannerYearCounters,
   providerDayStats,
+  providerPlannerNumbers,
   rangeComposition,
   rosterPoolFte,
   type PlannerAvailabilityRow,
+  type PlannerPayload,
+  type PlannerRosterEntry,
   type PlannerSlotRow,
   type PlannerTemplateRow,
 } from './plannerMath';
 import {
   computeCallObligationCensus,
+  extraCalls,
   fteWeightedTarget,
   roundedObligation,
   clampParToPoolFte,
 } from './fteTarget';
+import { countDaysInYear, ptoCounterStats } from './dateRanges';
 import {
   entitledOffDays,
   ptoWeekdaysCovered,
@@ -410,5 +417,196 @@ describe('liveAvailabilityRows', () => {
     expect(liveAvailabilityRows(rows).map(r => r.approval_status)).toEqual([
       'approved', 'pending', 'waitlisted',
     ]);
+  });
+});
+
+// ── Card-level assembly (payload → per-physician numbers) ────────────────────
+
+const rosterEntry = (
+  provider_id: string,
+  fte_value: number | null,
+  over: Partial<PlannerRosterEntry> = {},
+): PlannerRosterEntry => ({
+  provider_id,
+  first_name: 'F',
+  last_name: provider_id.toUpperCase(),
+  short_display_name: null,
+  initials: null,
+  provider_type: 'physician',
+  fte_value,
+  home_site_id: 'site-1',
+  call_taker: true,
+  partial_call_taker: false,
+  is_day_doc: false,
+  is_icu_doc: false,
+  ...over,
+});
+
+describe('buildPlannerContext + providerPlannerNumbers', () => {
+  // C1 call every day type present in January (no holiday templates):
+  // 15 weekday + 5 friday + 5 saturday + 4 sunday = 29 call slots.
+  const TEMPLATES = aggregateTemplateSlotCounts([
+    tmplRow('weekday', 'st-C1', 'C1', 'call', 1),
+    tmplRow('friday', 'st-C1', 'C1', 'call', 1),
+    tmplRow('saturday', 'st-C1', 'C1', 'call', 1),
+    tmplRow('sunday', 'st-C1', 'C1', 'call', 1),
+    tmplRow('weekday', 'st-D1', 'D1', 'regular', 3), // regular: never a call slot
+  ]);
+
+  const payload: PlannerPayload = {
+    site: { id: 'site-1', name: 'Main', call_par_level: 12, call_par_level_stored: 12 },
+    range: { date_start: JAN.start, date_end: JAN.end },
+    holidays: JAN_HOLIDAYS,
+    templates: TEMPLATES,
+    roster: [
+      rosterEntry('a', 1),
+      rosterEntry('b', 0.6),
+      rosterEntry('c', 1, { call_taker: false }), // day doc — outside the pool
+      rosterEntry('e', null),                     // null fte → census coerces to 1
+    ],
+    availability: [
+      avail({ provider_id: 'b', availability_type: 'pto', start_date: '2026-01-05', end_date: '2026-01-09' }), // 5 weekdays
+    ],
+    actuals: null,
+  };
+  const ctx = buildPlannerContext(payload);
+
+  it('context singles-home the pool, composition and estimate (cross-checked)', () => {
+    expect(ctx.census.poolFte).toBeCloseTo(2.6, 10); // a(1) + b(0.6) + e(null→1)
+    expect(ctx.census.poolFte).toBe(rosterPoolFte(payload.roster, 'site-1'));
+    expect(ctx.composition.workingDays).toBe(workingDaysInRange(ctx.composition.dates, ctx.composition.majorHolidayDates));
+    expect(ctx.callEstimate.total).toBe(29);
+    expect(ctx.availabilityByPid.get('b')).toHaveLength(1);
+    expect(ctx.availabilityByPid.has('a')).toBe(false);
+  });
+
+  it('CROSS-CHECK: current numbers are exactly the engine-helper composition on identical inputs', () => {
+    const n = providerPlannerNumbers(ctx, 'b');
+    const effectivePar = clampParToPoolFte(12, ctx.census.poolFte);
+    expect(n.fte).toBe(0.6);
+    expect(n.effectivePar).toBe(effectivePar);
+    expect(n.totalExpected).toBe(fteWeightedTarget(29, effectivePar, 0.6));
+    expect(n.obligation).toBe(roundedObligation(n.totalExpected));
+    // Per-bucket expected is the raw fteWeightedTarget of that bucket's slots…
+    for (const b of n.buckets) {
+      expect(b.expected).toBe(fteWeightedTarget(b.slots, effectivePar, 0.6));
+    }
+    // …and sums back to the total by linearity.
+    const summed = n.buckets.reduce((acc, b) => acc + b.expected, 0);
+    expect(summed).toBeCloseTo(n.totalExpected, 10);
+    // Days side routes through providerDayStats (itself engine-pinned above).
+    const pto = ptoWeekdaysCovered(payload.availability, ctx.composition.workingDaySet).size;
+    expect(n.days.ptoWeekdays).toBe(pto);
+    expect(n.days.required).toBe(requiredWorkDays(0.6, ctx.composition.workingDays, pto));
+    expect(n.days.entitledOff).toBe(entitledOffDays(0.6, ctx.composition.workingDays));
+  });
+
+  it('without actuals every assigned-side figure is null (estimate, not a fake zero)', () => {
+    const n = providerPlannerNumbers(ctx, 'b');
+    expect(n.hasActuals).toBe(false);
+    expect(n.assignedCalls).toBeNull();
+    expect(n.remainingCalls).toBeNull();
+    expect(n.extra).toBeNull();
+    expect(n.credited).toBeNull();
+    expect(n.dayDelta).toBeNull();
+    expect(n.buckets.every(b => b.assigned === null)).toBe(true);
+  });
+
+  it('what-if overrides replace exactly one input each, through the same formulas', () => {
+    const wi = providerPlannerNumbers(ctx, 'b', {
+      fte: 1, parLevel: 10, poolFte: 20, extraPtoWeekdays: 2,
+    });
+    expect(wi.effectivePar).toBe(clampParToPoolFte(10, 20)); // pool above par: no clamp
+    expect(wi.totalExpected).toBe(fteWeightedTarget(29, 10, 1));
+    expect(wi.obligation).toBe(roundedObligation(wi.totalExpected));
+    expect(wi.days.ptoWeekdays).toBe(7); // 5 real + 2 hypothetical
+    expect(wi.days.required).toBe(requiredWorkDays(1, ctx.composition.workingDays, 7));
+    expect(wi.days.entitledOff).toBe(entitledOffDays(1, ctx.composition.workingDays));
+    // Hypothetical sell-back removes netted days (floored at 0 upstream).
+    const sold = providerPlannerNumbers(ctx, 'b', { sellbackWeekdays: 5 });
+    expect(sold.days.ptoWeekdays).toBe(0);
+  });
+
+  it('census fte coercion applies (null fte → 1), matching the engine profile load', () => {
+    const n = providerPlannerNumbers(ctx, 'e');
+    expect(n.fte).toBe(1);
+    expect(n.totalExpected).toBe(fteWeightedTarget(29, n.effectivePar, 1));
+  });
+
+  it('wires actuals: assigned/remaining/extras + credited breakdown + day delta', () => {
+    const withActuals: PlannerPayload = {
+      ...payload,
+      actuals: {
+        schedule: { id: 's1', schedule_name: 'Jan', status: 'draft', date_start: JAN.start, date_end: JAN.end, version_number: 1 },
+        byProvider: {
+          b: {
+            callCounts: [
+              { bucket: 'weekday', code: 'C1', count: 2 },
+              { bucket: 'saturday', code: 'C1', count: 1 },
+              // A bucket the templates produce NO slots for must still render.
+              { bucket: 'holiday', code: 'CH', count: 1 },
+            ],
+            assignedWorkdays: ['2026-01-12', '2026-01-13'],
+            postCallRestWorkdays: ['2026-01-14'],
+            icuWorkdays: ['2026-01-15'],
+          },
+        },
+      },
+    };
+    const actx = buildPlannerContext(withActuals);
+    const n = providerPlannerNumbers(actx, 'b');
+    expect(n.hasActuals).toBe(true);
+    expect(n.assignedCalls).toBe(4);
+    expect(n.remainingCalls).toBe(Math.max(0, n.obligation - 4));
+    expect(n.extra).toBe(extraCalls(4, n.totalExpected)); // last-N convention count
+    expect(n.credited).toEqual({ assignments: 2, postCall: 1, icu: 1, total: 4 });
+    expect(n.dayDelta).toBe(4 - n.days.required);
+    const byBucket = new Map(n.buckets.map(b => [b.bucket, b]));
+    expect(byBucket.get('weekday')?.assigned).toBe(2);
+    expect(byBucket.get('friday')?.assigned).toBe(0);
+    expect(byBucket.get('holiday')).toEqual({ bucket: 'holiday', slots: 0, expected: 0, assigned: 1 });
+
+    // Under a live schedule, a provider with no assignments shows genuine
+    // zeros — the schedule exists and they have nothing (≠ the null case).
+    const na = providerPlannerNumbers(actx, 'a');
+    expect(na.assignedCalls).toBe(0);
+    expect(na.credited).toEqual({ assignments: 0, postCall: 0, icu: 0, total: 0 });
+    expect(na.dayDelta).toBe(0 - na.days.required);
+  });
+});
+
+// ── Year counters (provider-profile parity) ──────────────────────────────────
+
+describe('plannerYearCounters', () => {
+  // 2026-03-02 = Monday (Jan 1 2026 is a Thursday).
+  const rows: PlannerAvailabilityRow[] = [
+    avail({ availability_type: 'pto', start_date: '2026-03-02', end_date: '2026-03-08' }),          // Mon–Sun: 5 wkd, 7 cal
+    avail({ availability_type: 'pto_sellback', start_date: '2026-03-06', end_date: '2026-03-07' }), // Fri+Sat sold back
+    avail({ availability_type: 'unavailable', start_date: '2026-04-01', end_date: '2026-04-03' }),  // 3 days off
+    avail({ availability_type: 'sick', start_date: '2026-05-04', end_date: '2026-05-05' }),         // other: 2
+    avail({ availability_type: 'blocked', start_date: '2026-06-10', end_date: '2026-06-10' }),      // other: 1
+    avail({ availability_type: 'blocked', reason_code: 'icu_week', start_date: '2026-06-01', end_date: '2026-06-07' }), // ICU: excluded
+    avail({ availability_type: 'no_call_request', start_date: '2026-06-15', end_date: '2026-06-15' }),                  // never counted
+    avail({ availability_type: 'pto', start_date: '2026-07-01', end_date: '2026-07-02', approval_status: 'denied' }),   // dismissed
+  ];
+  const out = plannerYearCounters(rows, 2026);
+
+  it('CROSS-CHECK: PTO counter is exactly ptoCounterStats on the live pto/sell-back rows', () => {
+    expect(out.pto).toEqual(ptoCounterStats(
+      [{ start_date: '2026-03-02', end_date: '2026-03-08' }],
+      [{ start_date: '2026-03-06', end_date: '2026-03-07' }],
+      2026,
+    ));
+    // Headline INCLUDES sold-back days (Gabriel's sell-back semantics).
+    expect(out.pto.weekdaysBooked).toBe(5);
+    expect(out.pto.weekdaysSold).toBe(1); // the Friday (Saturday isn't a weekday)
+    expect(out.pto.calendarBooked).toBe(7);
+  });
+
+  it('category counters mirror the profile page split (ICU + no-call excluded, dismissed dropped)', () => {
+    expect(out.sellbackDays).toBe(countDaysInYear([{ start_date: '2026-03-06', end_date: '2026-03-07' }], 2026));
+    expect(out.sellbackDays).toBe(2);
+    expect(out.daysOffDays).toBe(3);
+    expect(out.otherDays).toBe(3); // sick 2 + generic blocked 1; ICU rotation + no-call never count
   });
 });

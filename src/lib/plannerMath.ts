@@ -35,10 +35,14 @@ import {
 import {
   clampParToPoolFte,
   computeCallObligationCensus,
+  extraCalls,
   fteWeightedTarget,
   roundedObligation,
+  type CallObligationCensus,
   type CensusProfile,
 } from './fteTarget';
+import { countDaysInYear, ptoCounterStats, type PtoCounterStats } from './dateRanges';
+import { ICU_POST_CALL_REASON, ICU_WEEK_REASON } from './icuRotation';
 import { derivedDayTypeFor, slateForDayType, templateSlotCount } from './templateSlots';
 import { embedArray } from './embed';
 
@@ -408,4 +412,251 @@ export function computeScheduleActuals(
 // isDismissedAvailability status semantics every engine routes through.
 export function liveAvailabilityRows<T extends { approval_status: string }>(rows: ReadonlyArray<T>): T[] {
   return rows.filter(r => !isDismissedAvailability(r));
+}
+
+// ═══ Card-level assembly (payload → per-physician numbers) ═══════════════════
+// Everything below turns ONE planner API payload into the numbers the
+// Physician Planner card renders. The card itself does no arithmetic — every
+// displayed figure comes out of these functions (grep-provable: the TSX has
+// no `Math.`, no `toFixed`, no numeric operators on domain values).
+
+// The planner route's payload, typed once here so the route (producer) and
+// the card (consumer) share the shape.
+export interface PlannerPayloadSite {
+  id: string;
+  name: string;
+  /** Resolved through the engine's DEFAULT_PAR_LEVEL rule by the route. */
+  call_par_level: number;
+  call_par_level_stored: number | null;
+}
+
+// Roster rows are structurally CensusProfile (fteTarget.ts) — the pool rule
+// and the `fte_value || 1` coercion apply to them without adaptation.
+export interface PlannerRosterEntry extends CensusProfile {
+  first_name: string | null;
+  last_name: string | null;
+  short_display_name: string | null;
+  initials: string | null;
+  provider_type: string | null;
+  is_day_doc: boolean;
+  is_icu_doc: boolean;
+}
+
+export interface PlannerActualsPayload {
+  schedule: {
+    id: string;
+    schedule_name: string;
+    status: string;
+    date_start: string;
+    date_end: string;
+    version_number: number;
+  };
+  byProvider: Record<string, ProviderActuals>;
+}
+
+export interface PlannerPayload {
+  site: PlannerPayloadSite;
+  range: { date_start: string; date_end: string };
+  holidays: PlannerHoliday[];
+  templates: TemplateSlotCountRow[];
+  roster: PlannerRosterEntry[];
+  availability: PlannerAvailabilityRow[];
+  actuals: PlannerActualsPayload | null;
+}
+
+// Precomputed per-payload context: the range composition, the template call
+// estimate, the roster census (ONE home for the pool ΣFTE and the fte
+// coercion — computeCallObligationCensus with an empty slot list), and the
+// availability rows grouped per provider.
+export interface PlannerContext {
+  payload: PlannerPayload;
+  composition: RangeComposition;
+  callEstimate: CallSlotEstimate;
+  census: CallObligationCensus;
+  availabilityByPid: Map<string, PlannerAvailabilityRow[]>;
+}
+
+export function buildPlannerContext(payload: PlannerPayload): PlannerContext {
+  const composition = rangeComposition(
+    payload.range.date_start, payload.range.date_end, payload.holidays);
+  const callEstimate = estimateCallSlots(payload.templates, composition.dayTypeCounts);
+  const census = computeCallObligationCensus({
+    storedParLevel: payload.site.call_par_level,
+    siteId: payload.site.id,
+    profiles: payload.roster,
+    slots: [],
+  });
+  const availabilityByPid = new Map<string, PlannerAvailabilityRow[]>();
+  for (const row of payload.availability) {
+    if (!row.provider_id) continue;
+    const list = availabilityByPid.get(row.provider_id);
+    if (list) list.push(row);
+    else availabilityByPid.set(row.provider_id, [row]);
+  }
+  return { payload, composition, callEstimate, census, availabilityByPid };
+}
+
+// What-if variables (panel C). Hypothetical only — nothing here writes
+// anything; the card labels the output as such. Each override replaces one
+// input of the SAME formulas the current numbers use:
+//   fte       → replaces the profile's coerced FTE (obligation AND days math)
+//   parLevel  → replaces sites.call_par_level (still clamped to the pool)
+//   poolFte   → replaces the roster-derived pool ΣFTE (advanced)
+//   extraPtoWeekdays / sellbackWeekdays → DayStatsWhatIf (providerDayStats)
+export interface PlannerWhatIf extends DayStatsWhatIf {
+  fte?: number;
+  parLevel?: number;
+  poolFte?: number;
+}
+
+export interface PlannerBucketRow {
+  bucket: string;          // fairness bucket (dayTypeBucket)
+  slots: number;           // call slots the range materializes in this bucket
+  expected: number;        // fteWeightedTarget(slots, effectivePar, fte) — fractional
+  assigned: number | null; // filled call assignments (null without actuals)
+}
+
+export interface ProviderPlannerNumbers {
+  providerId: string;
+  fte: number;             // what-if override or the census-coerced profile FTE
+  poolFte: number;
+  parLevel: number;        // pre-clamp denominator input (stored or what-if)
+  effectivePar: number;    // clampParToPoolFte(parLevel, poolFte)
+  totalCallSlots: number;
+  totalExpected: number;   // fractional
+  obligation: number;      // roundedObligation(totalExpected)
+  buckets: PlannerBucketRow[];
+  /** True when the payload found an overlapping draft/published schedule. */
+  hasActuals: boolean;
+  assignedCalls: number | null;
+  remainingCalls: number | null; // obligation − assigned, floored at 0
+  /** extraCalls(assigned, totalExpected) — the last-N OVER convention. */
+  extra: number | null;
+  days: ProviderDayStats;
+  credited: { assignments: number; postCall: number; icu: number; total: number } | null;
+  /** credited.total − days.required: + over, − under. */
+  dayDelta: number | null;
+}
+
+const EMPTY_ACTUALS: ProviderActuals = {
+  callCounts: [], assignedWorkdays: [], postCallRestWorkdays: [], icuWorkdays: [],
+};
+
+// One provider's full planner numbers — current stats when whatIf is omitted,
+// hypothetical when overrides are present. Pure composition of the shared
+// helpers via callObligationFor/providerDayStats; a provider absent from
+// actuals.byProvider under a live schedule legitimately shows zeros (the
+// schedule exists and they have nothing), while actuals: null renders the
+// assigned-side numbers as null (pre-generation estimate, not a zero).
+export function providerPlannerNumbers(
+  ctx: PlannerContext,
+  providerId: string,
+  whatIf?: PlannerWhatIf,
+): ProviderPlannerNumbers {
+  const fte = whatIf?.fte ?? ctx.census.fteFor(providerId);
+  const poolFte = whatIf?.poolFte ?? ctx.census.poolFte;
+  const parLevel = whatIf?.parLevel ?? ctx.payload.site.call_par_level;
+  const { effectivePar, totalExpected, obligation } =
+    callObligationFor(ctx.callEstimate.total, parLevel, poolFte, fte);
+
+  const hasActuals = ctx.payload.actuals != null;
+  const actuals = ctx.payload.actuals?.byProvider[providerId] ?? (hasActuals ? EMPTY_ACTUALS : null);
+
+  let assignedCalls = 0;
+  const assignedByBucket = new Map<string, number>();
+  for (const c of actuals?.callCounts ?? []) {
+    assignedCalls += c.count;
+    assignedByBucket.set(c.bucket, (assignedByBucket.get(c.bucket) ?? 0) + c.count);
+  }
+
+  // Bucket rows: union of estimate buckets and (rare) assigned-only buckets —
+  // an assignment in a bucket the templates no longer produce must stay
+  // visible, never silently dropped.
+  const bucketKeys = new Set([...ctx.callEstimate.byBucket.keys(), ...assignedByBucket.keys()]);
+  const buckets: PlannerBucketRow[] = [...bucketKeys].sort().map(bucket => {
+    const slots = ctx.callEstimate.byBucket.get(bucket) ?? 0;
+    return {
+      bucket,
+      slots,
+      expected: fteWeightedTarget(slots, effectivePar, fte),
+      assigned: actuals ? (assignedByBucket.get(bucket) ?? 0) : null,
+    };
+  });
+
+  const days = providerDayStats(
+    fte, ctx.composition.workingDaySet, ctx.availabilityByPid.get(providerId) ?? [], whatIf);
+
+  const credited = actuals
+    ? {
+        assignments: actuals.assignedWorkdays.length,
+        postCall: actuals.postCallRestWorkdays.length,
+        icu: actuals.icuWorkdays.length,
+        total: actuals.assignedWorkdays.length
+          + actuals.postCallRestWorkdays.length
+          + actuals.icuWorkdays.length,
+      }
+    : null;
+
+  return {
+    providerId,
+    fte,
+    poolFte,
+    parLevel,
+    effectivePar,
+    totalCallSlots: ctx.callEstimate.total,
+    totalExpected,
+    obligation,
+    buckets,
+    hasActuals,
+    assignedCalls: actuals ? assignedCalls : null,
+    remainingCalls: actuals ? Math.max(0, obligation - assignedCalls) : null,
+    extra: actuals ? extraCalls(assignedCalls, totalExpected) : null,
+    days,
+    credited,
+    dayDelta: credited ? credited.total - days.required : null,
+  };
+}
+
+// ── Year counters (provider-profile parity) ──────────────────────────────────
+// The planner's year counters MUST read exactly like the provider profile
+// page's category counters (src/app/(scheduling)/providers/[id]/page.tsx):
+// same helpers, same live-row filter, same category split —
+//   PTO       → ptoCounterStats (weekday headline INCLUDING sold-back days;
+//               the sold count rides along — Gabriel's sell-back semantics)
+//   Sell-back → calendar days (countDaysInYear)
+//   Days off  → 'unavailable' rows, calendar days
+//   Other     → everything else EXCEPT no-call requests and ICU rotation rows
+//               ('blocked' with an icu_* reason — those live in the profile's
+//               ICU section, and their weekdays credit as WORKED, not leave).
+export interface PlannerYearCounters {
+  year: number;
+  pto: PtoCounterStats;
+  sellbackDays: number;
+  daysOffDays: number;
+  otherDays: number;
+}
+
+// The profile page's non-counter categories, plus its ICU-owned row test.
+const NON_OTHER_TYPES = new Set(['pto', 'pto_sellback', 'unavailable', 'no_call_request']);
+function isIcuRotationRow(r: PlannerAvailabilityRow): boolean {
+  return r.availability_type === 'blocked'
+    && (r.reason_code === ICU_WEEK_REASON || r.reason_code === ICU_POST_CALL_REASON);
+}
+
+export function plannerYearCounters(
+  rows: ReadonlyArray<PlannerAvailabilityRow>,
+  year: number,
+): PlannerYearCounters {
+  const live = liveAvailabilityRows(rows);
+  const pto = live.filter(r => r.availability_type === 'pto');
+  const sell = live.filter(r => r.availability_type === 'pto_sellback');
+  const daysOff = live.filter(r => r.availability_type === 'unavailable');
+  const other = live.filter(r => !NON_OTHER_TYPES.has(r.availability_type) && !isIcuRotationRow(r));
+  return {
+    year,
+    pto: ptoCounterStats(pto, sell, year),
+    sellbackDays: countDaysInYear(sell, year),
+    daysOffDays: countDaysInYear(daysOff, year),
+    otherDays: countDaysInYear(other, year),
+  };
 }
