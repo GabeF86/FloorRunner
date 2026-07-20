@@ -97,6 +97,24 @@ export function entitledOffDays(fte: number, workingDays: number): number {
   return Math.max(0, workingDays - Math.round(fte * workingDays));
 }
 
+// Credit ledger writer (single home): mark `date` as a worked day for `pid`.
+// Skips non-working dates (weekend / major holiday placements consume nothing)
+// and dedupes per (provider, date) via the Set. Both placement engines route
+// their credit writes through this (solve's creditWorkDay wrapper on
+// SolveState.creditedWorkDays; dayShiftAutoGen's creditDay on its
+// creditedDaysByPid) so the crediting rules cannot drift.
+export function creditWorkedDay(
+  ledger: Map<string, Set<string>>,
+  workingDaySet: ReadonlySet<string>,
+  pid: string,
+  date: string,
+): void {
+  if (!workingDaySet.has(date)) return; // weekend / major holiday: no credit
+  let set = ledger.get(pid);
+  if (!set) { set = new Set(); ledger.set(pid, set); }
+  set.add(date);
+}
+
 // Cap predicate: would placing `date` block the provider under the working-days
 // cap? True only when the date is a working day the provider is not ALREADY
 // credited for (a placement on an already-credited day consumes no new credit)

@@ -5,7 +5,7 @@ import {
 import { evaluateEligibility } from './eligibility';
 import { computeObligations } from './obligation';
 import { computeSequenceOwnedSlotIds } from './sequenceOwnership';
-import { exceedsWorkDayCap, creditsAsWorkedAvailability } from './workDays';
+import { exceedsWorkDayCap, creditsAsWorkedAvailability, creditWorkedDay } from './workDays';
 import { emptySolveState } from './genTypes';
 import { CLASSIC_PATTERN, dayChainsFor, postCallBlockOffsets, blockChainsFor } from './callPattern';
 import type { CallPatternDoc } from './callPattern';
@@ -803,14 +803,12 @@ function markBlocked(s: SolveState, date: string, pid: string) {
   if (!s.blockedOnDate.has(date)) s.blockedOnDate.set(date, new Set());
   s.blockedOnDate.get(date)!.add(pid);
 }
-// FTE working-days credit ledger (single home). A no-op unless a budget is
-// present AND `date` is a working day — so weekend / major-holiday placements
-// consume nothing and the no-budget path is byte-identical.
+// FTE working-days credit wrapper. A no-op unless a budget is present — the
+// no-budget path is byte-identical; the working-day filter + (provider, date)
+// dedupe live in the shared creditWorkedDay ledger writer (workDays.ts).
 function creditWorkDay(s: SolveState, budget: WorkDayBudget | undefined, pid: string, date: string) {
-  if (!budget || !budget.workingDaySet.has(date)) return;
-  let set = s.creditedWorkDays.get(pid);
-  if (!set) { set = new Set(); s.creditedWorkDays.set(pid, set); }
-  set.add(date);
+  if (!budget) return;
+  creditWorkedDay(s.creditedWorkDays, budget.workingDaySet, pid, date);
 }
 function incBucket(s: SolveState, pid: string, dt: string, code: string) {
   const k = `${pid}|${dayTypeBucket(dt)}|${code}`;
