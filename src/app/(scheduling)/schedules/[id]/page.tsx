@@ -1639,21 +1639,11 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
             </Fragment>
           ))}
 
-          {/* ── Virtual rows: Available / Post-Call / Off / PTO ──────────── */}
-          {renderVirtualRows({
-            label: 'Available',
-            count: maxAvailable,
-            dataByDate: availableByDate,
-            color: gridTokens.category.Available,
-            visibleDates,
-            todayStr,
-            holidayMap,
-            getDayOfWeek,
-            zoneTop: true,
-            // Sell-back providers land in Available (they're working) with the
-            // red tint + tooltip so the row reads why they're here.
-            sellbackByDate,
-          })}
+          {/* ── Virtual rows: Post-Call / Off / PTO / Available ────────────
+              Order per Gabriel 2026-07-20: Available moves to the LAST
+              section of the grid, after PTO. zoneTop (the 2px zone-start
+              border) belongs to the FIRST section that actually renders —
+              Post-Call and Off skip rendering when empty, PTO always renders. */}
           {/* Post-Call row: providers who had a call shift the day before
               and have no assignment today. They're effectively off-duty
               for call rotation but we still want them visible so users
@@ -1667,11 +1657,13 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
             todayStr,
             holidayMap,
             getDayOfWeek,
+            zoneTop: maxPostCall > 0,
           })}
           {renderVirtualRows({
             label: 'Off',
             count: maxOff,
             dataByDate: offByDate,
+            zoneTop: maxPostCall === 0 && maxOff > 0,
             // Reason-coded blocked entries (ICU Week / ICU Post-Call) show
             // their label on hover so ICU docs read distinctly from generic
             // days off.
@@ -1691,10 +1683,23 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
             todayStr,
             holidayMap,
             getDayOfWeek,
-            // Always show the PTO label row even when empty — the bottom
-            // of the grid should always include a "PTO" cue so scanners
-            // know where to look for planned-leave providers.
+            zoneTop: maxPostCall === 0 && maxOff === 0,
+            // Always show the PTO label row even when empty — a standing
+            // "PTO" cue so scanners know where to look for planned leave.
             alwaysRender: true,
+          })}
+          {renderVirtualRows({
+            label: 'Available',
+            count: maxAvailable,
+            dataByDate: availableByDate,
+            color: gridTokens.category.Available,
+            visibleDates,
+            todayStr,
+            holidayMap,
+            getDayOfWeek,
+            // Sell-back providers land in Available (they're working) with the
+            // red tint + tooltip so the row reads why they're here.
+            sellbackByDate,
           })}
         </div>
       </div>
