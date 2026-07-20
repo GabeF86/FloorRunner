@@ -12,6 +12,8 @@ import type {
 } from './types';
 import {
   BOOKEND_EXTENDING_TYPES,
+  addDays,
+  daysBetween,
   isBlockingAvailability,
   isActiveNoCallRequest,
 } from './shared';
@@ -50,12 +52,6 @@ function ruleApplies(ctx: EvaluationContext, rule: RuleDefinition): boolean {
     ruleAppliesToDayType(rule, ctx.slot.derived_day_type) &&
     ruleAppliesToProvider(rule, ctx.providerGroup)
   );
-}
-
-function dateDiffDays(a: string, b: string): number {
-  const da = new Date(a + 'T00:00:00Z').getTime();
-  const db = new Date(b + 'T00:00:00Z').getTime();
-  return Math.round((da - db) / 86400000);
 }
 
 function startOfMonth(iso: string): string {
@@ -286,11 +282,11 @@ const weekendAdjacentPto: Evaluator = ctx => {
 
   const satDate = dt === 'saturday'
     ? ctx.slot.slot_date
-    : shiftDate(ctx.slot.slot_date, -1);
-  const weekBeforeStart = shiftDate(satDate, -5);
-  const weekBeforeEnd = shiftDate(satDate, -1);
-  const weekAfterStart = shiftDate(satDate, 2);
-  const weekAfterEnd = shiftDate(satDate, 6);
+    : addDays(ctx.slot.slot_date, -1);
+  const weekBeforeStart = addDays(satDate, -5);
+  const weekBeforeEnd = addDays(satDate, -1);
+  const weekAfterStart = addDays(satDate, 2);
+  const weekAfterEnd = addDays(satDate, 6);
 
   for (const a of ctx.availability) {
     // Canonical status predicate, narrowed to the bookend-extending subset —
@@ -351,7 +347,7 @@ const sequence: Evaluator = ctx => {
 
     // Case A: this assignment is the trigger shift
     if (ctx.shiftType.code === trigger && ruleAppliesToDayType(rule, ctx.slot.derived_day_type)) {
-      const wantDate = shiftDate(ctx.slot.slot_date, offset);
+      const wantDate = addDays(ctx.slot.slot_date, offset);
       const conflict = ctx.neighborAssignments.find(
         n => n.slot_date === wantDate && n.shift_type_code !== linked,
       );
@@ -380,7 +376,7 @@ const sequence: Evaluator = ctx => {
     // Case B: this assignment follows a trigger shift the day before
     // (only matters if THIS shift isn't the linked one)
     if (ctx.shiftType.code !== linked && ctx.shiftType.code !== trigger) {
-      const priorDate = shiftDate(ctx.slot.slot_date, -offset);
+      const priorDate = addDays(ctx.slot.slot_date, -offset);
       const priorTrigger = ctx.neighborAssignments.find(
         n => n.slot_date === priorDate && n.shift_type_code === trigger,
       );
@@ -398,12 +394,6 @@ const sequence: Evaluator = ctx => {
 
   return violations;
 };
-
-function shiftDate(iso: string, delta: number): string {
-  const d = new Date(iso + 'T00:00:00Z');
-  d.setUTCDate(d.getUTCDate() + delta);
-  return d.toISOString().slice(0, 10);
-}
 
 // ── Rest ───────────────────────────────────────────────────────────────────
 
@@ -435,7 +425,7 @@ const rest: Evaluator = ctx => {
 
     // Case A: this slot IS the after-shift — check the next day
     if (ctx.shiftType.code === afterCode && ruleAppliesToDayType(rule, ctx.slot.derived_day_type)) {
-      const nextDate = shiftDate(ctx.slot.slot_date, REST_WINDOW_DAYS);
+      const nextDate = addDays(ctx.slot.slot_date, REST_WINDOW_DAYS);
       const next = ctx.neighborAssignments.find(n => n.slot_date === nextDate);
       if (next && restType === 'day_off' && !exemptCodes.includes(next.shift_type_code)) {
         violations.push({
@@ -451,7 +441,7 @@ const rest: Evaluator = ctx => {
     // Case B: a prior day has the after-shift — this slot may break rest.
     // Only fires if (a) the prior day-type is in rule scope and (b) this
     // slot's shift_code isn't in the exempt list.
-    const priorDate = shiftDate(ctx.slot.slot_date, -REST_WINDOW_DAYS);
+    const priorDate = addDays(ctx.slot.slot_date, -REST_WINDOW_DAYS);
     const prior = ctx.neighborAssignments.find(
       n => n.slot_date === priorDate && n.shift_type_code === afterCode,
     );
@@ -721,7 +711,7 @@ const openSlot: Evaluator = ctx => {
   const violations: RuleViolation[] = [];
 
   const today = new Date().toISOString().slice(0, 10);
-  const daysUntil = dateDiffDays(ctx.slot.slot_date, today);
+  const daysUntil = daysBetween(today, ctx.slot.slot_date);
 
   // Check rule-driven deadlines
   for (const rule of ctx.rules) {

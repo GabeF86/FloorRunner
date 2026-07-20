@@ -14,6 +14,7 @@
 // next full grid load.
 import { evaluateAssignment } from './evaluate';
 import { fetchCommittedAssignments } from './committedAssignments';
+import { addDays } from './shared';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type SupabaseClient = any;
@@ -34,8 +35,8 @@ export async function revalidateNeighbors(
     if (!changedSlot) return revalidatedSlotIds;
     const center = (changedSlot as { slot_date: string }).slot_date;
     const versionId = (changedSlot as { schedule_version_id?: string | null }).schedule_version_id ?? null;
-    const start = shiftDate(center, -7);
-    const end = shiftDate(center, 7);
+    const start = addDays(center, -7);
+    const end = addDays(center, 7);
 
     // Draft isolation (invariant 3): revalidate only the provider's neighbors
     // that are committed (published) or in the version being edited — an edit
@@ -68,10 +69,4 @@ export async function revalidateNeighbors(
     console.error('[rulesEngine] neighbor revalidation failed:', err);
   }
   return revalidatedSlotIds;
-}
-
-export function shiftDate(iso: string, delta: number): string {
-  const d = new Date(iso + 'T00:00:00Z');
-  d.setUTCDate(d.getUTCDate() + delta);
-  return d.toISOString().slice(0, 10);
 }

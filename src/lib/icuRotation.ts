@@ -11,6 +11,8 @@
 // The Monday row is skipped when an existing blocked row already covers that
 // date (e.g. back-to-back ICU weeks), so entries never duplicate.
 
+import { addDays } from './rulesEngine/shared';
+
 export const ICU_WEEK_REASON = 'icu_week';
 export const ICU_POST_CALL_REASON = 'icu_post_call';
 
@@ -35,12 +37,6 @@ export interface IcuPlan {
   week: IcuRowPayload;
   // Null when an existing blocked row already covers the Monday.
   monday: IcuRowPayload | null;
-}
-
-function addDays(iso: string, n: number): string {
-  const d = new Date(iso + 'T00:00:00Z');
-  d.setUTCDate(d.getUTCDate() + n);
-  return d.toISOString().slice(0, 10);
 }
 
 /** Default week end: start + 6 days (a 7-day week). */
