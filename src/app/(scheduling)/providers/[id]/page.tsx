@@ -17,7 +17,14 @@ import {
   planIcuEntry,
   ICU_POST_CALL_REASON,
   ICU_WEEK_REASON,
+  type IcuPair,
 } from '@/lib/icuRotation';
+// Pure engine predicates reused so the availability-tab counters and the
+// sell-back "standalone" hint can never disagree with the scheduler about
+// which rows are live (denied/canceled = dismissed) or blocking.
+import { BLOCKING_AVAIL, isDismissedAvailability } from '@/lib/rulesEngine/shared';
+import { collapseDatesToRanges, countDaysInYear, type DateRange } from '@/lib/dateRanges';
+import { CalendarMultiPicker } from '@/components/CalendarMultiPicker';
 import { SiteShiftTypePicker } from '@/components/ShiftTypePicker';
 
 // Canonical lists used by the Preferences tab. Kept in this file for now —
@@ -323,7 +330,7 @@ export default function ProviderDetailPage({ params }: { params: { id: string } 
     { key: 'scheduling', label: 'Employment & Scheduling', info: 'Employment status, FTE, call eligibility, specialty capabilities, and scheduling constraints. These settings determine what shifts this provider can be assigned to.' },
     { key: 'preferences', label: 'Preferences & Specialties', info: 'Preferred and undesired shift types or sites, fellowships, skills, and custom blocked dates. The scheduler uses these as soft preferences.' },
     { key: 'sites', label: 'Sites & Credentials', info: 'Which hospitals and surgery centers this provider is credentialed at, effective dates, and site-specific call / shift-type restrictions.' },
-    { key: 'availability', label: 'Availability', info: 'PTO schedule, days off, no-call requests (while a request window is open), ICU rotation weeks, and other leave. The scheduler checks this before assigning shifts.' },
+    { key: 'availability', label: 'Availability', info: 'PTO schedule, PTO sell-back, days off, no-call requests (while a request window is open), ICU rotation weeks, and other leave. The scheduler checks this before assigning shifts.' },
     { key: 'custom', label: 'Custom Fields', info: 'Organization-defined extra fields. Configure which fields exist under Settings → Provider Custom Fields.' },
     { key: 'compensation', label: 'Compensation', info: 'ADMIN ONLY — salary, stipends, bonuses, and benefits costs. Currently visible to anyone with app access; will be gated to admins once auth/RLS is in place.' },
     { key: 'history', label: 'Assignment History', info: 'Past shift and call assignments for this provider, including burden tracking and fairness metrics.' },
@@ -1599,6 +1606,9 @@ const AVAILABILITY_TYPES: { value: string; label: string; color: string }[] = [
   { value: 'blocked', label: 'Blocked', color: '#334155' },
   { value: 'no_call_request', label: 'No-Call Request', color: '#fbbf24' },
   { value: 'call_request', label: 'Call Request', color: '#34d399' },
+  // Sell-back is RED by convention (matches the schedule grid's sell-back
+  // treatment): the provider IS WORKING these dates.
+  { value: 'pto_sellback', label: 'PTO Sell-Back', color: '#dc2626' },
 ];
 
 const AVAIL_TYPE_MAP: Record<string, { label: string; color: string }> = {};
@@ -1677,25 +1687,79 @@ function AvailabilityTab({ providerId, profile }: { providerId: string; profile:
     }
   }
   const ptoRows = rows.filter(r => r.availability_type === 'pto');
+  const sellbackRows = rows.filter(r => r.availability_type === 'pto_sellback');
   const daysOffRows = rows.filter(r => r.availability_type === 'unavailable');
   const noCallRows = rows.filter(r => r.availability_type === 'no_call_request');
   const otherRows = rows.filter(r =>
-    !['pto', 'unavailable', 'no_call_request'].includes(r.availability_type) && !icuIds.has(r.id));
+    !['pto', 'pto_sellback', 'unavailable', 'no_call_request'].includes(r.availability_type) && !icuIds.has(r.id));
+
+  // ── Category counters: CURRENT-CALENDAR-YEAR calendar-day counts ─────────
+  // Deliberate choice (documented in the InfoTip): every covered day in the
+  // year counts once — weekends and weekdays alike. The scheduler's Mon–Fri
+  // PTO-netting math (workDays.ts) is a different number on purpose. Only
+  // non-dismissed rows count (denied/canceled excluded; pending counts — it
+  // still blocks, clinical invariant 2).
+  const counterYear = new Date().getFullYear();
+  const live = (rs: AvailabilityRow[]) => rs.filter(r => !isDismissedAvailability(r));
+  const ptoDayCount = countDaysInYear(live(ptoRows), counterYear);
+  const sellbackDayCount = countDaysInYear(live(sellbackRows), counterYear);
+  const daysOffCount = countDaysInYear(live(daysOffRows), counterYear);
+  const otherDayCount = countDaysInYear(live(otherRows), counterYear);
+
+  // Sell-back rows that don't overlap ANY live blocking row are legal but
+  // inert — flag them so the chief sees they change nothing yet. Uses the
+  // engine's own BLOCKING_AVAIL + dismissed semantics.
+  const liveBlockingRows = rows.filter(r =>
+    BLOCKING_AVAIL.has(r.availability_type) && !isDismissedAvailability(r));
+  const sellbackNotes: Record<string, string> = {};
+  for (const s of sellbackRows) {
+    const overlaps = liveBlockingRows.some(b =>
+      b.start_date <= s.end_date && b.end_date >= s.start_date);
+    if (!overlaps) {
+      sellbackNotes[s.id] = 'standalone — no overlapping PTO/leave; changes nothing until it overlaps blocking time';
+    }
+  }
 
   return (
     <div style={{ maxWidth: 720 }}>
       {/* ── PTO Schedule ─────────────────────────────────────────────────── */}
       <AvailSection
         title="PTO Schedule"
+        counter={<CategoryCounter label="Total PTO Days" year={counterYear} days={ptoDayCount} />}
         hint="Vacation / paid time off. Counts toward PTO; blocks scheduling for the range (flanking weekends are handled by the scheduler's bookend rule)."
       >
         <PtoAddForm providerId={providerId} onAdded={loadAvailability} />
-        <SectionRows rows={ptoRows} onDelete={deleteEntry} formatDate={formatDate} emptyText="No PTO entries yet." />
+        <SectionRows rows={ptoRows} onDelete={deleteEntry} onChanged={loadAvailability} formatDate={formatDate} emptyText="No PTO entries yet." />
+      </AvailSection>
+
+      {/* ── PTO Sell-Back ────────────────────────────────────────────────── */}
+      <AvailSection
+        title="PTO Sell-Back"
+        counter={<CategoryCounter label="Total PTO Sell-Back" year={counterYear} days={sellbackDayCount} />}
+        hint={'The group bought PTO back — the provider IS WORKING these dates. A sell-back day overrides any PTO or other blocking entry covering it (including pending PTO), and each sold-back weekday is owed again in the working-day math. ' +
+          'Standalone entries that don’t overlap PTO or other leave are allowed, but they only change anything where they overlap blocking time.'}
+      >
+        <RangeAddForm
+          providerId={providerId}
+          availabilityType="pto_sellback"
+          addLabel="Add Sell-Back"
+          accent="#dc2626"
+          onAdded={loadAvailability}
+        />
+        <SectionRows
+          rows={sellbackRows}
+          onDelete={deleteEntry}
+          onChanged={loadAvailability}
+          formatDate={formatDate}
+          emptyText="No sell-back entries yet."
+          noteById={sellbackNotes}
+        />
       </AvailSection>
 
       {/* ── Days Off ─────────────────────────────────────────────────────── */}
       <AvailSection
         title="Days Off"
+        counter={<CategoryCounter label="Total Days Off" year={counterYear} days={daysOffCount} />}
         hint="Recurring or personal non-work days for partial-FTE and day docs. Entered as date ranges like PTO, but never counted or displayed as PTO."
       >
         <RangeAddForm
@@ -1704,7 +1768,7 @@ function AvailabilityTab({ providerId, profile }: { providerId: string; profile:
           addLabel="Add Days Off"
           onAdded={loadAvailability}
         />
-        <SectionRows rows={daysOffRows} onDelete={deleteEntry} formatDate={formatDate} emptyText="No days-off entries yet." />
+        <SectionRows rows={daysOffRows} onDelete={deleteEntry} onChanged={loadAvailability} formatDate={formatDate} emptyText="No days-off entries yet." />
       </AvailSection>
 
       {/* ── No Call Requests — only while a request window is OPEN ───────── */}
@@ -1745,43 +1809,18 @@ function AvailabilityTab({ providerId, profile }: { providerId: string; profile:
             </div>
           ) : (
             icuPairs.map(pair => (
-              <div key={pair.week.id} style={{
-                background: 'var(--bg-surface)', border: '1px solid var(--border)', borderRadius: 10,
-                padding: '12px 16px', marginBottom: 8,
-                display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-              }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-                  <span style={{
-                    fontSize: 11, fontWeight: 700, padding: '3px 8px', borderRadius: 6,
-                    background: 'rgba(139,92,246,0.15)', color: '#8b5cf6',
-                  }}>
-                    ICU Week
-                  </span>
-                  <div>
-                    <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)' }}>
-                      {formatDate(pair.week.start_date)} — {formatDate(pair.week.end_date)}
-                    </div>
-                    <div style={{ fontSize: 11, color: 'var(--text-dim)', marginTop: 2 }}>
-                      {pair.monday
-                        ? `+ post-ICU Monday off ${formatDate(pair.monday.start_date)}`
-                        : 'post-ICU Monday covered by another blocked entry'}
-                    </div>
-                  </div>
-                </div>
-                <button
-                  onClick={() => deleteIds(
-                    pair.monday ? [pair.week.id, pair.monday.id] : [pair.week.id],
-                    'Remove this ICU week (and its post-ICU Monday, if any)?',
-                  )}
-                  title="Delete ICU week + Monday"
-                  style={{
-                    fontSize: 11, color: '#f87171', background: 'none', border: 'none',
-                    cursor: 'pointer', padding: '2px 6px',
-                  }}
-                >
-                  x
-                </button>
-              </div>
+              <IcuPairCard
+                key={pair.week.id}
+                pair={pair}
+                providerId={providerId}
+                rows={rows}
+                formatDate={formatDate}
+                onDeletePair={() => deleteIds(
+                  pair.monday ? [pair.week.id, pair.monday.id] : [pair.week.id],
+                  'Remove this ICU week (and its post-ICU Monday, if any)?',
+                )}
+                onChanged={loadAvailability}
+              />
             ))
           )}
         </AvailSection>
@@ -1790,24 +1829,32 @@ function AvailabilityTab({ providerId, profile }: { providerId: string; profile:
       {/* ── Everything else (sick, FMLA, conference, blocks, …) ──────────── */}
       <AvailSection
         title="Other Leave & Blocks"
+        counter={<CategoryCounter label="Total Other Leave" year={counterYear} days={otherDayCount} />}
         hint="Sick, FMLA, conference/CME, admin days, jury duty, parental or military leave, and hard blocks."
       >
         <OtherAddForm providerId={providerId} onAdded={loadAvailability} />
-        <SectionRows rows={otherRows} onDelete={deleteEntry} formatDate={formatDate} emptyText="No other entries." />
+        <SectionRows rows={otherRows} onDelete={deleteEntry} onChanged={loadAvailability} formatDate={formatDate} emptyText="No other entries." />
       </AvailSection>
     </div>
   );
 }
 
-// Section wrapper: label + explanatory hint + content.
-function AvailSection({ title, hint, children }: {
+// Section wrapper: label (+ optional right-aligned counter) + hint + content.
+function AvailSection({ title, hint, counter, children }: {
   title: string;
   hint: string;
+  // Right-aligned header addition — the category's current-year day counter.
+  counter?: React.ReactNode;
   children: React.ReactNode;
 }) {
   return (
     <div style={{ marginBottom: 26 }}>
-      <SectionLabel>{title}</SectionLabel>
+      <SectionLabel>
+        <span style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%' }}>
+          <span>{title}</span>
+          {counter}
+        </span>
+      </SectionLabel>
       <div style={{ fontSize: 11, color: 'var(--text-dim)', marginBottom: 10, marginTop: -2, lineHeight: 1.5 }}>
         {hint}
       </div>
@@ -1816,12 +1863,35 @@ function AvailSection({ title, hint, children }: {
   );
 }
 
+// Current-calendar-year day counter shown beside a category header. The
+// counting rule (calendar days, weekends included, non-dismissed entries
+// only) is documented in the tooltip so nobody mistakes it for the
+// scheduler's Mon–Fri PTO math.
+function CategoryCounter({ label, year, days }: { label: string; year: number; days: number }) {
+  return (
+    <span style={{
+      display: 'inline-flex', alignItems: 'center', gap: 5,
+      fontSize: 10, fontWeight: 700, color: 'var(--text-muted)',
+      letterSpacing: 0.3, textTransform: 'none',
+      fontFamily: 'var(--font-mono), ui-monospace, monospace',
+    }}>
+      {label} · {year}: {days} day{days === 1 ? '' : 's'}
+      <InfoTip text={`Calendar-day count for ${year}: every covered day counts once — weekends and weekdays alike (the scheduler's Mon–Fri PTO netting is a separate number). Denied/canceled entries are excluded; pending and approved both count. Entries spanning year boundaries count only their ${year} days.`} />
+    </span>
+  );
+}
+
 // Entry list for one section, split into current/upcoming then past (dimmed).
-function SectionRows({ rows, onDelete, formatDate, emptyText }: {
+// When onChanged is provided, each entry gets an inline Edit flow (PATCH
+// start/end/notes); sections without it (no-call requests) stay delete-only.
+function SectionRows({ rows, onDelete, onChanged, formatDate, emptyText, noteById }: {
   rows: AvailabilityRow[];
   onDelete: (id: string) => void;
+  onChanged?: () => Promise<void>;
   formatDate: (d: string) => string;
   emptyText: string;
+  // Optional per-row annotation badge (e.g. the sell-back "standalone" hint).
+  noteById?: Record<string, string>;
 }) {
   const today = new Date().toISOString().slice(0, 10);
   const upcoming = rows.filter(r => r.end_date >= today);
@@ -1835,13 +1905,13 @@ function SectionRows({ rows, onDelete, formatDate, emptyText }: {
   }
   return (
     <>
-      {upcoming.map(r => <AvailabilityCard key={r.id} row={r} onDelete={onDelete} formatDate={formatDate} />)}
+      {upcoming.map(r => <AvailabilityCard key={r.id} row={r} onDelete={onDelete} onChanged={onChanged} formatDate={formatDate} note={noteById?.[r.id]} />)}
       {past.length > 0 && (
         <div style={{ opacity: 0.55 }}>
           <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-dim)', letterSpacing: 0.5, textTransform: 'uppercase', margin: '8px 0 6px' }}>
             Past
           </div>
-          {past.map(r => <AvailabilityCard key={r.id} row={r} onDelete={onDelete} formatDate={formatDate} />)}
+          {past.map(r => <AvailabilityCard key={r.id} row={r} onDelete={onDelete} onChanged={onChanged} formatDate={formatDate} note={noteById?.[r.id]} />)}
         </div>
       )}
     </>
@@ -1862,14 +1932,54 @@ async function postAvailability(body: Record<string, unknown>): Promise<string |
   return null;
 }
 
+// Shared PATCH helper for the inline edit flows. The route is the hardened
+// whitelist PATCH (start_date / end_date / notes / availability_type /
+// approval_status only — anything else 400s server-side).
+async function patchAvailability(id: string, body: Record<string, unknown>): Promise<string | null> {
+  const res = await fetch(`/api/scheduling/availability/${id}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    return data.error || `Failed (${res.status})`;
+  }
+  return null;
+}
+
+// POST one row per collapsed range — the calendar tab's submit path. Returns
+// the first error (stops there so the user can retry the remainder after
+// fixing; already-created rows simply show up on reload).
+async function postRanges(
+  providerId: string,
+  availabilityType: string,
+  ranges: DateRange[],
+  notes: string,
+): Promise<string | null> {
+  for (const r of ranges) {
+    const err = await postAvailability({
+      provider_id: providerId,
+      availability_type: availabilityType,
+      start_date: r.start,
+      end_date: r.end,
+      notes: notes || null,
+      approval_status: 'approved',
+    });
+    if (err) return err;
+  }
+  return null;
+}
+
 // PTO add form — date-range or week-number entry. "Week 1" = the Mon-Sun
 // week containing Jan 1 (even if Mon lands in the previous December). PTO
 // fills Mon-Fri of that week; the weekend is blocked automatically by the
 // bookend rule in the scheduler, so there's no reason to enter Sat/Sun here.
 function PtoAddForm({ providerId, onAdded }: { providerId: string; onAdded: () => Promise<void> }) {
-  const [mode, setMode] = useState<'date' | 'week'>('date');
+  const [mode, setMode] = useState<'date' | 'week' | 'calendar'>('date');
   const [start, setStart] = useState('');
   const [end, setEnd] = useState('');
+  const [days, setDays] = useState<string[]>([]);
   const [year, setYear] = useState<number>(new Date().getUTCFullYear());
   const [weekNum, setWeekNum] = useState<number>(1);
   const [notes, setNotes] = useState('');
@@ -1905,49 +2015,53 @@ function PtoAddForm({ providerId, onAdded }: { providerId: string; onAdded: () =
   }, [mode, year, weekNum]);
 
   const add = async () => {
-    if (!start || !end) return;
-    if (end < start) { setError('End date must be on or after start date'); return; }
     setBusy(true); setError(null);
     try {
-      const err = await postAvailability({
-        provider_id: providerId,
-        availability_type: 'pto',
-        start_date: start,
-        end_date: end,
-        notes: notes || null,
-        approval_status: 'approved',
-      });
+      let err: string | null;
+      if (mode === 'calendar') {
+        if (days.length === 0) return;
+        err = await postRanges(providerId, 'pto', collapseDatesToRanges(days), notes);
+      } else {
+        if (!start || !end) return;
+        if (end < start) { setError('End date must be on or after start date'); return; }
+        err = await postAvailability({
+          provider_id: providerId,
+          availability_type: 'pto',
+          start_date: start,
+          end_date: end,
+          notes: notes || null,
+          approval_status: 'approved',
+        });
+      }
       if (err) { setError(err); return; }
-      setStart(''); setEnd(''); setNotes('');
+      setStart(''); setEnd(''); setDays([]); setNotes('');
       await onAdded();
     } finally {
       setBusy(false);
     }
   };
 
+  const canAdd = mode === 'calendar' ? days.length > 0 : (!!start && !!end);
+
   return (
     <div style={addFormBoxStyle}>
       {error && <div style={addFormErrorStyle}>{error}</div>}
-      <div style={{ display: 'flex', gap: 6, marginBottom: 10 }}>
-        {(['date', 'week'] as const).map(m => (
-          <button
-            key={m}
-            type="button"
-            onClick={() => setMode(m)}
-            style={{
-              padding: '5px 10px', borderRadius: 6, cursor: 'pointer',
-              fontSize: 11, fontWeight: 700,
-              background: mode === m ? 'rgba(14,165,233,0.15)' : 'var(--bg-deep)',
-              color: mode === m ? '#0ea5e9' : 'var(--text-muted)',
-              border: `1px solid ${mode === m ? 'rgba(14,165,233,0.4)' : 'var(--border)'}`,
-            }}
-          >
-            {m === 'date' ? 'Date Range' : 'By Week #'}
-          </button>
-        ))}
-      </div>
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr auto', gap: 10, alignItems: 'end' }}>
-        {mode === 'date' ? (
+      <ModeTabs
+        options={[
+          { value: 'date', label: 'Date Range' },
+          { value: 'week', label: 'By Week #' },
+          { value: 'calendar', label: 'Calendar' },
+        ] as const}
+        mode={mode}
+        onChange={setMode}
+      />
+      {mode === 'calendar' && <CalendarPane days={days} onDaysChange={setDays} accent="#10b981" />}
+      <div style={{
+        display: 'grid',
+        gridTemplateColumns: mode === 'calendar' ? '1fr auto' : '1fr 1fr 1fr auto',
+        gap: 10, alignItems: 'end',
+      }}>
+        {mode === 'calendar' ? null : mode === 'date' ? (
           <>
             <div>
               <label style={fieldLabelStyle}>Start Date</label>
@@ -1988,8 +2102,8 @@ function PtoAddForm({ providerId, onAdded }: { providerId: string; onAdded: () =
           <label style={fieldLabelStyle}>Notes</label>
           <input value={notes} onChange={e => setNotes(e.target.value)} placeholder="Optional" style={fieldInputStyle} />
         </div>
-        <button onClick={add} disabled={busy || !start || !end} style={{
-          ...saveBtnStyle, opacity: busy || !start || !end ? 0.5 : 1, whiteSpace: 'nowrap',
+        <button onClick={add} disabled={busy || !canAdd} style={{
+          ...saveBtnStyle, opacity: busy || !canAdd ? 0.5 : 1, whiteSpace: 'nowrap',
         }}>
           {busy ? 'Adding...' : 'Add PTO'}
         </button>
@@ -2007,61 +2121,91 @@ function PtoAddForm({ providerId, onAdded }: { providerId: string; onAdded: () =
   );
 }
 
-// Generic date-range add form used by the Days Off section.
-function RangeAddForm({ providerId, availabilityType, addLabel, onAdded }: {
+// Generic date-range add form used by the Days Off and PTO Sell-Back
+// sections. Date-range and Calendar entry modes.
+function RangeAddForm({ providerId, availabilityType, addLabel, accent = '#0ea5e9', onAdded }: {
   providerId: string;
   availabilityType: string;
   addLabel: string;
+  accent?: string;
   onAdded: () => Promise<void>;
 }) {
+  const [mode, setMode] = useState<'date' | 'calendar'>('date');
   const [start, setStart] = useState('');
   const [end, setEnd] = useState('');
+  const [days, setDays] = useState<string[]>([]);
   const [notes, setNotes] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const add = async () => {
-    if (!start || !end) return;
-    if (end < start) { setError('End date must be on or after start date'); return; }
     setBusy(true); setError(null);
     try {
-      const err = await postAvailability({
-        provider_id: providerId,
-        availability_type: availabilityType,
-        start_date: start,
-        end_date: end,
-        notes: notes || null,
-        approval_status: 'approved',
-      });
+      let err: string | null;
+      if (mode === 'calendar') {
+        if (days.length === 0) return;
+        err = await postRanges(providerId, availabilityType, collapseDatesToRanges(days), notes);
+      } else {
+        if (!start || !end) return;
+        if (end < start) { setError('End date must be on or after start date'); return; }
+        err = await postAvailability({
+          provider_id: providerId,
+          availability_type: availabilityType,
+          start_date: start,
+          end_date: end,
+          notes: notes || null,
+          approval_status: 'approved',
+        });
+      }
       if (err) { setError(err); return; }
-      setStart(''); setEnd(''); setNotes('');
+      setStart(''); setEnd(''); setDays([]); setNotes('');
       await onAdded();
     } finally {
       setBusy(false);
     }
   };
 
+  const canAdd = mode === 'calendar' ? days.length > 0 : (!!start && !!end);
+
   return (
     <div style={addFormBoxStyle}>
       {error && <div style={addFormErrorStyle}>{error}</div>}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr auto', gap: 10, alignItems: 'end' }}>
-        <div>
-          <label style={fieldLabelStyle}>Start Date</label>
-          <input type="date" value={start} onChange={e => {
-            setStart(e.target.value);
-            if (!end || e.target.value > end) setEnd(e.target.value);
-          }} style={fieldInputStyle} />
-        </div>
-        <div>
-          <label style={fieldLabelStyle}>End Date</label>
-          <input type="date" value={end} onChange={e => setEnd(e.target.value)} min={start} style={fieldInputStyle} />
-        </div>
+      <ModeTabs
+        options={[
+          { value: 'date', label: 'Date Range' },
+          { value: 'calendar', label: 'Calendar' },
+        ] as const}
+        mode={mode}
+        onChange={setMode}
+        accent={accent}
+      />
+      {mode === 'calendar' && <CalendarPane days={days} onDaysChange={setDays} accent={accent} />}
+      <div style={{
+        display: 'grid',
+        gridTemplateColumns: mode === 'calendar' ? '1fr auto' : '1fr 1fr 1fr auto',
+        gap: 10, alignItems: 'end',
+      }}>
+        {mode === 'date' && (
+          <>
+            <div>
+              <label style={fieldLabelStyle}>Start Date</label>
+              <input type="date" value={start} onChange={e => {
+                setStart(e.target.value);
+                if (!end || e.target.value > end) setEnd(e.target.value);
+              }} style={fieldInputStyle} />
+            </div>
+            <div>
+              <label style={fieldLabelStyle}>End Date</label>
+              <input type="date" value={end} onChange={e => setEnd(e.target.value)} min={start} style={fieldInputStyle} />
+            </div>
+          </>
+        )}
         <div>
           <label style={fieldLabelStyle}>Notes</label>
           <input value={notes} onChange={e => setNotes(e.target.value)} placeholder="Optional" style={fieldInputStyle} />
         </div>
-        <button onClick={add} disabled={busy || !start || !end} style={{
-          ...saveBtnStyle, opacity: busy || !start || !end ? 0.5 : 1, whiteSpace: 'nowrap',
+        <button onClick={add} disabled={busy || !canAdd} style={{
+          ...saveBtnStyle, opacity: busy || !canAdd ? 0.5 : 1, whiteSpace: 'nowrap',
         }}>
           {busy ? 'Adding...' : addLabel}
         </button>
@@ -2078,54 +2222,90 @@ function NoCallAddForm({ providerId, window: win, usedCount, onAdded }: {
   usedCount: number;
   onAdded: () => Promise<void>;
 }) {
+  const [mode, setMode] = useState<'date' | 'calendar'>('date');
   const [date, setDate] = useState('');
+  // Calendar mode: multiple no-call dates submitted in ONE intake POST (the
+  // endpoint takes no_call_dates[] and enforces the per-window cap itself).
+  // The picker is clamped to the window's block range.
+  const [days, setDays] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const remaining = Math.max(0, win.max_no_call_requests - usedCount);
 
   const add = async () => {
-    if (!date) return;
+    const dates = mode === 'calendar' ? days : (date ? [date] : []);
+    if (dates.length === 0) return;
     setBusy(true); setError(null);
     try {
       const res = await fetch(`/api/requests/submit/${win.token}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ provider_id: providerId, no_call_dates: [date] }),
+        body: JSON.stringify({ provider_id: providerId, no_call_dates: dates }),
       });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
         setError(data.error || `Failed (${res.status})`);
         return;
       }
-      setDate('');
+      setDate(''); setDays([]);
       await onAdded();
     } finally {
       setBusy(false);
     }
   };
 
+  const selectedCount = mode === 'calendar' ? days.length : (date ? 1 : 0);
+  const canAdd = selectedCount > 0 && selectedCount <= remaining;
+
   return (
     <div style={addFormBoxStyle}>
       {error && <div style={addFormErrorStyle}>{error}</div>}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr auto auto', gap: 10, alignItems: 'end' }}>
-        <div>
-          <label style={fieldLabelStyle}>No-Call Date</label>
-          <input
-            type="date"
-            value={date}
-            min={win.block_start}
-            max={win.block_end}
-            onChange={e => setDate(e.target.value)}
-            style={fieldInputStyle}
-          />
-        </div>
+      <ModeTabs
+        options={[
+          { value: 'date', label: 'Date' },
+          { value: 'calendar', label: 'Calendar' },
+        ] as const}
+        mode={mode}
+        onChange={setMode}
+        accent="#fbbf24"
+      />
+      {mode === 'calendar' && (
+        <CalendarPane
+          days={days}
+          onDaysChange={setDays}
+          accent="#fbbf24"
+          minDate={win.block_start}
+          maxDate={win.block_end}
+        />
+      )}
+      <div style={{
+        display: 'grid',
+        gridTemplateColumns: mode === 'calendar' ? 'auto auto' : '1fr auto auto',
+        gap: 10, alignItems: 'end', justifyContent: mode === 'calendar' ? 'start' : undefined,
+      }}>
+        {mode === 'date' && (
+          <div>
+            <label style={fieldLabelStyle}>No-Call Date</label>
+            <input
+              type="date"
+              value={date}
+              min={win.block_start}
+              max={win.block_end}
+              onChange={e => setDate(e.target.value)}
+              style={fieldInputStyle}
+            />
+          </div>
+        )}
         <div style={{ fontSize: 11, color: 'var(--text-dim)', paddingBottom: 7 }}>
           {usedCount}/{win.max_no_call_requests} used
+          {mode === 'calendar' && selectedCount > remaining && (
+            <span style={{ color: '#f87171', fontWeight: 700 }}> — {selectedCount} selected exceeds the {remaining} remaining</span>
+          )}
         </div>
-        <button onClick={add} disabled={busy || !date || remaining === 0} style={{
-          ...saveBtnStyle, opacity: busy || !date || remaining === 0 ? 0.5 : 1, whiteSpace: 'nowrap',
+        <button onClick={add} disabled={busy || !canAdd} style={{
+          ...saveBtnStyle, opacity: busy || !canAdd ? 0.5 : 1, whiteSpace: 'nowrap',
         }}>
-          {busy ? 'Adding...' : 'Add Request'}
+          {busy ? 'Adding...' : selectedCount > 1 ? `Add ${selectedCount} Requests` : 'Add Request'}
         </button>
       </div>
     </div>
@@ -2211,44 +2391,249 @@ function IcuAddForm({ providerId, rows, onAdded }: {
   );
 }
 
+// ICU pair display + pairing-aware EDIT flow. The generic AvailabilityCard
+// edit (single-row PATCH) must never touch ICU rows — an ICU entry is TWO
+// rows (week + post-ICU Monday, src/lib/icuRotation.ts) that have to move
+// together. Editing here re-derives the Monday from the new week end via
+// planIcuEntry (the same planner the add flow uses) and reconciles:
+//   plan wants a Monday, pair has one   → PATCH the Monday row to the new date
+//   plan wants a Monday, pair has none  → POST a new icu_post_call row
+//   plan says covered, pair has one     → DELETE the now-redundant Monday row
+// so week+Monday pairing stays consistent through edits.
+function IcuPairCard({ pair, providerId, rows, formatDate, onDeletePair, onChanged }: {
+  pair: IcuPair<AvailabilityRow>;
+  providerId: string;
+  rows: AvailabilityRow[];
+  formatDate: (d: string) => string;
+  onDeletePair: () => void;
+  onChanged: () => Promise<void>;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [start, setStart] = useState(pair.week.start_date);
+  const [end, setEnd] = useState(pair.week.end_date);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const save = async () => {
+    if (!start || !end) return;
+    if (end < start) { setError('Week end must be on or after the start'); return; }
+    setBusy(true); setError(null);
+    try {
+      // Re-plan against every OTHER row so "Monday already covered" reflects
+      // the world without this pair (its own rows are the ones moving).
+      const others = rows.filter(r => r.id !== pair.week.id && r.id !== pair.monday?.id);
+      const plan = planIcuEntry(start, end, others);
+
+      const weekErr = await patchAvailability(pair.week.id, {
+        start_date: plan.week.start_date,
+        end_date: plan.week.end_date,
+      });
+      if (weekErr) { setError(weekErr); return; }
+
+      let mondayErr: string | null = null;
+      if (plan.monday && pair.monday) {
+        mondayErr = await patchAvailability(pair.monday.id, {
+          start_date: plan.monday.start_date,
+          end_date: plan.monday.end_date,
+        });
+      } else if (plan.monday && !pair.monday) {
+        mondayErr = await postAvailability({
+          provider_id: providerId,
+          availability_type: plan.monday.availability_type,
+          start_date: plan.monday.start_date,
+          end_date: plan.monday.end_date,
+          reason_code: plan.monday.reason_code,
+          approval_status: 'approved',
+        });
+      } else if (!plan.monday && pair.monday) {
+        const res = await fetch(`/api/scheduling/availability/${pair.monday.id}`, { method: 'DELETE' });
+        if (!res.ok) mondayErr = `Failed to remove the old Monday (${res.status})`;
+      }
+      if (mondayErr) {
+        setError(`Week saved, but the post-ICU Monday failed: ${mondayErr}`);
+        await onChanged(); // week DID move — resync so the UI shows reality
+        return;
+      }
+      setEditing(false);
+      await onChanged();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to update ICU week');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (editing) {
+    return (
+      <div style={{
+        background: 'var(--bg-surface)', border: '1px solid rgba(139,92,246,0.5)', borderRadius: 10,
+        padding: '12px 16px', marginBottom: 8,
+      }}>
+        {error && <div style={addFormErrorStyle}>{error}</div>}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+          <span style={{
+            fontSize: 11, fontWeight: 700, padding: '3px 8px', borderRadius: 6,
+            background: 'rgba(139,92,246,0.15)', color: '#8b5cf6',
+          }}>
+            ICU Week
+          </span>
+          <span style={{ fontSize: 10, color: 'var(--text-dim)' }}>
+            editing — the post-ICU Monday moves with the week
+          </span>
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr auto auto', gap: 10, alignItems: 'end' }}>
+          <div>
+            <label style={fieldLabelStyle}>Week Start</label>
+            <input type="date" value={start} onChange={e => setStart(e.target.value)} style={fieldInputStyle} />
+          </div>
+          <div>
+            <label style={fieldLabelStyle}>Week End</label>
+            <input type="date" value={end} min={start} onChange={e => setEnd(e.target.value)} style={fieldInputStyle} />
+          </div>
+          <button onClick={save} disabled={busy || !start || !end} style={{
+            ...saveBtnStyle, opacity: busy || !start || !end ? 0.5 : 1, whiteSpace: 'nowrap',
+          }}>
+            {busy ? 'Saving...' : 'Save'}
+          </button>
+          <button
+            onClick={() => {
+              setEditing(false); setError(null);
+              setStart(pair.week.start_date); setEnd(pair.week.end_date);
+            }}
+            disabled={busy}
+            style={{
+              padding: '7px 12px', borderRadius: 5, cursor: 'pointer', fontWeight: 600, fontSize: 12,
+              background: 'var(--bg-deep)', color: 'var(--text-muted)', border: '1px solid var(--border)',
+            }}
+          >
+            Cancel
+          </button>
+        </div>
+        {start && end && end >= start && (
+          <div style={{
+            fontSize: 11, color: 'var(--text-dim)', marginTop: 8,
+            padding: '5px 9px', background: 'rgba(139,92,246,0.06)',
+            border: '1px solid rgba(139,92,246,0.2)', borderRadius: 6,
+          }}>
+            Will block {start} – {end}, plus the following Monday off (re-derived).
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div style={{
+      background: 'var(--bg-surface)', border: '1px solid var(--border)', borderRadius: 10,
+      padding: '12px 16px', marginBottom: 8,
+      display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+    }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+        <span style={{
+          fontSize: 11, fontWeight: 700, padding: '3px 8px', borderRadius: 6,
+          background: 'rgba(139,92,246,0.15)', color: '#8b5cf6',
+        }}>
+          ICU Week
+        </span>
+        <div>
+          <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)' }}>
+            {formatDate(pair.week.start_date)} — {formatDate(pair.week.end_date)}
+          </div>
+          <div style={{ fontSize: 11, color: 'var(--text-dim)', marginTop: 2 }}>
+            {pair.monday
+              ? `+ post-ICU Monday off ${formatDate(pair.monday.start_date)}`
+              : 'post-ICU Monday covered by another blocked entry'}
+          </div>
+        </div>
+      </div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <button
+          onClick={() => setEditing(true)}
+          title="Edit ICU week (the Monday re-derives)"
+          style={{
+            fontSize: 11, color: '#0ea5e9', background: 'none', border: 'none',
+            cursor: 'pointer', padding: '2px 6px', fontWeight: 600,
+          }}
+        >
+          edit
+        </button>
+        <button
+          onClick={onDeletePair}
+          title="Delete ICU week + Monday"
+          style={{
+            fontSize: 11, color: '#f87171', background: 'none', border: 'none',
+            cursor: 'pointer', padding: '2px 6px',
+          }}
+        >
+          x
+        </button>
+      </div>
+    </div>
+  );
+}
+
 // Add form for the remaining availability types (sick, FMLA, conference, …).
+// pto_sellback is excluded — it has its own dedicated section.
 const OTHER_ENTRY_TYPES = AVAILABILITY_TYPES.filter(
-  t => !['pto', 'unavailable', 'no_call_request'].includes(t.value),
+  t => !['pto', 'pto_sellback', 'unavailable', 'no_call_request'].includes(t.value),
 );
 
 function OtherAddForm({ providerId, onAdded }: { providerId: string; onAdded: () => Promise<void> }) {
+  const [mode, setMode] = useState<'date' | 'calendar'>('date');
   const [type, setType] = useState(OTHER_ENTRY_TYPES[0]?.value || 'sick');
   const [start, setStart] = useState('');
   const [end, setEnd] = useState('');
+  const [days, setDays] = useState<string[]>([]);
   const [notes, setNotes] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const add = async () => {
-    if (!start || !end) return;
-    if (end < start) { setError('End date must be on or after start date'); return; }
     setBusy(true); setError(null);
     try {
-      const err = await postAvailability({
-        provider_id: providerId,
-        availability_type: type,
-        start_date: start,
-        end_date: end,
-        notes: notes || null,
-        approval_status: 'approved',
-      });
+      let err: string | null;
+      if (mode === 'calendar') {
+        if (days.length === 0) return;
+        err = await postRanges(providerId, type, collapseDatesToRanges(days), notes);
+      } else {
+        if (!start || !end) return;
+        if (end < start) { setError('End date must be on or after start date'); return; }
+        err = await postAvailability({
+          provider_id: providerId,
+          availability_type: type,
+          start_date: start,
+          end_date: end,
+          notes: notes || null,
+          approval_status: 'approved',
+        });
+      }
       if (err) { setError(err); return; }
-      setStart(''); setEnd(''); setNotes('');
+      setStart(''); setEnd(''); setDays([]); setNotes('');
       await onAdded();
     } finally {
       setBusy(false);
     }
   };
 
+  const canAdd = mode === 'calendar' ? days.length > 0 : (!!start && !!end);
+
   return (
     <div style={addFormBoxStyle}>
       {error && <div style={addFormErrorStyle}>{error}</div>}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr auto', gap: 10, alignItems: 'end' }}>
+      <ModeTabs
+        options={[
+          { value: 'date', label: 'Date Range' },
+          { value: 'calendar', label: 'Calendar' },
+        ] as const}
+        mode={mode}
+        onChange={setMode}
+      />
+      {mode === 'calendar' && <CalendarPane days={days} onDaysChange={setDays} />}
+      <div style={{
+        display: 'grid',
+        gridTemplateColumns: mode === 'calendar' ? '1fr 1fr auto' : '1fr 1fr 1fr 1fr auto',
+        gap: 10, alignItems: 'end',
+      }}>
         <div>
           <label style={fieldLabelStyle}>Type</label>
           <select value={type} onChange={e => setType(e.target.value)} style={fieldInputStyle}>
@@ -2257,27 +2642,101 @@ function OtherAddForm({ providerId, onAdded }: { providerId: string; onAdded: ()
             ))}
           </select>
         </div>
-        <div>
-          <label style={fieldLabelStyle}>Start Date</label>
-          <input type="date" value={start} onChange={e => {
-            setStart(e.target.value);
-            if (!end || e.target.value > end) setEnd(e.target.value);
-          }} style={fieldInputStyle} />
-        </div>
-        <div>
-          <label style={fieldLabelStyle}>End Date</label>
-          <input type="date" value={end} onChange={e => setEnd(e.target.value)} min={start} style={fieldInputStyle} />
-        </div>
+        {mode === 'date' && (
+          <>
+            <div>
+              <label style={fieldLabelStyle}>Start Date</label>
+              <input type="date" value={start} onChange={e => {
+                setStart(e.target.value);
+                if (!end || e.target.value > end) setEnd(e.target.value);
+              }} style={fieldInputStyle} />
+            </div>
+            <div>
+              <label style={fieldLabelStyle}>End Date</label>
+              <input type="date" value={end} onChange={e => setEnd(e.target.value)} min={start} style={fieldInputStyle} />
+            </div>
+          </>
+        )}
         <div>
           <label style={fieldLabelStyle}>Notes</label>
           <input value={notes} onChange={e => setNotes(e.target.value)} placeholder="Optional" style={fieldInputStyle} />
         </div>
-        <button onClick={add} disabled={busy || !start || !end} style={{
-          ...saveBtnStyle, opacity: busy || !start || !end ? 0.5 : 1, whiteSpace: 'nowrap',
+        <button onClick={add} disabled={busy || !canAdd} style={{
+          ...saveBtnStyle, opacity: busy || !canAdd ? 0.5 : 1, whiteSpace: 'nowrap',
         }}>
           {busy ? 'Adding...' : 'Add'}
         </button>
       </div>
+    </div>
+  );
+}
+
+// Entry-mode tab strip shared by every add box (Date Range / By Week # /
+// Calendar). One look, one behavior.
+function ModeTabs<T extends string>({ options, mode, onChange, accent = '#0ea5e9' }: {
+  options: ReadonlyArray<{ value: T; label: string }>;
+  mode: T;
+  onChange: (m: T) => void;
+  accent?: string;
+}) {
+  return (
+    <div style={{ display: 'flex', gap: 6, marginBottom: 10 }}>
+      {options.map(o => (
+        <button
+          key={o.value}
+          type="button"
+          onClick={() => onChange(o.value)}
+          style={{
+            padding: '5px 10px', borderRadius: 6, cursor: 'pointer',
+            fontSize: 11, fontWeight: 700,
+            background: mode === o.value ? `${accent}26` : 'var(--bg-deep)',
+            color: mode === o.value ? accent : 'var(--text-muted)',
+            border: `1px solid ${mode === o.value ? `${accent}66` : 'var(--border)'}`,
+          }}
+        >
+          {o.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+const fmtShortDate = (d: string) =>
+  new Date(d + 'T12:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+const rangeLabel = (r: DateRange) =>
+  r.start === r.end ? fmtShortDate(r.start) : `${fmtShortDate(r.start)}–${fmtShortDate(r.end)}`;
+
+// Calendar-tab pane shared by every category's add box: the drag-select month
+// grid plus a live summary of what submit will create (contiguous runs
+// collapse to date-range rows; isolated days become single-day rows —
+// src/lib/dateRanges.ts collapseDatesToRanges).
+function CalendarPane({ days, onDaysChange, accent = '#0ea5e9', minDate, maxDate }: {
+  days: string[];
+  onDaysChange: (next: string[]) => void;
+  accent?: string;
+  minDate?: string;
+  maxDate?: string;
+}) {
+  const ranges = collapseDatesToRanges(days);
+  return (
+    <div style={{ marginBottom: 10 }}>
+      <CalendarMultiPicker
+        selected={days}
+        onChange={onDaysChange}
+        accent={accent}
+        minDate={minDate}
+        maxDate={maxDate}
+      />
+      {days.length > 0 && (
+        <div style={{
+          fontSize: 11, color: 'var(--text-dim)', marginTop: 8,
+          padding: '5px 9px', background: `${accent}0f`,
+          border: `1px solid ${accent}33`, borderRadius: 6,
+        }}>
+          {days.length} day{days.length === 1 ? '' : 's'} selected → {ranges.length}{' '}
+          entr{ranges.length === 1 ? 'y' : 'ies'}: {ranges.map(rangeLabel).join(', ')}
+        </div>
+      )}
     </div>
   );
 }
@@ -2292,15 +2751,33 @@ const addFormErrorStyle: React.CSSProperties = {
   border: '1px solid rgba(248,113,113,0.3)', borderRadius: 6,
 };
 
-function AvailabilityCard({ row, onDelete, formatDate }: {
+function AvailabilityCard({ row, onDelete, onChanged, formatDate, note }: {
   row: AvailabilityRow;
   onDelete: (id: string) => void;
+  // When provided, the card offers an inline Edit flow (start/end/notes PATCH)
+  // and calls this after a successful save so the section reloads.
+  onChanged?: () => Promise<void>;
   formatDate: (d: string) => string;
+  // Optional annotation badge (e.g. the sell-back "standalone" hint).
+  note?: string;
 }) {
+  const [editing, setEditing] = useState(false);
   const typeInfo = AVAIL_TYPE_MAP[row.availability_type] || { label: row.availability_type, color: '#64748b' };
   const approvalInfo = APPROVAL_COLORS[row.approval_status] || APPROVAL_COLORS.pending;
   const sameDay = row.start_date === row.end_date;
   const reason = reasonCodeLabel(row.reason_code);
+
+  if (editing && onChanged) {
+    return (
+      <AvailabilityEditForm
+        row={row}
+        typeLabel={typeInfo.label}
+        typeColor={typeInfo.color}
+        onCancel={() => setEditing(false)}
+        onSaved={async () => { setEditing(false); await onChanged(); }}
+      />
+    );
+  }
 
   return (
     <div style={{
@@ -2330,6 +2807,11 @@ function AvailabilityCard({ row, onDelete, formatDate }: {
           {row.notes && (
             <div style={{ fontSize: 11, color: 'var(--text-dim)', marginTop: 2 }}>{row.notes}</div>
           )}
+          {note && (
+            <div style={{ fontSize: 10, color: 'var(--text-dim)', fontStyle: 'italic', marginTop: 2 }} title={note}>
+              {note}
+            </div>
+          )}
         </div>
       </div>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -2347,6 +2829,18 @@ function AvailabilityCard({ row, onDelete, formatDate }: {
         }}>
           {row.approval_status}
         </span>
+        {onChanged && (
+          <button
+            onClick={() => setEditing(true)}
+            title="Edit dates / notes"
+            style={{
+              fontSize: 11, color: '#0ea5e9', background: 'none', border: 'none',
+              cursor: 'pointer', padding: '2px 6px', fontWeight: 600,
+            }}
+          >
+            edit
+          </button>
+        )}
         <button
           onClick={() => onDelete(row.id)}
           title="Delete"
@@ -2356,6 +2850,86 @@ function AvailabilityCard({ row, onDelete, formatDate }: {
           }}
         >
           x
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// Inline editor for one availability row: start/end/notes → PATCH through the
+// hardened whitelist route. ICU rows never reach this form — the ICU section
+// renders its own pair cards with a pairing-aware edit flow (IcuPairCard).
+function AvailabilityEditForm({ row, typeLabel, typeColor, onCancel, onSaved }: {
+  row: AvailabilityRow;
+  typeLabel: string;
+  typeColor: string;
+  onCancel: () => void;
+  onSaved: () => Promise<void>;
+}) {
+  const [start, setStart] = useState(row.start_date);
+  const [end, setEnd] = useState(row.end_date);
+  const [notes, setNotes] = useState(row.notes || '');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const save = async () => {
+    if (!start || !end) return;
+    if (end < start) { setError('End date must be on or after start date'); return; }
+    setBusy(true); setError(null);
+    try {
+      const err = await patchAvailability(row.id, {
+        start_date: start,
+        end_date: end,
+        notes: notes || null,
+      });
+      if (err) { setError(err); return; }
+      await onSaved();
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div style={{
+      background: 'var(--bg-surface)', border: `1px solid ${typeColor}50`, borderRadius: 10,
+      padding: '12px 16px', marginBottom: 8,
+    }}>
+      {error && <div style={addFormErrorStyle}>{error}</div>}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+        <span style={{
+          fontSize: 11, fontWeight: 700, padding: '3px 8px', borderRadius: 6,
+          background: `${typeColor}20`, color: typeColor,
+        }}>
+          {typeLabel}
+        </span>
+        <span style={{ fontSize: 10, color: 'var(--text-dim)' }}>editing</span>
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr auto auto', gap: 10, alignItems: 'end' }}>
+        <div>
+          <label style={fieldLabelStyle}>Start Date</label>
+          <input type="date" value={start} onChange={e => {
+            setStart(e.target.value);
+            if (e.target.value > end) setEnd(e.target.value);
+          }} style={fieldInputStyle} />
+        </div>
+        <div>
+          <label style={fieldLabelStyle}>End Date</label>
+          <input type="date" value={end} min={start} onChange={e => setEnd(e.target.value)} style={fieldInputStyle} />
+        </div>
+        <div>
+          <label style={fieldLabelStyle}>Notes</label>
+          <input value={notes} onChange={e => setNotes(e.target.value)} placeholder="Optional" style={fieldInputStyle} />
+        </div>
+        <button onClick={save} disabled={busy || !start || !end} style={{
+          ...saveBtnStyle, opacity: busy || !start || !end ? 0.5 : 1, whiteSpace: 'nowrap',
+        }}>
+          {busy ? 'Saving...' : 'Save'}
+        </button>
+        <button onClick={onCancel} disabled={busy} style={{
+          padding: '7px 12px', borderRadius: 5, cursor: 'pointer', fontWeight: 600, fontSize: 12,
+          background: 'var(--bg-deep)', color: 'var(--text-muted)', border: '1px solid var(--border)',
+        }}>
+          Cancel
         </button>
       </div>
     </div>
