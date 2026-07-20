@@ -32,7 +32,7 @@ import { CallPatternDocSchema, patternWarnings, callFillOrderWarnings, dayTypeFi
 import { fetchCommittedAssignments, filterPublishedVersions } from './committedAssignments';
 import { embedArray } from '@/lib/embed';
 import { clampParToPoolFte } from '@/lib/fteTarget';
-import { isWorkingDay, ptoWeekdaysCovered, requiredWorkDays, entitledOffDays } from './workDays';
+import { isWorkingDay, ptoWeekdaysCovered, requiredWorkDays, entitledOffDays, loadMajorHolidayDates } from './workDays';
 
 const DEFAULT_PAR_LEVEL = 12; // fallback when site.call_par_level isn't set
 
@@ -794,21 +794,10 @@ export async function loadGenerationContext(
   // count) rather than aborting the whole load.
   const blockMin = (rawSlots[0] as { slot_date: string }).slot_date;
   const blockMax = (rawSlots[rawSlots.length - 1] as { slot_date: string }).slot_date;
-  const majorHolidayDates = new Set<string>();
+  let majorHolidayDates = new Set<string>();
   if (organizationId) {
-    try {
-      countQ();
-      const { data: holidays } = await sb
-        .from('holiday_calendars')
-        .select('holiday_date, is_major_holiday')
-        .eq('organization_id', organizationId)
-        .eq('is_major_holiday', true)
-        .gte('holiday_date', blockMin)
-        .lte('holiday_date', blockMax);
-      for (const h of ((holidays as Array<Record<string, unknown>> | null) || [])) {
-        if (h.is_major_holiday && h.holiday_date) majorHolidayDates.add(h.holiday_date as string);
-      }
-    } catch { /* holiday table missing/unreadable — treat every weekday as a working day */ }
+    countQ();
+    majorHolidayDates = await loadMajorHolidayDates(sb, organizationId, blockMin, blockMax);
   }
   const workingDaySet = new Set<string>();
   for (let d = blockMin; d <= blockMax; d = addDays(d, 1)) {

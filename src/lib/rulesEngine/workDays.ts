@@ -18,8 +18,37 @@
 // tracking, dayShiftAutoGen cap supersession, sequenceAutoFill, the report)
 // routes through this module so no two engines can disagree.
 
-import { dayOfWeekUTC, BOOKEND_EXTENDING_TYPES, isDismissedAvailability } from './shared';
+import { dayOfWeekUTC, BOOKEND_EXTENDING_TYPES, isDismissedAvailability, type SupabaseClient } from './shared';
 import { ICU_WEEK_REASON, ICU_POST_CALL_REASON } from '@/lib/icuRotation';
+
+// Major-holiday dates within [start, end] for an organization (holiday rows
+// are org-wide, site_id NULL). Single home for the query both placement
+// engines run (genContext's budget build; dayShiftAutoGen's working-days cap).
+// Swallow-errors-to-no-majors posture: a missing/unreadable holiday table
+// degrades to an empty set — every weekday counts as a working day — rather
+// than aborting the load. Callers keep their own organizationId guards and
+// query counting.
+export async function loadMajorHolidayDates(
+  sb: SupabaseClient,
+  organizationId: string,
+  start: string,
+  end: string,
+): Promise<Set<string>> {
+  const out = new Set<string>();
+  try {
+    const { data: holidays } = await sb
+      .from('holiday_calendars')
+      .select('holiday_date, is_major_holiday')
+      .eq('organization_id', organizationId)
+      .eq('is_major_holiday', true)
+      .gte('holiday_date', start)
+      .lte('holiday_date', end);
+    for (const h of ((holidays as Array<Record<string, unknown>> | null) || [])) {
+      if (h.is_major_holiday && h.holiday_date) out.add(h.holiday_date as string);
+    }
+  } catch { /* holiday table missing/unreadable — treat every weekday as a working day */ }
+  return out;
+}
 
 // Availability types whose covered weekdays reduce the working-days obligation
 // 1:1 — planned, contractually-entitled leave. Reuses BOOKEND_EXTENDING_TYPES:
