@@ -21,7 +21,7 @@ import { runMopUpPass } from './passes/mopUp';
 import type {
   GenerationContext, SolveState,
   SolutionPlan, CandidateRejection,
-  SolveOptions, ShiftTypeInfo,
+  SolveOptions, ShiftTypeInfo, SlotToFill,
 } from './genTypes';
 
 // Relief codes are derived from ctx.shiftTypes (relief_rank ordering). That map
@@ -38,6 +38,27 @@ function reliefCodesFor(shiftTypes: Map<string, ShiftTypeInfo> | undefined): str
     reliefCodesCache.set(shiftTypes, cached);
   }
   return cached;
+}
+
+// Sequence-owned slot ids are a pure function of (doc, slotIndex) — two
+// objects that are IDENTICAL across all of optimize()'s thousands of
+// re-solves — so memoize on their identities (same idiom as reliefCodesCache;
+// the inner doc check guards the rare same-slotIndex/different-doc caller).
+// Consumers only read the set (`.has`), never mutate it, so sharing one Set
+// across re-solves is behavior-identical by construction.
+const sequenceOwnedCache = new WeakMap<
+  Map<string, Map<string, SlotToFill>>,
+  { doc: CallPatternDoc; owned: Set<string> }
+>();
+function sequenceOwnedFor(
+  doc: CallPatternDoc,
+  slotIndex: Map<string, Map<string, SlotToFill>>,
+): Set<string> {
+  const hit = sequenceOwnedCache.get(slotIndex);
+  if (hit && hit.doc === doc) return hit.owned;
+  const owned = computeSequenceOwnedSlotIds(doc, slotIndex);
+  sequenceOwnedCache.set(slotIndex, { doc, owned });
+  return owned;
 }
 
 // solve() interprets the site's CallPatternDoc (ctx.callPattern ?? CLASSIC_PATTERN):
@@ -95,7 +116,8 @@ export function solve(ctx: GenerationContext, opts: SolveOptions = {}): Solution
   // sequenceAutoFill and seeds remain the only legitimate writers. Computed
   // unconditionally (pure, pattern-data-driven): under the classic pattern no
   // relief code is ever a chain target, so parity-era fixtures are untouched.
-  const sequenceOwnedSlotIds = computeSequenceOwnedSlotIds(doc, ctx.slotIndex);
+  // Memoized across optimizer re-solves (sequenceOwnedFor above).
+  const sequenceOwnedSlotIds = sequenceOwnedFor(doc, ctx.slotIndex);
 
   const providerById = ctx.providerById ?? new Map(ctx.providers.map(p => [p.id, p]));
 
