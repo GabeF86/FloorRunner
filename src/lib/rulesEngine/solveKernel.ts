@@ -15,6 +15,7 @@ import type { SolveState } from './solveState';
 import type {
   GenerationContext, SlotToFill, CandidateProvider, SolutionPlan,
   PlacementSource, AssignmentExplanation, SkippedDerived, WorkDayBudget,
+  CandidateRejection,
 } from './genTypes';
 
 // One solve() invocation's bundled context: immutable inputs (ctx, doc,
@@ -49,6 +50,21 @@ export interface SolverRun {
   // "Next call" per provider — built by buildProviderCalls AFTER every call
   // placement pass; consumed by the relief pass + mop-up sweep ranking.
   providerCalls: Map<string, Array<{ date: string; code: string }>>;
+}
+
+// Report an open slot on the plan — ONE shape for every reporting site
+// (main loop, spans, relief, mop-up). Reason strings are assertion-pinned
+// and pass through BYTE-EXACT; `candidates` is only attached when the caller
+// provides one (key-presence preserved).
+export function pushUnfilled(
+  run: SolverRun, slot: SlotToFill, reason: string, candidates?: CandidateRejection[],
+) {
+  run.plan.unfilled.push({
+    slot_id: slot.slot_id, slot_date: slot.slot_date,
+    shift_type_code: slot.shift_type_code, shift_type_category: slot.shift_type_category,
+    reason,
+    ...(candidates !== undefined ? { candidates } : {}),
+  });
 }
 
 export function hasNoCallRequest(run: SolverRun, pid: string, date: string): boolean {

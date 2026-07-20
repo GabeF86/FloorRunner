@@ -11,7 +11,7 @@ import { CLASSIC_PATTERN, postCallBlockOffsets } from './callPattern';
 import type { CallPatternDoc } from './callPattern';
 import {
   record, overrideFor, scoreCall, applyDayChains, applyBlockChains,
-  capRoom, chainCallNeeds, noteViolation, buildProviderCalls,
+  capRoom, chainCallNeeds, noteViolation, buildProviderCalls, pushUnfilled,
 } from './solveKernel';
 import type { SolverRun } from './solveKernel';
 import { runPrePtoPass } from './passes/prePto';
@@ -184,11 +184,7 @@ export function solve(ctx: GenerationContext, opts: SolveOptions = {}): Solution
 
     const forced = overrideFor(run, slot);
     if (forced === null) {
-      plan.unfilled.push({
-        slot_id: slot.slot_id, slot_date: slot.slot_date,
-        shift_type_code: slot.shift_type_code, shift_type_category: slot.shift_type_category,
-        reason: 'Forced provider ineligible',
-      });
+      pushUnfilled(run, slot, 'Forced provider ineligible');
       continue;
     }
     if (forced) {
@@ -211,15 +207,12 @@ export function solve(ctx: GenerationContext, opts: SolveOptions = {}): Solution
       ? eligible.filter(p => capRoom(run, p.id) >= 1 + chainCallNeeds(run, slot))
       : eligible;
     if (obligatory && candidates.length === 0) {
-      plan.unfilled.push({
-        slot_id: slot.slot_id, slot_date: slot.slot_date,
-        shift_type_code: slot.shift_type_code, shift_type_category: slot.shift_type_category,
-        reason: eligible.length > 0 ? 'obligation-cap' : 'No eligible providers',
-        candidates: sweep.map(x => ({
+      pushUnfilled(run, slot,
+        eligible.length > 0 ? 'obligation-cap' : 'No eligible providers',
+        sweep.map(x => ({
           provider_id: x.p.id, provider_name: x.p.short_display_name,
           reason: x.r.eligible ? 'obligation-cap' as const : (x.r.reason ?? 'bucket-quota'),
-        })),
-      });
+        })));
       continue;
     }
 
@@ -268,11 +261,8 @@ export function solve(ctx: GenerationContext, opts: SolveOptions = {}): Solution
         provider_id: x.p.id, provider_name: x.p.short_display_name,
         reason: capBound && x.r.eligible ? 'workdays-cap' : (x.r.reason ?? 'bucket-quota'),
       }));
-      plan.unfilled.push({
-        slot_id: slot.slot_id, slot_date: slot.slot_date,
-        shift_type_code: slot.shift_type_code, shift_type_category: slot.shift_type_category,
-        reason: capBound ? 'workdays-cap' : 'No eligible providers', candidates: candidateReasons,
-      });
+      pushUnfilled(run, slot,
+        capBound ? 'workdays-cap' : 'No eligible providers', candidateReasons);
       continue;
     }
 

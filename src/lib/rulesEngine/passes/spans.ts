@@ -4,12 +4,12 @@
 // main call loop individually. See ALGORITHM.md §15 field map.
 import { addDays } from '../shared';
 import { evaluateEligibility } from '../eligibility';
-import { record, applyDayChains, scoreCall, capRoom } from '../solveKernel';
+import { record, applyDayChains, scoreCall, capRoom, pushUnfilled } from '../solveKernel';
 import type { SolverRun } from '../solveKernel';
 import type { SlotToFill } from '../genTypes';
 
 export function runSpansPass(run: SolverRun, scheduleDates: string[]): void {
-  const { ctx, state, plan } = run;
+  const { ctx, state } = run;
   const dayTypeOfDate = (date: string): string | undefined => {
     for (const s of ctx.slotIndex.get(date)?.values() ?? []) return s.derived_day_type;
     return undefined;
@@ -39,13 +39,7 @@ export function runSpansPass(run: SolverRun, scheduleDates: string[]): void {
         // (within caps) — mirroring the existing severed-span fallback.
         const reason = run.obligatory && eligibleForSpan.length > 0
           ? 'obligation-cap' : 'No provider can cover full span';
-        for (const s of spanSlots) {
-          plan.unfilled.push({
-            slot_id: s.slot_id, slot_date: s.slot_date,
-            shift_type_code: s.shift_type_code, shift_type_category: s.shift_type_category,
-            reason,
-          });
-        }
+        for (const s of spanSlots) pushUnfilled(run, s, reason);
         continue;
       }
       const winner = scoreCall(run, candidates, spanSlots[0])[0].p;

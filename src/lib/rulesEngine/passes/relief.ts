@@ -2,12 +2,12 @@
 // "First on out-list" ranking via solveKernel.rankByNextCall; requires
 // buildProviderCalls to have run. See ALGORITHM.md §10.
 import { evaluateEligibility } from '../eligibility';
-import { record, rankByNextCall } from '../solveKernel';
+import { record, rankByNextCall, pushUnfilled } from '../solveKernel';
 import type { SolverRun } from '../solveKernel';
 import type { SlotToFill } from '../genTypes';
 
 export function runReliefPass(run: SolverRun, scheduleDates: string[]): void {
-  const { ctx, state, plan, doc, reliefCodes } = run;
+  const { ctx, state, doc, reliefCodes } = run;
   if (!doc.reliefPass?.enabled) return;
   const reliefDayTypes = doc.reliefPass.dayTypes as string[];
   for (const date of scheduleDates) {
@@ -38,11 +38,7 @@ export function runReliefPass(run: SolverRun, scheduleDates: string[]): void {
       const pick = scored.find(s => !state.assignedOnDate.get(date)?.has(s.p.id)
         && evaluateEligibility(slot, s.p, state, ctx, 'derived').eligible);
       if (!pick) {
-        plan.unfilled.push({
-          slot_id: slot.slot_id, slot_date: slot.slot_date,
-          shift_type_code: slot.shift_type_code, shift_type_category: slot.shift_type_category,
-          reason: 'No eligible relief provider',
-        });
+        pushUnfilled(run, slot, 'No eligible relief provider');
         continue;
       }
       record(run, slot, pick.p, 'relief-order');

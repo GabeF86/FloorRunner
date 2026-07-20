@@ -23,7 +23,7 @@
 // Requires ctx.shiftTypes — pure legacy fixtures without it keep
 // byte-identical output (golden parity). See ALGORITHM.md §10.5.
 import { evaluateEligibility } from '../eligibility';
-import { record, rankByNextCall } from '../solveKernel';
+import { record, rankByNextCall, pushUnfilled } from '../solveKernel';
 import type { SolverRun } from '../solveKernel';
 
 export function runMopUpPass(run: SolverRun, scheduleDates: string[]): void {
@@ -42,25 +42,17 @@ export function runMopUpPass(run: SolverRun, scheduleDates: string[]): void {
       if (alreadyReported.has(slot.slot_id)) continue;             // relief pass already reported it
       if (run.sequenceOwnedSlotIds.has(slot.slot_id)) {
         const key = `${slot.slot_date}|${slot.shift_type_code}`;
-        plan.unfilled.push({
-          slot_id: slot.slot_id, slot_date: slot.slot_date,
-          shift_type_code: slot.shift_type_code, shift_type_category: slot.shift_type_category,
-          reason: skippedKeys.has(key)
-            ? 'sequence-orphan: chain link severed'
-            : waivedLinkKeys.has(key)
-              ? 'sequence-orphan: pre-call fill waived'
-              : 'sequence-orphan: chain source unfilled',
-        });
+        pushUnfilled(run, slot, skippedKeys.has(key)
+          ? 'sequence-orphan: chain link severed'
+          : waivedLinkKeys.has(key)
+            ? 'sequence-orphan: pre-call fill waived'
+            : 'sequence-orphan: chain source unfilled');
         continue;
       }
       const available = ctx.providers.filter(
         p => evaluateEligibility(slot, p, state, ctx, 'derived').eligible);
       if (available.length === 0) {
-        plan.unfilled.push({
-          slot_id: slot.slot_id, slot_date: slot.slot_date,
-          shift_type_code: slot.shift_type_code, shift_type_category: slot.shift_type_category,
-          reason: 'No eligible provider for call-engine day slot',
-        });
+        pushUnfilled(run, slot, 'No eligible provider for call-engine day slot');
         continue;
       }
       record(run, slot, rankByNextCall(run, available, date)[0].p, 'day-mop-up');
