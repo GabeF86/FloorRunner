@@ -24,9 +24,13 @@
 //   - Not already assigned on this date in this version
 //   - Not assigned anywhere else on this date — any other site or any other
 //     schedule version of this site (invariant 3)
-//   - Total scheduled days in this block < effective_block_cap
-//     (effective_block_cap = floor(FTE × weekdays_in_block) by default,
-//      or days_per_week × weeks_in_block when an explicit weekly value is set).
+//   - Total scheduled days in this block < effective_block_cap. The
+//     working-days formula (2026-07-17) is authoritative:
+//     round(FTE × workingDays) − nettingPtoWeekdays (workingDays = block
+//     weekdays minus major holidays; requiredWorkDays in workDays.ts). The
+//     legacy floor(FTE × weekdays_in_block) survives ONLY as a fallback when
+//     workingDays is degenerate (0); an explicit days_per_week
+//     (× weeks_in_block) remains authoritative when set on the profile.
 //     The count includes ALL of the provider's same-site assignments in the
 //     block — call shifts and D-chain placements made by autoGenerate also
 //     consume the budget, so the cap is a true "total days worked" ceiling.

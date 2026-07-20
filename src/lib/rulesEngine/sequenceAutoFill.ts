@@ -250,9 +250,10 @@ async function loadTriggerSlot(sb: SupabaseClient, slotId: string): Promise<Load
 // site, PLUS the trigger's own draft version (clinical invariant 3 + draft
 // isolation — cross-site double-bookings against committed schedules still
 // block, but an overlapping unpublished draft does not). The trigger's version
-// MUST stay visible: eviction (same-version guard, L~491) and occupied-checks
-// read those rows. Two committed-scope queries merged in the helper; all link
-// evaluation happens in memory.
+// MUST stay visible: eviction (the post-call evict loop's
+// `a.schedule_version_id !== trigger.schedule_version_id` same-version guard)
+// and occupied-checks read those rows. Two committed-scope queries merged in
+// the helper; all link evaluation happens in memory.
 async function loadAssignmentsWindow(
   sb: SupabaseClient,
   providerId: string,

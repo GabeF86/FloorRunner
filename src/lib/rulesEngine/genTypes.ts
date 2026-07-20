@@ -131,9 +131,16 @@ export interface WorkDayBudget {
 }
 
 // 'call' = the full set; 'call-no-quota' = every call gate EXCEPT the bucket
-// quota (used ONLY by IF-3 quota relaxation — relaxation may waive the quota,
-// never a safety gate); 'derived' = structural placements (drops quota + the
-// post-call guard, keeps every safety gate).
+// quota — and it also WAIVES the FTE workdays cap (eligibility applies the cap
+// on 'call' | 'derived' only; quota relaxation re-applies it manually in
+// solve() so a cap-bound slot still stays open). FOUR consumers: IF-3 quota
+// relaxation (solve's relaxSweep), block-chain call links (solve's
+// applyBlockChains — a structural same-provider obligation whose anchor was
+// already fairness-scored), the optimizer's eligibility pre-gate
+// (optimize's gatePasses), and override pin re-validation (solve's
+// overrideFor). Waiving may cover the quota + cap, never a safety gate.
+// 'derived' = structural placements (drops quota + the post-call guard, keeps
+// every safety gate and the workdays cap).
 export type GateSet = 'call' | 'call-no-quota' | 'derived';
 
 export type RejectionReason =
@@ -290,7 +297,9 @@ export function emptySolveState(): SolveState {
 export type FillMode = 'all' | 'obligatory';
 
 // Options for solve(). callOverrides forces a provider onto a CALL slot (by
-// slot_id -> provider_id) when that provider passes the canonical 'call' gate;
+// slot_id -> provider_id) when that provider passes the 'call-no-quota' gate
+// (a pin re-asserts an ALREADY-MADE placement — quota-relaxed ones included —
+// so re-checking the quota would self-reject it; see solve's overrideFor);
 // used by the local-search optimizer to re-solve a perturbed call assignment.
 // fillMode: see FillMode. The optimizer never runs in obligatory mode
 // (autoGenerate skips it), so callOverrides and 'obligatory' don't combine in

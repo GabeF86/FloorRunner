@@ -720,19 +720,8 @@ export async function loadGenerationContext(
   }
 
   // Per-provider block target = base share of THIS block + deficit carried
-  // forward from past blocks at this site.
-  //
-  //   base_i_B     = (block_total_B / par_level) * fte_i
-  //   expected_i_B = (hist_total_B / par_level) * fte_i   [what they *should* have]
-  //   actual_i_B   = hist_assigned_i_B                    [what they got]
-  //   deficit_i_B  = max(0, expected_i_B - actual_i_B)
-  //
-  //   target_i_B = base_i_B + deficit_i_B
-  //
-  // The `max(0, …)` means providers who've been OVER-allocated historically
-  // don't get their block target shrunk — they just get scored worse so the
-  // greedy loop hands slots to under-allocated providers first. A hard
-  // shrink of their cap could leave slots unfilled for no good reason.
+  // forward from past blocks at this site (formula + max(0, …) rationale:
+  // computeBucketTargets' docstring above).
   //
   // 2026-07-16: targets are computed TWICE. The RAW pass (stored par, no
   // floor) exists only to keep the shortfall warning honest — a stale
