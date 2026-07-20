@@ -7,6 +7,7 @@
 // that turns bucket totals + historical data into per-provider FTE targets.
 
 import {
+  NEIGHBOR_WINDOW_DAYS,
   addDays,
   dayTypeBucket,
   normalizeWeekdays,
@@ -33,7 +34,6 @@ import { clampParToPoolFte } from '@/lib/fteTarget';
 import { isWorkingDay, ptoWeekdaysCovered, requiredWorkDays, entitledOffDays } from './workDays';
 
 const DEFAULT_PAR_LEVEL = 12; // fallback when site.call_par_level isn't set
-const NEIGHBOR_WINDOW_DAYS = 31;
 
 // A Supabase/PostgREST error indicating the queried relation doesn't exist yet
 // (pre-patch18 live DB). Distinct from a plain "no row" result (data:null,
