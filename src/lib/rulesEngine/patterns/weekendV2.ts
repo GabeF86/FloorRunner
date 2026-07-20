@@ -58,13 +58,25 @@ export const WEEKEND_V2_PATTERN: CallPatternDoc = CallPatternDocSchema.parse({
       { trigger: 'C1', links: [{ offset: 2, code: 'C2' }] },
     ]},
   ],
+  // Pre-call fills are UNCONDITIONAL (Gabriel 2026-07-20): "Pre-call status
+  // should be given to anyone on call the following day. D1 status is only
+  // dependent on the Call status from the day before, and D2 and D3 Status is
+  // only for the call status on the following day." The unlessCallWithinDays:2
+  // conditions previously on the C1→D2 and C2→D3 links were ported from legacy
+  // behavior on 2026-07-12 (never asked for) — they waived the pre-call fill
+  // after ANY call within 2 days, which cost neuro-weekend Jones (Sun C3,
+  // Tue C1) her Monday D2. The schema FEATURE stays in callPattern.ts (classic
+  // still uses it); this pattern's DATA drops it. D1-overrides-D2 needs no
+  // waiver: a C2's +1 D1 lands first in date order, so the next day's −1 D2
+  // pre-fill severs on the same-date gate (recorded 'occupied') — pinned in
+  // weekendV2Pattern.test.ts (D1 OVERRIDES D2).
   dayChains: [
     { trigger: 'C1', dayTypes: ['weekday', 'friday', 'federal_holiday', 'major_holiday'],
-      links: [{ offset: -1, code: 'D2', unlessCallWithinDays: 2 }], blocks: [{ offset: 1 }] },
+      links: [{ offset: -1, code: 'D2' }], blocks: [{ offset: 1 }] },
     { trigger: 'C1', dayTypes: ['saturday'], blocks: [{ offset: 1 }] },
     { trigger: 'C1', dayTypes: ['sunday'], blocks: [{ offset: 1 }] },
     { trigger: 'C2', dayTypes: ['weekday', 'friday', 'federal_holiday', 'major_holiday'],
-      links: [{ offset: -1, code: 'D3', unlessCallWithinDays: 2 }, { offset: 1, code: 'D1' }] },
+      links: [{ offset: -1, code: 'D3' }, { offset: 1, code: 'D1' }] },
     { trigger: 'C2', dayTypes: ['sunday'], links: [{ offset: 1, code: 'D1' }] },
   ],
   reliefPass: { enabled: true, dayTypes: ['weekday', 'friday'] },

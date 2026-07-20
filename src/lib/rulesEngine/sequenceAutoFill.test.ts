@@ -18,6 +18,7 @@ import {
   loadActiveCallPattern,
 } from './sequenceAutoFill';
 import { CLASSIC_PATTERN, type CallPatternDoc } from './callPattern';
+import { WEEKEND_V2_PATTERN } from './patterns/weekendV2';
 import { makeFakeSupabase, fromCount, callsFor, type TableCfg } from './__fixtures__/fakeSupabase';
 
 // Dates: Sun 2026-03-01, Mon 03-02, Tue 03-03, Wed 03-04, Thu 03-05,
@@ -818,6 +819,54 @@ describe('applySequenceAutoFill — rank precedence (renamed D3→PRE)', () => {
     expect(result.filledSlotIds).toEqual([]);
     expect(updates(calls)).toHaveLength(0);
     expect(result.skips).toContainEqual({ date: TUE, code: 'D1', provider_id: 'p1', reason: 'occupied' });
+  });
+
+  // ── D1 OVERRIDES D2, manual path (Gabriel 2026-07-20) ─────────────────────
+  // "unless it was a C2, in which case her D1 status would override the D2
+  // status." Weekend v2's pre-call links are now unconditional, so the manual
+  // path must enforce the override structurally: a manual C2 (day X−1) evicts
+  // an auto-generated D2 pre-fill on day X and lands D1; a manual C1 (day X+1)
+  // finds day X already held by the D1 and its D2 pre-fill declines as
+  // occupied (pre-call links never evict — eviction is post-call-only).
+  it('D1 evicts D2: manual C2 on day X−1 evicts the auto-generated D2 pre-fill on day X and fills D1 (weekend v2 doc)', async () => {
+    const d2Assignment: AssignmentRow =
+      { id: 'a-d2', provider_id: 'p1', assignment_status: 'assigned', source_type: 'auto_generated' };
+    const { sb, calls } = makeFakeSupabase({
+      tables: tables({
+        trigger: triggerSlot({ date: MON }), // C2, call_rank 1
+        slots: [
+          slot({ id: 'slot-d2-tue', date: TUE, code: 'D2', assignments: [d2Assignment] }),
+          slot({ id: 'slot-d1-tue', date: TUE, code: 'D1', assignments: [openRow('open-1')] }),
+        ],
+        assignments: [winAssign({ id: 'a-d2', date: TUE, code: 'D2', slotId: 'slot-d2-tue', source: 'auto_generated' })],
+      }),
+    });
+    const result = await applySequenceAutoFill(sb, 'trig', 'p1', WEEKEND_V2_PATTERN);
+    expect(result.filledSlotIds).toEqual(['slot-d1-tue']);
+    expect(result.evictedSlotIds).toEqual(['slot-d2-tue']); // reported, never silent
+    const up = updates(calls);
+    expect(up).toHaveLength(2);
+    expect(up[0].provider_id).toBeNull();      // D2 reverted to open first…
+    expect(up[1].provider_id).toBe('p1');      // …then the D1 fill lands
+  });
+
+  it('D2 never evicts D1: manual C1 on day X+1 declines its D2 pre-fill as occupied when D1 holds day X (weekend v2 doc)', async () => {
+    const { sb, calls } = makeFakeSupabase({
+      tables: tables({
+        trigger: triggerSlot({ date: WED, code: 'C1', stOpts: { category: 'call', call_rank: 0 } }),
+        slots: [slot({ id: 'slot-d2-tue', date: TUE, code: 'D2', assignments: [openRow('open-2')] })],
+        assignments: [
+          // The provider's Mon C2 and its auto-filled Tue D1 (the earlier chain).
+          winAssign({ id: 'a-c2-mon', date: MON, code: 'C2', stOpts: { category: 'call', call_rank: 1 } }),
+          winAssign({ id: 'a-d1-tue', date: TUE, code: 'D1', slotId: 'slot-d1-tue', source: 'auto_generated' }),
+        ],
+      }),
+    });
+    const result = await applySequenceAutoFill(sb, 'trig', 'p1', WEEKEND_V2_PATTERN);
+    expect(result.filledSlotIds).toEqual([]);
+    expect(result.evictedSlotIds).toEqual([]); // pre-call links (offset < 0) never evict
+    expect(result.skips).toContainEqual({ date: TUE, code: 'D2', provider_id: 'p1', reason: 'occupied' });
+    expect(updates(calls)).toHaveLength(0);    // the D1 row is untouched
   });
 
   it('pre-fill declines when a prior-day call of equal-or-lower call_rank owns the linked day', async () => {

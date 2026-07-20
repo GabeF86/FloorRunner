@@ -271,14 +271,20 @@ describe('WEEKEND_V2_PATTERN — broken chains still fill (in-house first)', () 
 // The OLD live shape (sunday-anchored, −2 back-link to Fri C1) and the NEW
 // shape (friday-anchored, +2 forward link to Sun C2) must produce the
 // IDENTICAL Doc A artifact set: Fri C1 + Sun C2 on one person, Thursday D2
-// filled (unlessCallWithinDays 2 sees only calls strictly BEFORE Friday —
-// daysBetween is signed, so the Sunday C2 two days AFTER never suppresses, in
-// either anchoring), Saturday blocked, Monday D1 filled. Both variants also
-// pin that dayChains fire on BLOCK-LINK placements: in the old shape Fri C1
-// was the link (its Saturday block + Thursday D2 fired from the link); in the
-// new shape Sun C2 is the link (its Monday D1 fires from the link). The old
-// doc is inlined verbatim below (Doc A pieces of the pre-2026-07-15 live
-// pattern) as the characterization baseline.
+// filled, Saturday blocked, Monday D1 filled. Both variants also pin that
+// dayChains fire on BLOCK-LINK placements: in the old shape Fri C1 was the
+// link (its Saturday block + Thursday D2 fired from the link); in the new
+// shape Sun C2 is the link (its Monday D1 fires from the link). The old doc is
+// inlined verbatim below (Doc A pieces of the pre-2026-07-15 live pattern) as
+// the characterization baseline.
+//
+// RE-PINNED 2026-07-20 (Gabriel): the recent-call scenario now DIVERGES by
+// design. WEEKEND_V2_PATTERN dropped unlessCallWithinDays from its pre-call
+// links (pre-call fills are unconditional — the previous describe), so Thu D2
+// FILLS despite a Wednesday call. The OLD synthetic doc keeps the condition
+// verbatim and stays the engine-level coverage of the unlessCallWithinDays
+// FEATURE (silent link waiver, no skip record) — the schema field remains
+// supported for patterns that still use it (classic does).
 describe('friday-first Doc A — pinned behavior across the re-anchor', () => {
   const OLD_SUNDAY_ANCHORED: CallPatternDoc = {
     version: 1,
@@ -311,6 +317,7 @@ describe('friday-first Doc A — pinned behavior across the re-anchor', () => {
       name: 'OLD sunday-anchored (characterization of live-today)',
       doc: OLD_SUNDAY_ANCHORED,
       anchorId: 'sunC2', linkId: 'friC1',
+      waivesPreCall: true, // keeps unlessCallWithinDays: 2 — the FEATURE pin
       slots: () => [
         callSlot('sunC2', '2026-01-11', 'C2', 'sunday'),
         callSlot('friC1', '2026-01-09', 'C1', 'friday'),
@@ -322,6 +329,7 @@ describe('friday-first Doc A — pinned behavior across the re-anchor', () => {
       name: 'NEW friday-anchored (re-anchored chain)',
       doc: WEEKEND_V2_PATTERN,
       anchorId: 'friC1', linkId: 'sunC2',
+      waivesPreCall: false, // pre-call fills unconditional (Gabriel 2026-07-20)
       slots: () => [
         callSlot('friC1', '2026-01-09', 'C1', 'friday'),
         callSlot('sunC2', '2026-01-11', 'C2', 'sunday'),
@@ -341,8 +349,10 @@ describe('friday-first Doc A — pinned behavior across the re-anchor', () => {
       expect(docA).toBeDefined();
       // The chained pair lands on one person, whichever side is the anchor.
       expect(byId[v.linkId]).toBe(docA);
-      // Thursday D2: unlessCallWithinDays 2 does NOT suppress — the paired Sun
-      // C2 is two days AFTER Friday, and hadCallWithin only looks backwards.
+      // Thursday D2 fills in both variants. (Old doc: unlessCallWithinDays 2
+      // sees only calls strictly BEFORE Friday — the paired Sun C2 two days
+      // AFTER never suppresses, hadCallWithin looks backwards. New doc: the
+      // link is unconditional.)
       expect(byId['thuD2']).toBe(docA);
       // Monday D1 via the sunday C2 dayChain — fires whether Sun C2 was the
       // anchor (old) or the link (new): dayChains run on block-link placements.
@@ -354,11 +364,15 @@ describe('friday-first Doc A — pinned behavior across the re-anchor', () => {
       expect(plan.assignments.some(a => a.provider_id === docA && a.slot_date === '2026-01-10')).toBe(false);
     });
 
-    it(`${v.name}: a call 2 days before Friday suppresses Thu D2 identically`, () => {
-      // Wednesday C2 (gap 2 from Friday) trips unlessCallWithinDays in BOTH
-      // anchorings — the suppression is a silent link condition (no skip
-      // record), mirroring solve's semantics. Single provider so Doc A is
-      // deterministically the Wednesday-call holder.
+    it(`${v.name}: a call 2 days before Friday — Thu D2 ${v.waivesPreCall ? 'waived (unlessCallWithinDays feature)' : 'FILLS (waiver removed, Gabriel 2026-07-20)'}`, () => {
+      // RE-PINNED 2026-07-20 (was: "suppresses Thu D2 identically"). A
+      // Wednesday C2 seed (gap 2 from Friday) exercises the recent-call
+      // window. OLD synthetic doc: unlessCallWithinDays 2 waives the Thu D2
+      // pre-fill SILENTLY (link condition, not a recorded skip) — this stays
+      // the engine coverage of the schema feature. NEW WEEKEND_V2_PATTERN:
+      // the link carries no condition, so Thu D2 fills — pre-call status
+      // depends only on tomorrow's call (Gabriel 2026-07-20). Single provider
+      // so Doc A is deterministically the Wednesday-call holder.
       const wedSeed = {
         slot_date: '2026-01-07', provider_id: 'p1', shift_type_code: 'C2',
         shift_type_category: 'call', derived_day_type: 'weekday',
@@ -370,9 +384,13 @@ describe('friday-first Doc A — pinned behavior across the re-anchor', () => {
       const byId = Object.fromEntries(plan.assignments.map(a => [a.slot_id, a.provider_id]));
       expect(byId[v.anchorId]).toBe('p1');
       expect(byId[v.linkId]).toBe('p1');
-      // Suppressed, and silently (link condition, not a recorded skip).
-      expect(byId['thuD2']).toBeUndefined();
-      expect(plan.skippedDerived!.some(s => s.date === '2026-01-08' && s.code === 'D2')).toBe(false);
+      if (v.waivesPreCall) {
+        // Waived, and silently (link condition, not a recorded skip).
+        expect(byId['thuD2']).toBeUndefined();
+        expect(plan.skippedDerived!.some(s => s.date === '2026-01-08' && s.code === 'D2')).toBe(false);
+      } else {
+        expect(byId['thuD2']).toBe('p1');
+      }
     });
   }
 });
@@ -538,6 +556,97 @@ describe('WEEKEND_V2_PATTERN — chain call links bypass quota, severance record
     expect(fri?.provider_id).toBe('p1');
     expect(sun?.provider_id).toBe('p1');
     expect((plan.skippedDerived ?? []).filter(s => s.code === 'C2')).toHaveLength(0);
+  });
+});
+
+// ── pre-call fills are UNCONDITIONAL under Weekend v2 (Gabriel 2026-07-20) ───
+// "Pre-call status should be given to anyone on call the following day. D1
+// status is only dependent on the Call status from the day before, and D2 and
+// D3 Status is only for the call status on the following day." The
+// unlessCallWithinDays:2 conditions on the C1→D2 and C2→D3 pre-call links were
+// ported from legacy behavior on 2026-07-12, never asked for — they waived the
+// pre-call fill after ANY call within 2 days, which is how neuro-weekend Jones
+// (Sun C3, Tue C1) lost her Monday D2. The schema feature stays (other
+// patterns — classic included — may still use it); Weekend v2's DATA drops it.
+describe('WEEKEND_V2_PATTERN — pre-call fills are unconditional (Gabriel 2026-07-20)', () => {
+  const shiftTypes = new Map([
+    ['C1', shiftInfo('C1', { category: 'call', call_rank: 0 })],
+    ['C2', shiftInfo('C2', { category: 'call', call_rank: 1 })],
+    ['C3', shiftInfo('C3', { category: 'call', call_rank: 2, is_overlay: true })],
+  ]);
+
+  it('Jones shape: C3 two days back + C1 tomorrow → the Monday D2 pre-fill LANDS', () => {
+    // Seeded Sun C3 (neuro weekend tail) is 2 days before Tuesday's C1 — the
+    // old waiver suppressed Monday D2 exactly here. D2 depends ONLY on
+    // tomorrow's C1; the fill must land.
+    const slots = [
+      dSlot('monD2', '2026-01-12', 'D2', 'weekday'),
+      callSlot('tueC1', '2026-01-13', 'C1', 'weekday'),
+    ];
+    const plan = solve(buildCtx(slots, [prov('p1')], {
+      callPattern: WEEKEND_V2_PATTERN, shiftTypes,
+      seedAssignments: [{
+        slot_date: '2026-01-11', provider_id: 'p1',
+        shift_type_code: 'C3', shift_type_category: 'call', derived_day_type: 'sunday',
+      }],
+    }));
+    const byId = Object.fromEntries(plan.assignments.map(a => [a.slot_id, a.provider_id]));
+    expect(byId['tueC1']).toBe('p1');
+    expect(byId['monD2']).toBe('p1');
+  });
+
+  it('sibling link: C3 two days back + C2 tomorrow → the Monday D3 pre-fill LANDS', () => {
+    const slots = [
+      dSlot('monD3', '2026-01-12', 'D3', 'weekday'),
+      callSlot('tueC2', '2026-01-13', 'C2', 'weekday'),
+    ];
+    const plan = solve(buildCtx(slots, [prov('p1')], {
+      callPattern: WEEKEND_V2_PATTERN, shiftTypes,
+      seedAssignments: [{
+        slot_date: '2026-01-11', provider_id: 'p1',
+        shift_type_code: 'C3', shift_type_category: 'call', derived_day_type: 'sunday',
+      }],
+    }));
+    const byId = Object.fromEntries(plan.assignments.map(a => [a.slot_id, a.provider_id]));
+    expect(byId['tueC2']).toBe('p1');
+    expect(byId['monD3']).toBe('p1');
+  });
+
+  it('D1 OVERRIDES D2: C2 on day X−1 and C1 on day X+1 → day X = D1, D2 open with the honest orphan reason', () => {
+    // Gabriel 2026-07-20: "unless it was a C2, in which case her D1 status
+    // would override the D2 status." Mechanism, pinned here: the C2 fills in
+    // date order and its +1 D1 lands FIRST; the next day's C1 then tries the
+    // −1 D2 pre-fill, hits the same-date gate (the provider already holds D1),
+    // and the link severs with a RECORDED 'occupied' skip (invariant 4). The
+    // sequence-owned D2 slot stays open and is reported once, honestly.
+    const engineShiftTypes = new Map([
+      ['C1', shiftInfo('C1', { category: 'call', call_rank: 0, generation_engine: 'call' })],
+      ['C2', shiftInfo('C2', { category: 'call', call_rank: 1, generation_engine: 'call' })],
+      ['D1', shiftInfo('D1', { generation_engine: 'call' })],
+      ['D2', shiftInfo('D2', { generation_engine: 'call' })],
+    ]);
+    const slots = [
+      callSlot('monC2', '2026-01-12', 'C2', 'weekday'), // day X−1
+      dSlot('tueD1', '2026-01-13', 'D1', 'weekday'),    // day X
+      dSlot('tueD2', '2026-01-13', 'D2', 'weekday'),    // day X
+      callSlot('wedC1', '2026-01-14', 'C1', 'weekday'), // day X+1
+    ];
+    const plan = solve(buildCtx(slots, [prov('p1')], {
+      callPattern: WEEKEND_V2_PATTERN, shiftTypes: engineShiftTypes,
+    }));
+    const byId = Object.fromEntries(plan.assignments.map(a => [a.slot_id, a.provider_id]));
+    expect(byId['monC2']).toBe('p1');
+    expect(byId['wedC1']).toBe('p1');
+    // Day X = D1 (post-2nd-call wins the day).
+    expect(byId['tueD1']).toBe('p1');
+    // The D2 pre-fill severed on the same-date gate — recorded, never silent…
+    expect(plan.skippedDerived).toContainEqual(
+      { date: '2026-01-13', code: 'D2', provider_id: 'p1', reason: 'occupied' });
+    // …and the sequence-owned D2 slot stays open, reported exactly once.
+    expect(plan.assignments.some(a => a.slot_id === 'tueD2')).toBe(false);
+    const orphans = plan.unfilled.filter(u => u.slot_id === 'tueD2');
+    expect(orphans).toHaveLength(1);
+    expect(orphans[0].reason).toBe('sequence-orphan: chain link severed');
   });
 });
 
