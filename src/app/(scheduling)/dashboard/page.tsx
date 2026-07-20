@@ -8,6 +8,7 @@ import type { ReactNode } from 'react';
 import { sbSchedulingServer } from '@/lib/supabaseScheduling';
 import { PageHeader, Card, Badge, Table, EmptyState, Banner, Button, scheduleStatusTone } from '@/components/ui';
 import { loadDashboardData, type DashboardData, type Panel } from './queries';
+import PhysicianPlannerCard from './PhysicianPlannerCard';
 
 // Never prerender — this page hits Supabase at request time.
 export const dynamic = 'force-dynamic';
@@ -295,6 +296,12 @@ export default async function DashboardPage() {
       >
         <TodaysCallPanel panel={data.todaysCall} today={data.today} />
         <AttentionPanel panel={data.attention} />
+      </div>
+
+      {/* Physician Planner — client card (its data comes from the planner API,
+          not loadDashboardData; collapsed by default to picker + summary). */}
+      <div style={{ marginTop: 'var(--space-4)' }}>
+        <PhysicianPlannerCard />
       </div>
     </div>
   );
