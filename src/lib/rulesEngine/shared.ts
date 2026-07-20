@@ -11,6 +11,32 @@ import type { CandidateProvider, AvailabilityEntry, SlotToFill } from './genType
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export type SupabaseClient = any;
 
+// ── Pre-patch18 degraded-mode error classifiers (single home) ───────────────
+// The graceful-degradation loaders (genContext, sequenceAutoFill,
+// dayShiftAutoGen) distinguish "this DB predates the patch" from a genuine
+// read failure. Consolidated predicates only — each caller keeps its own
+// bespoke degradation behavior.
+
+// A Supabase/PostgREST error indicating a queried COLUMN doesn't exist
+// (pre-patch18 DB, or patch18 partly applied). 42703 = undefined_column.
+export function isMissingColumnError(
+  err: { code?: string; message?: string } | null | undefined,
+): boolean {
+  if (!err) return false;
+  if (err.code === '42703') return true;
+  return /column/i.test(err.message || '');
+}
+
+// A Supabase/PostgREST error indicating the queried RELATION doesn't exist yet
+// (pre-patch18 live DB). Distinct from a plain "no row" result (data:null,
+// error:null). 42P01 = undefined_table.
+export function isMissingRelationError(error: unknown): boolean {
+  const e = error as { message?: string; code?: string } | null;
+  if (!e) return false;
+  if (e.code === '42P01') return true; // undefined_table
+  return /does not exist|could not find the table|schema cache/i.test(e.message || '');
+}
+
 // Availability types that block an assignment entirely. A provider with
 // any entry of one of these types covering the slot date is not eligible.
 export const BLOCKING_AVAIL: ReadonlySet<string> = new Set([

@@ -20,7 +20,7 @@
 // Suppressed fills are returned as `skips` using the SkippedDerived vocabulary
 // (clinical invariant 4: left unassigned AND recorded, never silently dropped).
 
-import { addDays, daysBetween, isBlockingAvailability } from './shared';
+import { addDays, daysBetween, isBlockingAvailability, isMissingColumnError } from './shared';
 import { fetchCommittedAssignments } from './committedAssignments';
 import { embedArray } from '@/lib/embed';
 import {
@@ -186,12 +186,6 @@ const NARROW_ST = 'code, category, requires_post_call_rule';
 
 export const RANKS_DEGRADED_WARNING =
   'shift_types rank columns missing — sequence precedence degraded to category ranking (apply patch18)';
-
-function isMissingColumnError(err: { code?: string; message?: string } | null | undefined): boolean {
-  if (!err) return false;
-  if (err.code === '42703') return true;
-  return /column/i.test(err.message || '');
-}
 
 interface LoadOutcome<T> {
   data: T;

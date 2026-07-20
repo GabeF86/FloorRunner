@@ -10,6 +10,7 @@ import {
   NEIGHBOR_WINDOW_DAYS,
   addDays,
   dayTypeBucket,
+  isMissingRelationError,
   normalizeWeekdays,
   buildPrePtoByThursday,
   type SupabaseClient,
@@ -35,16 +36,9 @@ import { isWorkingDay, ptoWeekdaysCovered, requiredWorkDays, entitledOffDays } f
 
 const DEFAULT_PAR_LEVEL = 12; // fallback when site.call_par_level isn't set
 
-// A Supabase/PostgREST error indicating the queried relation doesn't exist yet
-// (pre-patch18 live DB). Distinct from a plain "no row" result (data:null,
-// error:null). Missing-COLUMN errors (patch18 partly applied) are handled
-// separately at the shift_types load.
-function isMissingRelationError(error: unknown): boolean {
-  const e = error as { message?: string; code?: string } | null;
-  if (!e) return false;
-  if (e.code === '42P01') return true; // undefined_table
-  return /does not exist|could not find the table|schema cache/i.test(e.message || '');
-}
+// Missing-relation detection (pre-patch18 live DB) is the shared
+// isMissingRelationError; missing-COLUMN errors (patch18 partly applied) are
+// handled separately at the shift_types load.
 
 // ── Pure helpers ──────────────────────────────────────────────────────────────
 
