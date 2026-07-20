@@ -94,17 +94,20 @@ describe('ptoCounterStats', () => {
   // weekday number so it can be compared to the annual entitlement.
   it('Sat–Sun PTO week: 5 weekdays booked, 9 calendar days', () => {
     const s = ptoCounterStats([{ start_date: '2026-06-06', end_date: '2026-06-14' }], [], 2026);
-    expect(s).toEqual({ weekdaysBooked: 5, weekdaysSold: 0, weekdaysNet: 5, calendarNet: 9 });
+    expect(s).toEqual({ weekdaysBooked: 5, weekdaysSold: 0, weekdaysNet: 5, calendarBooked: 9, calendarNet: 9 });
   });
 
-  it('sell-back overlapping PTO nets those weekdays out of the PTO count', () => {
-    // PTO Mon Jun 8 – Fri Jun 12; chief buys back Thu–Fri.
+  // Sell-back semantics (Gabriel 2026-07-20): sold-back days are STILL
+  // DEDUCTED from the pool — weekdaysBooked (the headline) includes them;
+  // weekdaysSold/weekdaysNet are the informational breakdown.
+  it('sell-back overlapping PTO: pool debit unchanged, sold reported alongside', () => {
+    // PTO Mon Jun 8 – Fri Jun 12; provider sells back Thu–Fri (works them).
     const s = ptoCounterStats(
       [{ start_date: '2026-06-08', end_date: '2026-06-12' }],
       [{ start_date: '2026-06-11', end_date: '2026-06-12' }],
       2026,
     );
-    expect(s).toEqual({ weekdaysBooked: 5, weekdaysSold: 2, weekdaysNet: 3, calendarNet: 3 });
+    expect(s).toEqual({ weekdaysBooked: 5, weekdaysSold: 2, weekdaysNet: 3, calendarBooked: 5, calendarNet: 3 });
   });
 
   it('standalone sell-back (no PTO underneath) changes nothing', () => {
@@ -113,7 +116,7 @@ describe('ptoCounterStats', () => {
       [{ start_date: '2026-09-01', end_date: '2026-09-03' }],
       2026,
     );
-    expect(s).toEqual({ weekdaysBooked: 5, weekdaysSold: 0, weekdaysNet: 5, calendarNet: 5 });
+    expect(s).toEqual({ weekdaysBooked: 5, weekdaysSold: 0, weekdaysNet: 5, calendarBooked: 5, calendarNet: 5 });
   });
 
   it('sell-back covering a PTO weekend day nets the calendar count but not weekdays', () => {
@@ -123,7 +126,7 @@ describe('ptoCounterStats', () => {
       [{ start_date: '2026-06-06', end_date: '2026-06-06' }],
       2026,
     );
-    expect(s).toEqual({ weekdaysBooked: 5, weekdaysSold: 0, weekdaysNet: 5, calendarNet: 8 });
+    expect(s).toEqual({ weekdaysBooked: 5, weekdaysSold: 0, weekdaysNet: 5, calendarBooked: 9, calendarNet: 8 });
   });
 
   it('clips to the requested year', () => {

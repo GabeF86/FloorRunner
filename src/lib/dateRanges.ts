@@ -7,11 +7,16 @@
 //   one calendar year. Used by the Sell-Back / Days Off / Other Leave category
 //   counters, which deliberately count calendar days (weekends and weekdays
 //   alike).
-// - ptoCounterStats: the PTO counter's numbers — WEEKDAYS (Mon–Fri), net of
-//   sell-back coverage. Physician PTO banks are debited in working days, so
-//   the headline number a chief compares to the annual entitlement must be a
-//   weekday count, and a sold-back date is a WORKING date, not PTO taken
-//   (matches the engine's ptoWeekdaysCovered netting in workDays.ts).
+// - ptoCounterStats: the PTO counter's numbers — WEEKDAYS (Mon–Fri).
+//   Physician PTO banks are debited in working days, so the headline number a
+//   chief compares to the annual entitlement is weekdaysBooked. SELL-BACK
+//   SEMANTICS (Gabriel 2026-07-20): a sold-back day is STILL DEDUCTED from
+//   the PTO pool — the provider burns the PTO day AND works it at premium.
+//   So the headline INCLUDES sold-back days; weekdaysSold is reported
+//   alongside as information. (The engine's ptoWeekdaysCovered netting in
+//   workDays.ts is a DIFFERENT question — whether the day excuses the
+//   work-days requirement — and correctly excludes sold-back days there:
+//   they are worked, so still owed.)
 //   Deliberately simpler than the engine in two stated ways: no major-holiday
 //   exclusion (needs a DB read; the scheduler's working-days budget is the
 //   finer number), and PTO rows count on their RAW entered dates (no weekend
@@ -86,13 +91,18 @@ export function countWeekdays(dates: Iterable<string>): number {
 
 /** The PTO category counter's numbers for one calendar year. */
 export interface PtoCounterStats {
-  /** Weekdays covered by PTO rows in the year, before sell-back netting. */
+  /** Weekdays covered by PTO rows in the year — THE headline: PTO consumed
+   *  from the pool, INCLUDING sold-back days (sell-back never refunds PTO). */
   weekdaysBooked: number;
-  /** PTO-covered weekdays also covered by a sell-back row (working — owed again). */
+  /** PTO-covered weekdays also covered by a sell-back row (worked at premium,
+   *  still deducted from the pool). Informational, shown alongside. */
   weekdaysSold: number;
-  /** weekdaysBooked − weekdaysSold: the number to compare to the PTO entitlement. */
+  /** weekdaysBooked − weekdaysSold: days actually spent OFF. Not the pool
+   *  debit — kept for display of "days off vs sold" breakdowns. */
   weekdaysNet: number;
-  /** Calendar days covered by PTO minus sell-back-overridden dates (weekends incl.). */
+  /** Calendar days covered by PTO rows (weekends incl.), full coverage. */
+  calendarBooked: number;
+  /** Calendar days covered by PTO minus sell-back-overridden dates. */
   calendarNet: number;
 }
 
@@ -118,6 +128,7 @@ export function ptoCounterStats(
     weekdaysBooked,
     weekdaysSold,
     weekdaysNet: weekdaysBooked - weekdaysSold,
+    calendarBooked: pto.size,
     calendarNet: net.length,
   };
 }

@@ -1931,20 +1931,19 @@ function CategoryCounter({ label, year, days }: { label: string; year: number; d
   );
 }
 
-// The PTO header counter: WEEKDAYS (Mon–Fri), net of sell-back — the number a
-// chief compares to the annual entitlement (PTO banks are debited in working
-// days; a sold-back date is a working date, not PTO taken). When any weekdays
-// were sold back the booked − sold breakdown is shown inline so the netting
-// is auditable at a glance. Calendar days (also net of sell-back) ride along
-// as secondary context.
+// The PTO header counter: WEEKDAYS (Mon–Fri) CONSUMED from the PTO pool —
+// the number a chief compares to the annual entitlement. Sell-back semantics
+// (Gabriel 2026-07-20): a sold-back day is STILL DEDUCTED from the pool (the
+// provider burns the PTO day and works it at premium pay), so the headline
+// INCLUDES sold-back days; the sold count is shown inline as information.
 function PtoCounter({ year, stats }: { year: number; stats: PtoCounterStats }) {
-  const { weekdaysBooked, weekdaysSold, weekdaysNet, calendarNet } = stats;
+  const { weekdaysBooked, weekdaysSold, calendarBooked } = stats;
   return (
     <span style={COUNTER_STYLE}>
-      Total PTO Days · {year}: {weekdaysNet} weekday{weekdaysNet === 1 ? '' : 's'}
-      {weekdaysSold > 0 ? ` (${weekdaysBooked} booked − ${weekdaysSold} sold back)` : ''}
-      {' · '}{calendarNet} calendar
-      <InfoTip text={`Weekday (Mon–Fri) PTO count for ${year}, NET of sell-back: sold-back dates are working days, not PTO taken — those weekdays are subtracted (and owed again), matching the scheduler's netting. PTO banks are debited in working days, so compare THIS number to the annual entitlement. The calendar figure counts every covered day including weekends, also net of sell-back. Major-holiday exclusion (the scheduler's finer working-days budget) is not applied here. Denied/canceled entries are excluded; pending and approved both count; entries spanning year boundaries count only their ${year} days.`} />
+      Total PTO Days · {year}: {weekdaysBooked} weekday{weekdaysBooked === 1 ? '' : 's'}
+      {weekdaysSold > 0 ? ` (incl. ${weekdaysSold} sold back)` : ''}
+      {' · '}{calendarBooked} calendar
+      <InfoTip text={`Weekday (Mon–Fri) PTO consumed from the pool in ${year} — compare THIS number to the annual entitlement. Sold-back days are INCLUDED: selling back deducts the PTO day AND the provider works it at premium (the sell-back counter tracks those separately). The calendar figure counts every covered day including weekends. Major-holiday exclusion (the scheduler's finer working-days budget) is not applied here. Denied/canceled entries are excluded; pending and approved both count; entries spanning year boundaries count only their ${year} days.`} />
     </span>
   );
 }
