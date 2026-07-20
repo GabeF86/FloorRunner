@@ -1,6 +1,7 @@
 // Shared types for the call-schedule generation pipeline.
 // Lifted from the interfaces formerly inline in autoGenerate.ts.
 import type { CallPatternDoc } from './callPattern';
+import type { WorkDayBudget } from './workDays';
 
 export interface SlotToFill {
   slot_id: string;
@@ -113,27 +114,22 @@ export interface GenerationContext {
   workDayBudget?: WorkDayBudget;
 }
 
-// Per-provider working-days accounting for a block. `required` is the placement
-// cap (credited weekday count may not exceed it); the rest feed the report.
-export interface ProviderWorkDayBudget {
-  fte: number;
-  workingDays: number;   // block working days (weekday, not major holiday)
-  ptoWeekdays: number;   // working days covered by PTO-netting leave (nets 1:1)
-  required: number;      // round(fte × workingDays) − ptoWeekdays, floored at 0
-  entitledOff: number;   // workingDays − round(fte × workingDays)
-}
-
-export interface WorkDayBudget {
-  workingDays: number;                     // |workingDaySet|
-  workingDaySet: ReadonlySet<string>;      // block dates that are working days
-  majorHolidayDates: ReadonlySet<string>;  // major-holiday dates within the block
-  byProvider: Map<string, ProviderWorkDayBudget>;
-}
+// WorkDayBudget / ProviderWorkDayBudget live beside their arithmetic in
+// workDays.ts (2026-07-20 decomposition) and are RE-EXPORTED here so existing
+// imports — test files included — stay unchanged.
+export type { WorkDayBudget, ProviderWorkDayBudget } from './workDays';
 
 // 'call' = the full set; 'call-no-quota' = every call gate EXCEPT the bucket
-// quota (used ONLY by IF-3 quota relaxation — relaxation may waive the quota,
-// never a safety gate); 'derived' = structural placements (drops quota + the
-// post-call guard, keeps every safety gate).
+// quota — and it also WAIVES the FTE workdays cap (eligibility applies the cap
+// on 'call' | 'derived' only; quota relaxation re-applies it manually in
+// solve() so a cap-bound slot still stays open). FOUR consumers: IF-3 quota
+// relaxation (solve's relaxSweep), block-chain call links (solve's
+// applyBlockChains — a structural same-provider obligation whose anchor was
+// already fairness-scored), the optimizer's eligibility pre-gate
+// (optimize's gatePasses), and override pin re-validation (solve's
+// overrideFor). Waiving may cover the quota + cap, never a safety gate.
+// 'derived' = structural placements (drops quota + the post-call guard, keeps
+// every safety gate and the workdays cap).
 export type GateSet = 'call' | 'call-no-quota' | 'derived';
 
 export type RejectionReason =
@@ -250,35 +246,11 @@ export interface SolutionPlan {
   chainAnchorSlotIds?: string[];
 }
 
-// Mutable in-memory bookkeeping during solve. Never touches I/O.
-export interface SolveState {
-  bucketAssigned: Map<string, number>;       // "pid|bucket|code" -> count
-  assignedOnDate: Map<string, Set<string>>;  // date -> set of pids
-  handledSlotIds: Set<string>;
-  callDatesByProvider: Map<string, string[]>; // pid -> sorted call dates
-  // date -> pids whose day this is a pattern post-call BLOCK (day off), as
-  // opposed to an ordinary assignment. Written alongside markAssigned at the
-  // two block-marking sites (applyDayChains blocks; seedSolveState IF-1) so
-  // OVERLAY placements — which skip the assignedOnDate budget — can still see
-  // and respect blocked days (clinical invariant 1).
-  blockedOnDate: Map<string, Set<string>>;
-  // FTE working-days credit ledger (2026-07-17): pid -> set of WORKING dates
-  // credited as worked (weekday assignments from any pass, post-call rest days
-  // on weekdays, ICU-week weekdays). Single home for the credited counter the
-  // workdays cap consults; only populated when ctx carries a workDayBudget.
-  creditedWorkDays: Map<string, Set<string>>;
-}
-
-export function emptySolveState(): SolveState {
-  return {
-    bucketAssigned: new Map(),
-    assignedOnDate: new Map(),
-    handledSlotIds: new Set(),
-    callDatesByProvider: new Map(),
-    blockedOnDate: new Map(),
-    creditedWorkDays: new Map(),
-  };
-}
+// SolveState + emptySolveState live in solveState.ts (2026-07-20 solve
+// decomposition, alongside the pure state mutators) and are RE-EXPORTED here
+// so existing imports — test files included — stay unchanged.
+export type { SolveState } from './solveState';
+export { emptySolveState } from './solveState';
 
 // Generation fill mode (2026-07-17). 'all' (default) fills every fillable
 // call slot — the pre-change engine byte for byte. 'obligatory' caps each
@@ -290,7 +262,9 @@ export function emptySolveState(): SolveState {
 export type FillMode = 'all' | 'obligatory';
 
 // Options for solve(). callOverrides forces a provider onto a CALL slot (by
-// slot_id -> provider_id) when that provider passes the canonical 'call' gate;
+// slot_id -> provider_id) when that provider passes the 'call-no-quota' gate
+// (a pin re-asserts an ALREADY-MADE placement — quota-relaxed ones included —
+// so re-checking the quota would self-reject it; see solve's overrideFor);
 // used by the local-search optimizer to re-solve a perturbed call assignment.
 // fillMode: see FillMode. The optimizer never runs in obligatory mode
 // (autoGenerate skips it), so callOverrides and 'obligatory' don't combine in

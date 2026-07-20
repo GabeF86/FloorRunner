@@ -11,6 +11,32 @@ import type { CandidateProvider, AvailabilityEntry, SlotToFill } from './genType
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export type SupabaseClient = any;
 
+// ── Pre-patch18 degraded-mode error classifiers (single home) ───────────────
+// The graceful-degradation loaders (genContext, sequenceAutoFill,
+// dayShiftAutoGen) distinguish "this DB predates the patch" from a genuine
+// read failure. Consolidated predicates only — each caller keeps its own
+// bespoke degradation behavior.
+
+// A Supabase/PostgREST error indicating a queried COLUMN doesn't exist
+// (pre-patch18 DB, or patch18 partly applied). 42703 = undefined_column.
+export function isMissingColumnError(
+  err: { code?: string; message?: string } | null | undefined,
+): boolean {
+  if (!err) return false;
+  if (err.code === '42703') return true;
+  return /column/i.test(err.message || '');
+}
+
+// A Supabase/PostgREST error indicating the queried RELATION doesn't exist yet
+// (pre-patch18 live DB). Distinct from a plain "no row" result (data:null,
+// error:null). 42P01 = undefined_table.
+export function isMissingRelationError(error: unknown): boolean {
+  const e = error as { message?: string; code?: string } | null;
+  if (!e) return false;
+  if (e.code === '42P01') return true; // undefined_table
+  return /does not exist|could not find the table|schema cache/i.test(e.message || '');
+}
+
 // Availability types that block an assignment entirely. A provider with
 // any entry of one of these types covering the slot date is not eligible.
 export const BLOCKING_AVAIL: ReadonlySet<string> = new Set([
@@ -49,6 +75,32 @@ export function isBlockingAvailability(
   return !isDismissedAvailability(entry) && BLOCKING_AVAIL.has(entry.availability_type);
 }
 
+// ── Overlay coexistence (single home for the decision table) ────────────────
+// May an EXISTING same-site, same-date assignment and an INCOMING placement
+// coexist? The is_overlay exemption is deliberately NARROW and two-sided —
+// it exempts REGULAR↔OVERLAY-CALL pairs only (Doc C's Fri D4 day shift + Fri
+// C3 evening neuro overlay call), in either placement order:
+//   existing OVERLAY row + incoming NON-CALL  → coexist
+//   incoming OVERLAY     + existing REGULAR   → coexist
+//   call + call (either overlay)              → collide (never stack)
+//   everything else                           → collide
+// Missing/undefined is_overlay ⇒ non-overlay — the conservative pre-overlay
+// behavior (degraded pre-patch18 loads therefore collide on every pair).
+// Cross-site pairs are NEVER exempt (a genuine two-places conflict) — callers
+// keep same-site scoping local.
+// Consumers: sequenceAutoFill's coexists() routes through this directly.
+// eligibility's same-date / call-on-call / blockedOnDate trio and
+// dayShiftAutoGen's seed-time occupancy skip realize the SAME table
+// incrementally against their own state shapes (SolveState maps / occupancy
+// sets) where the existing side is implicit — see the cross-references there.
+export function overlayMayCoexist(
+  existing: { category?: string | null; is_overlay?: boolean | null },
+  incoming: { category?: string | null; is_overlay?: boolean | null },
+): boolean {
+  return (existing.is_overlay === true && incoming.category !== 'call')
+    || (incoming.is_overlay === true && existing.category === 'regular');
+}
+
 // Multi-day planned-leave types that also trigger a weekend-bookend
 // extension. Ad-hoc single-day types (sick, jury_duty, unavailable,
 // blocked) are intentionally left out — extending them would swallow
@@ -69,15 +121,35 @@ export const NEIGHBOR_WINDOW_DAYS = 31;
 export const AVAIL_WINDOW_DAYS = 14;
 
 // ── Date math (YYYY-MM-DD strings, no Date objects leaking) ─────────────────
+// Memoized (2026-07-20 perf): Date-string parsing was ~74% of all engine CPU
+// (daysBetween via daysSinceLastCall/hadCallWithin, addDays via
+// evaluateEligibility + sequenceOwnership, dayOfWeekUTC). Module-level Map
+// caches are observably behavior-free — pure functions of their string
+// inputs, cached values computed by exactly the pre-memo expression on first
+// use. Growth is bounded: a block touches only ~30-90 distinct date strings
+// (plus small offset sets), and serverless processes are short-lived.
 
+const addDaysCache = new Map<string, string>();
 export function addDays(iso: string, n: number): string {
-  const d = new Date(iso + 'T00:00:00Z');
-  d.setUTCDate(d.getUTCDate() + n);
-  return d.toISOString().slice(0, 10);
+  const key = iso + '|' + n;
+  let v = addDaysCache.get(key);
+  if (v === undefined) {
+    const d = new Date(iso + 'T00:00:00Z');
+    d.setUTCDate(d.getUTCDate() + n);
+    v = d.toISOString().slice(0, 10);
+    addDaysCache.set(key, v);
+  }
+  return v;
 }
 
+const dayOfWeekCache = new Map<string, number>();
 export function dayOfWeekUTC(iso: string): number {
-  return new Date(iso + 'T00:00:00Z').getUTCDay(); // 0=Sun..6=Sat
+  let v = dayOfWeekCache.get(iso);
+  if (v === undefined) {
+    v = new Date(iso + 'T00:00:00Z').getUTCDay(); // 0=Sun..6=Sat
+    dayOfWeekCache.set(iso, v);
+  }
+  return v;
 }
 
 // Day-of-week → derived day type. Single home for the DOW fallback mapping
@@ -108,10 +180,18 @@ export function datesOverlap(rangeStart: string, rangeEnd: string, date: string)
 
 // Whole-day difference (to - from) in UTC days. Positive when `to` is later.
 // Inputs are YYYY-MM-DD strings parsed at UTC midnight, so this is DST-safe.
+// The iso→epoch-ms parse is memoized (see the date-math header note).
+const epochCache = new Map<string, number>();
+function epochUTC(iso: string): number {
+  let v = epochCache.get(iso);
+  if (v === undefined) {
+    v = new Date(iso + 'T00:00:00Z').getTime();
+    epochCache.set(iso, v);
+  }
+  return v;
+}
 export function daysBetween(from: string, to: string): number {
-  const f = new Date(from + 'T00:00:00Z').getTime();
-  const t = new Date(to + 'T00:00:00Z').getTime();
-  return Math.round((t - f) / 86400000);
+  return Math.round((epochUTC(to) - epochUTC(from)) / 86400000);
 }
 
 // ── PTO bookend extension ──────────────────────────────────────────────────

@@ -17,11 +17,17 @@ import type {
 const PASS: EligibilityResult = { eligible: true };
 
 // Single canonical eligibility gate. `gate === 'call'` applies the full set
-// (quota + post-call guard included). `gate === 'derived'` is for structurally
-// derived placements (D-chains, weekend non-call fills, D4-D9 relief): it drops
-// the bucket-quota and C1 post-call gates but keeps every safety gate
-// (credentials, conflicts, weekday availability, weekend-adjacent PTO, and the
-// PTO-bookend availability check — the last of which closes the relief-pass H2 bug).
+// (quota + post-call guard + workdays cap included). `gate === 'call-no-quota'`
+// is 'call' minus the bucket quota and the workdays cap (quota relaxation,
+// block-chain call links, optimizer pre-gate + pin re-validation — see GateSet
+// in genTypes.ts). `gate === 'derived'` is for structurally derived placements
+// (D-chains, weekend non-call fills, relief codes from shift_types.relief_rank
+// ordering — D4-D9 is only the legacy fallback when ctx.shiftTypes is absent):
+// it drops the bucket-quota and the pattern-driven post-call guard (a code
+// whose day-chain blocks the next day — not a C1 literal) but keeps every
+// safety gate (credentials, conflicts, weekday availability, weekend-adjacent
+// PTO, and the PTO-bookend availability check — the last of which closes the
+// relief-pass H2 bug) plus the workdays cap.
 export function evaluateEligibility(
   slot: SlotToFill,
   p: CandidateProvider,
@@ -42,6 +48,14 @@ export function evaluateEligibility(
   // day shift + Fri C3 evening neuro call). It is NOT a general free pass —
   // two same-date CALLS never stack, and post-call blocked days always bind
   // (both checks below; review findings 1+2).
+  //
+  // This trio realizes the canonical overlayMayCoexist decision table
+  // (shared.ts) INCREMENTALLY against SolveState maps — the existing side is
+  // implicit in map membership (overlay placements never enter assignedOnDate;
+  // callDatesByProvider holds every call, overlay included; blockedOnDate
+  // holds post-call blocks, which aren't assignments at all), so the
+  // two-object predicate cannot be consumed literally here. Keep the three
+  // checks in sync with that table.
   const slotOverlay = ctx.shiftTypes?.get(slot.shift_type_code)?.is_overlay ?? false;
   if (!slotOverlay && state.assignedOnDate.get(slot.slot_date)?.has(p.id)) {
     return { eligible: false, reason: 'same-date' };

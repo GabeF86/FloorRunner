@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { sbSchedulingServer } from '@/lib/supabaseScheduling';
+import { dayOfWeekUTC, dayTypeFromDow } from '@/lib/rulesEngine/shared';
 
 // Never prerender — this route hits Supabase per request.
 export const dynamic = 'force-dynamic';
@@ -115,11 +116,11 @@ export async function POST(req: NextRequest) {
     } else if (holiday) {
       dayType = 'federal_holiday';
     } else {
-      const dow = current.getDay();
-      if (dow === 0) dayType = 'sunday';
-      else if (dow === 5) dayType = 'friday';
-      else if (dow === 6) dayType = 'saturday';
-      else dayType = 'weekday';
+      // Single-homed DOW→dayType map (shared.dayTypeFromDow). dateStr is the
+      // valid ISO date the loop just derived; its UTC DOW equals the old
+      // local-noon getDay() for offsets in (-12,+12] — every deployed target.
+      // (UTC+13/+14 would differ, where UTC DOW is the self-consistent choice.)
+      dayType = dayTypeFromDow(dayOfWeekUTC(dateStr));
     }
 
     // Match templates for this day type.

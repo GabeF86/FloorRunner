@@ -7,8 +7,10 @@
 // that turns bucket totals + historical data into per-provider FTE targets.
 
 import {
+  NEIGHBOR_WINDOW_DAYS,
   addDays,
   dayTypeBucket,
+  isMissingRelationError,
   normalizeWeekdays,
   buildPrePtoByThursday,
   type SupabaseClient,
@@ -30,21 +32,13 @@ import { CallPatternDocSchema, patternWarnings, callFillOrderWarnings, dayTypeFi
 import { fetchCommittedAssignments, filterPublishedVersions } from './committedAssignments';
 import { embedArray } from '@/lib/embed';
 import { clampParToPoolFte } from '@/lib/fteTarget';
-import { isWorkingDay, ptoWeekdaysCovered, requiredWorkDays, entitledOffDays } from './workDays';
+import { isWorkingDay, ptoWeekdaysCovered, requiredWorkDays, entitledOffDays, loadMajorHolidayDates } from './workDays';
 
 const DEFAULT_PAR_LEVEL = 12; // fallback when site.call_par_level isn't set
-const NEIGHBOR_WINDOW_DAYS = 31;
 
-// A Supabase/PostgREST error indicating the queried relation doesn't exist yet
-// (pre-patch18 live DB). Distinct from a plain "no row" result (data:null,
-// error:null). Missing-COLUMN errors (patch18 partly applied) are handled
-// separately at the shift_types load.
-function isMissingRelationError(error: unknown): boolean {
-  const e = error as { message?: string; code?: string } | null;
-  if (!e) return false;
-  if (e.code === '42P01') return true; // undefined_table
-  return /does not exist|could not find the table|schema cache/i.test(e.message || '');
-}
+// Missing-relation detection (pre-patch18 live DB) is the shared
+// isMissingRelationError; missing-COLUMN errors (patch18 partly applied) are
+// handled separately at the shift_types load.
 
 // ── Pure helpers ──────────────────────────────────────────────────────────────
 
@@ -149,7 +143,14 @@ export interface LoadResult {
 export async function loadGenerationContext(
   sb: SupabaseClient,
   scheduleVersionId: string,
-  options: { overrideProviderIds?: string[] } = {},
+  options: {
+    overrideProviderIds?: string[];
+    // The version's parent schedule id, when the caller already holds it (the
+    // generate route's path param). Skips the redundant schedule_versions
+    // round trip in step 6; absent → the lookup (and its degraded-mode
+    // warning) runs exactly as before.
+    parentScheduleId?: string;
+  } = {},
 ): Promise<LoadResult> {
   let dbQueries = 0;
   const countQ = () => { dbQueries++; };
@@ -176,34 +177,50 @@ export async function loadGenerationContext(
   }
   const siteId = (rawSlots[0] as { site_id: string }).site_id;
 
-  // Load site to get call_par_level (gracefully fallback if column doesn't exist
-  // yet) + organization_id (scopes the holiday_calendars query for the
-  // working-days budget below — holiday rows are org-wide, site_id NULL).
-  let parLevel = DEFAULT_PAR_LEVEL;
-  let organizationId: string | null = null;
-  try {
-    countQ();
-    const { data: site } = await sb.from('sites').select('call_par_level, organization_id').eq('id', siteId).single();
-    if (site) {
-      if (typeof site.call_par_level === 'number' && site.call_par_level > 0) {
-        parLevel = site.call_par_level;
-      }
-      organizationId = (site.organization_id as string | null) ?? null;
-    }
-  } catch { /* column may not exist yet — use default */ }
+  // ── 1a-1c. Site metadata wave (parallelized 2026-07-20, C2.4) ─────────────
+  // sites + shift_types (with its conditional narrow retry CHAINED inside its
+  // member) + call_patterns depend only on siteId, so their round trips
+  // overlap in one Promise.all wave. Each member keeps its bespoke
+  // degraded-mode handling verbatim and RETURNS its warnings; they are pushed
+  // after the wave resolves in the original fixed order (shift_types →
+  // call_patterns) so the warnings array is identical to the serial load's.
 
-  // ── 1b. Load full shift-type metadata for the site ────────────────────────
-  // Drives generation behavior (call/relief rank, overlay, engine, post-call
-  // flag, coverage type). On ANY load failure ctx.shiftTypes stays undefined so
-  // solve's documented legacy fallbacks (LEGACY_RELIEF_CODES, call-rank
-  // literals) engage uniformly — attaching a rank-less map here would make
-  // reliefCodesFor() return [] and silently kill the relief pass.
+  // 1a. Site row: call_par_level (graceful fallback if the column doesn't
+  // exist yet) + organization_id (scopes the holiday_calendars query for the
+  // working-days budget below — holiday rows are org-wide, site_id NULL).
+  const loadSiteRow = async (): Promise<{ parLevel: number; organizationId: string | null }> => {
+    let parLevel = DEFAULT_PAR_LEVEL;
+    let organizationId: string | null = null;
+    try {
+      countQ();
+      const { data: site } = await sb.from('sites').select('call_par_level, organization_id').eq('id', siteId).single();
+      if (site) {
+        if (typeof site.call_par_level === 'number' && site.call_par_level > 0) {
+          parLevel = site.call_par_level;
+        }
+        organizationId = (site.organization_id as string | null) ?? null;
+      }
+    } catch { /* column may not exist yet — use default */ }
+    return { parLevel, organizationId };
+  };
+
+  // 1b. Full shift-type metadata for the site. Drives generation behavior
+  // (call/relief rank, overlay, engine, post-call flag, coverage type). On ANY
+  // load failure shiftTypes stays undefined so solve's documented legacy
+  // fallbacks (LEGACY_RELIEF_CODES, call-rank literals) engage uniformly —
+  // attaching a rank-less map here would make reliefCodesFor() return [] and
+  // silently kill the relief pass.
   //   • Missing engine columns (pre-patch18 live DB): warn "apply patch18" and
   //     retry with code+category ONLY to feed the pattern cross-check below.
   //   • Any other error (timeout, RLS, transient): warn with the error message.
-  let shiftTypes: Map<string, ShiftTypeInfo> | undefined;
-  const knownShiftCodes = new Set<string>();
-  {
+  const loadShiftTypes = async (): Promise<{
+    shiftTypes: Map<string, ShiftTypeInfo> | undefined;
+    knownShiftCodes: Set<string>;
+    warnings: string[];
+  }> => {
+    let shiftTypes: Map<string, ShiftTypeInfo> | undefined;
+    const knownShiftCodes = new Set<string>();
+    const memberWarnings: string[] = [];
     countQ();
     const wide = await sb
       .from('shift_types')
@@ -214,7 +231,7 @@ export async function loadGenerationContext(
     if (wide.error) {
       const wideErrMsg = (wide.error as { message?: string }).message || '';
       if (/column/i.test(wideErrMsg)) {
-        warnings.push('shift_types engine columns missing — apply patch18');
+        memberWarnings.push('shift_types engine columns missing — apply patch18');
         countQ();
         const narrow = await sb
           .from('shift_types')
@@ -225,7 +242,7 @@ export async function loadGenerationContext(
           if (r.code) knownShiftCodes.add(r.code as string);
         }
       } else {
-        warnings.push(`shift_types load failed — using legacy engine fallbacks: ${wideErrMsg || 'unknown error'}`);
+        memberWarnings.push(`shift_types load failed — using legacy engine fallbacks: ${wideErrMsg || 'unknown error'}`);
       }
     } else {
       shiftTypes = new Map<string, ShiftTypeInfo>();
@@ -247,14 +264,19 @@ export async function loadGenerationContext(
         knownShiftCodes.add(code);
       }
     }
-  }
+    return { shiftTypes, knownShiftCodes, warnings: memberWarnings };
+  };
 
-  // ── 1c. Load the site's active call pattern ───────────────────────────────
-  // Success → ctx.callPattern (zod-parsed). Validation failure → undefined +
-  // warning. Missing table → undefined + warning. No row → undefined, silent
-  // (normal pre-seed state; solve falls back to CLASSIC_PATTERN).
-  let callPattern: CallPatternDoc | undefined;
-  {
+  // 1c. The site's active call pattern. Success → callPattern (zod-parsed).
+  // Validation failure → undefined + warning. Missing table → undefined +
+  // warning. No row → undefined, silent (normal pre-seed state; solve falls
+  // back to CLASSIC_PATTERN).
+  const loadCallPattern = async (): Promise<{
+    callPattern: CallPatternDoc | undefined;
+    warnings: string[];
+  }> => {
+    let callPattern: CallPatternDoc | undefined;
+    const memberWarnings: string[] = [];
     countQ();
     const { data: patRow, error: patErr } = await sb
       .from('call_patterns')
@@ -265,7 +287,7 @@ export async function loadGenerationContext(
 
     if (patErr) {
       if (isMissingRelationError(patErr)) {
-        warnings.push('call_patterns table missing — apply patch18');
+        memberWarnings.push('call_patterns table missing — apply patch18');
       }
       // Other errors: leave undefined; engine falls back to CLASSIC silently.
     } else {
@@ -275,12 +297,22 @@ export async function loadGenerationContext(
         if (parsed.success) {
           callPattern = parsed.data;
         } else {
-          warnings.push(`Active call pattern failed validation: ${parsed.error.issues[0]?.message ?? 'unknown error'}`);
+          memberWarnings.push(`Active call pattern failed validation: ${parsed.error.issues[0]?.message ?? 'unknown error'}`);
         }
       }
       // No row → definition undefined → callPattern stays undefined, no warning.
     }
-  }
+    return { callPattern, warnings: memberWarnings };
+  };
+
+  const [siteRowRes, shiftTypesRes, callPatternRes] = await Promise.all([
+    loadSiteRow(), loadShiftTypes(), loadCallPattern(),
+  ]);
+  const { parLevel, organizationId } = siteRowRes;
+  const { shiftTypes, knownShiftCodes } = shiftTypesRes;
+  const { callPattern } = callPatternRes;
+  warnings.push(...shiftTypesRes.warnings);
+  warnings.push(...callPatternRes.warnings);
 
   // Cross-check: every code the pattern references should exist as a shift
   // type. knownShiftCodes is populated from the wide select or, in degraded
@@ -488,13 +520,66 @@ export async function loadGenerationContext(
     };
   }
 
+  // ── 3b-5 + lookups: provider-scoped wave (parallelized 2026-07-20, C2.4) ──
+  // providers, credentials, availability, the parent-schedule lookup (only
+  // when the option is absent — C2.3) and the §9 holiday load are mutually
+  // independent once providerIds + organizationId are known, so their round
+  // trips overlap in one Promise.all wave. Query chains are constructed in
+  // the original order (builders execute lazily on await for both the real
+  // client and the recording fakes); results — and the parent-lookup's
+  // degraded-mode warning — are processed after the wave in the original
+  // fixed order. The two 'assignments' reads (§6 conflict scan, §6.5 legacy
+  // fallback) deliberately stay sequential AFTER this wave: the conflict scan
+  // needs parentScheduleId, and keeping them ordered preserves the serial
+  // load's per-table query sequence exactly.
+
+  // Pure date windows, hoisted ahead of the wave (§5's availability window +
+  // §9's block span).
+  const waveDates = Array.from(new Set(slotsToFill.map(s => s.slot_date))).sort();
+  const waveAvailStart = addDays(waveDates[0], -NEIGHBOR_WINDOW_DAYS);
+  const waveAvailEnd = addDays(waveDates[waveDates.length - 1], NEIGHBOR_WINDOW_DAYS);
+  const blockMin = (rawSlots[0] as { slot_date: string }).slot_date;
+  const blockMax = (rawSlots[rawSlots.length - 1] as { slot_date: string }).slot_date;
+
   countQ();
-  const { data: providerRows } = await sb
+  const providersQ = sb
     .from('providers')
     .select('id, provider_type, short_display_name')
     .in('id', providerIds)
     .eq('status', 'active')
     .order('id');
+  countQ();
+  const credsQ = sb
+    .from('provider_site_credentials')
+    .select('provider_id, is_active, credentialed, can_take_call, can_take_weekend_call, can_take_holiday_call, allowed_shift_types, excluded_shift_types, skill_tags')
+    .eq('site_id', siteId)
+    .in('provider_id', providerIds);
+  countQ();
+  const availQ = sb
+    .from('provider_availability')
+    .select('provider_id, availability_type, start_date, end_date, approval_status, reason_code')
+    .in('provider_id', providerIds)
+    .lte('start_date', waveAvailEnd)
+    .gte('end_date', waveAvailStart);
+  // Parent-schedule lookup (skipped when the caller passed it — C2.3).
+  const parentLookupQ = options.parentScheduleId
+    ? null
+    : (countQ(), sb
+        .from('schedule_versions')
+        .select('schedule_id')
+        .eq('id', scheduleVersionId)
+        .single());
+  // §9's major-holiday load (swallow-errors-to-no-majors inside the helper).
+  const holidaysQ = organizationId
+    ? (countQ(), loadMajorHolidayDates(sb, organizationId, blockMin, blockMax))
+    : null;
+
+  const [providersRes, credsRes, availRes, verRes, majorHolidayDates] = await Promise.all([
+    providersQ, credsQ, availQ,
+    parentLookupQ ?? Promise.resolve(null),
+    holidaysQ ?? Promise.resolve(new Set<string>()),
+  ]);
+  const providerRows = (providersRes as { data: unknown }).data;
 
   const providers: CandidateProvider[] = (
     ((providerRows || []) as Array<Record<string, unknown>>).map(p => {
@@ -511,13 +596,8 @@ export async function loadGenerationContext(
     }) as Array<CandidateProvider | null>
   ).filter((p): p is CandidateProvider => p !== null);
 
-  // ── 4. Preload site credentials for all home-site providers ───────────────
-  countQ();
-  const { data: creds } = await sb
-    .from('provider_site_credentials')
-    .select('provider_id, is_active, credentialed, can_take_call, can_take_weekend_call, can_take_holiday_call, allowed_shift_types, excluded_shift_types, skill_tags')
-    .eq('site_id', siteId)
-    .in('provider_id', providerIds);
+  // ── 4. Site credentials for all home-site providers (loaded in the wave) ──
+  const creds = (credsRes as { data: unknown }).data;
 
   const credByPid = new Map<string, SiteCredentials>();
   for (const c of (creds || []) as Array<Record<string, unknown>>) {
@@ -533,20 +613,9 @@ export async function loadGenerationContext(
     });
   }
 
-  // ── 5. Preload availability for the schedule date range ───────────────────
-  const dates = Array.from(new Set(slotsToFill.map(s => s.slot_date))).sort();
-  const minDate = dates[0];
-  const maxDate = dates[dates.length - 1];
-  const availRangeStart = addDays(minDate, -NEIGHBOR_WINDOW_DAYS);
-  const availRangeEnd = addDays(maxDate, NEIGHBOR_WINDOW_DAYS);
-
-  countQ();
-  const { data: avail } = await sb
-    .from('provider_availability')
-    .select('provider_id, availability_type, start_date, end_date, approval_status, reason_code')
-    .in('provider_id', providerIds)
-    .lte('start_date', availRangeEnd)
-    .gte('end_date', availRangeStart);
+  // ── 5. Availability for the schedule date range (loaded in the wave) ──────
+  const minDate = waveDates[0];
+  const avail = (availRes as { data: unknown }).data;
 
   const availByPid = new Map<string, AvailabilityEntry[]>();
   for (const a of (avail || []) as Array<Record<string, unknown>>) {
@@ -577,15 +646,16 @@ export async function loadGenerationContext(
   // widened ±1 day so post-call/adjacency guards see a neighbor booked
   // elsewhere. Deriving this from slotsToFill (call slots only) left a hole
   // on derived-only edge dates.
-  countQ();
-  const { data: verRow } = await sb
-    .from('schedule_versions')
-    .select('schedule_id')
-    .eq('id', scheduleVersionId)
-    .single();
-  const parentScheduleId = (verRow as { schedule_id?: string } | null)?.schedule_id ?? null;
+  // Parent schedule id: taken from the options bag when the caller already
+  // holds it (saves a round trip); otherwise from the wave's lookup, with the
+  // degraded-mode warning preserved verbatim.
+  let parentScheduleId: string | null = options.parentScheduleId ?? null;
   if (!parentScheduleId) {
-    warnings.push('schedule_versions lookup failed — conflict scan degraded to other-sites-only (same-site double-booking in other schedules is invisible)');
+    const verRow = (verRes as { data: unknown } | null)?.data;
+    parentScheduleId = (verRow as { schedule_id?: string } | null)?.schedule_id ?? null;
+    if (!parentScheduleId) {
+      warnings.push('schedule_versions lookup failed — conflict scan degraded to other-sites-only (same-site double-booking in other schedules is invisible)');
+    }
   }
 
   const crossWindowStart = addDays(allSlotDates[0], -1);
@@ -720,19 +790,8 @@ export async function loadGenerationContext(
   }
 
   // Per-provider block target = base share of THIS block + deficit carried
-  // forward from past blocks at this site.
-  //
-  //   base_i_B     = (block_total_B / par_level) * fte_i
-  //   expected_i_B = (hist_total_B / par_level) * fte_i   [what they *should* have]
-  //   actual_i_B   = hist_assigned_i_B                    [what they got]
-  //   deficit_i_B  = max(0, expected_i_B - actual_i_B)
-  //
-  //   target_i_B = base_i_B + deficit_i_B
-  //
-  // The `max(0, …)` means providers who've been OVER-allocated historically
-  // don't get their block target shrunk — they just get scored worse so the
-  // greedy loop hands slots to under-allocated providers first. A hard
-  // shrink of their cap could leave slots unfilled for no good reason.
+  // forward from past blocks at this site (formula + max(0, …) rationale:
+  // computeBucketTargets' docstring above).
   //
   // 2026-07-16: targets are computed TWICE. The RAW pass (stored par, no
   // floor) exists only to keep the shortfall warning honest — a stale
@@ -809,24 +868,8 @@ export async function loadGenerationContext(
   // slot_date), not just open dates, so a partial regenerate still sees the full
   // span. A missing/failed holiday query degrades to "no majors" (all weekdays
   // count) rather than aborting the whole load.
-  const blockMin = (rawSlots[0] as { slot_date: string }).slot_date;
-  const blockMax = (rawSlots[rawSlots.length - 1] as { slot_date: string }).slot_date;
-  const majorHolidayDates = new Set<string>();
-  if (organizationId) {
-    try {
-      countQ();
-      const { data: holidays } = await sb
-        .from('holiday_calendars')
-        .select('holiday_date, is_major_holiday')
-        .eq('organization_id', organizationId)
-        .eq('is_major_holiday', true)
-        .gte('holiday_date', blockMin)
-        .lte('holiday_date', blockMax);
-      for (const h of ((holidays as Array<Record<string, unknown>> | null) || [])) {
-        if (h.is_major_holiday && h.holiday_date) majorHolidayDates.add(h.holiday_date as string);
-      }
-    } catch { /* holiday table missing/unreadable — treat every weekday as a working day */ }
-  }
+  // majorHolidayDates was loaded in the provider-scoped wave above (empty set
+  // when organizationId is null — same degradation as before).
   const workingDaySet = new Set<string>();
   for (let d = blockMin; d <= blockMax; d = addDays(d, 1)) {
     if (isWorkingDay(d, majorHolidayDates)) workingDaySet.add(d);
