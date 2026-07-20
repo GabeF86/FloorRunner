@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { sbSchedulingServer } from '@/lib/supabaseScheduling';
-import { dayOfWeekUTC, dayTypeFromDow } from '@/lib/rulesEngine/shared';
+import { derivedDayTypeFor, slateForDayType, templateSlotCount } from '@/lib/templateSlots';
 
 // Never prerender — this route hits Supabase per request.
 export const dynamic = 'force-dynamic';
@@ -108,41 +108,17 @@ export async function POST(req: NextRequest) {
 
   while (current <= end) {
     const dateStr = current.toISOString().split('T')[0];
-    const holiday = holidayMap.get(dateStr);
 
-    let dayType: string;
-    if (holiday && holiday.is_major_holiday) {
-      dayType = 'major_holiday';
-    } else if (holiday) {
-      dayType = 'federal_holiday';
-    } else {
-      // Single-homed DOW→dayType map (shared.dayTypeFromDow). dateStr is the
-      // valid ISO date the loop just derived; its UTC DOW equals the old
-      // local-noon getDay() for offsets in (-12,+12] — every deployed target.
-      // (UTC+13/+14 would differ, where UTC DOW is the self-consistent choice.)
-      dayType = dayTypeFromDow(dayOfWeekUTC(dateStr));
-    }
-
-    // Match templates for this day type.
-    //
-    // FRIDAY PARTIAL-OVERRIDE CONTRACT (2026-07-16): friday-specific templates
-    // override PER SHIFT TYPE; weekday templates whose shift_type_id has no
-    // friday-specific row still materialize. The old fallback was
-    // all-or-nothing (`matching.length === 0`), so the moment ANY friday
-    // template existed (patch25 added friday C3 + D4) every Friday silently
-    // lost its whole weekday slate — C1/C2/D1-D7 slots were never created and
-    // the engine had nothing to fill. Zero friday rows still yields the pure
-    // weekday slate (previous fallback preserved); a friday row with
-    // required_count 0 deliberately suppresses that shift type on Fridays.
-    // Saturday/sunday slates are complete and intentionally distinct — no
-    // union there.
-    let matching = (templates || []).filter((t: Record<string, unknown>) => t.day_type === dayType);
-    if (dayType === 'friday') {
-      const fridaySpecificShiftTypes = new Set(matching.map((t: Record<string, unknown>) => t.shift_type_id));
-      const weekdayFill = (templates || []).filter((t: Record<string, unknown>) =>
-        t.day_type === 'weekday' && !fridaySpecificShiftTypes.has(t.shift_type_id));
-      matching = [...matching, ...weekdayFill];
-    }
+    // Day typing + template matching are single-homed in lib/templateSlots.ts
+    // (shared with the Physician Planner's estimates so they can never diverge
+    // from real slot creation): derivedDayTypeFor carries the major/federal/
+    // DOW precedence; slateForDayType carries the FRIDAY PARTIAL-OVERRIDE
+    // CONTRACT (2026-07-16 — friday rows override per shift type, other
+    // weekday templates still materialize, count-0 friday rows suppress);
+    // templateSlotCount carries the required_count semantics.
+    const dayType = derivedDayTypeFor(dateStr, holidayMap.get(dateStr));
+    const matching = slateForDayType(
+      (templates || []) as Array<Record<string, unknown>>, dayType);
     // required_count materializes as SIBLING slot rows (slot_index 0..N-1),
     // each with required_count: 1 and its own open assignment row —
     // scheduling.assignments has UNIQUE(schedule_slot_id), so one assignment
@@ -150,8 +126,7 @@ export async function POST(req: NextRequest) {
     for (const tmpl of matching) {
       // required_count <= 0 means "no slots for this template" — never coerce
       // 0 to 1 (Task 11 review finding). null/undefined keep the default of 1.
-      const count = (tmpl.required_count as number | null | undefined) ?? 1;
-      if (count <= 0) continue;
+      const count = templateSlotCount(tmpl);
       for (let i = 0; i < count; i++) {
         slotRows.push({
           schedule_version_id: version.id,
