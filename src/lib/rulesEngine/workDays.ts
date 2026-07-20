@@ -18,7 +18,7 @@
 // tracking, dayShiftAutoGen cap supersession, sequenceAutoFill, the report)
 // routes through this module so no two engines can disagree.
 
-import { dayOfWeekUTC, BOOKEND_EXTENDING_TYPES, isDismissedAvailability, type SupabaseClient } from './shared';
+import { dayOfWeekUTC, BOOKEND_EXTENDING_TYPES, isDismissedAvailability, isActiveSellback, type SupabaseClient } from './shared';
 import { ICU_WEEK_REASON, ICU_POST_CALL_REASON } from '@/lib/icuRotation';
 
 // Major-holiday dates within [start, end] for an organization (holiday rows
@@ -118,6 +118,13 @@ export function workingDaysInRange(
 // rows (pending included; denied/canceled ignored). Restricted to the block's
 // working-day set and deduped, so the count nets against exactly the days that
 // were obligations in the first place — keeping the entitledOff identity exact.
+//
+// pto_sellback (2026-07-20): a working day covered by a LIVE sell-back row is
+// removed from the netting set — the sold-back day is OWED AGAIN (the chief
+// bought the PTO back; the provider works it). It credits as worked only when
+// an assignment actually lands on it, via the normal placement credit path
+// (creditWorkedDay) — a standalone sell-back row credits nothing. With zero
+// sell-back rows the subtraction pass no-ops (byte-identical netting).
 export function ptoWeekdaysCovered(
   entries: ReadonlyArray<{ availability_type: string; start_date: string; end_date: string; approval_status: string }>,
   workingDaySet: ReadonlySet<string>,
@@ -128,6 +135,13 @@ export function ptoWeekdaysCovered(
     if (!PTO_NETTING_TYPES.has(e.availability_type)) continue;
     for (const d of workingDaySet) {
       if (e.start_date <= d && d <= e.end_date) out.add(d);
+    }
+  }
+  for (const e of entries) {
+    if (out.size === 0) break;
+    if (!isActiveSellback(e)) continue;
+    for (const d of [...out]) {
+      if (e.start_date <= d && d <= e.end_date) out.delete(d);
     }
   }
   return out;

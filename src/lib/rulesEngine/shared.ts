@@ -75,6 +75,74 @@ export function isBlockingAvailability(
   return !isDismissedAvailability(entry) && BLOCKING_AVAIL.has(entry.availability_type);
 }
 
+// ── PTO sell-back date-level override (2026-07-20) ──────────────────────────
+// A LIVE pto_sellback row means the provider IS WORKING those dates: the chief
+// bought the PTO back. It is NOT a blocking type (isBlockingAvailability stays
+// the row-level classifier and never matches it) — instead it overrides other
+// rows' blocking coverage at the DATE level: a date covered by a live sell-back
+// row is not blocked even if PTO/other blocking rows cover it, INCLUDING
+// pending PTO (invariant-2 nuance: pending still blocks everywhere else; the
+// override is the feature's meaning — ALGORITHM.md §6). Sold-back weekdays are
+// owed again in the working-days budget (ptoWeekdaysCovered, workDays.ts).
+
+// Row-level: a sell-back row the engine honors (denied/canceled are ignored,
+// same status semantics as every other availability row).
+export function isActiveSellback(
+  entry: { availability_type: string; approval_status: string },
+): boolean {
+  return entry.availability_type === 'pto_sellback' && !isDismissedAvailability(entry);
+}
+
+// Date-level: is `date` covered by any live sell-back row? The one home for
+// the override-coverage decision — isDateBlocked composes it, and consumers
+// that need the raw coverage (validation timeOff's per-row messages, the
+// working-days netting) consult it directly so nothing can disagree.
+// Sell-back rows are matched on their RAW dates (a working row never gets the
+// PTO weekend bookend), but the override applies to bookend-EXTENDED blocking
+// coverage too: selling back the Saturday a Monday-start PTO bookends over
+// unblocks that Saturday.
+export function isSellbackOverridden(
+  entries: ReadonlyArray<{ availability_type: string; start_date: string; end_date: string; approval_status: string }>,
+  date: string,
+): boolean {
+  for (const a of entries) {
+    if (isActiveSellback(a) && datesOverlap(a.start_date, a.end_date, date)) return true;
+  }
+  return false;
+}
+
+// THE single-homed per-date blocking decision: `date` is blocked iff some
+// non-dismissed blocking row covers it AND no live sell-back row covers it.
+// Every engine consumer of isBlockingAvailability's PER-DATE decisions routes
+// through here (eligibility's availability gate, dayShiftAutoGen's blocked-date
+// precompute, sequenceAutoFill's linked-day check, the assistant's open-slot
+// hints); isBlockingAvailability remains the ROW-level classifier for
+// non-date-specific uses (pre-PTO Thursday index, weekend-adjacent-week
+// exclusion — both deliberately row-based, see ALGORITHM.md §6).
+// opts.bookend applies the §6 weekend-bookend extension (effectivePtoRange) to
+// blocking rows — pass true where the consumer historically bookended
+// (eligibility, dayShiftAutoGen); omit for RAW-range consumers (validation
+// timeOff, sequence linked-day, hints). With zero sell-back rows this is
+// exactly the pre-change any-blocking-row-covers decision. Byte-identical
+// engine output is pinned by the FILL-MODE GOLDEN PLANS (fillAllPlan.golden
+// + the obligatoryMode/noCallRequests plan pins), which run solve() with the
+// live shared eligibility path. Golden parity alone CANNOT catch a change
+// here: solveLegacy imports the live evaluateEligibility, so a shared-
+// eligibility mutation shifts both sides identically and parity stays green.
+export function isDateBlocked(
+  entries: ReadonlyArray<{ availability_type: string; start_date: string; end_date: string; approval_status: string }>,
+  date: string,
+  opts?: { bookend?: boolean },
+): boolean {
+  if (isSellbackOverridden(entries, date)) return false;
+  for (const a of entries) {
+    if (!isBlockingAvailability(a)) continue;
+    const r = opts?.bookend ? effectivePtoRange(a) : { start: a.start_date, end: a.end_date };
+    if (datesOverlap(r.start, r.end, date)) return true;
+  }
+  return false;
+}
+
 // ── Overlay coexistence (single home for the decision table) ────────────────
 // May an EXISTING same-site, same-date assignment and an INCOMING placement
 // coexist? The is_overlay exemption is deliberately NARROW and two-sided —

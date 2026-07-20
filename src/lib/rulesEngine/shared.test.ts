@@ -10,6 +10,9 @@ import {
   normalizeWeekdays,
   dayTypeBucket,
   isBlockingAvailability,
+  isActiveSellback,
+  isSellbackOverridden,
+  isDateBlocked,
 } from './shared';
 
 // Characterization tests pinning the hard-won date / PTO / bucket logic.
@@ -116,6 +119,84 @@ describe('isBlockingAvailability (canonical predicate — spec §6.7)', () => {
   });
   it('non-blocking availability types never block', () => {
     expect(isBlockingAvailability({ availability_type: 'preference', approval_status: 'approved' })).toBe(false);
+  });
+});
+
+// ── pto_sellback date-level override (2026-07-20) ───────────────────────────
+// A live pto_sellback row means the provider IS WORKING those dates: any
+// blocking coverage (pending PTO included) is overridden on exactly the
+// covered dates. Dates: 2026-01-05 Mon .. 2026-01-09 Fri; 01-03 Sat.
+
+const ptoWeek = {
+  availability_type: 'pto', start_date: '2026-01-05', end_date: '2026-01-09',
+  approval_status: 'approved',
+};
+const sellTue = {
+  availability_type: 'pto_sellback', start_date: '2026-01-06', end_date: '2026-01-06',
+  approval_status: 'approved',
+};
+
+describe('isActiveSellback (live sell-back rows only)', () => {
+  it('approved and pending sell-back rows are live', () => {
+    expect(isActiveSellback(sellTue)).toBe(true);
+    expect(isActiveSellback({ ...sellTue, approval_status: 'pending' })).toBe(true);
+  });
+  it('denied/canceled sell-back rows are dismissed', () => {
+    expect(isActiveSellback({ ...sellTue, approval_status: 'denied' })).toBe(false);
+    expect(isActiveSellback({ ...sellTue, approval_status: 'canceled' })).toBe(false);
+  });
+  it('other availability types are never sell-back', () => {
+    expect(isActiveSellback(ptoWeek)).toBe(false);
+  });
+  it('pto_sellback is NOT a blocking type (row-level classification unchanged)', () => {
+    expect(isBlockingAvailability(sellTue)).toBe(false);
+  });
+});
+
+describe('isDateBlocked (single-homed per-date decision)', () => {
+  it('blocks a plain PTO week (zero-sellback ≡ isBlockingAvailability coverage)', () => {
+    expect(isDateBlocked([ptoWeek], '2026-01-06')).toBe(true);
+    expect(isDateBlocked([ptoWeek], '2026-01-12')).toBe(false);
+  });
+  it('sell-back Tuesday unblocks exactly Tuesday — Mon/Wed-Fri stay blocked', () => {
+    const rows = [ptoWeek, sellTue];
+    expect(isDateBlocked(rows, '2026-01-05')).toBe(true);
+    expect(isDateBlocked(rows, '2026-01-06')).toBe(false);
+    expect(isDateBlocked(rows, '2026-01-07')).toBe(true);
+    expect(isDateBlocked(rows, '2026-01-08')).toBe(true);
+    expect(isDateBlocked(rows, '2026-01-09')).toBe(true);
+  });
+  it('overrides PENDING PTO too — that is the feature meaning (invariant-2 nuance)', () => {
+    const rows = [{ ...ptoWeek, approval_status: 'pending' }, sellTue];
+    expect(isDateBlocked(rows, '2026-01-05')).toBe(true); // pending still blocks
+    expect(isDateBlocked(rows, '2026-01-06')).toBe(false); // sell-back wins
+  });
+  it('a dismissed sell-back row does not override', () => {
+    expect(isDateBlocked([ptoWeek, { ...sellTue, approval_status: 'canceled' }], '2026-01-06')).toBe(true);
+    expect(isDateBlocked([ptoWeek, { ...sellTue, approval_status: 'denied' }], '2026-01-06')).toBe(true);
+  });
+  it('row order does not matter (sell-back wins even when listed first)', () => {
+    expect(isDateBlocked([sellTue, ptoWeek], '2026-01-06')).toBe(false);
+  });
+  it('bookend option extends blocking rows; a sell-back on the extended date overrides it', () => {
+    // Mon-start PTO bookends back over Sat 01-03 (effectivePtoRange).
+    expect(isDateBlocked([ptoWeek], '2026-01-03', { bookend: true })).toBe(true);
+    expect(isDateBlocked([ptoWeek], '2026-01-03')).toBe(false); // raw dates: not covered
+    const sellSat = { ...sellTue, start_date: '2026-01-03', end_date: '2026-01-03' };
+    expect(isDateBlocked([ptoWeek, sellSat], '2026-01-03', { bookend: true })).toBe(false);
+  });
+  it('a standalone sell-back row (no blocking overlap) changes nothing', () => {
+    expect(isDateBlocked([sellTue], '2026-01-06')).toBe(false);
+    expect(isDateBlocked([], '2026-01-06')).toBe(false);
+  });
+});
+
+describe('isSellbackOverridden (the override coverage decision)', () => {
+  it('true exactly on live sell-back-covered dates', () => {
+    expect(isSellbackOverridden([sellTue], '2026-01-06')).toBe(true);
+    expect(isSellbackOverridden([sellTue], '2026-01-07')).toBe(false);
+    expect(isSellbackOverridden([{ ...sellTue, approval_status: 'denied' }], '2026-01-06')).toBe(false);
+    expect(isSellbackOverridden([ptoWeek], '2026-01-06')).toBe(false);
   });
 });
 

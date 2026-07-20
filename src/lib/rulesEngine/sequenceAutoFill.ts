@@ -20,7 +20,7 @@
 // Suppressed fills are returned as `skips` using the SkippedDerived vocabulary
 // (clinical invariant 4: left unassigned AND recorded, never silently dropped).
 
-import { addDays, daysBetween, isBlockingAvailability, isMissingColumnError, overlayMayCoexist } from './shared';
+import { addDays, daysBetween, isDateBlocked, isMissingColumnError, overlayMayCoexist } from './shared';
 import { fetchCommittedAssignments } from './committedAssignments';
 import { embedArray } from '@/lib/embed';
 import {
@@ -517,11 +517,12 @@ export async function applySequenceAutoFill(
     const occupant = chosen.assignments.find(a => a.provider_id && !evictedIds.has(a.id));
     if (occupant) { skip(linkedDate, code, 'occupied'); continue; }
 
-    // Blocking availability — canonical predicate, PENDING PTO blocks
-    // (clinical invariant 2 / spec §6.7).
-    const blocked = availability.some(a =>
-      isBlockingAvailability(a) && a.start_date <= linkedDate && a.end_date >= linkedDate);
-    if (blocked) { skip(linkedDate, code, 'pto'); continue; }
+    // Blocking availability — single-homed per-date decision (isDateBlocked):
+    // PENDING PTO blocks (clinical invariant 2 / spec §6.7); a live
+    // pto_sellback row covering the linked date overrides — the provider is
+    // working, so the derived fill may land (ALGORITHM.md §6). RAW ranges as
+    // before (this check never bookended).
+    if (isDateBlocked(availability, linkedDate)) { skip(linkedDate, code, 'pto'); continue; }
 
     // Provider-wide same-day conflict — ANY site, ANY schedule version
     // (clinical invariant 3). Labeled relative to the CHOSEN slot's site

@@ -1,0 +1,41 @@
+-- ╔══════════════════════════════════════════════════════════════════════════╗
+-- ║ STATUS: APPLIED 2026-07-20 (proof-phase, own transaction; enum_range verified ends ...,military_leave,pto_sellback) — proof phase applies.                                ║
+-- ║ Apply to project qhwdbtixhzdsgwwtcfrm ("Floor Runner"), ref verified,     ║
+-- ║ via the project-scoped supabase-floorrunner MCP server (or the dashboard  ║
+-- ║ SQL editor). Never run through the atlas-staging / chiefos MCP servers.   ║
+-- ╚══════════════════════════════════════════════════════════════════════════╝
+--
+-- Patch 31: PTO sell-back availability type. Additive enum value only.
+--
+--   scheduling.availability_type += 'pto_sellback'
+--
+-- SEMANTICS (engine-side, shipped with this patch's app code):
+--   A non-dismissed pto_sellback row means the provider IS WORKING those
+--   dates — the chief bought the PTO back. It is NOT a blocking type; it
+--   overrides blocking coverage DATE-BY-DATE (a date covered by a live
+--   sell-back row is not blocked even if PTO — pending included — covers it).
+--   Single home: src/lib/rulesEngine/shared.ts (isDateBlocked /
+--   isSellbackOverridden); working-days netting subtracts sell-back-covered
+--   weekdays (workDays.ts ptoWeekdaysCovered) — a sold-back day is owed
+--   again. See ALGORITHM.md §6.
+--
+-- TRANSACTION SEMANTICS (Postgres ALTER TYPE ... ADD VALUE):
+--   Since PostgreSQL 12, ADD VALUE may run inside a transaction block, BUT the
+--   new value cannot be USED (inserted/compared in DML) in the same
+--   transaction that added it — doing so raises
+--   "unsafe use of new value of enum type". So:
+--     • run this statement in its OWN migration/transaction, and
+--     • do not bundle seed/backfill INSERTs of 'pto_sellback' with it.
+--   IF NOT EXISTS makes the statement idempotent (re-running is a no-op).
+--   Enum additions are irreversible-in-place (no DROP VALUE) — acceptable
+--   here because unused enum values are inert.
+--
+-- No RLS statements: follows patch18's precedent — the app talks to the
+-- scheduling schema with the service-role key; RLS/auth work is tracked
+-- separately as the platform's #1 blocker.
+--
+-- Verification (after apply):
+--   SELECT enum_range(NULL::scheduling.availability_type);
+--   -- expect 'pto_sellback' in the list.
+
+ALTER TYPE scheduling.availability_type ADD VALUE IF NOT EXISTS 'pto_sellback';

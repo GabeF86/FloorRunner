@@ -133,6 +133,49 @@ describe('timeOff evaluator', () => {
     expect(v[0].severity).toBe('soft');
   });
 
+  // pto_sellback date-level override (2026-07-20): a live sell-back row on the
+  // slot date means the provider IS WORKING — a PTO violation on that date
+  // would be wrong (the assignment is exactly what the sell-back sanctions).
+  it('a live pto_sellback covering the slot date suppresses the PTO flag', () => {
+    const v = byCategory(ctx({
+      availability: [
+        avail({ start_date: '2026-01-05', end_date: '2026-01-09' }), // PTO week over slot 01-07
+        avail({ id: 'av2', availability_type: 'pto_sellback' }),      // sold-back 01-07
+      ],
+    }), 'time_off');
+    expect(v).toHaveLength(0);
+  });
+
+  it('sell-back suppresses PENDING PTO too, but only on covered dates', () => {
+    // Slot on 01-07 sold back → clean; identical ctx on 01-08 still flags.
+    const rows = (slotDate: string) => ctx({
+      slot: slot({ slot_date: slotDate }),
+      availability: [
+        avail({ start_date: '2026-01-05', end_date: '2026-01-09', approval_status: 'pending' }),
+        avail({ id: 'av2', availability_type: 'pto_sellback' }), // covers 01-07 only
+      ],
+    });
+    expect(byCategory(rows('2026-01-07'), 'time_off')).toHaveLength(0);
+    expect(byCategory(rows('2026-01-08'), 'time_off')).toHaveLength(1);
+  });
+
+  it('a dismissed sell-back row does not suppress the PTO flag', () => {
+    const v = byCategory(ctx({
+      availability: [
+        avail({ start_date: '2026-01-05', end_date: '2026-01-09' }),
+        avail({ id: 'av2', availability_type: 'pto_sellback', approval_status: 'canceled' }),
+      ],
+    }), 'time_off');
+    expect(v).toHaveLength(1);
+  });
+
+  it('a sell-back row alone raises no time_off violation', () => {
+    const v = byCategory(ctx({
+      availability: [avail({ availability_type: 'pto_sellback' })],
+    }), 'time_off');
+    expect(v).toHaveLength(0);
+  });
+
   it('open slot (no provider) is skipped', () => {
     const v = byCategory(ctx({ providerId: null, availability: [avail()] }), 'time_off');
     expect(v).toHaveLength(0);

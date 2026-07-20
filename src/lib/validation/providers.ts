@@ -15,8 +15,33 @@ export const AVAILABILITY_TYPES = [
   'available', 'unavailable', 'pto', 'sick', 'fmla', 'conference', 'admin',
   'cme', 'jury_duty', 'no_call_request', 'call_request', 'blocked',
   'parental_leave', 'military_leave',
+  // pto_sellback (patch31, 2026-07-20): the chief bought PTO back — the
+  // provider IS WORKING the covered dates. NOT a blocking type; it overrides
+  // blocking coverage date-by-date (rulesEngine/shared.ts isDateBlocked) and
+  // sold-back weekdays are owed again in the working-days budget.
+  'pto_sellback',
 ] as const;
 export type AvailabilityType = typeof AVAILABILITY_TYPES[number];
+
+// Display labels for availability types — shared so the UI and any server
+// copy render the same vocabulary.
+export const AVAILABILITY_TYPE_LABELS: Record<AvailabilityType, string> = {
+  available: 'Available',
+  unavailable: 'Unavailable',
+  pto: 'PTO',
+  sick: 'Sick',
+  fmla: 'FMLA',
+  conference: 'Conference',
+  admin: 'Admin',
+  cme: 'CME',
+  jury_duty: 'Jury Duty',
+  no_call_request: 'No-Call Request',
+  call_request: 'Call Request',
+  blocked: 'Blocked',
+  parental_leave: 'Parental Leave',
+  military_leave: 'Military Leave',
+  pto_sellback: 'PTO Sell-Back',
+};
 
 export const APPROVAL_STATUSES = ['pending', 'approved', 'denied', 'waitlisted', 'canceled'] as const;
 export type ApprovalStatus = typeof APPROVAL_STATUSES[number];
@@ -79,8 +104,14 @@ export function isValidEmail(s: string): boolean {
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 export function isValidDate(s: string): boolean {
   if (!DATE_RE.test(s)) return false;
-  const d = new Date(s + 'T00:00:00');
-  return !Number.isNaN(d.getTime());
+  const d = new Date(s + 'T00:00:00Z');
+  if (Number.isNaN(d.getTime())) return false;
+  // Round-trip guard: JS Date silently rolls impossible calendar days over
+  // ('2026-02-30' parses as Mar 2, '2026-04-31' as May 1), so a format-valid
+  // but nonexistent date would sail through here, then blow up as a Postgres
+  // date-column error (500) instead of the promised 400. Only accept strings
+  // the parsed date maps straight back to.
+  return d.toISOString().slice(0, 10) === s;
 }
 
 export type ValidationResult =
@@ -155,6 +186,70 @@ export function validateProviderCreate(body: ProviderCreateInput): ValidationRes
     }
   }
   return { ok: true };
+}
+
+// ── provider_availability PATCH validation (2026-07-20 hardening) ───────────
+// The availability [id] route used to pass the raw request body straight into
+// .update() — mass assignment (any column, e.g. provider_id or source, could
+// be rewritten, and garbage values reached the DB). This validator is the
+// single gate: a strict WHITELIST of updatable fields, enum membership for
+// availability_type / approval_status, ISO-date shape for the endpoints, and
+// a hard 400 on ANY unknown key (unlike validateAndSplitPatch's silent drop —
+// an availability edit is small enough that a typo should fail loudly).
+// end >= start is enforced by the route against the MERGED row (existing +
+// patch), since a patch may move only one endpoint.
+//
+// ICU rows (reason_code 'icu_week' / 'icu_post_call') pair a week row with its
+// post-ICU Monday row (src/lib/icuRotation.ts). This field-level validator
+// cannot see the sibling row — keeping that pairing consistent is the ICU
+// section's own edit flow (which re-derives the Monday); the generic edit UI
+// routes ICU-week edits through it.
+
+export const AVAILABILITY_PATCH_FIELDS = [
+  'start_date', 'end_date', 'notes', 'availability_type', 'approval_status',
+] as const;
+
+export interface AvailabilityPatchResult {
+  ok: boolean;
+  error?: string;
+  // Cleaned whitelist-only field map, safe to hand to .update().
+  fields: Record<string, unknown>;
+}
+
+export function validateAvailabilityPatch(body: unknown): AvailabilityPatchResult {
+  const fields: Record<string, unknown> = {};
+  if (body === null || typeof body !== 'object' || Array.isArray(body)) {
+    return { ok: false, error: 'body must be a JSON object', fields };
+  }
+  for (const [key, valRaw] of Object.entries(body as Record<string, unknown>)) {
+    if (!(AVAILABILITY_PATCH_FIELDS as readonly string[]).includes(key)) {
+      return { ok: false, error: `unknown field: ${key}`, fields };
+    }
+    let val = valRaw;
+    if (key === 'start_date' || key === 'end_date') {
+      if (typeof val !== 'string' || !isValidDate(val)) {
+        return { ok: false, error: `${key} must be YYYY-MM-DD`, fields };
+      }
+    } else if (key === 'availability_type') {
+      if (typeof val !== 'string' || !(AVAILABILITY_TYPES as readonly string[]).includes(val)) {
+        return { ok: false, error: `availability_type must be one of: ${AVAILABILITY_TYPES.join(', ')}`, fields };
+      }
+    } else if (key === 'approval_status') {
+      if (typeof val !== 'string' || !(APPROVAL_STATUSES as readonly string[]).includes(val)) {
+        return { ok: false, error: `approval_status must be one of: ${APPROVAL_STATUSES.join(', ')}`, fields };
+      }
+    } else if (key === 'notes') {
+      if (val !== null && typeof val !== 'string') {
+        return { ok: false, error: 'notes must be a string or null', fields };
+      }
+      if (val === '') val = null; // store NULL, not empty string
+    }
+    fields[key] = val;
+  }
+  if (Object.keys(fields).length === 0) {
+    return { ok: false, error: 'no updatable fields in body', fields };
+  }
+  return { ok: true, fields };
 }
 
 // Partial validation for PATCH — only validates fields that are present.

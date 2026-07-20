@@ -1,11 +1,10 @@
 import {
   BOOKEND_EXTENDING_TYPES,
   addDays,
-  datesOverlap,
   dayOfWeekUTC,
-  effectivePtoRange,
   dayTypeBucket,
   isBlockingAvailability,
+  isDateBlocked,
 } from './shared';
 import { CLASSIC_PATTERN, postCallBlockOffsets } from './callPattern';
 import { exceedsWorkDayCap } from './workDays';
@@ -150,7 +149,10 @@ export function evaluateEligibility(
   }
   // Missing credentials row = "not yet configured", treated as passing.
 
-  // Saturday/Sunday adjacent-week PTO exclusion.
+  // Saturday/Sunday adjacent-week PTO exclusion. Deliberately ROW-based, not
+  // routed through isDateBlocked: a sold-back day INSIDE the adjacent PTO week
+  // does not resurrect weekend eligibility — the surrounding planned leave
+  // still exists (v1 simplification, stated in ALGORITHM.md §6).
   if (slot.derived_day_type === 'saturday' || slot.derived_day_type === 'sunday') {
     const satDate = slot.derived_day_type === 'saturday'
       ? slot.slot_date
@@ -175,14 +177,13 @@ export function evaluateEligibility(
     }
   }
 
-  // Availability with PTO bookend (pending blocks — spec §6.7).
-  const entries = ctx.availByPid.get(p.id) || [];
-  for (const a of entries) {
-    if (!isBlockingAvailability(a)) continue;
-    const { start, end } = effectivePtoRange(a);
-    if (datesOverlap(start, end, slot.slot_date)) {
-      return { eligible: false, reason: 'availability-blocked' };
-    }
+  // Availability with PTO bookend (pending blocks — spec §6.7), single-homed
+  // per-date decision (isDateBlocked, shared.ts): a live pto_sellback row
+  // covering the slot date OVERRIDES any blocking coverage — the provider is
+  // working that day (ALGORITHM.md §6). Zero-sellback inputs take exactly the
+  // pre-change bookended any-blocking-row-covers path.
+  if (isDateBlocked(ctx.availByPid.get(p.id) || [], slot.slot_date, { bookend: true })) {
+    return { eligible: false, reason: 'availability-blocked' };
   }
 
   // FTE working-days cap (2026-07-17). Opt-in via ctx.workDayBudget (absent on

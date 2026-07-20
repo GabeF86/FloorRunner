@@ -209,3 +209,69 @@ describe('evaluateEligibility — derived gate (relief / D-chain)', () => {
     expect(r.eligible).toBe(true);
   });
 });
+
+// ── pto_sellback date-level override (2026-07-20) ───────────────────────────
+// A live sell-back row means the provider IS WORKING those dates: the engine
+// may assign the sold-back date even though PTO covers it; every other date of
+// the PTO week stays blocked. Dates: 2026-01-05 Mon .. 2026-01-09 Fri.
+describe('evaluateEligibility — pto_sellback override', () => {
+  const ptoWeek = {
+    availability_type: 'pto', start_date: '2026-01-05', end_date: '2026-01-09',
+    approval_status: 'approved',
+  };
+  const sellTue = {
+    availability_type: 'pto_sellback', start_date: '2026-01-06', end_date: '2026-01-06',
+    approval_status: 'approved',
+  };
+  const withRows = (rows: typeof ptoWeek[]) => ctx({
+    availByPid: new Map([['p1', rows]]),
+    bucketTarget: new Map([['p1|weekday|C1', 5], ['p1|saturday|C1', 5]]),
+  });
+
+  it('PTO week + sell-back Tuesday: Tuesday assignable, Mon/Wed-Fri blocked', () => {
+    const c = withRows([ptoWeek, sellTue]);
+    expect(evaluateEligibility(slot({ slot_date: '2026-01-06' }), provider(), emptySolveState(), c, 'call').eligible).toBe(true);
+    for (const d of ['2026-01-05', '2026-01-07', '2026-01-08', '2026-01-09']) {
+      const r = evaluateEligibility(slot({ slot_date: d }), provider(), emptySolveState(), c, 'call');
+      expect(r, d).toEqual({ eligible: false, reason: 'availability-blocked' });
+    }
+  });
+
+  it('sell-back overrides PENDING PTO on the covered date (invariant-2 nuance)', () => {
+    const c = withRows([{ ...ptoWeek, approval_status: 'pending' }, sellTue]);
+    expect(evaluateEligibility(slot({ slot_date: '2026-01-06' }), provider(), emptySolveState(), c, 'call').eligible).toBe(true);
+    expect(evaluateEligibility(slot({ slot_date: '2026-01-05' }), provider(), emptySolveState(), c, 'call'))
+      .toEqual({ eligible: false, reason: 'availability-blocked' });
+  });
+
+  it('a canceled sell-back row does not override', () => {
+    const c = withRows([ptoWeek, { ...sellTue, approval_status: 'canceled' }]);
+    expect(evaluateEligibility(slot({ slot_date: '2026-01-06' }), provider(), emptySolveState(), c, 'call'))
+      .toEqual({ eligible: false, reason: 'availability-blocked' });
+  });
+
+  it('bookend-extended dates: the sell-back clears the availability gate, but the weekend-adjacent rule still excludes (v1 layering)', () => {
+    // Mon-start PTO bookends back over Sat 2026-01-03 (§6). A sell-back on
+    // that Saturday removes the DATE-level block (pinned in shared.test.ts on
+    // isDateBlocked directly) — but every bookend-extended date is a weekend
+    // day, and Sat/Sun slots hit the §6.5 adjacent-week exclusion FIRST, which
+    // v1 deliberately keeps row-based. So in evaluateEligibility the reported
+    // reason is 'weekend-adjacent-pto' with and without the sell-back.
+    const sellSat = { ...sellTue, start_date: '2026-01-03', end_date: '2026-01-03' };
+    const d1 = slot({ slot_date: '2026-01-03', shift_type_code: 'D1', shift_type_category: 'regular', derived_day_type: 'saturday' });
+    expect(evaluateEligibility(d1, provider(), emptySolveState(), withRows([ptoWeek]), 'derived'))
+      .toEqual({ eligible: false, reason: 'weekend-adjacent-pto' });
+    expect(evaluateEligibility(d1, provider(), emptySolveState(), withRows([ptoWeek, sellSat]), 'derived'))
+      .toEqual({ eligible: false, reason: 'weekend-adjacent-pto' });
+  });
+
+  it('the weekend-adjacent-PTO exclusion is deliberately NOT overridden (v1)', () => {
+    // Sat 2026-01-10 call: PTO covers the Mon-Fri week before. A sold-back
+    // Tuesday inside that week does not resurrect weekend eligibility — the
+    // adjacent-week rule stays row-based (documented in ALGORITHM.md §6).
+    const c = withRows([ptoWeek, sellTue]);
+    const sat = slot({ slot_date: '2026-01-10', derived_day_type: 'saturday' });
+    expect(evaluateEligibility(sat, provider(), emptySolveState(), c, 'call'))
+      .toEqual({ eligible: false, reason: 'weekend-adjacent-pto' });
+  });
+});

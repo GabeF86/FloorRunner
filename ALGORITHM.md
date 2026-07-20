@@ -120,6 +120,20 @@ Applies only to PTO / FMLA / parental_leave / military_leave (multi-day planned 
 
 Sick / jury_duty / unavailable / blocked are single-day types and don't extend. PTO that already begins/ends on a weekend isn't extended further — the weekend is already inside the range.
 
+### PTO sell-back date-level override (`pto_sellback`, 2026-07-20)
+
+A non-dismissed `pto_sellback` availability row means the provider **is working** those dates — the chief bought the PTO back. It is **not** a blocking type (`isBlockingAvailability` never matches it; `BLOCKING_AVAIL` is unchanged); instead it overrides blocking coverage **date by date**: a date covered by a live sell-back row is not blocked even if PTO or any other blocking row covers it — **including PENDING PTO**. That is the invariant-2 nuance, and it is the feature's meaning: pending PTO still blocks everywhere else, but a sell-back row is a chief-entered decision that supersedes the request on exactly the covered dates. Single home: `isDateBlocked` / `isSellbackOverridden` ([`shared.ts`](src/lib/rulesEngine/shared.ts)) — every per-date consumer routes through it (eligibility's availability gate §5/9, `dayShiftAutoGen`'s blocked-date precompute, `sequenceAutoFill`'s linked-day check, validation's `timeOff` evaluator, the assistant's open-slot hints). `isBlockingAvailability` remains the row-level classifier.
+
+Interactions, kept deliberately simple in v1 (all stated, none silent):
+
+- **Bookend (§6):** `effectivePtoRange` itself is unchanged. The override applies to bookend-EXTENDED coverage too — selling back the Saturday a Monday-start PTO bookends over unblocks that Saturday at the date level. (In `evaluateEligibility` the §6.5 adjacent-week exclusion usually still excludes such weekend dates — see next point.)
+- **Adjacent-week exclusion (§6.5) stays ROW-based:** a sold-back day inside a PTO week does not resurrect the flanking weekend's call eligibility — the surrounding planned leave still exists. Likewise the pre-PTO Thursday index (§7) stays row-based.
+- **Working-days contract (§4.6):** PTO netting subtracts sell-back-covered weekdays (`ptoWeekdaysCovered`) — a sold-back day is **owed again**, raising `required` back up. It credits as worked only when an assignment actually lands on it (the normal placement credit path); a standalone sell-back row credits nothing.
+- **Standalone rows:** a sell-back row overlapping no blocking time is legal and changes nothing (the UI hints this).
+- **Validation:** `timeOff` must not flag a PTO violation on a sold-back date (the assignment is exactly what the sell-back sanctions); `no_call_request` soft flags still apply.
+
+Zero-sellback inputs are byte-identical to the pre-change engine. The pin that actually guards this is the **fill-mode golden plans** (`fillAllPlan.golden.json` + the obligatory-mode / no-call-request plan pins), which run `solve()` through the live shared eligibility path. Golden parity is structurally incapable of catching a shared-eligibility change — `solveLegacy` imports the live `evaluateEligibility`, so a mutation there shifts both sides identically and parity stays green.
+
 ## 6.5. Sat/Sun adjacent-week PTO exclusion
 
 Hard rule layered on top of the bookend. For any Sat or Sun call slot, the provider is ineligible if they have planned leave (PTO / FMLA / parental / military) covering any day of either flanking Mon-Fri week:
