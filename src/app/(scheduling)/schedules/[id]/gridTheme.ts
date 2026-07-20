@@ -28,6 +28,15 @@ export const gridTokens = {
   line: '#e8edf3',
   hard: '#ef4444',
   soft: '#f59e0b',
+  // PTO sell-back (2026-07-20): a live pto_sellback row means the provider IS
+  // WORKING that date — red per Gabriel's explicit ask. `sellback` is the cell
+  // wash (reads on the white/gray body cells the grid always uses in both app
+  // themes), `sellbackMark` the strong marker/text red. Deliberately NOT wired
+  // into cellBackground's pinned precedence — applied directly where sell-back
+  // renders (Available virtual row + assignment-cell marker).
+  sellback: 'rgba(220,38,38,0.14)',
+  sellbackHover: 'rgba(220,38,38,0.24)',
+  sellbackMark: '#dc2626',
   // virtual-row category accents (label border only)
   category: { Available: '#10b981', 'Post-Call': '#8b5cf6', Off: '#94a3b8', PTO: '#f59e0b' } as Record<string, string>,
 } as const;

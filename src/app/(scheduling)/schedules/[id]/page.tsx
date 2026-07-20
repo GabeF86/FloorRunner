@@ -10,6 +10,10 @@ import {
 import AssistantPanel from './AssistantPanel';
 import { PageHeader, Badge, Button, Banner, scheduleStatusTone } from '@/components/ui';
 import { reasonCodeLabel } from '@/lib/validation/providers';
+// Pure row-level classifier for LIVE pto_sellback rows — the grid must agree
+// with the engine's date-level override (rulesEngine/shared.ts isDateBlocked)
+// about which dates a provider is working, so it imports the same predicate.
+import { isActiveSellback } from '@/lib/rulesEngine/shared';
 // Pure, client-safe helper shared with the grid API route — one bucket rule
 // (hard / soft / warning-never-soft) for both server and client counting.
 import { validationSummaryFor, type ValidationSummary } from '@/app/api/scheduling/schedules/[id]/grid/route.helpers';
@@ -316,7 +320,7 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
 
   /* ── Derived Data ───────────────────────────────────────────────────────── */
 
-  const { shiftTypes, allDates, slotMap, holidayMap, assignedOnDate, availableByDate, offByDate, offTitleByDate, ptoByDate, postCallByDate, maxAvailable, maxOff, maxPto, maxPostCall, callTakerIds } = useMemo(() => {
+  const { shiftTypes, allDates, slotMap, holidayMap, assignedOnDate, availableByDate, offByDate, offTitleByDate, ptoByDate, postCallByDate, maxAvailable, maxOff, maxPto, maxPostCall, callTakerIds, sellbackByDate } = useMemo(() => {
     const empty = {
       shiftTypes: [] as ShiftTypeInfo[], allDates: [] as string[],
       slotMap: {} as Record<string, Record<string, Slot>>,
@@ -329,6 +333,7 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
       postCallByDate: {} as Record<string, Provider[]>,
       maxAvailable: 0, maxOff: 0, maxPto: 0, maxPostCall: 0,
       callTakerIds: new Set<string>(),
+      sellbackByDate: {} as Record<string, Set<string>>,
     };
     if (!grid) return empty;
 
@@ -396,6 +401,27 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
     // cell reads "ICU Week" instead of looking like a generic day off.
     const offTitleByDate: Record<string, Record<string, string>> = {};
     const allDatesSet = new Set(allDates);
+
+    // PTO sell-back coverage (2026-07-20): a LIVE pto_sellback row means the
+    // provider IS WORKING those dates — it overrides blocking coverage
+    // date-by-date (engine: rulesEngine/shared.ts isDateBlocked, incl.
+    // pending PTO). Mirrored here so the virtual rows agree with the engine:
+    // on a sold-back date the provider is excluded from PTO/Off and shows in
+    // Available (red) or their assignment cell (red SB marker). Precomputed
+    // BEFORE the PTO/Off expansion so those loops can consult it.
+    const sellbackByDate: Record<string, Set<string>> = {};
+    for (const avail of grid.availability || []) {
+      if (!isActiveSellback(avail)) continue;
+      const start = new Date(avail.start_date + 'T00:00:00Z');
+      const end = new Date(avail.end_date + 'T00:00:00Z');
+      for (let d = new Date(start); d <= end; d.setUTCDate(d.getUTCDate() + 1)) {
+        const ds = d.toISOString().slice(0, 10);
+        if (!allDatesSet.has(ds)) continue;
+        if (!sellbackByDate[ds]) sellbackByDate[ds] = new Set();
+        sellbackByDate[ds].add(avail.provider_id);
+      }
+    }
+
     for (const avail of grid.availability || []) {
       // Only approved entries show up in virtual rows — pending/denied
       // entries shouldn't visually occupy a slot until an admin signs off.
@@ -415,6 +441,9 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
       for (let d = new Date(start); d <= end; d.setUTCDate(d.getUTCDate() + 1)) {
         const ds = d.toISOString().slice(0, 10);
         if (!allDatesSet.has(ds)) continue;
+        // Sell-back override: a sold-back date is a WORKING date — never
+        // rendered as PTO or Off, regardless of what blocking rows cover it.
+        if (sellbackByDate[ds]?.has(provider.id)) continue;
         if (isPto) {
           if (!ptoByDate[ds]) ptoByDate[ds] = [];
           if (!ptoByDate[ds].some(p => p.id === provider.id)) ptoByDate[ds].push(provider);
@@ -492,6 +521,11 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
         if (assigned.has(pid) || ptoSet.has(pid) || postCallSet.has(pid)) continue;
         const provider = providerById[pid];
         if (!provider) continue;
+        // Selling back PTO today → explicitly working: force Available (red
+        // treatment in the renderer) even for non-call-takers, who would
+        // otherwise fall into Off. If they're assigned they never reach here
+        // (they render in their assignment cell with the SB marker).
+        if (sellbackByDate[date]?.has(pid)) { available.push(provider); continue; }
         // Off bucket: explicit scheduled-off that day, or a non-call-taker.
         // Everyone else at home-site goes to Available (call-taker overflow).
         if (offSet.has(pid) || !callTakerIds.has(pid)) off.push(provider);
@@ -508,7 +542,7 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
     const maxPto = Math.max(0, ...Object.values(ptoByDate).map(v => v.length));
     const maxPostCall = Math.max(0, ...Object.values(postCallByDate).map(v => v.length));
 
-    return { shiftTypes, allDates, slotMap, holidayMap, assignedOnDate, availableByDate, offByDate, offTitleByDate, ptoByDate, postCallByDate, maxAvailable, maxOff, maxPto, maxPostCall, callTakerIds };
+    return { shiftTypes, allDates, slotMap, holidayMap, assignedOnDate, availableByDate, offByDate, offTitleByDate, ptoByDate, postCallByDate, maxAvailable, maxOff, maxPto, maxPostCall, callTakerIds, sellbackByDate };
   }, [grid]);
 
   /* ── Per-date working roster + over-par detection ───────────────────────── */
@@ -1482,6 +1516,12 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
                 // to the rounded obligation never carry the OVER treatment.
                 // Doesn't include deficit carry-forward — see useMemo notes.
                 const isOverPar = isAssigned && !!assignment && overParAssignmentIds.has(assignment.id);
+                // PTO sell-back: this provider has a live pto_sellback row
+                // covering today — they're working a date PTO would otherwise
+                // block. Red "SB" marker + tooltip (bottom-left corner is
+                // unused: validation badge top-left, lock top-right,
+                // OVER/EXTRA bottom-right).
+                const isSellback = isAssigned && !!provider && !!sellbackByDate[date]?.has(provider.id);
 
                 const cellFlags = { isOverPar, isExtraCall, isHoliday, isWeekend };
 
@@ -1503,7 +1543,9 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
                         ? `${provider.short_display_name} is past their rounded call obligation for this block — this is one of their extra calls.`
                         : isExtraCall && provider
                           ? `Provider picking up Extra call — ${provider.short_display_name} is not in the regular call pool at this site.`
-                          : undefined
+                          : isSellback && provider
+                            ? `${provider.short_display_name} is selling back PTO — working this date.`
+                            : undefined
                     }
                     style={{
                       background: cellBackground(cellFlags),
@@ -1556,6 +1598,17 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
                       }}>EXTRA</span>
                     ) : null}
 
+                    {/* Sell-back marker (bottom-LEFT — can co-occur with the
+                        bottom-right OVER/EXTRA tags without overlap). Red per
+                        the sell-back convention: gridTokens.sellbackMark. */}
+                    {isSellback && (
+                      <span aria-label="Selling back PTO — working" style={{
+                        position: 'absolute', bottom: 1, left: 3,
+                        fontSize: 8, fontWeight: 800, letterSpacing: '0.5px',
+                        color: gridTokens.sellbackMark, pointerEvents: 'none',
+                      }}>SB</span>
+                    )}
+
                     {/* Lock icon */}
                     {isLocked && (
                       <span aria-label="Locked slot" style={{
@@ -1597,6 +1650,9 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
             holidayMap,
             getDayOfWeek,
             zoneTop: true,
+            // Sell-back providers land in Available (they're working) with the
+            // red tint + tooltip so the row reads why they're here.
+            sellbackByDate,
           })}
           {/* Post-Call row: providers who had a call shift the day before
               and have no assignment today. They're effectively off-duty
@@ -1869,7 +1925,7 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
 
 function renderVirtualRows({
   label, count, dataByDate, color, visibleDates, todayStr, holidayMap, getDayOfWeek,
-  titleByDate, alwaysRender = false, zoneTop = false,
+  titleByDate, alwaysRender = false, zoneTop = false, sellbackByDate,
 }: {
   label: string;
   count: number;
@@ -1888,6 +1944,10 @@ function renderVirtualRows({
   // When true (first zone row only), adds a stronger top border marking the
   // assignment→status boundary.
   zoneTop?: boolean;
+  // date → providers with a live pto_sellback row that day. A matching cell
+  // gets the RED sell-back tint + "Selling back PTO — working" tooltip
+  // (gridTokens.sellback / sellbackMark). Passed for the Available row only.
+  sellbackByDate?: Record<string, Set<string>>;
 }) {
   if (count === 0 && !alwaysRender) return null;
   const rowCount = Math.max(count, alwaysRender ? 1 : 0);
@@ -1919,7 +1979,14 @@ function renderVirtualRows({
       const isHoliday = !!holidayMap[date];
       const isToday = date === todayStr;
       const isSatBorder = dow === 6 && i > 0;
-      const virtCellBg = cellBackground({ isOverPar: false, isExtraCall: false, isHoliday, isWeekend });
+      // Sell-back cell: red tint + red name (Gabriel's explicit ask) — the
+      // provider is here because they're WORKING a date PTO would otherwise
+      // block. Applied directly (not via cellBackground, whose precedence is
+      // pinned by gridTheme.test.ts).
+      const isSellback = !!provider && !!sellbackByDate?.[date]?.has(provider.id);
+      const virtCellBg = isSellback
+        ? gridTokens.sellback
+        : cellBackground({ isOverPar: false, isExtraCall: false, isHoliday, isWeekend });
       rows.push(
         <div key={`virt-cell-${label}-${idx}-${date}`} style={{
           background: virtCellBg,
@@ -1933,10 +2000,10 @@ function renderVirtualRows({
         }}>
           {provider ? (
             <span
-              title={titleByDate?.[date]?.[provider.id]}
+              title={isSellback ? 'Selling back PTO — working' : titleByDate?.[date]?.[provider.id]}
               style={{
-                fontSize: 11.5, fontWeight: 500,
-                color: gridTokens.statusName,
+                fontSize: 11.5, fontWeight: isSellback ? 700 : 500,
+                color: isSellback ? gridTokens.sellbackMark : gridTokens.statusName,
                 whiteSpace: 'nowrap',
               }}
             >
