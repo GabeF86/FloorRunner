@@ -1,5 +1,5 @@
 -- ╔══════════════════════════════════════════════════════════════════════════╗
--- ║ STATUS: NOT APPLIED — proof phase applies.                                ║
+-- ║ STATUS: APPLIED 2026-07-20 (proof-phase, own transaction; enum_range verified ends ...,military_leave,pto_sellback) — proof phase applies.                                ║
 -- ║ Apply to project qhwdbtixhzdsgwwtcfrm ("Floor Runner"), ref verified,     ║
 -- ║ via the project-scoped supabase-floorrunner MCP server (or the dashboard  ║
 -- ║ SQL editor). Never run through the atlas-staging / chiefos MCP servers.   ║
