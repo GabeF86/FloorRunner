@@ -3,7 +3,7 @@
 // genTypes.ts (2026-07-20 solve decomposition); genTypes RE-EXPORTS
 // SolveState/emptySolveState so existing imports (tests included) keep
 // working unchanged. Never touches I/O.
-import { dayTypeBucket, daysBetween } from './shared';
+import { addDays, dayTypeBucket, daysBetween } from './shared';
 import { creditWorkedDay } from './workDays';
 import type { WorkDayBudget } from './genTypes';
 
@@ -60,21 +60,32 @@ export function incBucket(s: SolveState, pid: string, dt: string, code: string) 
   const k = `${pid}|${dayTypeBucket(dt)}|${code}`;
   s.bucketAssigned.set(k, (s.bucketAssigned.get(k) || 0) + 1);
 }
+// The per-provider call-date lists are kept sorted ascending and deduped;
+// the three helpers below exploit that (2026-07-20 C2.5): binary insert, a
+// reverse scan to the closest prior call, and a range test with early exit.
+// Each is decision-for-decision identical to the naive scan it replaced
+// (ISO YYYY-MM-DD strings compare lexicographically = chronologically).
 export function addCallDate(s: SolveState, pid: string, date: string) {
   const list = s.callDatesByProvider.get(pid) || [];
-  if (list.includes(date)) return;
-  list.push(date); list.sort();
+  // Binary search for the insertion point; skip the duplicate instead of the
+  // old includes()+push()+sort() per insert.
+  let lo = 0, hi = list.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (list[mid] < date) lo = mid + 1; else hi = mid;
+  }
+  if (list[lo] === date) return;
+  list.splice(lo, 0, date);
   s.callDatesByProvider.set(pid, list);
 }
 export function daysSinceLastCall(s: SolveState, pid: string, date: string): number {
   const list = s.callDatesByProvider.get(pid) || [];
-  let best = Infinity;
-  for (const d of list) {
-    if (d >= date) break;
-    const gap = daysBetween(d, date);
-    if (gap < best) best = gap;
+  // Sorted ascending: the LAST date < `date` is the closest prior call, so
+  // one daysBetween computes the same minimum the old full prefix scan did.
+  for (let i = list.length - 1; i >= 0; i--) {
+    if (list[i] < date) return daysBetween(list[i], date);
   }
-  return best;
+  return Infinity;
 }
 // Did the provider have a call within `n` days BEFORE `date`? Generalizes the
 // legacy "had a call exactly two days before" suppression check.
@@ -82,9 +93,14 @@ export function daysSinceLastCall(s: SolveState, pid: string, date: string): num
 // holds because classic uses this only on offset:-1 links where gap===1 is masked
 // by the same-date guard — keep in mind for positive-offset links.
 export function hadCallWithin(s: SolveState, pid: string, date: string, n: number): boolean {
-  for (const d of s.callDatesByProvider.get(pid) || []) {
-    const gap = daysBetween(d, date);
-    if (gap > 0 && gap <= n) return true;
+  const list = s.callDatesByProvider.get(pid);
+  if (!list || list.length === 0) return false;
+  // gap ∈ (0, n]  ⇔  d ∈ [date − n days, date): two string compares per
+  // element instead of a daysBetween parse, with a sorted early exit.
+  const lower = addDays(date, -n);
+  for (const d of list) {
+    if (d >= date) return false; // sorted: no later entry can precede `date`
+    if (d >= lower) return true;
   }
   return false;
 }
