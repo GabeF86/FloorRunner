@@ -23,11 +23,6 @@ export async function hasGenerationMetadataColumn(sb: SupabaseClient): Promise<b
   return !error;
 }
 
-// Test-only: reset the cached probe result so unit tests don't leak state.
-export function __resetMetadataColumnCache(): void {
-  metadataColumnConfirmed = false;
-}
-
 // .in() read chunks stay well under URL-length limits (500 UUIDs ≈ 19KB of
 // query string); writes go in the request body so WRITE_CHUNK can be larger.
 const READ_CHUNK = 100;

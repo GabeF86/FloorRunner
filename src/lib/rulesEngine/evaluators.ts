@@ -863,6 +863,3 @@ export const evaluators: Evaluator[] = [
   poolEligibility,
   crossSite,
 ];
-
-// Re-export helpers used by dateDiff in tests etc.
-export const __test = { dateDiffDays, startOfMonth, startOfWeek, shiftDate };
