@@ -16,6 +16,10 @@ import type { UnfilledSlot, PlannedAssignment, AssignmentExplanation, SolutionMe
 
 export interface AutoGenerateOptions {
   overrideProviderIds?: string[];
+  // The version's parent schedule id, when the caller already holds it (the
+  // generate route's path param). Threaded to loadGenerationContext to skip
+  // its redundant schedule_versions round trip; absent → looked up as before.
+  parentScheduleId?: string;
   optimize?: boolean; // default true; set false to use raw greedy construction
   // Optimizer wall-clock budget (ms). Falls back to the
   // SCHEDULING_OPTIMIZE_WALL_MS env var, then the optimizer default (2000).

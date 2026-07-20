@@ -143,7 +143,14 @@ export interface LoadResult {
 export async function loadGenerationContext(
   sb: SupabaseClient,
   scheduleVersionId: string,
-  options: { overrideProviderIds?: string[] } = {},
+  options: {
+    overrideProviderIds?: string[];
+    // The version's parent schedule id, when the caller already holds it (the
+    // generate route's path param). Skips the redundant schedule_versions
+    // round trip in step 6; absent → the lookup (and its degraded-mode
+    // warning) runs exactly as before.
+    parentScheduleId?: string;
+  } = {},
 ): Promise<LoadResult> {
   let dbQueries = 0;
   const countQ = () => { dbQueries++; };
@@ -571,15 +578,21 @@ export async function loadGenerationContext(
   // widened ±1 day so post-call/adjacency guards see a neighbor booked
   // elsewhere. Deriving this from slotsToFill (call slots only) left a hole
   // on derived-only edge dates.
-  countQ();
-  const { data: verRow } = await sb
-    .from('schedule_versions')
-    .select('schedule_id')
-    .eq('id', scheduleVersionId)
-    .single();
-  const parentScheduleId = (verRow as { schedule_id?: string } | null)?.schedule_id ?? null;
+  // Parent schedule id: taken from the options bag when the caller already
+  // holds it (saves a round trip); otherwise looked up, with the degraded-mode
+  // warning preserved verbatim.
+  let parentScheduleId: string | null = options.parentScheduleId ?? null;
   if (!parentScheduleId) {
-    warnings.push('schedule_versions lookup failed — conflict scan degraded to other-sites-only (same-site double-booking in other schedules is invisible)');
+    countQ();
+    const { data: verRow } = await sb
+      .from('schedule_versions')
+      .select('schedule_id')
+      .eq('id', scheduleVersionId)
+      .single();
+    parentScheduleId = (verRow as { schedule_id?: string } | null)?.schedule_id ?? null;
+    if (!parentScheduleId) {
+      warnings.push('schedule_versions lookup failed — conflict scan degraded to other-sites-only (same-site double-booking in other schedules is invisible)');
+    }
   }
 
   const crossWindowStart = addDays(allSlotDates[0], -1);
