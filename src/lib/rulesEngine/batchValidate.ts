@@ -143,56 +143,43 @@ export async function batchValidateVersion(
   // against the wrong site's credentials/rules.
   const siteId = slots[0].site_id;
 
-  // ── 2. Provider info: group + FTE + pool flags ─────────────────────────────
+  // ── 2-5. Provider-scoped preloads (parallelized 2026-07-20, C2.4) ──────────
+  // The four preloads are mutually independent once providerIds + the date
+  // window are known, so their round trips overlap in one Promise.all wave.
+  // Each keeps its exact query shape; failures are checked AFTER the wave in
+  // the original order (providers → availability → assignments window →
+  // credentials) so the bail message matches the serial load's first-failure
+  // semantics. fetchCommittedAssignments' two sub-queries stay sequential
+  // inside its member — it is the only pre-write reader of `assignments`.
   const provInfo = new Map<string, {
     group: 'physician' | 'crna' | 'both';
     fte: number | null;
     poolFlags: EvaluationContext['poolFlags'];
   }>();
+  const availByPid = new Map<string, AvailabilityRow[]>();
+  // ── 4's committed scope (draft isolation, invariant 3): every PUBLISHED
+  // version plus THIS version under validation. One helper call serves both
+  // the neighbor window (scoped in memory to this version+site, matching the
+  // serial loadContext filters) and cross-site double-booking detection
+  // (which must see every committed schedule + this version — but NOT other
+  // drafts).
+  const rowsByPid = new Map<string, ProviderJoinedRow[]>();
+  const credByPid = new Map<string, ProviderSiteCredentials>();
   if (providerIds.length > 0) {
     dbQueries++;
-    const { data, error } = await sb
+    const provQ = sb
       .from('providers')
       .select('id, provider_type, provider_employment_profiles(fte_value, call_taker, partial_call_taker, is_day_doc)')
       .in('id', providerIds);
-    if (error) return bail('providers', error.message);
-    for (const row of (data || []) as Array<Record<string, unknown>>) {
-      provInfo.set(row.id as string, {
-        group: providerGroupFromType(row.provider_type as string),
-        fte: parseEmbeddedFte(row.provider_employment_profiles),
-        poolFlags: parseEmbeddedPoolFlags(row.provider_employment_profiles),
-      });
-    }
-  }
-
-  // ── 3. Availability for all assigned providers over the version range ──────
-  const availByPid = new Map<string, AvailabilityRow[]>();
-  if (providerIds.length > 0) {
     dbQueries++;
-    const { data, error } = await sb
+    const availQ = sb
       .from('provider_availability')
       .select('id, provider_id, availability_type, start_date, end_date, approval_status')
       .in('provider_id', providerIds)
       .lte('start_date', addDays(maxDate, AVAIL_WINDOW_DAYS))
       .gte('end_date', addDays(minDate, -AVAIL_WINDOW_DAYS));
-    if (error) return bail('provider_availability', error.message);
-    for (const row of (data || []) as AvailabilityRow[]) {
-      const list = availByPid.get(row.provider_id) || [];
-      list.push(row);
-      availByPid.set(row.provider_id, list);
-    }
-  }
-
-  // ── 4. All assigned rows for those providers, version range ±31d ───────────
-  // Committed scope (draft isolation, invariant 3): every PUBLISHED version
-  // plus THIS version under validation. One helper call serves both the
-  // neighbor window (scoped in memory to this version+site, matching the serial
-  // loadContext filters) and cross-site double-booking detection (which must
-  // see every committed schedule + this version — but NOT other drafts).
-  const rowsByPid = new Map<string, ProviderJoinedRow[]>();
-  if (providerIds.length > 0) {
     dbQueries++;
-    const { data, error } = await fetchCommittedAssignments(
+    const rowsQ = fetchCommittedAssignments(
       sb,
       'id, provider_id, schedule_slot_id, schedule_slots!inner(id, slot_date, shift_type_id, derived_day_type, site_id, schedule_version_id, schedule_versions!inner(version_status))',
       {
@@ -202,8 +189,38 @@ export async function batchValidateVersion(
         includeVersionId: scheduleVersionId,
       },
     );
-    if (error) return bail('assignments window', error.message ?? 'unknown error');
-    for (const row of (data || []) as Array<Record<string, unknown>>) {
+    dbQueries++;
+    const credQ = sb
+      .from('provider_site_credentials')
+      .select(
+        'provider_id, site_id, is_active, credentialed, can_take_call, can_take_weekend_call, can_take_holiday_call, can_take_backup_call, allowed_shift_types, excluded_shift_types, skill_tags',
+      )
+      .in('provider_id', providerIds)
+      .eq('site_id', siteId);
+
+    const [provRes, availRes, rowsRes, credRes] = await Promise.all([provQ, availQ, rowsQ, credQ]);
+
+    // ── 2. Provider info: group + FTE + pool flags ──
+    if (provRes.error) return bail('providers', provRes.error.message);
+    for (const row of (provRes.data || []) as Array<Record<string, unknown>>) {
+      provInfo.set(row.id as string, {
+        group: providerGroupFromType(row.provider_type as string),
+        fte: parseEmbeddedFte(row.provider_employment_profiles),
+        poolFlags: parseEmbeddedPoolFlags(row.provider_employment_profiles),
+      });
+    }
+
+    // ── 3. Availability for all assigned providers over the version range ──
+    if (availRes.error) return bail('provider_availability', availRes.error.message);
+    for (const row of (availRes.data || []) as AvailabilityRow[]) {
+      const list = availByPid.get(row.provider_id) || [];
+      list.push(row);
+      availByPid.set(row.provider_id, list);
+    }
+
+    // ── 4. All assigned rows for those providers, version range ±31d ──
+    if (rowsRes.error) return bail('assignments window', rowsRes.error.message ?? 'unknown error');
+    for (const row of (rowsRes.data || []) as Array<Record<string, unknown>>) {
       if (!row.schedule_slots) continue;
       const pid = row.provider_id as string;
       const list = rowsByPid.get(pid) || [];
@@ -214,21 +231,10 @@ export async function batchValidateVersion(
       });
       rowsByPid.set(pid, list);
     }
-  }
 
-  // ── 5. Site credentials ─────────────────────────────────────────────────────
-  const credByPid = new Map<string, ProviderSiteCredentials>();
-  if (providerIds.length > 0) {
-    dbQueries++;
-    const { data, error } = await sb
-      .from('provider_site_credentials')
-      .select(
-        'provider_id, site_id, is_active, credentialed, can_take_call, can_take_weekend_call, can_take_holiday_call, can_take_backup_call, allowed_shift_types, excluded_shift_types, skill_tags',
-      )
-      .in('provider_id', providerIds)
-      .eq('site_id', siteId);
-    if (error) return bail('provider_site_credentials', error.message);
-    for (const row of (data || []) as Array<Record<string, unknown>>) {
+    // ── 5. Site credentials ──
+    if (credRes.error) return bail('provider_site_credentials', credRes.error.message);
+    for (const row of (credRes.data || []) as Array<Record<string, unknown>>) {
       credByPid.set(row.provider_id as string, mapCredentialsRow(row));
     }
   }
