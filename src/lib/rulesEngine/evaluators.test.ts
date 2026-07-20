@@ -454,8 +454,37 @@ describe('coverage evaluator', () => {
     expect(v).toHaveLength(0);
   });
 
-  it('implicit check still flags an under-filled CALL slot', () => {
+  // 2026-07-20 live bug: the manual-edit path evaluates BEFORE writing, so
+  // the slot's DB row shows no provider at eval time. The being-assigned
+  // provider (ctx.providerId) must count toward coverage or every manual
+  // call assignment gets a stale "0 assigned" flag.
+  it('implicit check credits the in-flight assignment (evaluate-before-write)', () => {
     const v = byCategory(ctx({
+      providerId: 'p1',
+      sameDayAssignments: [sameDay({ provider_id: null })], // DB row pre-write
+    }), 'coverage');
+    expect(v).toHaveLength(0);
+  });
+
+  it('in-flight credit does not double-count a post-write re-evaluation', () => {
+    // required 2, DB already shows p1 (post-write): still under-covered by 1.
+    const v = byCategory(ctx({
+      providerId: 'p1',
+      sameDayAssignments: [
+        sameDay({ provider_id: 'p1', required: 2 }),
+      ],
+    }), 'coverage');
+    expect(v).toHaveLength(1);
+    expect(v[0].rule_name).toBe('Slot under-covered');
+  });
+
+  it('implicit check still flags a genuinely OPEN under-filled CALL slot', () => {
+    // providerId null = evaluating the open row itself (batch validation) —
+    // no in-flight assignment to credit; the previous version of this test
+    // set a ctx provider against an empty slot, which pinned the very
+    // evaluate-before-write bug fixed on 2026-07-20.
+    const v = byCategory(ctx({
+      providerId: null,
       sameDayAssignments: [sameDay({ provider_id: null })],
     }), 'coverage');
     expect(v).toHaveLength(1);

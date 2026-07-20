@@ -596,7 +596,17 @@ const coverage: Evaluator = ctx => {
   );
   const assignedToMySlot = mySlotAssignments.filter(a => a.provider_id).length;
   const requiredForMySlot = mySlotAssignments[0]?.required_count ?? 1;
-  if (ctx.shiftType.category === 'call' && assignedToMySlot < requiredForMySlot) {
+  // Credit the assignment being evaluated: the manual-edit path evaluates
+  // BEFORE writing, so the DB row for this slot still shows no provider at
+  // eval time — without this, every manual call assignment is stamped with a
+  // stale "needs N, only N-1 assigned" flag (live bug, 2026-07-20). Guarded
+  // so a re-evaluation AFTER the write (where the row already carries this
+  // provider) doesn't double-count.
+  const inFlight =
+    ctx.providerId && !mySlotAssignments.some(a => a.provider_id === ctx.providerId)
+      ? 1
+      : 0;
+  if (ctx.shiftType.category === 'call' && assignedToMySlot + inFlight < requiredForMySlot) {
     violations.push({
       rule_id: null,
       rule_name: 'Slot under-covered',
