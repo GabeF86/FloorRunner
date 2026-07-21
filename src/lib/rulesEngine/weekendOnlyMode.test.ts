@@ -3,7 +3,7 @@ import { solve } from './solve';
 import { buildFixtureContext, buildCtx, prov, callSlot, dSlot, shiftInfo } from './__fixtures__/buildContext';
 import { CLASSIC_PATTERN, type CallPatternDoc } from './callPattern';
 import { WEEKEND_V2_PATTERN } from './patterns/weekendV2';
-import type { GenerationContext, SolutionPlan } from './genTypes';
+import type { AvailabilityEntry, GenerationContext, SolutionPlan } from './genTypes';
 
 // ── Generation fill mode 'weekend-only' (2026-07-21, staged weekend fill) ────
 // Gabriel: "give me an option to just fill in the weekend call schedule and
@@ -334,9 +334,13 @@ describe('staged equivalence — weekend-only then Continue-all vs one-shot all 
   // it AFTER them (stage 1 skips it; stage 2 runs it over the committed
   // weekend). When the PTO-bound provider would win a Friday call that the
   // pre-PTO Thursday placement's post-call block would have denied them, the
-  // two flows fill the SAME slots with SWAPPED providers: staged favors the
-  // weekend placement (which is the feature's intent — the reviewed weekend
-  // is authoritative), one-shot favors the pre-PTO Thursday.
+  // flows swap providers on the contended slots: staged favors the weekend
+  // placement (which is the feature's intent — the reviewed weekend is
+  // authoritative), one-shot favors the pre-PTO Thursday. In the MINIMAL
+  // case below the swap stays contained (same two slots, swapped providers),
+  // but that containment is NOT a general guarantee — the swap can cascade
+  // through chain links and unlessCallWithinDays waivers and change WHICH
+  // chained day slots fill. The cascade is pinned in the next test.
   it('characterized divergence: a pre-PTO provider contending for a Friday call swaps with the Thursday fill', () => {
     const mk = () => buildCtx(
       [callSlot('friC1', '2026-01-09', 'C1', 'friday'), callSlot('thuC1', '2026-01-08', 'C1')],
@@ -361,9 +365,101 @@ describe('staged equivalence — weekend-only then Continue-all vs one-shot all 
     expect(Object.fromEntries(assignmentMap(stage1, stage2)))
       .toEqual({ friC1: 'p1', thuC1: 'p2' });
     expect(stage2.assignments.find(a => a.slot_id === 'thuC1')?.source).toBe('main-loop');
-    // No coverage is lost either way — the divergence is who, never whether.
+    // In THIS minimal two-slot case no coverage is lost — the same two slots
+    // fill either way. That is a fact about this fixture, not a guarantee:
+    // the cascade test below shows the same swap changing which chained day
+    // slots fill at all.
     expect(oneShot.unfilled).toHaveLength(0);
     expect(stage1.unfilled).toHaveLength(0);
     expect(stage2.unfilled).toHaveLength(0);
+  });
+
+  // ── the cascade: the swap can change WHICH chained day slots fill ─────────
+  // Golden fixture (p05 PTO 01-14..16) plus two live no-call requests (soft
+  // scoring tiers — enough to reshuffle greedy winners so the PTO-bound p05
+  // contends for a weekend-scope call). One-shot's pre-PTO pass hands p05 the
+  // Thursday 01-08 C1, whose post-call block denies p05 the Friday 01-09 C1
+  // (p02 takes it despite the no-call penalty); stage 1 has no pre-PTO pass,
+  // so p05 wins that Friday. The swap then CASCADES through chain links and
+  // unlessCallWithinDays waivers: the staged union covers TWO FEWER day slots
+  // than one-shot (loses four chained D fills, gains two different ones).
+  // "Coverage never differs" is FALSE for the cascade. What DOES hold is the
+  // reporting invariant: every divergent slot is accounted for — chain
+  // suppressions land in skippedDerived (invariant 4) and, in production
+  // shape (ctx.shiftTypes present), every still-open chain slot is reported
+  // by the stage-2 mop-up as a sequence orphan. Run in production shape here
+  // so those reports are live and pinned.
+  it('characterized cascade: the swap changes WHICH chained day slots fill — fewer covered, all reported', () => {
+    const shiftTypes = new Map([
+      ['C1', shiftInfo('C1', { category: 'call', generation_engine: 'call', call_rank: 0, requires_post_call_rule: true })],
+      ['C2', shiftInfo('C2', { category: 'call', generation_engine: 'call', call_rank: 1, requires_post_call_rule: true })],
+      ['C3', shiftInfo('C3', { category: 'call', generation_engine: 'call', call_rank: 2 })],
+      ['D1', shiftInfo('D1', { generation_engine: 'call' })],
+      ['D2', shiftInfo('D2', { generation_engine: 'call' })],
+      ['D3', shiftInfo('D3', { generation_engine: 'call' })],
+      ['D4', shiftInfo('D4', { generation_engine: 'call', relief_rank: 1 })],
+      ['D5', shiftInfo('D5', { generation_engine: 'call', relief_rank: 2 })],
+      ['D6', shiftInfo('D6', { generation_engine: 'call', relief_rank: 3 })],
+    ]);
+    const mkAvail = (): Map<string, AvailabilityEntry[]> => new Map([
+      ['p05', [{ availability_type: 'pto', start_date: '2026-01-14',
+                 end_date: '2026-01-16', approval_status: 'approved' }]],
+      ['p02', [{ availability_type: 'no_call_request', start_date: '2026-01-09',
+                 end_date: '2026-01-12', approval_status: 'pending' }]],
+      ['p06', [{ availability_type: 'no_call_request', start_date: '2026-01-17',
+                 end_date: '2026-01-18', approval_status: 'approved' }]],
+    ]);
+    const mk = () => buildFixtureContext({ availByPid: mkAvail(), shiftTypes });
+
+    const oneShot = solve(mk());
+    const stage1 = solve(mk(), { fillMode: 'weekend-only' });
+    const stage2 = solve(continueCtx(mk(), stage1), { fillMode: 'all' });
+
+    // The contention scenario is realized.
+    const prePto = oneShot.assignments.find(a => a.source === 'pre-pto-thursday');
+    expect(prePto?.slot_id).toBe('2026-01-08|C1');
+    expect(prePto?.provider_id).toBe('p05');
+    expect(assignmentMap(oneShot).get('2026-01-09|C1')).toBe('p02');
+    expect(assignmentMap(stage1).get('2026-01-09|C1')).toBe('p05');
+
+    // The cascade: the two flows fill DIFFERENT sets of chained day slots.
+    const union = assignmentMap(stage1, stage2);
+    const one = assignmentMap(oneShot);
+    const lost = [...one.keys()].filter(k => !union.has(k)).sort();
+    const gained = [...union.keys()].filter(k => !one.has(k)).sort();
+    expect(lost).toEqual(['2026-01-08|D1', '2026-01-18|D2', '2026-01-20|D2', '2026-01-21|D2']);
+    expect(gained).toEqual(['2026-01-18|D3', '2026-01-23|D2']);
+    expect(union.size).toBe(one.size - 2); // coverage genuinely differs
+
+    // Nothing is silent. Every lost slot is reported open by stage 2…
+    const stage2Open = new Map(stage2.unfilled.map(u => [u.slot_id, u.reason]));
+    expect(stage2Open.get('2026-01-08|D1')).toBe('sequence-orphan: chain link severed');
+    expect(stage2Open.get('2026-01-18|D2')).toBe('sequence-orphan: chain link severed');
+    expect(stage2Open.get('2026-01-20|D2')).toBe('sequence-orphan: pre-call fill waived');
+    expect(stage2Open.get('2026-01-21|D2')).toBe('sequence-orphan: pre-call fill waived');
+    // …with the severed links' suppression events in skippedDerived
+    // (invariant 4; the waived pair is a by-design unlessCallWithinDays skip,
+    // recorded via the mop-up reason above, not a suppression):
+    const skips = new Map((stage2.skippedDerived ?? []).map(s => [`${s.date}|${s.code}`, s.reason]));
+    expect(skips.get('2026-01-08|D1')).toBe('occupied');
+    expect(skips.get('2026-01-18|D2')).toBe('pto');
+    // …and the gained slots are exactly slots ONE-SHOT itself reported open.
+    const oneShotOpen = new Map(oneShot.unfilled.map(u => [u.slot_id, u.reason]));
+    expect(oneShotOpen.get('2026-01-18|D3')).toBe('sequence-orphan: chain link severed');
+    expect(oneShotOpen.get('2026-01-23|D2')).toBe('sequence-orphan: chain link severed');
+
+    // Source pinned: drop ONLY p05's PTO (both no-call requests stay) and the
+    // staged union is byte-identical to one-shot again — the cascade's sole
+    // source is the pre-PTO pass ordering the previous test characterizes.
+    const mkCtl = () => {
+      const avail = mkAvail();
+      avail.delete('p05');
+      return buildFixtureContext({ availByPid: avail, shiftTypes });
+    };
+    const ctlOneShot = solve(mkCtl());
+    const ctlStage1 = solve(mkCtl(), { fillMode: 'weekend-only' });
+    const ctlStage2 = solve(continueCtx(mkCtl(), ctlStage1), { fillMode: 'all' });
+    expect(Object.fromEntries(assignmentMap(ctlStage1, ctlStage2)))
+      .toEqual(Object.fromEntries(assignmentMap(ctlOneShot)));
   });
 });
