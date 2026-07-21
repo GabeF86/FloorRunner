@@ -20,6 +20,11 @@ import { validationSummaryFor, type ValidationSummary } from '@/app/api/scheduli
 
 /* ── Interfaces ──────────────────────────────────────────────────────────── */
 
+// Auto-generate fill modes (mirrors rulesEngine FillMode; the route degrades
+// unknown values to 'all'). 'weekend-only' is the staged flow: weekend call
+// first, then a Continue button that runs 'all' over the committed weekend.
+type GenFillMode = 'all' | 'obligatory' | 'weekend-only';
+
 interface SiteInfo {
   name: string;
   short_name: string | null;
@@ -847,39 +852,56 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
       credited: { assignments: number; postCall: number; icu: number; total: number };
       entitledOff: number; delta: number;
     }>;
+    // Which fill mode produced this result — drives the staged weekend
+    // banner + Continue affordance below.
+    fillMode: GenFillMode;
+    // Weekend-only runs only: call slots deliberately deferred to Continue
+    // (NOT failures, NOT counted in `skipped`).
+    awaitingContinue: { total: number; byDayType: Record<string, number> } | null;
   } | null>(null);
   const [showPoolModal, setShowPoolModal] = useState(false);
 
-  // Generation fill mode (2026-07-17). 'all' fills every fillable slot with
-  // the available pool (default, pre-change behavior); 'obligatory' fills
-  // only obligatory call slots — each provider gets at most their rounded
-  // total obligation and the rest stay open. Persisted per browser; hydrated
-  // after mount to avoid an SSR mismatch (BoardClient precedent).
+  // Generation fill mode (2026-07-17; 'weekend-only' added 2026-07-21).
+  // 'all' fills every fillable slot with the available pool (default,
+  // pre-change behavior); 'obligatory' fills only obligatory call slots —
+  // each provider gets at most their rounded total obligation and the rest
+  // stay open; 'weekend-only' is the STAGED flow — only Sat/Sun/Fri call
+  // slots (+ their pattern chains) fill now, and the result banner offers a
+  // Continue button that runs a normal 'all' generation over the committed
+  // weekend. Persisted per browser; hydrated after mount to avoid an SSR
+  // mismatch (BoardClient precedent).
   const FILL_MODE_STORAGE_KEY = 'scheduling.generateFillMode';
-  const [genFillMode, setGenFillMode] = useState<'all' | 'obligatory'>('all');
+  const [genFillMode, setGenFillMode] = useState<GenFillMode>('all');
   useEffect(() => {
     try {
-      if (localStorage.getItem(FILL_MODE_STORAGE_KEY) === 'obligatory') setGenFillMode('obligatory');
+      const stored = localStorage.getItem(FILL_MODE_STORAGE_KEY);
+      if (stored === 'obligatory' || stored === 'weekend-only') setGenFillMode(stored);
     } catch { /* storage unavailable — keep default */ }
   }, []);
-  const changeGenFillMode = (v: 'all' | 'obligatory') => {
+  const changeGenFillMode = (v: GenFillMode) => {
     setGenFillMode(v);
     try { localStorage.setItem(FILL_MODE_STORAGE_KEY, v); } catch { /* non-fatal */ }
   };
 
-  const autoGenerateSchedule = async () => {
-    if (!grid) return;
-    const confirmMsg = genFillMode === 'obligatory'
-      ? 'Auto-generate will fill ONLY obligatory call slots — each provider receives at most their rounded call obligation; remaining call slots stay open. Manual assignments will NOT be overwritten. Continue?'
-      : 'Auto-generate will fill all open slots using active rules. Manual assignments will NOT be overwritten. Continue?';
-    if (!confirm(confirmMsg)) return;
+  const CONFIRM_BY_MODE: Record<GenFillMode, string> = {
+    all: 'Auto-generate will fill all open slots using active rules. Manual assignments will NOT be overwritten. Continue?',
+    obligatory: 'Auto-generate will fill ONLY obligatory call slots — each provider receives at most their rounded call obligation; remaining call slots stay open. Manual assignments will NOT be overwritten. Continue?',
+    'weekend-only': 'Auto-generate will fill ONLY the weekend call schedule (Fri/Sat/Sun + their chained shifts). The rest of the schedule waits until you press Continue. Manual assignments will NOT be overwritten. Continue?',
+  };
+
+  // One generation runner for both entry points: the Auto-Generate button
+  // (uses the selected mode, confirms first) and the staged Continue button
+  // (always mode 'all' — the simplest correct choice: Continue finishes the
+  // WHOLE schedule; the select stays available for anything more specific —
+  // and no confirm: the banner it sits in already says exactly what it does).
+  const runGeneration = async (mode: GenFillMode) => {
     setGenerating(true);
     setGenResult(null);
     try {
       const res = await fetch(`/api/scheduling/schedules/${id}/generate`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ fillMode: genFillMode }),
+        body: JSON.stringify({ fillMode: mode }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Generation failed');
@@ -889,6 +911,9 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
         skippedDerived: Array.isArray(data.skippedDerived) ? data.skippedDerived : [],
         requestGrants: Array.isArray(data.requestGrants) ? data.requestGrants : [],
         workDayReport: Array.isArray(data.workDayReport) ? data.workDayReport : [],
+        fillMode: mode,
+        awaitingContinue: data.awaitingContinue && typeof data.awaitingContinue.total === 'number'
+          ? data.awaitingContinue : null,
       });
       await loadGrid();
     } catch (e) {
@@ -896,6 +921,17 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
     } finally {
       setGenerating(false);
     }
+  };
+
+  const autoGenerateSchedule = async () => {
+    if (!grid) return;
+    if (!confirm(CONFIRM_BY_MODE[genFillMode])) return;
+    await runGeneration(genFillMode);
+  };
+
+  const continueGeneration = async () => {
+    if (!grid || generating) return;
+    await runGeneration('all');
   };
 
   /* ── Provider list for picker ───────────────────────────────────────────── */
@@ -1200,19 +1236,25 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
                 ? `Custom Pool (${schedule.included_provider_ids.length})`
                 : 'Select Pool'}
             </Button>
-            {/* Fill-mode select + Auto-Generate: a two-option control.
+            {/* Fill-mode select + Auto-Generate: a three-option control.
                 'Fill all slots' = pre-change behavior; 'Obligatory only'
                 caps each provider at their rounded call obligation and
-                leaves the remaining call slots open. Persisted in
-                localStorage (scheduling.generateFillMode). */}
+                leaves the remaining call slots open; 'Weekend call only'
+                stages the fill — weekend call (+ chains) now, then the
+                banner's Continue button finishes the rest with 'all'.
+                Persisted in localStorage (scheduling.generateFillMode). */}
             <select
               value={genFillMode}
-              onChange={e => changeGenFillMode(e.target.value === 'obligatory' ? 'obligatory' : 'all')}
+              onChange={e => changeGenFillMode(
+                e.target.value === 'obligatory' || e.target.value === 'weekend-only'
+                  ? e.target.value : 'all')}
               disabled={generating}
               aria-label="Auto-generate fill mode"
               title={genFillMode === 'obligatory'
                 ? 'Fill only obligatory call slots — each provider receives at most their rounded call obligation; the rest stay open.'
-                : 'Fill all open slots with the available pool (default).'}
+                : genFillMode === 'weekend-only'
+                  ? 'Fill only the weekend call schedule (Fri/Sat/Sun + chained shifts) now; press Continue in the result banner to fill the rest.'
+                  : 'Fill all open slots with the available pool (default).'}
               style={{
                 padding: '7px 10px', fontSize: 12.5, fontWeight: 600, borderRadius: 8,
                 background: 'var(--bg)', color: 'var(--text-muted)',
@@ -1221,6 +1263,7 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
             >
               <option value="all">Fill all slots</option>
               <option value="obligatory">Obligatory only</option>
+              <option value="weekend-only">Weekend call only</option>
             </select>
             <Button
               variant="secondary"
@@ -1252,11 +1295,39 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
             tone={genResult.errors.length > 0 ? 'error' : 'success'}
             onDismiss={() => setGenResult(null)}
           >
-            <span>
-              Filled {genResult.filled} slot{genResult.filled !== 1 ? 's' : ''}.
-              {genResult.skipped > 0 && ` ${genResult.skipped} could not be filled.`}
-              {genResult.errors.length > 0 && ` ${genResult.errors.length} error(s).`}
-            </span>
+            {genResult.fillMode === 'weekend-only' ? (
+              // Staged weekend fill: the deferred (awaiting-Continue) count is
+              // NOT a failure and is kept visually separate from real unfilled
+              // weekend slots. The Continue button finishes the schedule with
+              // an ordinary 'all' generation over the committed weekend.
+              <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+                <span>
+                  Weekend fill complete: {genResult.filled} placed
+                  {genResult.awaitingContinue
+                    ? ` · ${genResult.awaitingContinue.total} slot${genResult.awaitingContinue.total !== 1 ? 's' : ''} awaiting Continue`
+                      + (genResult.awaitingContinue.total > 0
+                        ? ` (${Object.entries(genResult.awaitingContinue.byDayType)
+                            .map(([dt, n]) => `${n} ${dt.replace(/_/g, ' ')}`).join(', ')})`
+                        : '')
+                    : ''}.
+                  {genResult.skipped > 0 && ` ${genResult.skipped} weekend slot${genResult.skipped !== 1 ? 's' : ''} could not be filled.`}
+                  {genResult.errors.length > 0 && ` ${genResult.errors.length} error(s).`}
+                </span>
+                <Button
+                  onClick={continueGeneration}
+                  disabled={generating}
+                  title="Run a normal full generation over the rest of the schedule. The weekend placements just made are kept as-is."
+                >
+                  {generating ? 'Generating...' : 'Continue — fill remaining slots'}
+                </Button>
+              </div>
+            ) : (
+              <span>
+                Filled {genResult.filled} slot{genResult.filled !== 1 ? 's' : ''}.
+                {genResult.skipped > 0 && ` ${genResult.skipped} could not be filled.`}
+                {genResult.errors.length > 0 && ` ${genResult.errors.length} error(s).`}
+              </span>
+            )}
             {genResult.warnings.length > 0 && (
               // Full list, never truncated (2026-07-16): the quota-coverage
               // warnings are the fastest structural signal — the ABSENCE of a

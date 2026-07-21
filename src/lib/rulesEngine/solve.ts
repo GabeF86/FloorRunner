@@ -22,7 +22,13 @@ import type {
   GenerationContext, SolveState,
   SolutionPlan, CandidateRejection,
   SolveOptions, ShiftTypeInfo, SlotToFill,
+  AwaitingContinueSlot,
 } from './genTypes';
+
+// Weekend-only fill scope (FillMode 'weekend-only', 2026-07-21): the day
+// types the main loop attempts. Holiday day types are deliberately OUT —
+// the staged Continue run ('all') handles them.
+const WEEKEND_ONLY_DAY_TYPES = new Set(['saturday', 'sunday', 'friday']);
 
 // Relief codes are derived from ctx.shiftTypes (relief_rank ordering). That map
 // is stable across the optimizer's re-solves, so memoize on its identity; the
@@ -157,6 +163,19 @@ export function solve(ctx: GenerationContext, opts: SolveOptions = {}): Solution
   // Everything below is gated on the flag: fillMode 'all' (default) is the
   // pre-change engine byte for byte (pinned in obligatoryMode.test.ts).
   const obligatory = opts.fillMode === 'obligatory';
+  // ── weekend-only fill mode (2026-07-21, staged weekend fill) ──
+  // Main loop attempts ONLY Sat/Sun/Fri call slots; out-of-scope call slots
+  // land in plan.awaitingContinue (deferred, NOT failed). Chains from weekend
+  // placements are never scope-clipped. The weekday-targeted pre-PTO pass and
+  // the relief/mop-up sweeps are skipped whole — they belong to the Continue
+  // run, which is an ordinary 'all' generation over the committed weekend
+  // placements as seeds. Quota/scoring semantics are IDENTICAL to 'all'
+  // (relaxation enabled, no obligation caps — modes never compose in v1).
+  // plan.awaitingContinue is only materialized here so the fill-all golden
+  // JSON pin (fillAllPlan.golden.json) stays byte-identical.
+  const weekendOnly = opts.fillMode === 'weekend-only';
+  const awaitingContinue: AwaitingContinueSlot[] | null = weekendOnly ? [] : null;
+  if (awaitingContinue) plan.awaitingContinue = awaitingContinue;
   const obligationByPid = obligatory ? computeObligations(ctx) : null;
   const callCountByPid = new Map<string, number>();
   if (obligatory) {
@@ -194,7 +213,12 @@ export function solve(ctx: GenerationContext, opts: SolveOptions = {}): Solution
 
   // Configurable placement passes (pre-PTO Thursday — passes/prePto.ts, §7),
   // then spans (multi-day same-provider obligations — passes/spans.ts).
-  runPrePtoPass(run);
+  // Weekend-only skips pre-PTO (it targets a weekday Thursday — the Continue
+  // run places it) but KEEPS spans: like chains, a span is a structural
+  // same-provider obligation, and no shipped pattern carries one anchored off
+  // the weekend (a weekday-anchored span would place weekday calls here —
+  // accepted v1 simplicity, mirroring chains-never-scope-clipped).
+  if (!weekendOnly) runPrePtoPass(run);
 
   const scheduleDates = ctx.scheduleDates ?? Array.from(ctx.slotIndex.keys()).sort();
   runSpansPass(run, scheduleDates);
@@ -203,6 +227,18 @@ export function solve(ctx: GenerationContext, opts: SolveOptions = {}): Solution
   for (const slot of slotsToFill) {
     if (state.handledSlotIds.has(slot.slot_id)) continue;
     if (slot.shift_type_category !== 'call') continue;
+    // Weekend-only scope gate — AFTER the handled check (an out-of-scope call
+    // slot a chain already filled is handled, not awaiting) and BEFORE the
+    // override resolution (overrides are an optimizer seam; the optimizer
+    // never runs in weekend-only mode). Deferred slots are counted, never
+    // reported as unfilled failures.
+    if (awaitingContinue && !WEEKEND_ONLY_DAY_TYPES.has(slot.derived_day_type)) {
+      awaitingContinue.push({
+        slot_id: slot.slot_id, slot_date: slot.slot_date,
+        shift_type_code: slot.shift_type_code, derived_day_type: slot.derived_day_type,
+      });
+      continue;
+    }
 
     const forced = overrideFor(run, slot);
     if (forced === null) {
@@ -302,14 +338,20 @@ export function solve(ctx: GenerationContext, opts: SolveOptions = {}): Solution
   // "Next call" per provider (solveKernel.buildProviderCalls) — built once
   // after every call placement pass; shared by the relief pass and the mop-up
   // sweep (both place only NON-call slots, so the map never goes stale
-  // between them).
-  buildProviderCalls(run);
+  // between them). Weekend-only defers all three to the Continue run: relief
+  // and mop-up rank against the FULL call schedule ("first on out-list"), and
+  // a weekend-only plan doesn't have one yet — running them here would both
+  // mis-rank and prematurely report orphans whose weekday triggers simply
+  // haven't been attempted.
+  if (!weekendOnly) {
+    buildProviderCalls(run);
 
-  // Relief pass (passes/relief.ts, §10 + IF-2 fixes), then the mop-up sweep
-  // for orphaned call-engine-owned day slots (passes/mopUp.ts, §10.5 — incl.
-  // the sequence-orphan reporting).
-  runReliefPass(run, scheduleDates);
-  runMopUpPass(run, scheduleDates);
+    // Relief pass (passes/relief.ts, §10 + IF-2 fixes), then the mop-up sweep
+    // for orphaned call-engine-owned day slots (passes/mopUp.ts, §10.5 — incl.
+    // the sequence-orphan reporting).
+    runReliefPass(run, scheduleDates);
+    runMopUpPass(run, scheduleDates);
+  }
 
   return plan;
 }
