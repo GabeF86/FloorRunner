@@ -26,10 +26,16 @@ export const maxDuration = 300;
 // fills) already committed to the DB, which lets it (a) avoid same-day
 // conflicts with a Day Doc who somehow ended up in a call slot and (b) use
 // the existing assignments for fairness seeding.
-// Body (optional JSON): { fillMode?: 'all' | 'obligatory' }. 'all' (default)
-// fills every fillable call slot; 'obligatory' caps each provider at their
-// rounded total obligation and leaves the rest open ('obligation-cap').
-// Applies to the CALL engine only — day-shift gen is unaffected by design.
+// Body (optional JSON): { fillMode?: 'all' | 'obligatory' | 'weekend-only' }.
+// 'all' (default) fills every fillable call slot; 'obligatory' caps each
+// provider at their rounded total obligation and leaves the rest open
+// ('obligation-cap'). Both apply to the CALL engine only — day-shift gen is
+// unaffected by design. 'weekend-only' (2026-07-21) is the STAGED weekend
+// fill: only Sat/Sun/Fri call slots (+ their pattern chains) are placed and
+// the day-shift pass is SKIPPED too — the whole rest of the schedule waits
+// for the Continue generation (a follow-up POST with fillMode 'all'), which
+// sees the committed weekend placements as seeds. Unknown/absent values
+// degrade to 'all' (resolveFillMode).
 export async function POST(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> },
@@ -83,6 +89,17 @@ export async function POST(
   // skippedDerived, and optimizeStats; unfilled candidate rejections are
   // trimmed to keep the payload proportional to what the UI shows.
   if (!result.ok) {
+    return NextResponse.json(
+      { ...result, unfilled: trimUnfilled(result.unfilled) },
+      { status: statusForResult(result) },
+    );
+  }
+
+  // Weekend-only stops after the weekend call pass: day-shift gen belongs to
+  // the Continue run (it would otherwise fill weekday day slots around a call
+  // schedule that hasn't been attempted yet). The result already carries
+  // awaitingContinue for the UI's staged banner.
+  if (fillMode === 'weekend-only') {
     return NextResponse.json(
       { ...result, unfilled: trimUnfilled(result.unfilled) },
       { status: statusForResult(result) },

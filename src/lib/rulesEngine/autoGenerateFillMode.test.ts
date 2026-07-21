@@ -12,9 +12,14 @@ describe('resolveFillMode', () => {
   it("accepts the exact string 'obligatory'", () => {
     expect(resolveFillMode('obligatory')).toBe('obligatory');
   });
+  it("accepts the exact string 'weekend-only'", () => {
+    expect(resolveFillMode('weekend-only')).toBe('weekend-only');
+  });
   it("any other value degrades to 'all'", () => {
     expect(resolveFillMode('all')).toBe('all');
     expect(resolveFillMode('OBLIGATORY')).toBe('all');
+    expect(resolveFillMode('WEEKEND-ONLY')).toBe('all');
+    expect(resolveFillMode('weekend')).toBe('all');
     expect(resolveFillMode(5)).toBe('all');
     expect(resolveFillMode(null)).toBe('all');
     expect(resolveFillMode({})).toBe('all');
@@ -93,5 +98,26 @@ describe('autoGenerate — fillMode threading', () => {
     expect(result.ok).toBe(true);
     expect(holder.optimizeCalls).toBe(1);
     expect(result.seedMetrics?.filled).toBe(1);
+  });
+
+  it("fillMode 'weekend-only' skips the optimizer (partial plans aren't optimized)", async () => {
+    const result = await autoGenerate({}, 'ver-1', { fillMode: 'weekend-only' });
+    expect(result.ok).toBe(true);
+    expect(holder.optimizeCalls).toBe(0);
+    expect(result.optimizeStats).toBeUndefined();
+  });
+
+  it("fillMode 'weekend-only' surfaces awaitingContinue (total + day-type breakdown), not unfilled", async () => {
+    // The fixture's only slot is a weekday C1 — out of weekend scope.
+    const result = await autoGenerate({}, 'ver-1', { fillMode: 'weekend-only' });
+    expect(result.assignments).toHaveLength(0);
+    expect(result.unfilled).toHaveLength(0);
+    expect(result.skipped).toBe(0);
+    expect(result.awaitingContinue).toEqual({ total: 1, byDayType: { weekday: 1 } });
+  });
+
+  it("other modes carry no awaitingContinue key", async () => {
+    const result = await autoGenerate({}, 'ver-1', { fillMode: 'all' });
+    expect(result.awaitingContinue).toBeUndefined();
   });
 });

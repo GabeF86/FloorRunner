@@ -12,7 +12,7 @@ import type { WorkDayReportRow } from './workDayReport';
 import type { RequestGrant } from './requestGrants';
 import type { OptimizeStats } from './optimize';
 import type { SupabaseClient } from './shared';
-import type { UnfilledSlot, PlannedAssignment, AssignmentExplanation, SolutionMetrics, PlacementSource, SkippedDerived, FillMode } from './genTypes';
+import type { UnfilledSlot, PlannedAssignment, AssignmentExplanation, SolutionMetrics, PlacementSource, SkippedDerived, FillMode, AwaitingContinueSlot } from './genTypes';
 
 export interface AutoGenerateOptions {
   overrideProviderIds?: string[];
@@ -32,6 +32,14 @@ export interface AutoGenerateOptions {
   // 'call-no-quota' pin re-validation knows nothing of caps — a pinned
   // eviction could push a provider past their obligation. The deterministic
   // greedy plan IS the obligatory answer.
+  //
+  // 'weekend-only' (2026-07-21): staged weekend fill — Sat/Sun/Fri call slots
+  // only (chains land wherever the pattern points); out-of-scope call slots
+  // are reported in `awaitingContinue`, not `unfilled`. It never runs the
+  // optimizer either: a deliberately partial plan must not be "improved"
+  // against full-schedule objectives. The optimizer runs once, in the
+  // Continue generation ('all') — where the committed weekend placements are
+  // SEEDS, hence immovable: reviewed weekends stay locked, by design.
   fillMode?: FillMode;
 }
 
@@ -40,11 +48,12 @@ export function resolveOptimizeEnabled(flag: boolean | undefined): boolean {
   return flag !== false;
 }
 
-// Pure: only the exact string 'obligatory' opts in; everything else — absent,
-// 'all', wrong case, wrong type — degrades to the default 'all'. Shared by
-// the generate route's body parsing and the engine option resolution.
+// Pure: only the exact strings 'obligatory' / 'weekend-only' opt in;
+// everything else — absent, 'all', wrong case, wrong type — degrades to the
+// default 'all'. Shared by the generate route's body parsing and the engine
+// option resolution.
 export function resolveFillMode(v: unknown): FillMode {
-  return v === 'obligatory' ? 'obligatory' : 'all';
+  return v === 'obligatory' || v === 'weekend-only' ? v : 'all';
 }
 
 // Pure: explicit param wins, then the env var; undefined lets optimize()
@@ -88,6 +97,11 @@ export interface GenerationResult {
   // credited breakdown / entitledOff / delta). Empty when ctx carries no
   // budget. Surfaced in the UI near the fairness/grant banner.
   workDayReport: WorkDayReportRow[];
+  // Weekend-only mode ONLY (absent otherwise): call slots the staged run
+  // deliberately did not attempt, with a day-type breakdown. NOT failures and
+  // NOT counted in `skipped` — the UI banner renders "N placed · M slots
+  // awaiting Continue" and offers the Continue ('all') button.
+  awaitingContinue?: { total: number; byDayType: Record<string, number> };
   // Distinguishes a hard failure (no slots / empty pool / DB error) from a
   // legitimate partial fill. The route maps this to an HTTP status.
   ok: boolean;
@@ -98,6 +112,16 @@ export interface GenerationResult {
     par_level: number; total_slots: number; call_slots: number;
     providers: number; elapsed_ms: number; db_queries: number;
   };
+}
+
+// Pure: plan.awaitingContinue -> the result summary (total + per-day-type
+// counts). Weekend-only mode only; the full slot list stays on the plan.
+export function summarizeAwaitingContinue(
+  slots: AwaitingContinueSlot[],
+): { total: number; byDayType: Record<string, number> } {
+  const byDayType: Record<string, number> = {};
+  for (const s of slots) byDayType[s.derived_day_type] = (byDayType[s.derived_day_type] || 0) + 1;
+  return { total: slots.length, byDayType };
 }
 
 // Pure: planned assignment -> the API/UI assignment shape (now includes the
@@ -136,9 +160,10 @@ export async function autoGenerate(
     const fillMode = resolveFillMode(options.fillMode);
     const seedPlan = solve(ctx, { fillMode });
     seedMetrics = scoreSolution(seedPlan, ctx);
-    // Obligatory mode always returns the deterministic greedy plan — see the
-    // AutoGenerateOptions.fillMode note for why the optimizer must not run.
-    if (fillMode !== 'obligatory' && resolveOptimizeEnabled(options.optimize)) {
+    // Only 'all' optimizes. Obligatory and weekend-only both return the
+    // deterministic greedy plan — see the AutoGenerateOptions.fillMode note
+    // for why the optimizer must not run in either.
+    if (fillMode === 'all' && resolveOptimizeEnabled(options.optimize)) {
       const optimized = optimize(ctx, {
         wallClockMs: resolveWallClockMs(options.wallClockMs, process.env.SCHEDULING_OPTIMIZE_WALL_MS),
       });
@@ -205,6 +230,10 @@ export async function autoGenerate(
   result.assignments = plan.assignments.map(toResultAssignment);
   result.unfilled = plan.unfilled;
   result.skippedDerived = plan.skippedDerived ?? [];
+  // Weekend-only: deferred out-of-scope call slots (plan.awaitingContinue is
+  // materialized only in that mode — present even when empty, so the UI can
+  // always render the staged banner + Continue affordance).
+  if (plan.awaitingContinue) result.awaitingContinue = summarizeAwaitingContinue(plan.awaitingContinue);
   result.metrics = scoreSolution(plan, ctx);
   result.seedMetrics = seedMetrics;
   // Working-days report from the FINAL (post-optimize) plan + seeds — describes

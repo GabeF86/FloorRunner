@@ -231,6 +231,16 @@ export interface SkippedDerived {
   reason: 'pto' | 'cross-site' | 'occupied' | 'no-slot' | 'ineligible' | 'already-handled' | 'overridden';
 }
 
+// A call slot the weekend-only main loop deliberately did NOT attempt (out of
+// weekend scope: not saturday/sunday/friday). NOT a failure — the staged
+// Continue run ('all') attempts it. See FillMode 'weekend-only'.
+export interface AwaitingContinueSlot {
+  slot_id: string;
+  slot_date: string;
+  shift_type_code: string;
+  derived_day_type: string;
+}
+
 export interface SolutionPlan {
   assignments: PlannedAssignment[];
   unfilled: UnfilledSlot[];
@@ -244,6 +254,10 @@ export interface SolutionPlan {
   // severs the designed same-provider pairing (2026-07-16 PROOF defect 2).
   // OPTIONAL for the same frozen-solveLegacy reason as skippedDerived.
   chainAnchorSlotIds?: string[];
+  // Present ONLY in weekend-only mode (always, even when empty): out-of-scope
+  // call slots the main loop skipped, in slotsToFill order. Kept absent in
+  // 'all'/'obligatory' so the fillAllPlan.golden.json JSON pin is untouched.
+  awaitingContinue?: AwaitingContinueSlot[];
 }
 
 // SolveState + emptySolveState live in solveState.ts (2026-07-20 solve
@@ -259,7 +273,20 @@ export { emptySolveState } from './solveState';
 // quota-relaxation sweep never runs, and remaining call slots are left open
 // with reason 'obligation-cap'. Non-call placements are never capped; the
 // day-shift engine is unaffected.
-export type FillMode = 'all' | 'obligatory';
+//
+// 'weekend-only' (2026-07-21, staged weekend fill): the main loop attempts
+// ONLY call slots whose derived_day_type is saturday/sunday/friday (holiday
+// day types are OUT — Continue handles them); block/day chains fire normally
+// from those placements and land wherever the pattern points (Monday D1,
+// Friday D2/D4, post-call blocks) — never scope-clipped. Skipped: the pre-PTO
+// pass (weekday-targeted), relief, mop-up (autoGenerate also skips the
+// optimizer, and the generate route skips the day-shift engine). Out-of-scope
+// call slots are counted in plan.awaitingContinue, NOT reported unfilled.
+// Quota/scoring semantics are the SAME as 'all' (relaxation enabled, no
+// obligation caps — modes do not compose in v1). The staged Continue is just
+// a second generation with fillMode 'all' over the committed weekend
+// placements as seeds.
+export type FillMode = 'all' | 'obligatory' | 'weekend-only';
 
 // Options for solve(). callOverrides forces a provider onto a CALL slot (by
 // slot_id -> provider_id) when that provider passes the 'call-no-quota' gate

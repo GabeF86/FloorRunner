@@ -190,6 +190,25 @@ describe('POST /api/scheduling/schedules/:id/generate — fillMode param (2026-0
     expect(holder.dayOptions[0]).not.toHaveProperty('fillMode');
   });
 
+  it("{ fillMode: 'weekend-only' } in the body reaches the call engine", async () => {
+    const { res } = await post({ fillMode: 'weekend-only' });
+    expect(res.status).toBe(200);
+    expect(genFillMode()).toBe('weekend-only');
+  });
+
+  it("fillMode 'weekend-only' skips the day-shift engine (staged: Continue runs it)", async () => {
+    await post({ fillMode: 'weekend-only' });
+    expect(holder.dayOptions).toHaveLength(0);
+  });
+
+  it("fillMode 'weekend-only' passes awaitingContinue through to the response", async () => {
+    holder.genResult = genResult({
+      awaitingContinue: { total: 4, byDayType: { weekday: 3, federal_holiday: 1 } },
+    });
+    const { json } = await post({ fillMode: 'weekend-only' });
+    expect(json.awaitingContinue).toEqual({ total: 4, byDayType: { weekday: 3, federal_holiday: 1 } });
+  });
+
   it('override pool still threads through alongside the fill mode', async () => {
     const { sb } = makeFakeSupabase({
       tables: {
