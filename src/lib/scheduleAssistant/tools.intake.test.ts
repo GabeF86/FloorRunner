@@ -58,19 +58,19 @@ describe('intake tools — registry', () => {
     }
   });
 
-  it('record_availability writable types = BLOCKING_AVAIL ∪ {no_call_request, pto_sellback}, all valid AVAILABILITY_TYPES', () => {
+  it('record_availability writable types = BLOCKING_AVAIL ∪ {no_call_request, call_request, pto_sellback}, all valid AVAILABILITY_TYPES', () => {
     const tool = assistantTools.find(t => t.name === 'record_availability')!;
     const schema = tool.input_schema as { properties: { availability_type: { enum: string[] } } };
     const enumVals = schema.properties.availability_type.enum;
-    // Set-equality with the engine's canonical blocking set + the two
+    // Set-equality with the engine's canonical blocking set + the three
     // engine-meaningful non-blocking levers — the write set is DERIVED from
-    // BLOCKING_AVAIL, so it cannot drift. DELIBERATE EXTENSION (2026-07-20):
-    // pto_sellback joins no_call_request as an explicit addition — it is
-    // neither blocking nor a request; it is the date-level blocking OVERRIDE
-    // (chief-entered sell-back — isDateBlocked, shared.ts; ALGORITHM.md §6).
-    expect(new Set(enumVals)).toEqual(new Set([...BLOCKING_AVAIL, 'no_call_request', 'pto_sellback']));
+    // BLOCKING_AVAIL, so it cannot drift. DELIBERATE EXTENSIONS:
+    // pto_sellback (2026-07-20) is the date-level blocking OVERRIDE
+    // (chief-entered sell-back — isDateBlocked, shared.ts; ALGORITHM.md §6);
+    // call_request (2026-07-22) is the soft PREFER lever — the mirror image
+    // of no_call_request (scoreCall preferred tier, solveKernel.ts).
+    expect(new Set(enumVals)).toEqual(new Set([...BLOCKING_AVAIL, 'no_call_request', 'call_request', 'pto_sellback']));
     for (const v of enumVals) expect(AVAILABILITY_TYPES as readonly string[]).toContain(v);
-    expect(enumVals).not.toContain('call_request'); // consumer-less type excluded
     expect(enumVals).not.toContain('available'); // informational, not engine-meaningful
   });
 
@@ -108,6 +108,16 @@ describe('record_availability', () => {
     const row = callsFor(calls, 'provider_availability', 'insert')[0].args[0] as Record<string, unknown>;
     expect(row.availability_type).toBe('no_call_request');
     expect(row.notes).toBeNull();
+  });
+
+  it('accepts call_request (the soft-prefer lever, mirror of no_call_request)', async () => {
+    const { executors, sb, calls } = run({ ...okOrg, provider_availability: { data: { id: 'av-3' } } });
+    await executors.record_availability(sb, ctx, {
+      provider_id: 'p1', availability_type: 'call_request', start_date: '2026-01-15', end_date: '2026-01-15',
+    });
+    const row = callsFor(calls, 'provider_availability', 'insert')[0].args[0] as Record<string, unknown>;
+    expect(row.availability_type).toBe('call_request');
+    expect(row.approval_status).toBe('approved');
   });
 
   it('rejects a non-engine availability type (zod enum)', async () => {

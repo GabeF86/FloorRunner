@@ -10,6 +10,8 @@ import {
   normalizeWeekdays,
   dayTypeBucket,
   isBlockingAvailability,
+  isActiveNoCallRequest,
+  isActiveCallRequest,
   isActiveSellback,
   isSellbackOverridden,
   isDateBlocked,
@@ -197,6 +199,36 @@ describe('isSellbackOverridden (the override coverage decision)', () => {
     expect(isSellbackOverridden([sellTue], '2026-01-07')).toBe(false);
     expect(isSellbackOverridden([{ ...sellTue, approval_status: 'denied' }], '2026-01-06')).toBe(false);
     expect(isSellbackOverridden([ptoWeek], '2026-01-06')).toBe(false);
+  });
+});
+
+// ── request predicates (no-call 2026-07-17 / call 2026-07-22) ───────────────
+// isActiveCallRequest is the MIRROR IMAGE of isActiveNoCallRequest: same
+// status semantics (pending counts; denied/canceled don't), different
+// availability_type, opposite engine meaning (prefer vs avoid). Pinned in
+// parity so the two single-home predicates can never drift.
+
+describe('isActiveNoCallRequest / isActiveCallRequest (single-home parity)', () => {
+  const cases: Array<[string, boolean]> = [
+    ['approved', true], ['pending', true], ['waitlisted', true],
+    ['denied', false], ['canceled', false],
+  ];
+  it('identical status semantics for both predicates', () => {
+    for (const [status, live] of cases) {
+      expect(isActiveNoCallRequest({ availability_type: 'no_call_request', approval_status: status }),
+        `no_call/${status}`).toBe(live);
+      expect(isActiveCallRequest({ availability_type: 'call_request', approval_status: status }),
+        `call/${status}`).toBe(live);
+    }
+  });
+  it('each predicate matches ONLY its own availability_type', () => {
+    expect(isActiveNoCallRequest({ availability_type: 'call_request', approval_status: 'approved' })).toBe(false);
+    expect(isActiveCallRequest({ availability_type: 'no_call_request', approval_status: 'approved' })).toBe(false);
+    expect(isActiveCallRequest({ availability_type: 'pto', approval_status: 'approved' })).toBe(false);
+  });
+  it('neither request type is blocking (soft levers only)', () => {
+    expect(isBlockingAvailability({ availability_type: 'no_call_request', approval_status: 'approved' })).toBe(false);
+    expect(isBlockingAvailability({ availability_type: 'call_request', approval_status: 'approved' })).toBe(false);
   });
 });
 

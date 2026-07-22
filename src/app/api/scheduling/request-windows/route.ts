@@ -3,6 +3,7 @@ import { randomBytes } from 'crypto';
 import { sbSchedulingServer } from '@/lib/supabaseScheduling';
 import { RequestWindowCreateSchema } from '@/lib/validation/requestIntake';
 import { formatZodIssues } from '@/lib/validation/scheduling';
+import { isMissingColumnError } from '@/lib/rulesEngine/shared';
 
 // Never prerender — this route hits Supabase per request.
 export const dynamic = 'force-dynamic';
@@ -69,20 +70,36 @@ export async function POST(req: NextRequest) {
     );
   }
 
+  // max_call_requests (2026-07-22, patch36): NULL = call-shift requests OFF
+  // for this window; ≥ 1 enables the category at that per-provider cap.
+  const maxCall = parsed.data.max_call_requests ?? null;
   const row = {
     site_id: parsed.data.site_id,
     block_start: parsed.data.block_start,
     block_end: parsed.data.block_end,
     max_no_call_requests: parsed.data.max_no_call_requests ?? 3,
+    max_call_requests: maxCall,
     token: randomBytes(18).toString('base64url'), // 24 url-safe chars
     status: 'open',
   };
 
-  const { data, error } = await sb
+  let { data, error } = await sb
     .from('request_windows')
     .insert(row)
     .select()
     .single();
+  // Pre-patch36 narrow retry (grid-route patch35 idiom): when the column is
+  // missing AND the admin did NOT set a call cap, retry without it — nothing
+  // is lost. A SET cap must never be silently dropped: surface the error so
+  // the admin applies patch36 first.
+  if (error && maxCall === null && isMissingColumnError(error)) {
+    const { max_call_requests: _omit, ...legacyRow } = row;
+    ({ data, error } = await sb
+      .from('request_windows')
+      .insert(legacyRow)
+      .select()
+      .single());
+  }
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
   return NextResponse.json(data);
 }

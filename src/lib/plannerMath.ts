@@ -631,9 +631,10 @@ export function providerPlannerNumbers(
 //               the sold count rides along — Gabriel's sell-back semantics)
 //   Sell-back → calendar days (countDaysInYear)
 //   Days off  → 'unavailable' rows, calendar days
-//   Other     → everything else EXCEPT no-call requests and ICU rotation rows
-//               ('blocked' with an icu_* reason — those live in the profile's
-//               ICU section, and their weekdays credit as WORKED, not leave).
+//   Other     → everything else EXCEPT no-call/call requests and ICU rotation
+//               rows ('blocked' with an icu_* reason — those live in the
+//               profile's ICU section, and their weekdays credit as WORKED,
+//               not leave).
 export interface PlannerYearCounters {
   year: number;
   pto: PtoCounterStats;
@@ -643,7 +644,9 @@ export interface PlannerYearCounters {
 }
 
 // The profile page's non-counter categories, plus its ICU-owned row test.
-const NON_OTHER_TYPES = new Set(['pto', 'pto_sellback', 'unavailable', 'no_call_request']);
+// call_request (2026-07-22) mirrors no_call_request: it has its own profile
+// section (Call Requests) and is a soft request, never counted leave.
+const NON_OTHER_TYPES = new Set(['pto', 'pto_sellback', 'unavailable', 'no_call_request', 'call_request']);
 function isIcuRotationRow(r: PlannerAvailabilityRow): boolean {
   return r.availability_type === 'blocked'
     && (r.reason_code === ICU_WEEK_REASON || r.reason_code === ICU_POST_CALL_REASON);

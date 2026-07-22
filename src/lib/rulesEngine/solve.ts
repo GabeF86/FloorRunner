@@ -1,4 +1,4 @@
-import { addDays, isActiveNoCallRequest } from './shared';
+import { addDays, datesOverlap, isActiveNoCallRequest, isActiveCallRequest } from './shared';
 import { evaluateEligibility } from './eligibility';
 import { computeObligations } from './obligation';
 import { computeSequenceOwnedSlotIds } from './sequenceOwnership';
@@ -12,7 +12,7 @@ import { CLASSIC_PATTERN, postCallBlockOffsets, dayChainsFor } from './callPatte
 import type { CallPatternDoc } from './callPattern';
 import {
   record, overrideFor, scoreCall, applyDayChains, applyBlockChains,
-  capRoom, chainCallNeeds, noteViolation, buildProviderCalls, pushUnfilled,
+  capRoom, chainCallNeeds, noteViolation, noteGrant, buildProviderCalls, pushUnfilled,
   admitsUnderCallCaps,
 } from './solveKernel';
 import { buildCallCaps } from './providerCaps';
@@ -159,6 +159,45 @@ export function solve(ctx: GenerationContext, opts: SolveOptions = {}): Solution
     if (live.length > 0) noCallByPid.set(pid, live);
   }
 
+  // ── call-request soft preference (2026-07-22) ──
+  // MIRROR of the no-call tier: LIVE (non-dismissed) call_request entries per
+  // provider (isActiveCallRequest — the same single-home predicate the grant
+  // report uses). NOT a gate-waiver: a live request on the slot date LIFTS
+  // the candidate a sort tier in scoreCall (preferred, before tier 0), so a
+  // requester wins call slots they already pass every safety gate, quota,
+  // cap and fill-mode rule for. With zero live call_request rows the map and
+  // the contradiction set below are empty, every new branch is inert and the
+  // plan is byte-identical (pinned against fillAllPlan.golden.json in
+  // callRequests.test.ts).
+  const callReqByPid = new Map<string, Array<{ start_date: string; end_date: string }>>();
+  for (const [pid, entries] of ctx.availByPid) {
+    const live = entries.filter(isActiveCallRequest);
+    if (live.length > 0) callReqByPid.set(pid, live);
+  }
+
+  const scheduleDates = ctx.scheduleDates ?? Array.from(ctx.slotIndex.keys()).sort();
+
+  // Contradictory requests: a provider with BOTH a live call request and a
+  // live no-call request covering the same block date asked for opposite
+  // things — treat the date as NEITHER (excluded from both tiers, both
+  // fairness counters and the grant reports) and warn ONCE per provider on
+  // plan.requestWarnings (lazily materialized so request-free plans stay
+  // byte-identical to the golden pin). Deterministic id order.
+  const contraReqDates = new Map<string, Set<string>>();
+  for (const pid of [...callReqByPid.keys()].sort()) {
+    const noCall = noCallByPid.get(pid);
+    if (!noCall) continue;
+    const callReq = callReqByPid.get(pid)!;
+    const dates = scheduleDates.filter(d =>
+      callReq.some(e => datesOverlap(e.start_date, e.end_date, d))
+      && noCall.some(e => datesOverlap(e.start_date, e.end_date, d)));
+    if (dates.length === 0) continue;
+    contraReqDates.set(pid, new Set(dates));
+    const name = providerById.get(pid)?.short_display_name ?? pid;
+    (plan.requestWarnings ??= []).push(
+      `Contradictory requests: ${name} has both a call request and a no-call request on ${dates.join(', ')} — treated as neither.`);
+  }
+
   // ── obligatory fill mode (2026-07-17) ──
   // Cap each provider's CALL assignments at their rounded TOTAL obligation
   // (obligation.ts). Seeded/manual calls consume the cap too — the obligation
@@ -225,6 +264,7 @@ export function solve(ctx: GenerationContext, opts: SolveOptions = {}): Solution
     obligatory, obligationByPid, callCountByPid,
     callCaps, callCodeTally,
     noCallByPid, noCallViolated: new Map<string, number>(),
+    callReqByPid, callReqGranted: new Map<string, number>(), contraReqDates,
     waivedLinkKeys: new Set<string>(),
     sequenceOwnedSlotIds, providerById,
     overrides: opts.callOverrides,
@@ -233,9 +273,14 @@ export function solve(ctx: GenerationContext, opts: SolveOptions = {}): Solution
     providerCalls: new Map(),
   };
   // Fair denial seeding: seeded/manual calls on requested dates count — that
-  // provider has already absorbed a denial this block.
+  // provider has already absorbed a denial this block. Fair GRANT seeding
+  // mirrors it: a seeded call on a live call-request date is a grant already
+  // received.
   for (const seed of ctx.seedAssignments) {
-    if (seed.shift_type_category === 'call') noteViolation(run, seed.provider_id, seed.slot_date);
+    if (seed.shift_type_category === 'call') {
+      noteViolation(run, seed.provider_id, seed.slot_date);
+      noteGrant(run, seed.provider_id, seed.slot_date);
+    }
   }
 
   // Configurable placement passes (pre-PTO Thursday — passes/prePto.ts, §7),
@@ -247,8 +292,7 @@ export function solve(ctx: GenerationContext, opts: SolveOptions = {}): Solution
   // accepted v1 simplicity, mirroring chains-never-scope-clipped).
   if (!weekendOnly) runPrePtoPass(run);
 
-  const scheduleDates = ctx.scheduleDates ?? Array.from(ctx.slotIndex.keys()).sort();
-  runSpansPass(run, scheduleDates);
+  runSpansPass(run, scheduleDates); // scheduleDates hoisted above (request maps)
 
   // ── main construction loop (CALL slots only) ──
   for (const slot of slotsToFill) {

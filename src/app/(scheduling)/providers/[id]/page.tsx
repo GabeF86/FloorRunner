@@ -24,6 +24,7 @@ import {
 // which rows are live (denied/canceled = dismissed), blocking, or
 // bookend-extended (effectivePtoRange).
 import { BLOCKING_AVAIL, effectivePtoRange, isDismissedAvailability } from '@/lib/rulesEngine/shared';
+import { callRequestsEnabled, countWindowRequestRows } from '@/lib/validation/requestIntake';
 import { collapseDatesToRanges, countDaysInYear, ptoCounterStats, type DateRange, type PtoCounterStats } from '@/lib/dateRanges';
 import { CalendarMultiPicker } from '@/components/CalendarMultiPicker';
 import { SiteShiftTypePicker } from '@/components/ShiftTypePicker';
@@ -1589,6 +1590,8 @@ interface RequestWindowInfo {
   block_start: string;
   block_end: string;
   max_no_call_requests: number;
+  // Admin-set call-request cap (patch36); null/absent = category off.
+  max_call_requests?: number | null;
   token: string;
   status: string;
 }
@@ -1698,8 +1701,9 @@ function AvailabilityTab({ providerId, profile }: { providerId: string; profile:
   const sellbackRows = rows.filter(r => r.availability_type === 'pto_sellback');
   const daysOffRows = rows.filter(r => r.availability_type === 'unavailable');
   const noCallRows = rows.filter(r => r.availability_type === 'no_call_request');
+  const callReqRows = rows.filter(r => r.availability_type === 'call_request');
   const otherRows = rows.filter(r =>
-    !['pto', 'pto_sellback', 'unavailable', 'no_call_request'].includes(r.availability_type) && !icuIds.has(r.id));
+    !['pto', 'pto_sellback', 'unavailable', 'no_call_request', 'call_request'].includes(r.availability_type) && !icuIds.has(r.id));
 
   // ── Category counters: CURRENT-CALENDAR-YEAR counts ──────────────────────
   // Only non-dismissed rows count (denied/canceled excluded; pending counts —
@@ -1800,7 +1804,7 @@ function AvailabilityTab({ providerId, profile }: { providerId: string; profile:
           <NoCallAddForm
             providerId={providerId}
             window={openWindow}
-            usedCount={noCallRows.filter(r => r.notes === `request_window:${openWindow.id}`).length}
+            usedCount={countWindowRequestRows(noCallRows, openWindow.id, 'no_call_request')}
             onAdded={loadAvailability}
           />
           <SectionRows rows={noCallRows} onDelete={deleteEntry} formatDate={formatDate} emptyText="No no-call requests yet." />
@@ -1812,6 +1816,32 @@ function AvailabilityTab({ providerId, profile }: { providerId: string; profile:
           hint="No request window is currently open for this provider's home site — existing requests are shown read-only; new ones can be entered once a window opens."
         >
           <SectionRows rows={noCallRows} onDelete={deleteEntry} formatDate={formatDate} emptyText="" />
+        </AvailSection>
+      )}
+
+      {/* ── Call Requests — mirror of No Call: entry only while a window with
+             the category ENABLED (max_call_requests ≥ 1) is open ──────────── */}
+      {openWindow && callRequestsEnabled(openWindow.max_call_requests) && (
+        <AvailSection
+          title="Call Requests"
+          hint={`Request window open for the block ${formatDate(openWindow.block_start)} – ${formatDate(openWindow.block_end)}. ` +
+            `Up to ${openWindow.max_call_requests} dates — each date counts as one request; the schedule generator tries to GIVE call on them (soft — no approval step, never guaranteed).`}
+        >
+          <CallRequestAddForm
+            providerId={providerId}
+            window={openWindow}
+            usedCount={countWindowRequestRows(callReqRows, openWindow.id, 'call_request')}
+            onAdded={loadAvailability}
+          />
+          <SectionRows rows={callReqRows} onDelete={deleteEntry} formatDate={formatDate} emptyText="No call requests yet." />
+        </AvailSection>
+      )}
+      {(!openWindow || !callRequestsEnabled(openWindow?.max_call_requests)) && callReqRows.length > 0 && (
+        <AvailSection
+          title="Call Requests"
+          hint="No open request window with call requests enabled for this provider's home site — existing requests are shown read-only; new ones can be entered once an enabled window opens."
+        >
+          <SectionRows rows={callReqRows} onDelete={deleteEntry} formatDate={formatDate} emptyText="" />
         </AvailSection>
       )}
 
@@ -2281,23 +2311,27 @@ function RangeAddForm({ providerId, availabilityType, addLabel, accent = '#0ea5e
   );
 }
 
-// No-call add — routes through the SAME token-gated intake endpoint the
-// public form uses, so the per-window cap has exactly one enforcement point.
-function NoCallAddForm({ providerId, window: win, usedCount, onAdded }: {
+// Window request add (no-call + its 2026-07-22 call-request mirror) — routes
+// through the SAME token-gated intake endpoint the public form uses, so each
+// per-window cap has exactly one enforcement point.
+function WindowRequestAddForm({ providerId, window: win, usedCount, onAdded, kind }: {
   providerId: string;
   window: RequestWindowInfo;
   usedCount: number;
   onAdded: () => Promise<void>;
+  kind: 'no_call' | 'call';
 }) {
   const [mode, setMode] = useState<'date' | 'calendar'>('date');
   const [date, setDate] = useState('');
-  // Calendar mode: multiple no-call dates submitted in ONE intake POST (the
-  // endpoint takes no_call_dates[] and enforces the per-window cap itself).
-  // The picker is clamped to the window's block range.
+  // Calendar mode: multiple dates submitted in ONE intake POST (the endpoint
+  // takes no_call_dates[]/call_dates[] and enforces the per-window cap
+  // itself). The picker is clamped to the window's block range.
   const [days, setDays] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const remaining = Math.max(0, win.max_no_call_requests - usedCount);
+  const max = kind === 'no_call' ? win.max_no_call_requests : (win.max_call_requests ?? 0);
+  const accent = kind === 'no_call' ? '#fbbf24' : '#34d399'; // AVAILABILITY_TYPES colors
+  const remaining = Math.max(0, max - usedCount);
 
   const add = async () => {
     const dates = mode === 'calendar' ? days : (date ? [date] : []);
@@ -2307,7 +2341,10 @@ function NoCallAddForm({ providerId, window: win, usedCount, onAdded }: {
       const res = await fetch(`/api/requests/submit/${win.token}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ provider_id: providerId, no_call_dates: dates }),
+        body: JSON.stringify({
+          provider_id: providerId,
+          [kind === 'no_call' ? 'no_call_dates' : 'call_dates']: dates,
+        }),
       });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
@@ -2334,13 +2371,13 @@ function NoCallAddForm({ providerId, window: win, usedCount, onAdded }: {
         ] as const}
         mode={mode}
         onChange={setMode}
-        accent="#fbbf24"
+        accent={accent}
       />
       {mode === 'calendar' && (
         <CalendarPane
           days={days}
           onDaysChange={setDays}
-          accent="#fbbf24"
+          accent={accent}
           minDate={win.block_start}
           maxDate={win.block_end}
         />
@@ -2352,7 +2389,7 @@ function NoCallAddForm({ providerId, window: win, usedCount, onAdded }: {
       }}>
         {mode === 'date' && (
           <div>
-            <label style={fieldLabelStyle}>No-Call Date</label>
+            <label style={fieldLabelStyle}>{kind === 'no_call' ? 'No-Call Date' : 'Call Date'}</label>
             <input
               type="date"
               value={date}
@@ -2364,7 +2401,7 @@ function NoCallAddForm({ providerId, window: win, usedCount, onAdded }: {
           </div>
         )}
         <div style={{ fontSize: 11, color: 'var(--text-dim)', paddingBottom: 7 }}>
-          {usedCount}/{win.max_no_call_requests} used
+          {usedCount}/{max} used
           {mode === 'calendar' && selectedCount > remaining && (
             <span style={{ color: '#f87171', fontWeight: 700 }}> — {selectedCount} selected exceeds the {remaining} remaining</span>
           )}
@@ -2377,6 +2414,24 @@ function NoCallAddForm({ providerId, window: win, usedCount, onAdded }: {
       </div>
     </div>
   );
+}
+
+function NoCallAddForm(props: {
+  providerId: string;
+  window: RequestWindowInfo;
+  usedCount: number;
+  onAdded: () => Promise<void>;
+}) {
+  return <WindowRequestAddForm {...props} kind="no_call" />;
+}
+
+function CallRequestAddForm(props: {
+  providerId: string;
+  window: RequestWindowInfo;
+  usedCount: number;
+  onAdded: () => Promise<void>;
+}) {
+  return <WindowRequestAddForm {...props} kind="call" />;
 }
 
 // ICU week entry: default end = start + 6; creates the week row and (unless

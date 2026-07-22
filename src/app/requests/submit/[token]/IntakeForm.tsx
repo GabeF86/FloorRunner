@@ -1,11 +1,14 @@
 'use client';
 
-// Client form for the public request-intake page. Three entry categories:
+// Client form for the public request-intake page. Entry categories:
 //   PTO ranges       → land in the Requests approval queue (pending)
 //   Days-off ranges  → approval queue (pending, availability_change)
 //   No-call dates    → recorded directly; the scheduling engine arbitrates
+//   Call dates       → recorded directly (only when the admin enabled the
+//                      category for this window); the engine soft-PREFERS them
 // Client-side checks mirror the server's (which is authoritative).
 import { useState } from 'react';
+import { callRequestsEnabled } from '@/lib/validation/requestIntake';
 
 interface RosterProvider {
   id: string;
@@ -15,26 +18,31 @@ interface RosterProvider {
 
 interface Range { start: string; end: string }
 
-export default function IntakeForm({ token, siteName, blockStart, blockEnd, maxNoCall, roster }: {
+export default function IntakeForm({ token, siteName, blockStart, blockEnd, maxNoCall, maxCall, roster }: {
   token: string;
   siteName: string;
   blockStart: string;
   blockEnd: string;
   maxNoCall: number;
+  // Per-provider call-request cap; null = the admin left the category off.
+  maxCall: number | null;
   roster: RosterProvider[];
 }) {
   const [providerId, setProviderId] = useState('');
   const [pto, setPto] = useState<Range[]>([]);
   const [daysOff, setDaysOff] = useState<Range[]>([]);
   const [noCallDates, setNoCallDates] = useState<string[]>([]);
+  const [callDates, setCallDates] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [done, setDone] = useState<{ pto: number; days_off: number; no_call: number } | null>(null);
+  const [done, setDone] = useState<{ pto: number; days_off: number; no_call: number; call?: number } | null>(null);
+
+  const callsEnabled = callRequestsEnabled(maxCall);
 
   const fmt = (d: string) =>
     new Date(d + 'T12:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 
-  const hasEntries = pto.length > 0 || daysOff.length > 0 || noCallDates.length > 0;
+  const hasEntries = pto.length > 0 || daysOff.length > 0 || noCallDates.length > 0 || callDates.length > 0;
   const canSubmit = !!providerId && hasEntries && !busy;
 
   const submit = async () => {
@@ -50,6 +58,7 @@ export default function IntakeForm({ token, siteName, blockStart, blockEnd, maxN
           pto: pto.map(r => ({ start_date: r.start, end_date: r.end })),
           days_off: daysOff.map(r => ({ start_date: r.start, end_date: r.end })),
           no_call_dates: noCallDates,
+          call_dates: callDates,
         }),
       });
       const data = await res.json();
@@ -76,6 +85,7 @@ export default function IntakeForm({ token, siteName, blockStart, blockEnd, maxN
           {done.pto > 0 && <>PTO requests: <b>{done.pto}</b> (pending scheduler approval)<br /></>}
           {done.days_off > 0 && <>Days-off requests: <b>{done.days_off}</b> (pending scheduler approval)<br /></>}
           {done.no_call > 0 && <>No-call dates: <b>{done.no_call}</b> (recorded — the schedule generator will avoid these when it can)<br /></>}
+          {(done.call ?? 0) > 0 && <>Call-shift requests: <b>{done.call}</b> (recorded — the schedule generator will try to give you call on these dates)<br /></>}
         </p>
         <p style={{ fontSize: 12, color: 'var(--text-dim)', marginTop: 10 }}>
           Need to add more? Just reopen this link while the window is open.
@@ -92,7 +102,8 @@ export default function IntakeForm({ token, siteName, blockStart, blockEnd, maxN
       <p style={{ fontSize: 13, color: 'var(--text-muted)', marginBottom: 18, lineHeight: 1.6 }}>
         For the block <b>{fmt(blockStart)} – {fmt(blockEnd)}</b>. PTO and days-off
         requests go to the scheduler for approval; no-call dates (up to {maxNoCall})
-        are handled by the scheduling engine itself.
+        {callsEnabled ? ` and call-shift requests (up to ${maxCall})` : ''} are
+        handled by the scheduling engine itself.
       </p>
 
       {error && (
@@ -149,6 +160,35 @@ export default function IntakeForm({ token, siteName, blockStart, blockEnd, maxN
             onClick={() => setNoCallDates(prev => [...prev, ''])} />
         )}
       </div>
+
+      {/* Call-shift request dates — only when the admin enabled the category */}
+      {callsEnabled && (
+        <div style={{ marginBottom: 22 }}>
+          <div style={sectionHeadStyle}>Call Requests</div>
+          <div style={hintStyle}>
+            Days you&apos;d LIKE to take call. Up to {maxCall} dates inside the block —
+            each date counts as one request. The schedule generator will try to give
+            you call on these dates (not guaranteed).
+          </div>
+          {callDates.map((d, i) => (
+            <div key={i} style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 8 }}>
+              <input
+                type="date"
+                value={d}
+                min={blockStart}
+                max={blockEnd}
+                onChange={e => setCallDates(prev => prev.map((x, j) => j === i ? e.target.value : x))}
+                style={{ ...inputStyle, flex: 1 }}
+              />
+              <RemoveButton onClick={() => setCallDates(prev => prev.filter((_, j) => j !== i))} />
+            </div>
+          ))}
+          {callDates.length < (maxCall ?? 0) && (
+            <AddButton label={`+ Add call date (${callDates.length}/${maxCall})`}
+              onClick={() => setCallDates(prev => [...prev, ''])} />
+          )}
+        </div>
+      )}
 
       <button
         onClick={submit}

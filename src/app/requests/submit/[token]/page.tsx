@@ -5,6 +5,7 @@
 // here (and again in the POST route); a closed or unknown token renders a
 // friendly closed page, never a form.
 import { sbSchedulingServer } from '@/lib/supabaseScheduling';
+import { isMissingColumnError } from '@/lib/rulesEngine/shared';
 import IntakeForm from './IntakeForm';
 
 export const dynamic = 'force-dynamic';
@@ -18,11 +19,21 @@ interface RosterProvider {
 export default async function RequestSubmitPage({ params }: { params: { token: string } }) {
   const sb = sbSchedulingServer();
 
-  const { data: window } = await sb
+  // max_call_requests is patch36 — a pre-patch36 DB (missing column) retries
+  // with the legacy column set and renders the form without the call section.
+  let { data: window, error: winErr } = await sb
     .from('request_windows')
-    .select('id, site_id, block_start, block_end, max_no_call_requests, status, sites:site_id(name, short_name)')
+    .select('id, site_id, block_start, block_end, max_no_call_requests, max_call_requests, status, sites:site_id(name, short_name)')
     .eq('token', params.token)
     .maybeSingle();
+  if (winErr && isMissingColumnError(winErr)) {
+    ({ data: window, error: winErr } = await sb
+      .from('request_windows')
+      .select('id, site_id, block_start, block_end, max_no_call_requests, status, sites:site_id(name, short_name)')
+      .eq('token', params.token)
+      .maybeSingle());
+    if (window) window = { ...window, max_call_requests: null };
+  }
 
   if (!window || window.status !== 'open') {
     return (
@@ -71,6 +82,7 @@ export default async function RequestSubmitPage({ params }: { params: { token: s
         blockStart={window.block_start}
         blockEnd={window.block_end}
         maxNoCall={window.max_no_call_requests}
+        maxCall={window.max_call_requests ?? null}
         roster={roster}
       />
     </Frame>
