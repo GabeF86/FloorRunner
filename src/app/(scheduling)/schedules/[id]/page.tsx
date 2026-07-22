@@ -37,6 +37,11 @@ import {
   isInvalidLimitInput, EMPTY_LIMIT_FIELDS,
   type ProviderLimits, type LimitFields,
 } from '@/lib/providerLimits';
+// Grid zoom (2026-07-22): level list + localStorage round-trip for the
+// toolbar's zoom segmented control. Applied as CSS `zoom` on the grid
+// container ONLY — uniform scaling keeps every inline sizing literal and
+// sticky header offset coupled by construction.
+import { GRID_ZOOM_LEVELS, loadGridZoom, saveGridZoom, type GridZoomLevel } from './gridZoom';
 
 /* ── Interfaces ──────────────────────────────────────────────────────────── */
 
@@ -920,6 +925,18 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
     try { localStorage.setItem(FILL_MODE_STORAGE_KEY, v); } catch { /* non-fatal */ }
   };
 
+  // Grid zoom (Gabriel 2026-07-22): shrink the grid so more schedule fits on
+  // one screen. Lazy initializer rather than the fill-mode useEffect pattern:
+  // the toolbar/grid only render after the data fetch (post-hydration — the
+  // `!grid` branch returns Loading), so reading localStorage before first
+  // paint restores the level without a flash AND without an SSR mismatch
+  // (the server-rendered Loading markup doesn't depend on this state).
+  const [gridZoom, setGridZoom] = useState<GridZoomLevel>(() => loadGridZoom());
+  const changeGridZoom = (level: GridZoomLevel) => {
+    setGridZoom(level);
+    saveGridZoom(level); // non-fatal on storage failure
+  };
+
   const CONFIRM_BY_MODE: Record<GenFillMode, string> = {
     all: 'Auto-generate will fill all open slots using active rules. Manual assignments will NOT be overwritten. Continue?',
     obligatory: 'Auto-generate will fill ONLY obligatory call slots — each provider receives at most their rounded call obligation; remaining call slots stay open. Manual assignments will NOT be overwritten. Continue?',
@@ -1233,6 +1250,37 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
           </div>
         )}
 
+        {/* Grid zoom — view more schedule per screen (Gabriel 2026-07-22).
+            Segmented control in the view-toggle idiom; percentages are the
+            labels so the current level doubles as the readout. Applies CSS
+            zoom to the week/month grid container only, so the control hides
+            in calendar view (week-nav precedent). Persisted per browser
+            (floorRunner.gridZoom); print always renders at 100%. */}
+        {viewMode !== 'calendar' && (
+          <div
+            role="group"
+            aria-label="Grid zoom"
+            title="Grid zoom — smaller percentages fit more of the schedule on screen"
+            style={{ display: 'inline-flex', border: '1px solid var(--border)', borderRadius: 8, overflow: 'hidden' }}
+          >
+            {GRID_ZOOM_LEVELS.map(level => (
+              <button
+                key={level}
+                onClick={() => changeGridZoom(level)}
+                aria-pressed={gridZoom === level}
+                style={{
+                  padding: '6px 9px', fontSize: 11, fontWeight: 700, border: 'none', cursor: 'pointer',
+                  fontFamily: 'var(--font-mono), ui-monospace, monospace',
+                  background: gridZoom === level ? 'rgba(56,189,248,0.18)' : 'transparent',
+                  color: gridZoom === level ? '#7dd3fc' : 'var(--text-muted)',
+                }}
+              >
+                {level}%
+              </button>
+            ))}
+          </div>
+        )}
+
         <div style={{ flex: 1 }} />
 
         {/* Call Counts button */}
@@ -1523,7 +1571,20 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
         border: '1px solid var(--border)',
         background: '#ffffff', // data cell background
       }}>
-        <div style={{
+        {/* Print always renders at 100% regardless of the on-screen zoom
+            level. Stylesheet !important beats the inline zoom below. (The
+            Call Counts print path is additionally isolated by its own
+            visibility-scoped stylesheet, so it never sees the grid.) */}
+        <style>{`@media print { .fr-grid-zoom { zoom: 1 !important; } }`}</style>
+        {/* CSS zoom on the grid itself (inner div, not the scroll container):
+            scrollbar/border chrome stays at 100% while every cell, font, and
+            sticky offset scales by the same factor — the top:22 date header
+            stays glued below the (minHeight 22, now scaled) DOW row, and the
+            sticky left shift-label column keeps left:0. The picker popover is
+            position:fixed OUTSIDE this subtree and placed from e.clientX/Y
+            (viewport px), so click-to-assign is zoom-independent. */}
+        <div className="fr-grid-zoom" style={{
+          zoom: gridZoom / 100,
           display: 'grid',
           gridTemplateColumns: `84px repeat(${colCount}, minmax(${viewMode === 'month' ? 82 : 74}px, 1fr))`,
           minWidth: colCount > 7 ? `${84 + colCount * (viewMode === 'month' ? 82 : 74)}px` : undefined,
