@@ -2375,9 +2375,19 @@ function PoolSelectorModal({
       // Limits ride along on BOTH saves (they are keyed to providers, not the
       // pool — resetting to the default pool keeps them; out-of-pool entries
       // render inert but survive). If the limits fetch failed the key is
-      // OMITTED so a network blip can never clobber stored limits.
+      // OMITTED so a network blip can never clobber stored limits. It is ALSO
+      // omitted for a null→null no-op (nothing stored, nothing entered):
+      // pre-patch34 the provider_limits column doesn't exist, and riding a
+      // no-op null along would 500 the WHOLE pool save on the missing column
+      // (review fix 2026-07-22). Clearing previously-stored limits still
+      // sends null (storedLimits non-empty then).
       const body: Record<string, unknown> = { included_provider_ids: payload };
-      if (limitsState === 'ready') body.provider_limits = buildLimitsPayload();
+      if (limitsState === 'ready') {
+        const limitsPayload = buildLimitsPayload();
+        if (limitsPayload !== null || Object.keys(storedLimits).length > 0) {
+          body.provider_limits = limitsPayload;
+        }
+      }
       const res = await fetch(`/api/scheduling/schedules/${scheduleId}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },

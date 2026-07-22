@@ -105,8 +105,20 @@ export function computeProviderCapSummary(
     }
   }
   rows.sort((a, b) => a.provider_name.localeCompare(b.provider_name) || a.code.localeCompare(b.code));
+  // cappedUnfilled counts DISTINCT slots that truly ended OPEN. The spans pass
+  // reports a cap-blocked span with 'provider-cap' BEFORE its slots fall to
+  // the main loop (severed-span fallback), so a slot can carry a span-level
+  // 'provider-cap' entry AND a later individual fill — or a second
+  // 'provider-cap' entry when the main loop also refuses it. The banner says
+  // "left open at a stated maximum", so only truly-open slots may count
+  // (review fix 2026-07-22).
+  const assignedSlotIds = new Set(plan.assignments.map(a => a.slot_id));
+  const cappedOpenSlotIds = new Set<string>();
+  for (const u of plan.unfilled) {
+    if (u.reason === 'provider-cap' && !assignedSlotIds.has(u.slot_id)) cappedOpenSlotIds.add(u.slot_id);
+  }
   return {
     rows,
-    cappedUnfilled: plan.unfilled.filter(u => u.reason === 'provider-cap').length,
+    cappedUnfilled: cappedOpenSlotIds.size,
   };
 }

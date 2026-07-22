@@ -311,6 +311,32 @@ describe('buildCallCaps / planWithinCallCaps / computeProviderCapSummary', () =>
     const ctx = buildCtx([callSlot('mon', '2026-01-05', 'C1')], [prov('p1')]);
     expect(computeProviderCapSummary(ctx, solve(ctx))).toBeNull();
   });
+
+  it('cappedUnfilled counts only DISTINCT truly-open slots (span fallback honesty)', () => {
+    // Everyone capped below the span: the spans pass reports BOTH slots with
+    // 'provider-cap', then the severed-span fallback lets the main loop fill
+    // them individually (one C1 each — within caps). The unfilled list keeps
+    // the span-level entries (pre-existing fallback semantics), but the banner
+    // claims "left open at a stated maximum" — so cappedUnfilled must count
+    // only slots that truly ended open, deduped: here 0 (review fix 2026-07-22).
+    const spanDoc: CallPatternDoc = {
+      ...CLASSIC_PATTERN,
+      blocks: [],
+      spans: [{ code: 'C1', anchorDayType: 'friday', offsets: [0, 1] }],
+    };
+    const ctx = buildCtx(
+      [callSlot('friC1', '2026-01-09', 'C1', 'friday'), callSlot('satC1', '2026-01-10', 'C1', 'saturday')],
+      [prov('p1'), prov('p2')],
+      { callPattern: spanDoc, providerLimits: { p1: { calls: { C1: 1 } }, p2: { calls: { C1: 1 } } } },
+    );
+    const plan = solve(ctx, { fillMode: 'all' });
+    // Both slots DID fill individually under caps...
+    expect(new Set(plan.assignments.map(a => a.slot_id))).toEqual(new Set(['friC1', 'satC1']));
+    // ...while the span-level provider-cap entries remain in unfilled.
+    expect(plan.unfilled.filter(u => u.reason === 'provider-cap').length).toBeGreaterThan(0);
+    // The summary must not call filled slots "left open".
+    expect(computeProviderCapSummary(ctx, plan)!.cappedUnfilled).toBe(0);
+  });
 });
 
 // ── working-days override (single-homed in workDays.ts) ──────────────────────
