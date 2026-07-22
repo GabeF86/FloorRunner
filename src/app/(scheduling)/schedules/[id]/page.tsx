@@ -7,6 +7,13 @@ import {
   fteWeightedTarget, roundedObligation, computeCallObligationCensus,
   type CallObligationCensus,
 } from '@/lib/fteTarget';
+// Day-math for the Call Counts modal (bucket day counts, Days Off, Working
+// Days) — pure helpers assembling the single-homed workDays/plannerMath
+// contracts; the modal only aggregates and renders.
+import { bucketDayCounts, daysOffFor, creditedWorkingDayTotals } from '@/lib/callCountDays';
+// rangeComposition = the planner card's single-homed block composition
+// (weekdays minus major holidays → the working-day set).
+import { rangeComposition } from '@/lib/plannerMath';
 import AssistantPanel from './AssistantPanel';
 import { PageHeader, Badge, Button, Banner, scheduleStatusTone } from '@/components/ui';
 import { reasonCodeLabel } from '@/lib/validation/providers';
@@ -86,6 +93,10 @@ interface ShiftTypeInfo {
   call_type: string | null;
   display_order: number | null;
   provider_group: string;
+  // Optional — powers the Call Counts modal's Working Days credit (post-call
+  // rest days credit as worked). Older cached payloads may omit it; the
+  // credit math treats absent as false.
+  requires_post_call_rule?: boolean | null;
 }
 
 interface ProviderInfo {
@@ -2560,6 +2571,31 @@ function CallCountsModal({ grid, onClose }: { grid: GridData; onClose: () => voi
     fteByPid[p.provider_id] = p.fte_value ?? 1;
   }
 
+  // Days-in-block per bucket header — DISTINCT stored slot dates per
+  // derived_day_type, the same exact-match keys the bucket columns aggregate
+  // on, so a day type with no bucket column (holiday) gets no count either.
+  const bucketDays = bucketDayCounts(grid.slots);
+
+  // Block working-day composition (weekdays minus major holidays) — the same
+  // single-homed rangeComposition the planner card uses, fed by the grid's
+  // holiday rows. Powers Days Off (denominator) and Working Days (credit set).
+  const composition = rangeComposition(scheduleStart, scheduleEnd, grid.holidays || []);
+
+  // Working Days = credited M–F working days actually scheduled on THIS
+  // draft: weekday assignments + post-call rest days credited as worked +
+  // ICU weeks (disjoint), via the shared credit logic (plannerMath through
+  // lib/callCountDays) — the generation banner's workDayReport semantics.
+  const creditedByPid = creditedWorkingDayTotals(
+    grid.slots, grid.availability || [], composition.workingDaySet, grid.holidays || []);
+  const workingDaysForPid = (pid: string) => creditedByPid[pid] || 0;
+
+  // Days Off = block working days − PTO weekdays − required, where required
+  // routes through the single-homed workDays contract (round(FTE × WD) − PTO).
+  // PTO weekdays here are the SAME tally the PTO Days column shows
+  // (ptoDaysForPid) so the two columns can never disagree. Full FTE → 0 → "—".
+  const daysOffForPid = (pid: string) =>
+    daysOffFor(census.fteFor(pid), composition.workingDays, ptoDaysForPid(pid));
+
   // Expected = FTE-weighted base target per (provider, bucket, code) —
   // (block_total_in_bucket / effective par) × fte_value, using the census's
   // clamped denominator (the engine's computeBucketTargets uses the same
@@ -2659,7 +2695,7 @@ function CallCountsModal({ grid, onClose }: { grid: GridData; onClose: () => voi
           <div>
             <div style={{ fontSize: 16, fontWeight: 800, color: 'var(--text)' }}>Call Counts</div>
             <div style={{ fontSize: 12, color: 'var(--text-dim)', marginTop: 2 }}>
-              {grid.schedule.schedule_name} — per provider, per day bucket, per call tier. PTO days (M–F only) shown separately.
+              {grid.schedule.schedule_name} — per provider, per day bucket, per call tier. PTO days (M–F only), FTE days off, and credited working days shown separately.
             </div>
           </div>
           <div className="no-print" style={{ display: 'flex', gap: 6 }}>
@@ -2679,11 +2715,16 @@ function CallCountsModal({ grid, onClose }: { grid: GridData; onClose: () => voi
             <tr style={{ background: 'var(--bg)', color: 'var(--text-muted)' }}>
               <th rowSpan={2} style={{ padding: '6px 10px', textAlign: 'left', borderBottom: '1px solid var(--border)', fontWeight: 700 }}>Provider</th>
               {BUCKETS.map(b => (
-                <th key={b.key} colSpan={3} style={{
+                <th key={b.key} colSpan={3} title={`${bucketDays[b.key]} ${b.label} day${bucketDays[b.key] === 1 ? '' : 's'} in this block — distinct slot dates by stored day type. Holiday-dated days are excluded (they have no bucket column).`} style={{
                   padding: '6px 10px', textAlign: 'center', fontWeight: 700,
                   borderBottom: '1px solid var(--border)', borderLeft: '1px solid var(--border)',
-                  color: 'var(--text-muted)',
-                }}>{b.label}</th>
+                  color: 'var(--text-muted)', cursor: 'help',
+                }}>
+                  {b.label}
+                  <span style={{ fontSize: 10, fontWeight: 500, opacity: 0.7, marginLeft: 4 }}>
+                    {bucketDays[b.key]}d
+                  </span>
+                </th>
               ))}
               <th colSpan={3} style={{
                 padding: '6px 10px', textAlign: 'center',
@@ -2707,6 +2748,20 @@ function CallCountsModal({ grid, onClose }: { grid: GridData; onClose: () => voi
                 borderBottom: '1px solid var(--border)', borderLeft: '1px solid var(--border)',
                 color: '#fbbf24',
               }}>PTO Days<br/><span style={{ fontSize: 10, fontWeight: 500, opacity: 0.7 }}>(M–F only)</span></th>
+              <th rowSpan={2} style={{
+                padding: '6px 10px', textAlign: 'center', fontWeight: 700,
+                borderBottom: '1px solid var(--border)', borderLeft: '1px solid var(--border)',
+                cursor: 'help',
+              }} title={`Entitled weekday days off this block from the FTE fraction: block working days (M–F minus major holidays, ${composition.workingDays} this block) − PTO days − required, where required = round(FTE × working days) − PTO days (the engine's working-days contract). PTO days = the PTO Days column's tally. Full-FTE providers compute to 0 (—).`}>
+                Days Off
+              </th>
+              <th rowSpan={2} style={{
+                padding: '6px 10px', textAlign: 'center', fontWeight: 700,
+                borderBottom: '1px solid var(--border)', borderLeft: '1px solid var(--border)',
+                cursor: 'help',
+              }} title="Credited M–F working days scheduled on this draft: distinct working days (weekdays minus major holidays) with any assignment, plus post-call rest days credited as worked, plus ICU rotation weekdays — the generation banner's working-days credit.">
+                Working Days
+              </th>
             </tr>
             <tr style={{ background: 'var(--bg)', color: 'var(--text-muted)' }}>
               {BUCKETS.map(b => CODES.map(c => (
@@ -2785,6 +2840,16 @@ function CallCountsModal({ grid, onClose }: { grid: GridData; onClose: () => voi
                   borderLeft: '1px solid var(--border)', fontWeight: 600,
                   color: ptoDaysForPid(p.id) > 0 ? '#fbbf24' : 'var(--text-dim)',
                 }}>{ptoDaysForPid(p.id) || '—'}</td>
+                <td style={{
+                  padding: '6px 10px', textAlign: 'center',
+                  borderLeft: '1px solid var(--border)', fontWeight: 600,
+                  color: daysOffForPid(p.id) > 0 ? 'var(--text)' : 'var(--text-dim)',
+                }}>{daysOffForPid(p.id) || '—'}</td>
+                <td style={{
+                  padding: '6px 10px', textAlign: 'center',
+                  borderLeft: '1px solid var(--border)', fontWeight: 600,
+                  color: workingDaysForPid(p.id) > 0 ? 'var(--text)' : 'var(--text-dim)',
+                }}>{workingDaysForPid(p.id) || '—'}</td>
               </tr>
             ))}
             {/* Totals row */}
@@ -2818,6 +2883,14 @@ function CallCountsModal({ grid, onClose }: { grid: GridData; onClose: () => voi
                 borderLeft: '1px solid var(--border)', borderTop: '2px solid var(--border)',
                 color: '#fbbf24',
               }}>{providers.reduce((s, p) => s + ptoDaysForPid(p.id), 0) || '—'}</td>
+              <td style={{
+                padding: '8px 10px', textAlign: 'center',
+                borderLeft: '1px solid var(--border)', borderTop: '2px solid var(--border)',
+              }}>{providers.reduce((s, p) => s + daysOffForPid(p.id), 0) || '—'}</td>
+              <td style={{
+                padding: '8px 10px', textAlign: 'center',
+                borderLeft: '1px solid var(--border)', borderTop: '2px solid var(--border)',
+              }}>{providers.reduce((s, p) => s + workingDaysForPid(p.id), 0) || '—'}</td>
             </tr>
             {/* Expected row — Σ of per-provider FTE-weighted targets (from slot counts,
                 at the effective par). A gap vs Total means unfilled slots in that column,
@@ -2850,6 +2923,8 @@ function CallCountsModal({ grid, onClose }: { grid: GridData; onClose: () => voi
               <td style={{ padding: '6px 10px', textAlign: 'center', borderLeft: '1px solid var(--border)' }}>
                 {providers.reduce((s, p) => s + rowExpected(p.id), 0).toFixed(1)}
               </td>
+              <td style={{ padding: '6px 10px', textAlign: 'center', borderLeft: '1px solid var(--border)' }}>—</td>
+              <td style={{ padding: '6px 10px', textAlign: 'center', borderLeft: '1px solid var(--border)' }}>—</td>
               <td style={{ padding: '6px 10px', textAlign: 'center', borderLeft: '1px solid var(--border)' }}>—</td>
             </tr>
           </tbody>
