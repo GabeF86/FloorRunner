@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { sbSchedulingServer } from '@/lib/supabaseScheduling';
-import { IntakeSubmissionSchema, windowNotesTag, callRequestsEnabled } from '@/lib/validation/requestIntake';
+import {
+  IntakeSubmissionSchema, windowNotesTag, callRequestsEnabled,
+  countNoCallRequestUnits, weekendGroupKey,
+} from '@/lib/validation/requestIntake';
 import { formatZodIssues } from '@/lib/validation/scheduling';
 import { isMissingColumnError } from '@/lib/rulesEngine/shared';
 
@@ -13,8 +16,10 @@ import { isMissingColumnError } from '@/lib/rulesEngine/shared';
 //   - the provider must be on the window site's active roster (home-site)
 //   - the per-provider caps (no-call always; call-shift when the admin
 //     enabled the category, max_call_requests ≥ 1) are enforced by counting
-//     existing window-sourced rows (notes = request_window:<id>) — one
-//     request = one requested DATE
+//     existing window-sourced rows (notes = request_window:<id>). CALL: one
+//     request = one requested DATE. NO-CALL: one request = one UNIT — a
+//     weekday date is 1, a weekend's Fri/Sat/Sun collectively 1
+//     (countNoCallRequestUnits; Gabriel 2026-07-22)
 //   - a date submitted as BOTH no-call and call in one POST is contradictory
 //     and rejected outright (cross-submission contradictions are the
 //     engine's: treated as neither, warned on generation)
@@ -128,9 +133,9 @@ export async function POST(
     }
   }
 
-  // Existing window-sourced rows of one request type — the caps count DATES
-  // already submitted to THIS window (notes = request_window:<id>), each
-  // request type independently.
+  // Existing window-sourced rows of one request type — the caps count what
+  // was already submitted to THIS window (notes = request_window:<id>), each
+  // request type independently (call per-date; no-call in weekend units).
   const existingWindowDates = async (type: 'no_call_request' | 'call_request') => {
     const { data, error } = await sb
       .from('provider_availability')
@@ -150,11 +155,21 @@ export async function POST(
       const existingDates = await existingWindowDates('no_call_request');
       newNoCall = requestedNoCall.filter(d => !existingDates.has(d));
       const max = window.max_no_call_requests ?? 3;
-      if (existingDates.size + newNoCall.length > max) {
+      // The no-call cap counts REQUESTS (units), not dates (Gabriel
+      // 2026-07-22): a weekday date = 1; Fri/Sat/Sun of the SAME weekend = 1
+      // total (countNoCallRequestUnits, single-homed in requestIntake.ts).
+      // Counted over the UNION of existing window rows and the new dates so
+      // resubmitting a weekend — or completing one already partially
+      // submitted — never double-counts. CALL requests stay per-date (3b).
+      const allDates = [...existingDates, ...requestedNoCall];
+      if (countNoCallRequestUnits(allDates) > max) {
+        const usedUnits = countNoCallRequestUnits(existingDates);
+        const weekendInvolved = allDates.some(d => weekendGroupKey(d) !== null);
         return NextResponse.json(
           {
-            error: `No-call limit is ${max} date${max === 1 ? '' : 's'} per provider for this window` +
-              (existingDates.size > 0 ? ` (${existingDates.size} already submitted).` : '.'),
+            error: `No-call limit is ${max} request${max === 1 ? '' : 's'} per provider for this window` +
+              (weekendInvolved ? ' — a full weekend (Fri, Sat, Sun) counts as one request' : '') +
+              (usedUnits > 0 ? ` — ${usedUnits} already used.` : '.'),
           },
           { status: 400 },
         );

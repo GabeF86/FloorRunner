@@ -8,7 +8,7 @@
 //                      category for this window); the engine soft-PREFERS them
 // Client-side checks mirror the server's (which is authoritative).
 import { useState } from 'react';
-import { callRequestsEnabled } from '@/lib/validation/requestIntake';
+import { callRequestsEnabled, countNoCallRequestUnits, weekendGroupDates } from '@/lib/validation/requestIntake';
 
 interface RosterProvider {
   id: string;
@@ -44,6 +44,18 @@ export default function IntakeForm({ token, siteName, blockStart, blockEnd, maxN
 
   const hasEntries = pto.length > 0 || daysOff.length > 0 || noCallDates.length > 0 || callDates.length > 0;
   const canSubmit = !!providerId && hasEntries && !busy;
+
+  // No-call REQUESTS are counted in units (Gabriel 2026-07-22): a weekday
+  // date = 1; a full weekend — Fri, Sat, Sun — counts as ONE request. Blank
+  // (not-yet-picked) rows count as 1 each until filled. The server enforces
+  // the same math (plus previously submitted dates) authoritatively.
+  const filledNoCall = noCallDates.filter(d => d);
+  const noCallUnits = countNoCallRequestUnits(filledNoCall) + (noCallDates.length - filledNoCall.length);
+  // At the cap, still allow ADDING dates that complete an already-picked
+  // weekend (they cost 0 extra requests).
+  const weekendCompletable = filledNoCall.some(d =>
+    weekendGroupDates(d).some(s => s >= blockStart && s <= blockEnd && !filledNoCall.includes(s)));
+  const canAddNoCall = noCallUnits < maxNoCall || weekendCompletable;
 
   const submit = async () => {
     if (!canSubmit) return;
@@ -101,7 +113,7 @@ export default function IntakeForm({ token, siteName, blockStart, blockEnd, maxN
       </h1>
       <p style={{ fontSize: 13, color: 'var(--text-muted)', marginBottom: 18, lineHeight: 1.6 }}>
         For the block <b>{fmt(blockStart)} – {fmt(blockEnd)}</b>. PTO and days-off
-        requests go to the scheduler for approval; no-call dates (up to {maxNoCall})
+        requests go to the scheduler for approval; no-call requests (up to {maxNoCall})
         {callsEnabled ? ` and call-shift requests (up to ${maxCall})` : ''} are
         handled by the scheduling engine itself.
       </p>
@@ -139,8 +151,9 @@ export default function IntakeForm({ token, siteName, blockStart, blockEnd, maxN
       <div style={{ marginBottom: 22 }}>
         <div style={sectionHeadStyle}>No-Call Requests</div>
         <div style={hintStyle}>
-          Days you&apos;d prefer not to take call (you may still work). Up to {maxNoCall} dates,
-          inside the block. The schedule generator avoids these when it can.
+          Days you&apos;d prefer not to take call (you may still work). Up to {maxNoCall} request{maxNoCall === 1 ? '' : 's'} inside
+          the block — a full weekend — Fri, Sat, Sun — counts as one request.
+          The schedule generator avoids these when it can.
         </div>
         {noCallDates.map((d, i) => (
           <div key={i} style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 8 }}>
@@ -155,9 +168,14 @@ export default function IntakeForm({ token, siteName, blockStart, blockEnd, maxN
             <RemoveButton onClick={() => setNoCallDates(prev => prev.filter((_, j) => j !== i))} />
           </div>
         ))}
-        {noCallDates.length < maxNoCall && (
-          <AddButton label={`+ Add no-call date (${noCallDates.length}/${maxNoCall})`}
+        {canAddNoCall && (
+          <AddButton label={`+ Add no-call date (${noCallUnits}/${maxNoCall} request${maxNoCall === 1 ? '' : 's'})`}
             onClick={() => setNoCallDates(prev => [...prev, ''])} />
+        )}
+        {!canAddNoCall && noCallDates.length > 0 && (
+          <div style={{ ...hintStyle, marginTop: 2 }}>
+            {noCallUnits}/{maxNoCall} request{maxNoCall === 1 ? '' : 's'} used — remove a date to change your picks.
+          </div>
         )}
       </div>
 

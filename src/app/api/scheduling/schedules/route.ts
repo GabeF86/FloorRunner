@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { sbSchedulingServer } from '@/lib/supabaseScheduling';
 import { derivedDayTypeFor, slateForDayType, templateSlotCount } from '@/lib/templateSlots';
+import { defaultScheduleName, parseScheduleName } from '@/lib/scheduleName';
 
 // Never prerender — this route hits Supabase per request.
 export const dynamic = 'force-dynamic';
@@ -38,6 +39,14 @@ export async function POST(req: NextRequest) {
   const sb = sbSchedulingServer();
   const body = await req.json();
 
+  // Optional custom name (Gabriel 2026-07-22): overrides the generated
+  // default when non-empty; blank/absent keeps the historical generated
+  // name. Route-hardened (trimmed, ≤ 120 chars) BEFORE any write.
+  const customName = parseScheduleName(body.schedule_name, { blankIsDefault: true });
+  if (!customName.ok) {
+    return NextResponse.json({ error: customName.error }, { status: 400 });
+  }
+
   // 1. Fetch site name for schedule_name generation
   const { data: site, error: siteErr } = await sb
     .from('sites')
@@ -46,9 +55,7 @@ export async function POST(req: NextRequest) {
     .single();
   if (siteErr) return NextResponse.json({ error: siteErr.message }, { status: 500 });
 
-  const startDate = new Date(body.date_start + 'T12:00:00');
-  const monthYear = startDate.toLocaleString('en-US', { month: 'long', year: 'numeric' });
-  const scheduleName = `${site.name} - Schedule - ${monthYear}`;
+  const scheduleName = customName.value ?? defaultScheduleName(site.name, body.date_start);
 
   // 2. Insert schedule
   const { data: schedule, error: schedErr } = await sb

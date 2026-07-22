@@ -1,7 +1,10 @@
 import type { ReactNode } from 'react';
 
 export interface PageHeaderProps {
-  title: string;
+  // ReactNode so a page can decorate the title (e.g. the schedule detail
+  // header's inline-rename pencil, 2026-07-22); plain strings render exactly
+  // as before.
+  title: ReactNode;
   subtitle?: ReactNode;
   actions?: ReactNode;
   /**

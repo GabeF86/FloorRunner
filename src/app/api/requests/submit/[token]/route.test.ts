@@ -322,3 +322,113 @@ describe('POST /api/requests/submit/[token] — call-shift requests', () => {
     expect(allRows.map(r => r.availability_type).sort()).toEqual(['call_request', 'no_call_request']);
   });
 });
+
+// ── Weekend no-call unit counting (Gabriel 2026-07-22) ──────────────────────
+// "A no weekend call (no Friday, no Saturday and no Sunday call) is considered
+// one request not three." The no-call cap is enforced in UNITS
+// (countNoCallRequestUnits): weekday = 1 each, Fri/Sat/Sun of one weekend = 1
+// total. Counted over the UNION of existing window rows and the new dates so
+// resubmits / weekend completion never double-count. CALL requests stay
+// per-date. Inside the test block: 9/11 Fri · 9/12 Sat · 9/13 Sun ·
+// 9/18–20 the next weekend · 9/10 + 10/01 + 10/08 Thursdays.
+describe('POST /api/requests/submit/[token] — weekend no-call units', () => {
+  it('a full Fri+Sat+Sun weekend plus 2 weekdays fits a cap of 3 (3 units, 5 rows)', async () => {
+    const { calls } = setup(); // max_no_call_requests: 3
+    const res = await POST(fakeReq({
+      provider_id: 'prov-1',
+      no_call_dates: ['2026-09-11', '2026-09-12', '2026-09-13', '2026-09-10', '2026-10-01'],
+    }), params);
+    expect(res.status).toBe(200);
+    const inserts = callsFor(calls, 'provider_availability', 'insert');
+    expect(inserts).toHaveLength(1);
+    const rows = inserts[0].args[0] as Array<Record<string, unknown>>;
+    expect(rows.map(r => r.start_date).sort()).toEqual(
+      ['2026-09-10', '2026-09-11', '2026-09-12', '2026-09-13', '2026-10-01'],
+    );
+  });
+
+  it('two different weekends + 2 weekdays exceed a cap of 3 (4 units) → 400 speaking in requests + weekend rule', async () => {
+    const { calls } = setup();
+    const res = await POST(fakeReq({
+      provider_id: 'prov-1',
+      no_call_dates: ['2026-09-11', '2026-09-12', '2026-09-20', '2026-09-10', '2026-10-01'],
+    }), params);
+    expect(res.status).toBe(400);
+    const msg = (await res.json()).error as string;
+    expect(msg).toMatch(/3 requests/);
+    expect(msg).toMatch(/full weekend/i); // explains Fri+Sat+Sun = one request
+    expect(writeCount(calls)).toBe(0);
+  });
+
+  it('a weekday-only overflow keeps a plain per-request message (no weekend clause)', async () => {
+    const { calls } = setup({ window: { ...WINDOW, max_no_call_requests: 1 } });
+    const res = await POST(fakeReq({
+      provider_id: 'prov-1',
+      no_call_dates: ['2026-09-10', '2026-10-01'],
+    }), params);
+    expect(res.status).toBe(400);
+    const msg = (await res.json()).error as string;
+    expect(msg).toMatch(/1 request/);
+    expect(msg).not.toMatch(/weekend/i);
+    expect(writeCount(calls)).toBe(0);
+  });
+
+  it('completing an already-submitted weekend at the cap adds 0 units → accepted', async () => {
+    // Cap 1, Saturday already recorded: adding the Fri + Sun of the SAME
+    // weekend is still the same single request.
+    const { calls } = setup({
+      window: { ...WINDOW, max_no_call_requests: 1 },
+      existingNoCallDates: ['2026-09-12'],
+    });
+    const res = await POST(fakeReq({
+      provider_id: 'prov-1',
+      no_call_dates: ['2026-09-11', '2026-09-13'],
+    }), params);
+    expect(res.status).toBe(200);
+    const inserts = callsFor(calls, 'provider_availability', 'insert');
+    expect(inserts).toHaveLength(1);
+    const rows = inserts[0].args[0] as Array<Record<string, unknown>>;
+    expect(rows.map(r => r.start_date)).toEqual(['2026-09-11', '2026-09-13']);
+  });
+
+  it('resubmitting the same weekend does not double-count (union semantics)', async () => {
+    const { calls } = setup({
+      window: { ...WINDOW, max_no_call_requests: 2 },
+      existingNoCallDates: ['2026-09-11', '2026-09-12', '2026-09-13'], // 1 unit used
+    });
+    const res = await POST(fakeReq({
+      provider_id: 'prov-1',
+      no_call_dates: ['2026-09-12', '2026-09-13', '2026-10-01'], // same weekend + 1 weekday = 2 units total
+    }), params);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.skipped_no_call).toBe(2); // the two resubmitted dates
+    const inserts = callsFor(calls, 'provider_availability', 'insert');
+    expect(inserts).toHaveLength(1);
+    const rows = inserts[0].args[0] as Array<Record<string, unknown>>;
+    expect(rows.map(r => r.start_date)).toEqual(['2026-10-01']);
+  });
+
+  it('a second, different weekend against remaining budget is rejected', async () => {
+    const { calls } = setup({
+      window: { ...WINDOW, max_no_call_requests: 1 },
+      existingNoCallDates: ['2026-09-12'], // 1 unit used of 1
+    });
+    const res = await POST(fakeReq({ provider_id: 'prov-1', no_call_dates: ['2026-09-19'] }), params);
+    expect(res.status).toBe(400);
+    const msg = (await res.json()).error as string;
+    expect(msg).toMatch(/1 request/);
+    expect(msg).toMatch(/1 already used/);
+    expect(writeCount(calls)).toBe(0);
+  });
+
+  it('CALL requests stay per-date: a full weekend of call dates is 3 requests, not 1', async () => {
+    const { calls } = setup({ window: { ...WINDOW, max_call_requests: 2 } });
+    const res = await POST(fakeReq({
+      provider_id: 'prov-1',
+      call_dates: ['2026-09-11', '2026-09-12', '2026-09-13'],
+    }), params);
+    expect(res.status).toBe(400); // 3 dates > cap 2 — no weekend collapsing here
+    expect(writeCount(calls)).toBe(0);
+  });
+});

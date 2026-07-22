@@ -164,7 +164,8 @@ export default function RequestWindowCard({ sites, initialSiteId }: {
         One shared link per site where providers submit PTO, days off, no-call dates,
         and (when enabled) call-shift requests for the next block. PTO / days-off land
         in the Requests queue; no-call and call dates go straight to the engine.
-        Each requested DATE counts as one request — a 3-day span counts as 3.
+        Call requests count per DATE (3 dates = 3 requests). No-call requests count
+        per date too, EXCEPT a full weekend — Fri, Sat, Sun — counts as ONE request.
       </div>
 
       {error && (
@@ -182,7 +183,7 @@ export default function RequestWindowCard({ sites, initialSiteId }: {
           <div style={{ fontSize: 13, color: 'var(--text)', marginBottom: 8 }}>
             Block <b>{fmt(open.block_start)} – {fmt(open.block_end)}</b>
             <span style={{ color: 'var(--text-dim)', fontSize: 12 }}>
-              {' '}· max {open.max_no_call_requests} no-call date{open.max_no_call_requests === 1 ? '' : 's'} per provider
+              {' '}· max {open.max_no_call_requests} no-call request{open.max_no_call_requests === 1 ? '' : 's'} per provider (a weekend = 1)
               {open.max_call_requests != null && open.max_call_requests >= 1
                 ? ` · max ${open.max_call_requests} call request${open.max_call_requests === 1 ? '' : 's'} per provider`
                 : ' · call requests off'}
