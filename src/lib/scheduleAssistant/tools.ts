@@ -705,8 +705,11 @@ interface CallPoolProvider {
 // Call-pool membership for read-only reports. KEEP IN SYNC with
 // loadGenerationContext §3 (genContext.ts): default pool = ACTIVE home-site
 // providers flagged call_taker or partial_call_taker; a schedule override pool
-// is exactly those UUIDs (that have an employment profile and are active —
-// genContext gates the providers query on status='active'). The status gate
+// NARROWS that (Gabriel 2026-07-21, mirrors genContext §3) — it skips only the
+// home-site gate, never the call_taker/partial_call_taker role criterion, so a
+// day doc in a custom pool is not a pool member here either (their FTE must
+// not deflate expected shares, and the prompt's "propose named fixes" flow
+// must never be steered toward a never-call-eligible provider). The status gate
 // runs in JS rather than the query so INACTIVE rows are still returned: a
 // departed provider holding historical assignments must be nameable in
 // reports, but must never enter the pool (their FTE would deflate everyone's
@@ -735,9 +738,9 @@ async function loadCallPool(
       { home_site_id?: string; call_taker?: boolean; partial_call_taker?: boolean } | undefined;
     // fte defaults to 1 for profiled providers (genContext parity: `|| 1`).
     const fte = profile ? (parseEmbeddedFte(row.provider_employment_profiles) || 1) : null;
-    const inPool = row.status === 'active' && !!profile && (override
-      ? true
-      : profile.home_site_id === ctx.siteId && (profile.call_taker === true || profile.partial_call_taker === true));
+    const inPool = row.status === 'active' && !!profile &&
+      (profile.call_taker === true || profile.partial_call_taker === true) &&
+      (override ? true : profile.home_site_id === ctx.siteId);
     const p: CallPoolProvider = {
       id: row.id as string,
       name: (row.short_display_name as string) || (row.last_name as string) || (row.id as string),

@@ -275,6 +275,37 @@ describe('get_fairness_report', () => {
     expect(ins.some(c => c.args[0] === 'id' && Array.isArray(c.args[1]) && (c.args[1] as string[]).includes('p1'))).toBe(true);
   });
 
+  // Override = NARROWING (Gabriel 2026-07-21) — the KEEP IN SYNC contract with
+  // loadGenerationContext §3: a non-call-taker in the custom pool must not
+  // count toward pool_fte / expected shares (a day doc never becomes
+  // call-eligible, so the report must not deflate everyone's expected share
+  // with their FTE or name them a pool member).
+  it('override pool intersects the call-taker criterion — a day doc in the custom pool stays out (Gabriel 2026-07-21)', async () => {
+    const providers = [
+      FAIRNESS_PROVIDERS[0], // p1: call taker, fte 1
+      { id: 'p9', last_name: 'DayDoc', short_display_name: 'DayDoc', provider_type: 'physician', status: 'active',
+        provider_employment_profiles: { fte_value: 1, home_site_id: 'site-1', call_taker: false, partial_call_taker: false } },
+    ];
+    const slots = [
+      { id: 's1', slot_date: '2026-01-05', derived_day_type: 'weekday',
+        shift_types: { code: 'C1', category: 'call' },
+        assignments: [{ provider_id: 'p1', assignment_status: 'assigned' }] },
+    ];
+    const { executors, sb } = run({
+      providers: canned(providers),
+      schedule_slots: canned(slots),
+    });
+    const out = await executors.get_fairness_report(
+      sb, { ...ctx, overrideProviderIds: ['p1', 'p9'] }, {});
+    const r = out.result as FairnessResult;
+    expect(r.pool_size).toBe(1);
+    expect(r.pool_fte).toBeCloseTo(1, 10);
+    const p1 = row(r, 'p1')!;
+    expect(p1.in_pool).toBe(true);
+    expect(p1.expected).toBeCloseTo(1, 10); // 1 call × 1 / 1 pool FTE — undiluted
+    expect(row(r, 'p9')).toBeUndefined();   // no calls held + out of pool → absent
+  });
+
   // Review IMPORTANT 1: genContext §3 gates the real pool on status='active'
   // (providers query, genContext.ts). Without the same gate a departed
   // provider with a lingering call_taker profile inflates pool_fte, deflates

@@ -1211,9 +1211,11 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
         >Assistant ✨</Button>
 
         {/* Pool selector + Auto-Generate.
-            A custom pool replaces the default rule-based pool entirely. When
-            none is set, we show "Default Pool" as a cue that auto-gen will
-            use the home-site call-takers. */}
+            A custom pool NARROWS the default rule-based pool (Gabriel
+            2026-07-21: it intersects each engine's role criterion — call
+            takers for call gen, Day Docs/sell-back for day gen — skipping
+            only the home-site gate). When none is set, we show "Select Pool"
+            as a cue that auto-gen will use the home-site call-takers. */}
         {schedule.status === 'draft' && (
           <>
             <Button
@@ -2110,8 +2112,11 @@ function renderVirtualRows({
  * Lets the user hand-pick which providers are eligible for auto-generation
  * on this schedule. Saved on the schedule row as `included_provider_ids`.
  * Null / empty array = use the default rule-based pool (home-site call-
- * takers for call, non-call-takers for day shifts). A non-empty array
- * replaces both default pools with the explicit list.
+ * takers for call, home-site Day Docs for day shifts). A non-empty array
+ * NARROWS both pools (Gabriel 2026-07-21): each engine intersects the list
+ * with its role criterion (call_taker/partial for call gen; is_day_doc or a
+ * live PTO sell-back covering the date for day gen) — only the home-site
+ * gate is skipped. It never widens eligibility.
  * ───────────────────────────────────────────────────────────────────────── */
 function PoolSelectorModal({
   scheduleId,
