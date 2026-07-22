@@ -146,7 +146,7 @@ export function optimize(ctx: GenerationContext, opts: OptimizeOptions = {}): Op
   // cap-clean. null caps ⇒ the check is inert (blank-fallback pin).
   const callCaps = buildCallCaps(ctx.providerLimits);
   const withinCallCaps = (trial: SolutionPlan): boolean =>
-    !callCaps || planWithinCallCaps(callCaps, trial, ctx.seedAssignments);
+    !callCaps || planWithinCallCaps(callCaps, trial, ctx.seedAssignments, ctx.shiftTypes);
 
   // ── Eligibility pre-gate (built once — its inputs never change) ──
   // The gate state holds ONLY the seeded assignments (+ ctx-derived facts like

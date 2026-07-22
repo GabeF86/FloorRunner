@@ -264,3 +264,68 @@ describe('batchValidateVersion — provider limits soft flags', () => {
     }
   });
 });
+
+// ── call splits (2026-07-22): WEIGHTED, PARENT-MAPPED call caps ─────────────
+// A segment assignment counts against the PARENT code's stated cap at its
+// fractional call_burden_weight (a C1N12 = 0.5 of C1). Whole calls keep
+// weight 1 / their own code — pre-split behavior byte for byte.
+
+describe('providerLimits evaluator — weighted parent-mapped segments', () => {
+  const segSt = (code: string, weight: number, parent: string): ShiftTypeRow => ({
+    ...st(code), call_burden_weight: weight, parent_call_code: parent,
+  });
+  const SEG_TYPES = [...SHIFT_TYPES, segSt('C1N12', 0.5, 'C1'), segSt('C1D12', 0.5, 'C1')];
+  const segCtx = (over: Partial<EvaluationContext> = {}): EvaluationContext => ctx({
+    shiftTypesByCode: new Map(SEG_TYPES.map(s => [s.code, s])),
+    shiftTypesById: new Map(SEG_TYPES.map(s => [s.id, s])),
+    ...over,
+  });
+  const segNeighbor = (date: string, code: string) => ({
+    assignment_id: `n-${date}-${code}`, slot_date: date, shift_type_code: code,
+    shift_type_category: 'call', day_type: 'weekday' as const,
+  });
+
+  it('a 0.5 segment on top of two whole C1s exceeds cap 2 (2.5 > 2) and the message shows the fractional count', () => {
+    const c = segCtx({
+      shiftType: SEG_TYPES.find(s => s.code === 'C1N12')!,
+      slot: slot({ shift_type_id: 'st-C1N12' }),
+      providerLimitsCtx: plcCtx({ limits: { p1: { calls: { C1: 2 } } } }),
+      neighborAssignments: [segNeighbor('2026-01-05', 'C1'), segNeighbor('2026-01-06', 'C1')],
+    });
+    const flags = limitFlags(c);
+    expect(flags).toHaveLength(1);
+    expect(flags[0].severity).toBe('soft');
+    expect(flags[0].message).toMatch(/2\.5 C1/);
+  });
+
+  it('a 0.5 segment plus one whole C1 stays within cap 2 (1.5) — clean', () => {
+    const c = segCtx({
+      shiftType: SEG_TYPES.find(s => s.code === 'C1N12')!,
+      slot: slot({ shift_type_id: 'st-C1N12' }),
+      providerLimitsCtx: plcCtx({ limits: { p1: { calls: { C1: 2 } } } }),
+      neighborAssignments: [segNeighbor('2026-01-05', 'C1')],
+    });
+    expect(limitFlags(c)).toHaveLength(0);
+  });
+
+  it('segment NEIGHBORS fold under the parent cap too: whole C1 evaluated + three 0.5 segments = 2.5 > 2', () => {
+    const c = segCtx({
+      providerLimitsCtx: plcCtx({ limits: { p1: { calls: { C1: 2 } } } }),
+      neighborAssignments: [
+        segNeighbor('2026-01-05', 'C1N12'), segNeighbor('2026-01-06', 'C1D12'),
+        segNeighbor('2026-01-08', 'C1N12'),
+      ],
+    });
+    const flags = limitFlags(c);
+    expect(flags).toHaveLength(1);
+    expect(flags[0].message).toMatch(/2\.5 C1/);
+  });
+
+  it('two half segments exactly AT the cap with a whole call (2.0 vs cap 2) are clean', () => {
+    const c = segCtx({
+      providerLimitsCtx: plcCtx({ limits: { p1: { calls: { C1: 2 } } } }),
+      neighborAssignments: [segNeighbor('2026-01-05', 'C1N12'), segNeighbor('2026-01-06', 'C1D12')],
+    });
+    expect(limitFlags(c)).toHaveLength(0);
+  });
+});

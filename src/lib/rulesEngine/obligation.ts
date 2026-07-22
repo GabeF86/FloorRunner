@@ -19,21 +19,27 @@
 // single-homed in src/lib/fteTarget.ts, shared with the schedule grid and the
 // Call Counts modal so engine and UI can't drift.
 import { fteWeightedTarget, roundedObligation } from '@/lib/fteTarget';
+import { callBurdenWeight } from '@/lib/callBurden';
 import { effectiveParLevel } from './genContext';
 import type { GenerationContext } from './genTypes';
 
 // pid -> fractional total expected calls for THIS block (no deficit — pure
 // base share). Total call slots = open call slots (slotsToFill required
-// counts) + already-assigned call seeds — the same census production
-// genContext folds into bucketTotals, but derived from category-tagged
-// sources so bare fixtures (whose buildCtx bucketTotals include regular
-// slots) count call slots only.
+// counts) + open manual-only segment slots (ctx.manualCallSlots) + already-
+// assigned call seeds — the same census production genContext folds into
+// bucketTotals, but derived from category-tagged sources so bare fixtures
+// (whose buildCtx bucketTotals include regular slots) count call slots only.
+// WEIGHTED (2026-07-22, call splits): every slot/seed counts its shift type's
+// call_burden_weight (1 when absent — unsplit inputs unchanged), so a split
+// call totals exactly ONE call of obligation.
 export function totalExpectedCalls(ctx: GenerationContext): Map<string, number> {
   const par = effectiveParLevel(ctx.parLevel, ctx.providers);
+  const weightOf = (code: string) => callBurdenWeight(ctx.shiftTypes?.get(code));
   let totalCallSlots = 0;
-  for (const s of ctx.slotsToFill) totalCallSlots += s.required_count;
+  for (const s of ctx.slotsToFill) totalCallSlots += s.required_count * weightOf(s.shift_type_code);
+  for (const s of ctx.manualCallSlots ?? []) totalCallSlots += s.required_count * weightOf(s.shift_type_code);
   for (const seed of ctx.seedAssignments) {
-    if (seed.shift_type_category === 'call') totalCallSlots++;
+    if (seed.shift_type_category === 'call') totalCallSlots += weightOf(seed.shift_type_code);
   }
   const out = new Map<string, number>();
   for (const p of ctx.providers) {

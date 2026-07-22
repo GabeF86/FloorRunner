@@ -288,6 +288,85 @@ describe('computeCallObligationCensus — ONE obligation input set for grid and 
     expect(sum).toBeCloseTo(census.totalCallSlots, 9);
   });
 
+  it('WEIGHTED census (call splits, 2026-07-22): totalCallSlots and actualCallsFor are weight sums; segments group under the parent code', () => {
+    // A split Sat C1: day 0.5 + night 0.5 held by two different docs. The
+    // schedule still contains exactly ONE call's worth of C1 that day.
+    const segSlot = (date: string, code: string, weight: number, a: Array<{ id: string; provider_id: string | null }>): CensusSlot => ({
+      slot_date: date,
+      shift_types: { category: 'call', code, call_burden_weight: weight, parent_call_code: 'C1' },
+      assignments: a,
+    });
+    const census = computeCallObligationCensus({
+      storedParLevel: 11, siteId: 'site1', includedProviderIds: null,
+      profiles: [profile('p1'), profile('p2')],
+      slots: [
+        slot('2026-01-05', 'C1', [asg('a1', 'p1')]),                 // whole call, weight 1
+        segSlot('2026-01-10', 'C1D12', 0.5, [asg('s1', 'p1')]),      // day half
+        segSlot('2026-01-10', 'C1N12', 0.5, [asg('s2', 'p2')]),      // night half
+        segSlot('2026-01-11', 'C1D12', 0.5, [asg('s3', null)]),      // open half still counts its weight
+      ],
+    });
+    expect(census.totalCallSlots).toBeCloseTo(2.5, 9); // 1 + 0.5 + 0.5 + 0.5
+    expect(census.actualCallsFor('p1')).toBeCloseTo(1.5, 9);
+    expect(census.actualCallsFor('p2')).toBeCloseTo(0.5, 9);
+    // callRecords carry weight + parent for downstream (modal) aggregation.
+    const s1 = census.callRecords.find(r => r.id === 's1')!;
+    expect(s1.weight).toBe(0.5);
+    expect(s1.parent_code).toBe('C1');
+    const a1 = census.callRecords.find(r => r.id === 'a1')!;
+    expect(a1.weight).toBe(1);
+    expect(a1.parent_code).toBe('C1');
+  });
+
+  it('WEIGHTED over-par selection: whole assignments from the chronological end whose cumulative weight exceeds the rounded obligation', () => {
+    // Obligation 1 (2 weighted slots ÷ pool 2 × 1.0 = 1). p1 holds a whole
+    // call + a later 0.5 night segment → total 1.5 > 1 → exactly the LAST
+    // assignment (the segment) is OVER; the whole call within obligation is not.
+    const census = computeCallObligationCensus({
+      storedParLevel: 11, siteId: 'site1', includedProviderIds: null,
+      profiles: [profile('p1'), profile('p2')],
+      slots: [
+        slot('2026-01-05', 'C1', [asg('a1', 'p1')]),
+        { slot_date: '2026-01-12', shift_types: { category: 'call', code: 'C1N12', call_burden_weight: 0.5, parent_call_code: 'C1' }, assignments: [asg('s1', 'p1')] },
+        { slot_date: '2026-01-12', shift_types: { category: 'call', code: 'C1D12', call_burden_weight: 0.5, parent_call_code: 'C1' }, assignments: [asg('s2', 'p2')] },
+      ],
+    });
+    expect(roundedObligation(census.totalExpectedFor('p1'))).toBe(1);
+    expect(census.overParAssignmentIds).toEqual(new Set(['s1']));
+  });
+
+  it('WEIGHTED over-par: two 0.5 segments summing to exactly one call are NOT over a 1-call obligation', () => {
+    const census = computeCallObligationCensus({
+      storedParLevel: 11, siteId: 'site1', includedProviderIds: null,
+      profiles: [profile('p1'), profile('p2')],
+      slots: [
+        { slot_date: '2026-01-05', shift_types: { category: 'call', code: 'C1D12', call_burden_weight: 0.5, parent_call_code: 'C1' }, assignments: [asg('s1', 'p1')] },
+        { slot_date: '2026-01-06', shift_types: { category: 'call', code: 'C1N12', call_burden_weight: 0.5, parent_call_code: 'C1' }, assignments: [asg('s2', 'p1')] },
+        slot('2026-01-07', 'C1', [asg('b1', 'p2')]),
+      ],
+    });
+    // 2 weighted slots ÷ pool 2 × 1.0 = 1 → obligation 1; p1 holds exactly 1.0.
+    expect(census.overParAssignmentIds).toEqual(new Set());
+  });
+
+  it('WEIGHTED over-par: three 0.3333 thirds (0.9999 stored sum) are NOT over a 1-call obligation', () => {
+    const third = (id: string, date: string, code: string) => ({
+      slot_date: date,
+      shift_types: { category: 'call', code, call_burden_weight: 0.3333, parent_call_code: 'C1' },
+      assignments: [asg(id, 'p1')],
+    });
+    const census = computeCallObligationCensus({
+      storedParLevel: 11, siteId: 'site1', includedProviderIds: null,
+      profiles: [profile('p1'), profile('p2')],
+      slots: [
+        third('t1', '2026-01-05', 'C1D8'), third('t2', '2026-01-06', 'C1E8'), third('t3', '2026-01-07', 'C1N8'),
+        slot('2026-01-08', 'C1', [asg('b1', 'p2')]),
+      ],
+    });
+    // ~2 weighted slots ÷ pool 2 × 1.0 ≈ 1 → obligation 1; p1 holds 0.9999.
+    expect(census.overParAssignmentIds).toEqual(new Set());
+  });
+
   it('a non-pool provider holding calls has obligation 0 — every one of their calls is over-par', () => {
     // Out-of-pool call coverage is beyond obligation by definition: the OVER
     // treatment shows it as extra rather than crediting a phantom fair share.

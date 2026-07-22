@@ -11,7 +11,8 @@
 // reassigned past a stated maximum, never silently dropped.
 
 import type { ProviderLimits } from '@/lib/providerLimits';
-import type { GenerationContext, SolutionPlan, SeedAssignment } from './genTypes';
+import { WEIGHT_EPSILON, callBurdenWeight, parentCallCodeOf } from '@/lib/callBurden';
+import type { GenerationContext, SolutionPlan, SeedAssignment, ShiftTypeInfo } from './genTypes';
 
 // pid -> code -> stated max.
 export type CallCaps = Map<string, Map<string, number>>;
@@ -35,15 +36,21 @@ export function buildCallCaps(limits: ProviderLimits | undefined): CallCaps | nu
   return caps.size > 0 ? caps : null;
 }
 
-// `${pid}|${code}` -> count of call-category placements (plan + seeds).
+// `${pid}|${code}` -> WEIGHTED count of call-category placements (plan +
+// seeds). With `shiftTypes` (2026-07-22, call splits) segment rows fold under
+// their PARENT code at their fractional call_burden_weight — a C1N12 seed is
+// 0.5 of C1 against a stated C1 cap. Absent map (bare fixtures, pre-patch35):
+// weight 1 / own code, the pre-split tally byte for byte.
 export function tallyCallsByPidCode(
   assignments: SolutionPlan['assignments'],
   seeds: ReadonlyArray<SeedAssignment>,
+  shiftTypes?: Map<string, ShiftTypeInfo>,
 ): Map<string, number> {
   const tally = new Map<string, number>();
   const inc = (pid: string, code: string) => {
-    const k = `${pid}|${code}`;
-    tally.set(k, (tally.get(k) || 0) + 1);
+    const info = shiftTypes?.get(code);
+    const k = `${pid}|${parentCallCodeOf(code, info)}`;
+    tally.set(k, (tally.get(k) || 0) + callBurdenWeight(info));
   };
   for (const a of assignments) if (a.shift_type_category === 'call') inc(a.provider_id, a.shift_type_code);
   for (const s of seeds) if (s.shift_type_category === 'call') inc(s.provider_id, s.shift_type_code);
@@ -54,15 +61,18 @@ export function tallyCallsByPidCode(
 // trial-acceptance gate: greedy plans are cap-clean by construction, and this
 // keeps every accepted trial cap-clean too — a pin ('call-no-quota') bypasses
 // caps INSIDE a trial re-solve, so the trial itself must be rejected here.
+// WEIGHT_EPSILON absorbs stored-fraction noise (a tally of exactly the cap
+// built from halves/thirds must not read as over).
 export function planWithinCallCaps(
   caps: CallCaps,
   plan: Pick<SolutionPlan, 'assignments'>,
   seeds: ReadonlyArray<SeedAssignment>,
+  shiftTypes?: Map<string, ShiftTypeInfo>,
 ): boolean {
-  const tally = tallyCallsByPidCode(plan.assignments, seeds);
+  const tally = tallyCallsByPidCode(plan.assignments, seeds, shiftTypes);
   for (const [pid, byCode] of caps) {
     for (const [code, cap] of byCode) {
-      if ((tally.get(`${pid}|${code}`) || 0) > cap) return false;
+      if ((tally.get(`${pid}|${code}`) || 0) > cap + WEIGHT_EPSILON) return false;
     }
   }
   return true;
@@ -90,7 +100,7 @@ export function computeProviderCapSummary(
 ): ProviderCapSummary | null {
   const caps = buildCallCaps(ctx.providerLimits);
   if (!caps) return null;
-  const tally = tallyCallsByPidCode(plan.assignments, ctx.seedAssignments);
+  const tally = tallyCallsByPidCode(plan.assignments, ctx.seedAssignments, ctx.shiftTypes);
   const nameByPid = new Map(ctx.providers.map(p => [p.id, p.short_display_name]));
   const rows: ProviderCapRow[] = [];
   for (const [pid, byCode] of caps) {

@@ -187,7 +187,8 @@ export function shiftInfo(code: string, over: Partial<ShiftTypeInfo> = {}): Shif
   return {
     code, category: 'regular', call_rank: null, relief_rank: null,
     is_overlay: false, generation_engine: 'day_pool',
-    requires_post_call_rule: false, call_coverage_type: null, ...over,
+    requires_post_call_rule: false, call_coverage_type: null,
+    manual_only: false, call_burden_weight: 1, parent_call_code: null, ...over,
   };
 }
 

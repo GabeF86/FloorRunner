@@ -58,6 +58,12 @@ export interface ShiftTypeRow {
   // 'day_pool' (7-3/7-5 day-doc slots), 'none', or null when unknown/pre-patch18.
   // Read-only for validation — the poolEligibility evaluator keys on it.
   generation_engine: string | null;
+  // Call-split columns (2026-07-22, patch35), optional — absent pre-patch35 /
+  // on older loads means weight 1 / parent = own code (callBurden.ts
+  // defaults). The providerLimits evaluator folds segment assignments under
+  // the PARENT code at their fractional weight.
+  call_burden_weight?: number | null;
+  parent_call_code?: string | null;
 }
 
 export interface SlotRow {

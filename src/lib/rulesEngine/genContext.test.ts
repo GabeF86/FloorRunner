@@ -281,6 +281,8 @@ describe('loadGenerationContext — shift types (requirement 1)', () => {
       code: 'C1', category: 'call', call_rank: 0, relief_rank: null,
       is_overlay: false, generation_engine: 'call',
       requires_post_call_rule: true, call_coverage_type: 'trauma',
+      // call-split columns (patch35) default when absent from the row.
+      manual_only: false, call_burden_weight: 1, parent_call_code: null,
     });
     expect(st.get('C2')!.call_rank).toBe(1);
     expect(st.get('D4')!.relief_rank).toBe(1);
