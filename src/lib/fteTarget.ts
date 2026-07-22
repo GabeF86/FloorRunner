@@ -90,10 +90,13 @@ export function selectOverParAssignmentIds(
 //     included, ANY call code (CB/beeper etc.), filled or not. Engine
 //     equivalent: open call slots + call seeds.
 //   - effectivePar  = clampParToPoolFte(stored par, generation-pool ΣFTE).
-//     Pool mirrors loadGenerationContext: `included_provider_ids` override
-//     when non-empty (exactly those, gates skipped), else home-site
-//     call/partial-call takers. Grid profiles are already restricted to
-//     active providers of the schedule's provider group.
+//     Pool mirrors loadGenerationContext: a non-empty `included_provider_ids`
+//     override NARROWS the pool (Gabriel 2026-07-21) — it skips only the
+//     home-site gate; the call_taker/partial_call_taker role criterion is
+//     always intersected (a day doc in a custom pool never counts toward
+//     call-pool FTE). Default pool = home-site call/partial-call takers.
+//     Grid profiles are already restricted to active providers of the
+//     schedule's provider group.
 //   - fte coercion `|| 1` matches genContext's profile load (null/0 → 1);
 //     providers with no profile default to 1 (pre-existing UI semantics —
 //     expected stays blind to eligibility by design).
@@ -141,9 +144,11 @@ export function computeCallObligationCensus(input: CallObligationCensusInput): C
   for (const prof of input.profiles) {
     const fte = prof.fte_value || 1; // engine coercion (genContext profile load)
     fteByPid.set(prof.provider_id, fte);
-    const inPool = override
+    // Role criterion applies on BOTH paths (override = narrowing, never
+    // widening — mirrors genContext §3); override skips only the home-site gate.
+    const inPool = (prof.call_taker || prof.partial_call_taker) && (override
       ? override.has(prof.provider_id)
-      : prof.home_site_id === input.siteId && (prof.call_taker || prof.partial_call_taker);
+      : prof.home_site_id === input.siteId);
     if (inPool) poolFte += fte;
   }
   const effectivePar = clampParToPoolFte(input.storedParLevel, poolFte);

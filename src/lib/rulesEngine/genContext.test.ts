@@ -872,3 +872,54 @@ describe('loadGenerationContext — workDayBudget', () => {
     expect(res.ctx!.availByPid.get('p2')![0].reason_code).toBe('icu_week');
   });
 });
+
+// ── Override pool narrows the call-taker criterion (Gabriel 2026-07-21) ──────
+// Live-confirmed bug class: overrideProviderIds REPLACED the engine's base
+// pool criteria instead of intersecting them. For the call engine that meant a
+// day doc in a custom pool became call-eligible. Override = narrowing: the
+// call_taker/partial_call_taker role criterion always applies; the custom pool
+// can only shrink the candidate set, never widen it.
+describe('loadGenerationContext — override pool narrows the call-taker criterion (Gabriel 2026-07-21)', () => {
+  // What production's `.in('provider_id', override)` would return for an
+  // override of [p1 (call taker), p9 (day doc)]: the fake ignores filters, so
+  // hand it exactly those rows.
+  const DAY_DOC_PROFILE = { provider_id: 'p9', fte_value: 1.0, home_site_id: 'site1', call_taker: false, partial_call_taker: false, available_weekdays: null };
+  const DAY_DOC_PROVIDER = { id: 'p9', provider_type: 'physician', short_display_name: 'DAYDOC', status: 'active' };
+
+  async function runOverride(ids: string[], profiles: unknown[], providers: unknown[]) {
+    const { sb } = makeFakeSupabase({
+      tables: baseTables({
+        provider_employment_profiles: { data: profiles, error: null },
+        providers: { data: providers, error: null },
+      }),
+    });
+    return loadGenerationContext(sb, 'ver1', { overrideProviderIds: ids });
+  }
+
+  it('a day doc in a custom pool never becomes call-eligible (intersect, not replace)', async () => {
+    const res = await runOverride(
+      ['p1', 'p9'],
+      [BASE_PROFILES[0], DAY_DOC_PROFILE],
+      [BASE_PROVIDERS[0], DAY_DOC_PROVIDER],
+    );
+    expect(res.ctx).toBeTruthy();
+    expect(res.ctx!.providers.map(p => p.id)).toEqual(['p1']);
+    expect(res.ctx!.providerById!.has('p9')).toBe(false);
+    // The exclusion is surfaced, never silent.
+    expect(res.ctx!.warnings!.some(w => /override/i.test(w) && /call taker/i.test(w))).toBe(true);
+  });
+
+  it('an override pool of only non-call-takers errors instead of silently generating', async () => {
+    const res = await runOverride(['p9'], [DAY_DOC_PROFILE], [DAY_DOC_PROVIDER]);
+    expect(res.ctx).toBeNull();
+    expect(res.error).toMatch(/call taker/i);
+  });
+
+  it('a partial call taker in a custom pool stays eligible (criterion is call OR partial)', async () => {
+    const partial = { provider_id: 'p8', fte_value: 0.5, home_site_id: 'site1', call_taker: false, partial_call_taker: true, available_weekdays: null };
+    const partialProv = { id: 'p8', provider_type: 'physician', short_display_name: 'PARTIAL', status: 'active' };
+    const res = await runOverride(['p8'], [partial], [partialProv]);
+    expect(res.ctx).toBeTruthy();
+    expect(res.ctx!.providers.map(p => p.id)).toEqual(['p8']);
+  });
+});
