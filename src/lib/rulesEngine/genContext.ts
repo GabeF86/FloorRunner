@@ -165,7 +165,7 @@ export async function loadGenerationContext(
   countQ();
   const { data: rawSlots, error: slotsErr } = await sb
     .from('schedule_slots')
-    .select('id, slot_date, shift_type_id, provider_group, required_count, locked, derived_day_type, site_id, shift_types(code, category), assignments(id, provider_id, assignment_status)')
+    .select('id, slot_date, shift_type_id, provider_group, required_count, locked, derived_day_type, site_id, shift_types(code, category), assignments(id, provider_id, assignment_status, source_type)')
     .eq('schedule_version_id', scheduleVersionId)
     .order('slot_date')
     .order('slot_index');
@@ -871,7 +871,7 @@ export async function loadGenerationContext(
   for (const raw of rawSlots as Array<Record<string, unknown>>) {
     const st = raw.shift_types as { code: string; category: string } | null;
     if (!st) continue;
-    const assignments = embedArray(raw.assignments) as Array<{ id: string; provider_id: string | null; assignment_status?: string }>;
+    const assignments = embedArray(raw.assignments) as Array<{ id: string; provider_id: string | null; assignment_status?: string; source_type?: string }>;
     for (const a of assignments) {
       if (a.provider_id) {
         seedAssignments.push({
@@ -880,6 +880,15 @@ export async function loadGenerationContext(
           shift_type_code: st.code,
           shift_type_category: st.category,
           derived_day_type: (raw.derived_day_type as string) || 'weekday',
+          // Eviction provenance (2026-07-21): what the seed-eviction gates and
+          // commitPlan's revert need. rawSlots are all THIS version by query,
+          // so the version stamp is structural; source_type may be absent on
+          // a fake/degraded read — the gates then refuse (never evict what
+          // you can't attribute).
+          slot_id: raw.id as string,
+          assignment_id: a.id,
+          source_type: a.source_type,
+          schedule_version_id: scheduleVersionId,
         });
       }
     }

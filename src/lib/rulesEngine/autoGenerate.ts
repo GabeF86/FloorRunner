@@ -12,7 +12,7 @@ import type { WorkDayReportRow } from './workDayReport';
 import type { RequestGrant } from './requestGrants';
 import type { OptimizeStats } from './optimize';
 import type { SupabaseClient } from './shared';
-import type { UnfilledSlot, PlannedAssignment, AssignmentExplanation, SolutionMetrics, PlacementSource, SkippedDerived, FillMode, AwaitingContinueSlot } from './genTypes';
+import type { UnfilledSlot, PlannedAssignment, AssignmentExplanation, SolutionMetrics, PlacementSource, SkippedDerived, EvictedSeed, FillMode, AwaitingContinueSlot } from './genTypes';
 
 export interface AutoGenerateOptions {
   overrideProviderIds?: string[];
@@ -84,6 +84,11 @@ export interface GenerationResult {
   // clinical invariant 4 says these are recorded, never silently dropped, so
   // the API surfaces them alongside unfilled.
   skippedDerived?: SkippedDerived[];
+  // Stale pre-fill seeds evicted by post-call chain fills (2026-07-21, the
+  // D1-overrides-pre-call rule applied to multi-pass seeds). Reported
+  // alongside skippedDerived — the vacated slots stay OPEN and this list is
+  // their report. Executed by commitPlan (revert-to-open before fills).
+  evictions?: EvictedSeed[];
   // Load-time advisories (missing patch18 objects, unknown pattern codes, quota
   // shortfalls, unsupported multi-fill slots). Non-fatal; surfaced to the UI.
   warnings: string[];
@@ -184,7 +189,9 @@ export async function autoGenerate(
   if (commit.errors.length > 0) {
     // Invariant 4: skip records must stay visible even when the commit fails —
     // the plan was solved, so its suppressed derived placements are known.
+    // Evictions likewise (they may be exactly what partially executed).
     result.skippedDerived = plan.skippedDerived ?? [];
+    result.evictions = plan.evictions ?? [];
     return result; // commit failure -> ok false (assignments not reliably written)
   }
 
@@ -230,6 +237,7 @@ export async function autoGenerate(
   result.assignments = plan.assignments.map(toResultAssignment);
   result.unfilled = plan.unfilled;
   result.skippedDerived = plan.skippedDerived ?? [];
+  result.evictions = plan.evictions ?? [];
   // Weekend-only: deferred out-of-scope call slots (plan.awaitingContinue is
   // materialized only in that mode — present even when empty, so the UI can
   // always render the staged banner + Continue affordance).

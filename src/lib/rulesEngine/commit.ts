@@ -187,12 +187,24 @@ export function partitionForWrite(
 
 export interface CommitResult {
   filled: number;
+  // Stale pre-fill seed rows reverted to open (plan.evictions executed) —
+  // 2026-07-21 seed eviction. 0 for eviction-free plans.
+  evicted: number;
   errors: string[];
   dbQueries: number;
 }
 
 // Batched write of the whole plan. Two bulk calls instead of N serial writes;
 // per-row fallback on bulk failure so one bad row no longer loses the batch.
+//
+// Seed evictions (plan.evictions, 2026-07-21) execute FIRST: each evicted
+// seed's assignment row is reverted to open (provider null, status 'open',
+// source 'manual' — mirroring sequenceAutoFill's revertToOpen) BEFORE any
+// fill write lands, so the incoming post-call fill never coexists with the
+// stale pre-fill it displaced. If a revert does NOT land, the dependent fill
+// (same provider + date) is WITHHELD from the write batches — writing it
+// would double-book the provider against the surviving seed row — and the
+// withholding is reported in errors.
 export async function commitPlan(
   sb: SupabaseClient,
   plan: SolutionPlan,
@@ -200,7 +212,46 @@ export async function commitPlan(
   const errors: string[] = [];
   let dbQueries = 0;
   const assignedAt = new Date().toISOString();
-  const { updates, inserts } = partitionForWrite(plan.assignments, assignedAt);
+
+  let evicted = 0;
+  const withheldKeys = new Set<string>(); // `${provider_id}|${slot_date}` of failed evictions
+  const evictions = plan.evictions ?? [];
+  if (evictions.length > 0) {
+    const reverts = evictions.map(e => ({
+      id: e.assignment_id,
+      // schedule_slot_id satisfies NOT NULL on the (never taken) insert arm —
+      // same convention as commitMetadata's payload.
+      schedule_slot_id: e.slot_id,
+      provider_id: null,
+      assignment_status: 'open',
+      source_type: 'manual',
+      assigned_at: null,
+      // null = honest "not validated", never a fake-clean [] (invariant 6).
+      validation_flags: null,
+    }));
+    const w = await bulkWriteWithRowFallback(sb, 'assignments', reverts, {
+      onConflict: 'id', label: 'eviction revert batch',
+    });
+    dbQueries += w.dbQueries;
+    evicted += w.landedIdx.length;
+    for (const e of w.rowErrors) {
+      errors.push(`Eviction revert failed for assignment ${evictions[e.index].assignment_id}: ${e.message}`);
+    }
+    const landed = new Set(w.landedIdx);
+    for (let i = 0; i < evictions.length; i++) {
+      if (landed.has(i)) continue;
+      const e = evictions[i];
+      withheldKeys.add(`${e.provider_id}|${e.date}`);
+      errors.push(
+        `Withheld the ${e.trigger_code}-chain fill on ${e.date} for ${e.provider_name}: ` +
+        `the ${e.code} eviction revert did not land (writing the fill would double-book)`,
+      );
+    }
+  }
+  const commitAssignments = withheldKeys.size === 0
+    ? plan.assignments
+    : plan.assignments.filter(a => !withheldKeys.has(`${a.provider_id}|${a.slot_date}`));
+  const { updates, inserts } = partitionForWrite(commitAssignments, assignedAt);
 
   let filled = 0;
   if (updates.length > 0) {
@@ -224,7 +275,7 @@ export async function commitPlan(
     }
   }
 
-  return { filled, errors, dbQueries };
+  return { filled, evicted, errors, dbQueries };
 }
 
 // INVARIANT: the schedule version must belong to `siteId` (a schedule version
