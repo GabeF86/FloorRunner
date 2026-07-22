@@ -11,7 +11,7 @@
 // literal-typed constant is fine — the result stays literal-typed).
 
 export const GRID_SCHEDULE_COLUMNS =
-  'id, organization_id, site_id, schedule_name, schedule_type, provider_group, date_start, date_end, status, included_provider_ids, sites(name, short_name, timezone, call_par_level)';
+  'id, organization_id, site_id, schedule_name, schedule_type, provider_group, date_start, date_end, status, included_provider_ids, provider_limits, sites(name, short_name, timezone, call_par_level)';
 
 // schedule_slot_id rides along even when nested under its slot so the client
 // can patch edited cells by slot id from the schedule-assignments response.

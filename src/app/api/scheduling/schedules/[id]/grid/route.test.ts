@@ -30,6 +30,7 @@ describe('grid column lists', () => {
     for (const col of [
       'id', 'organization_id', 'site_id', 'schedule_name', 'schedule_type',
       'provider_group', 'date_start', 'date_end', 'status', 'included_provider_ids',
+      'provider_limits',
     ]) {
       expect(GRID_SCHEDULE_COLUMNS).toContain(col);
     }

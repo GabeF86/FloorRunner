@@ -21,6 +21,11 @@ import { reasonCodeLabel } from '@/lib/validation/providers';
 // with the engine's date-level override (rulesEngine/shared.ts isDateBlocked)
 // about which dates a provider is working, so it imports the same predicate.
 import { isActiveSellback } from '@/lib/rulesEngine/shared';
+// requiredWorkDaysWithLimit = the engine's per-provider requirement (round(FTE
+// × WD) − PTO, overridden by a stated Limits-tab workingDays/daysOff entry) —
+// the Call Counts "Working Days" column shows actual/required from the SAME
+// function the generation cap uses.
+import { requiredWorkDaysWithLimit } from '@/lib/rulesEngine/workDays';
 // Pure, client-safe helper shared with the grid API route — one bucket rule
 // (hard / soft / warning-never-soft) for both server and client counting.
 import { validationSummaryFor, type ValidationSummary } from '@/app/api/scheduling/schedules/[id]/grid/route.helpers';
@@ -63,6 +68,9 @@ interface Schedule {
   // exactly those as the auto-generate candidate pool (still subject to
   // eligibility filters).
   included_provider_ids: string[] | null;
+  // Raw jsonb from schedules.provider_limits — always fed through
+  // parseProviderLimits before use (the PATCH route's parser, single home).
+  provider_limits?: unknown;
   sites: SiteInfo;
 }
 
@@ -2852,6 +2860,14 @@ function CallCountsModal({ grid, onClose }: { grid: GridData; onClose: () => voi
   const daysOffForPid = (pid: string) =>
     daysOffFor(census.fteFor(pid), composition.workingDays, ptoDaysForPid(pid));
 
+  // Required working days — the engine's own contract, incl. a stated
+  // Limits-tab override when one exists (blank limit → the FTE formula,
+  // Gabriel's verbatim fallback rule). Rendered as "actual / required".
+  const limitsParse = parseProviderLimits(grid.schedule.provider_limits);
+  const statedLimits = limitsParse.ok ? limitsParse.value : null;
+  const requiredForPid = (pid: string) => requiredWorkDaysWithLimit(
+    census.fteFor(pid), composition.workingDays, ptoDaysForPid(pid), statedLimits?.[pid] ?? undefined);
+
   // Expected = FTE-weighted base target per (provider, bucket, code) —
   // (block_total_in_bucket / effective par) × fte_value, using the census's
   // clamped denominator (the engine's computeBucketTargets uses the same
@@ -3015,8 +3031,8 @@ function CallCountsModal({ grid, onClose }: { grid: GridData; onClose: () => voi
                 padding: '6px 10px', textAlign: 'center', fontWeight: 700,
                 borderBottom: '1px solid var(--border)', borderLeft: '1px solid var(--border)',
                 cursor: 'help',
-              }} title="Credited M–F working days scheduled on this draft: distinct working days (weekdays minus major holidays) with any assignment, plus post-call rest days credited as worked, plus ICU rotation weekdays — the generation banner's working-days credit.">
-                Working Days
+              }} title="actual / required. Actual = credited M–F working days scheduled on this draft: distinct working days (weekdays minus major holidays) with any assignment, plus post-call rest days credited as worked, plus ICU rotation weekdays — the generation banner's working-days credit. Required = the engine's obligation: round(FTE × block working days) − PTO days, or the stated Limits-tab working-days/days-off override when one is set. Red = scheduled past the requirement.">
+                Working Days<br/><span style={{ fontSize: 10, fontWeight: 500, opacity: 0.7 }}>actual / required</span>
               </th>
             </tr>
             <tr style={{ background: 'var(--bg)', color: 'var(--text-muted)' }}>
@@ -3101,11 +3117,19 @@ function CallCountsModal({ grid, onClose }: { grid: GridData; onClose: () => voi
                   borderLeft: '1px solid var(--border)', fontWeight: 600,
                   color: daysOffForPid(p.id) > 0 ? 'var(--text)' : 'var(--text-dim)',
                 }}>{daysOffForPid(p.id) || '—'}</td>
-                <td style={{
-                  padding: '6px 10px', textAlign: 'center',
-                  borderLeft: '1px solid var(--border)', fontWeight: 600,
-                  color: workingDaysForPid(p.id) > 0 ? 'var(--text)' : 'var(--text-dim)',
-                }}>{workingDaysForPid(p.id) || '—'}</td>
+                <td
+                  title={`Scheduled ${workingDaysForPid(p.id)} of ${requiredForPid(p.id)} required working days`}
+                  style={{
+                    padding: '6px 10px', textAlign: 'center', whiteSpace: 'nowrap',
+                    borderLeft: '1px solid var(--border)', fontWeight: 600,
+                    color: workingDaysForPid(p.id) > requiredForPid(p.id) ? '#ef4444'
+                      : workingDaysForPid(p.id) > 0 || requiredForPid(p.id) > 0 ? 'var(--text)' : 'var(--text-dim)',
+                  }}
+                >
+                  {workingDaysForPid(p.id) || requiredForPid(p.id)
+                    ? `${workingDaysForPid(p.id)} / ${requiredForPid(p.id)}`
+                    : '—'}
+                </td>
               </tr>
             ))}
             {/* Totals row */}
@@ -3144,9 +3168,13 @@ function CallCountsModal({ grid, onClose }: { grid: GridData; onClose: () => voi
                 borderLeft: '1px solid var(--border)', borderTop: '2px solid var(--border)',
               }}>{providers.reduce((s, p) => s + daysOffForPid(p.id), 0) || '—'}</td>
               <td style={{
-                padding: '8px 10px', textAlign: 'center',
+                padding: '8px 10px', textAlign: 'center', whiteSpace: 'nowrap',
                 borderLeft: '1px solid var(--border)', borderTop: '2px solid var(--border)',
-              }}>{providers.reduce((s, p) => s + workingDaysForPid(p.id), 0) || '—'}</td>
+              }}>{(() => {
+                const a = providers.reduce((s, p) => s + workingDaysForPid(p.id), 0);
+                const r = providers.reduce((s, p) => s + requiredForPid(p.id), 0);
+                return a || r ? `${a} / ${r}` : '—';
+              })()}</td>
             </tr>
             {/* Expected row — Σ of per-provider FTE-weighted targets (from slot counts,
                 at the effective par). A gap vs Total means unfilled slots in that column,
