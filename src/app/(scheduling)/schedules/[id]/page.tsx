@@ -554,6 +554,12 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
       const st = slot.shift_types;
       if (!st || st.category !== 'call') continue;
       if (NON_POST_CALL_CODES.has(st.code)) continue;
+      // Call splits (2026-07-22, decision 3): post-call rest belongs to the
+      // OVERNIGHT segment holder only. A day/evening SEGMENT (parent set,
+      // requires_post_call_rule false) confers no rest — its holder stays
+      // Available tomorrow, never in this row. Whole-call rows (incl. C2's
+      // colloquial post-call display) keep the pre-split behavior.
+      if (isSegmentType(st) && !st.requires_post_call_rule) continue;
       for (const a of slot.assignments || []) {
         if (!a.provider_id) continue;
         const nextDay = addDaysStr(slot.slot_date, 1);
@@ -1807,6 +1813,11 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
                         const segHard = segFlags.some(f => f.severity === 'hard');
                         const segSoft = !segHard && segFlags.some(f => f.severity === 'soft');
                         const segOver = !!segAssignment && !!segProvider && overParAssignmentIds.has(segAssignment.id);
+                        // Extra-call parity with whole call cells: a holder
+                        // outside the regular call pool gets the same EXTRA
+                        // signal (OVER wins, mirroring the whole-cell tag
+                        // precedence) — segments must not hide pool pickups.
+                        const segExtra = !!segProvider && !callTakerIds.has(segProvider.id);
                         return (
                           <div
                             key={seg.id}
@@ -1819,7 +1830,7 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
                               });
                               setPickerSearch('');
                             }}
-                            title={`${seg.shift_types.name}${segProvider ? ` — ${segProvider.short_display_name}` : ' — open'}`}
+                            title={`${seg.shift_types.name}${segProvider ? ` — ${segProvider.short_display_name}` : ' — open'}${segExtra ? ' — extra call (not in the regular call pool at this site)' : ''}`}
                             style={{
                               flex: 1,
                               display: 'flex', alignItems: 'center', gap: 3,
@@ -1842,12 +1853,17 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
                             ) : (
                               <span style={{ fontSize: 8.5, fontWeight: 800, letterSpacing: '0.03em', color: gridTokens.open }}>OPEN</span>
                             )}
-                            {segOver && (
+                            {segOver ? (
                               <span aria-label="Over par for this shift" style={{
                                 fontSize: 6.5, fontWeight: 800, letterSpacing: '0.03em',
                                 color: '#b91c1c', flexShrink: 0,
                               }}>OVER</span>
-                            )}
+                            ) : segExtra ? (
+                              <span aria-label="Extra call" style={{
+                                fontSize: 6.5, fontWeight: 800, letterSpacing: '0.03em',
+                                color: '#0369a1', flexShrink: 0,
+                              }}>EXTRA</span>
+                            ) : null}
                             {(segHard || segSoft) && (
                               <span
                                 aria-label={segHard ? 'Hard rule violation' : 'Soft rule warning'}
