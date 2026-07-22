@@ -24,6 +24,14 @@ import { isActiveSellback } from '@/lib/rulesEngine/shared';
 // Pure, client-safe helper shared with the grid API route — one bucket rule
 // (hard / soft / warning-never-soft) for both server and client counting.
 import { validationSummaryFor, type ValidationSummary } from '@/app/api/scheduling/schedules/[id]/grid/route.helpers';
+// Provider limits (2026-07-22, patch34): the Pool modal's Limits tab edits
+// schedules.provider_limits through the single-homed shape/parse/field
+// helpers — the same parser the PATCH route enforces.
+import {
+  parseProviderLimits, fieldsFromEntry, entryFromFields, normalizeProviderLimits,
+  isInvalidLimitInput, EMPTY_LIMIT_FIELDS,
+  type ProviderLimits, type LimitFields,
+} from '@/lib/providerLimits';
 
 /* ── Interfaces ──────────────────────────────────────────────────────────── */
 
@@ -872,6 +880,13 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
     // Weekend-only runs only: call slots deliberately deferred to Continue
     // (NOT failures, NOT counted in `skipped`).
     awaitingContinue: { total: number; byDayType: Record<string, number> } | null;
+    // Provider call caps (patch34): placed-vs-cap per stated (provider, code)
+    // limit + slots deliberately left open at a stated max ('provider-cap').
+    // null when the schedule states no call caps.
+    providerCapSummary: {
+      rows: Array<{ provider_id: string; provider_name: string; code: string; cap: number; placed: number }>;
+      cappedUnfilled: number;
+    } | null;
   } | null>(null);
   const [showPoolModal, setShowPoolModal] = useState(false);
 
@@ -929,6 +944,8 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
         fillMode: mode,
         awaitingContinue: data.awaitingContinue && typeof data.awaitingContinue.total === 'number'
           ? data.awaitingContinue : null,
+        providerCapSummary: data.providerCapSummary && Array.isArray(data.providerCapSummary.rows)
+          ? data.providerCapSummary : null,
       });
       await loadGrid();
     } catch (e) {
@@ -1434,6 +1451,31 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
                 </div>
               );
             })()}
+            {/* Provider call caps (patch34): placed-vs-cap per stated limit.
+                Slots deliberately left open at a stated max are called out —
+                they are the caps working, not a failure. */}
+            {genResult.providerCapSummary && genResult.providerCapSummary.rows.length > 0 && (
+              <div style={{ marginTop: 4, color: 'var(--text-dim)' }}>
+                <div>
+                  Provider call limits:{' '}
+                  {genResult.providerCapSummary.rows.map((r, i) => (
+                    <span key={`${r.provider_id}|${r.code}`}>
+                      {i > 0 && ', '}
+                      {r.provider_name} {r.code}{' '}
+                      <b style={{ color: r.placed >= r.cap ? 'var(--warn, #b8860b)' : 'inherit' }}>
+                        {r.placed}/{r.cap}
+                      </b>
+                    </span>
+                  ))}
+                </div>
+                {genResult.providerCapSummary.cappedUnfilled > 0 && (
+                  <div>
+                    {genResult.providerCapSummary.cappedUnfilled} slot{genResult.providerCapSummary.cappedUnfilled !== 1 ? 's' : ''} left
+                    open at a stated maximum (reason: provider-cap) — fill manually or raise the limit.
+                  </div>
+                )}
+              </div>
+            )}
           </Banner>
         </div>
       )}
@@ -2170,6 +2212,66 @@ function PoolSelectorModal({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // ── Limits tab (2026-07-22, patch34 provider_limits) ───────────────────────
+  // Per-provider block limits: expected max of each call type (C1/C2/C3) and
+  // EITHER expected working days OR expected days off (mutually exclusive —
+  // filling one clears/disables the other). Blank everywhere = no limit (the
+  // engine keeps its FTE-derived budget — Gabriel's verbatim rule). Stored on
+  // the schedule row; fetched here lazily because the grid payload doesn't
+  // carry the column (and pre-patch34 DBs simply omit the field — graceful).
+  const [tab, setTab] = useState<'pool' | 'limits'>('pool');
+  const [storedLimits, setStoredLimits] = useState<ProviderLimits>({});
+  const [limitDrafts, setLimitDrafts] = useState<Record<string, LimitFields>>({});
+  // 'loading' → inputs held; 'ready' → editable; 'failed' → tab shows the
+  // error and SAVE OMITS the provider_limits key entirely (never clobber
+  // stored limits with an empty map because a fetch failed).
+  const [limitsState, setLimitsState] = useState<'loading' | 'ready' | 'failed'>('loading');
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch(`/api/scheduling/schedules/${scheduleId}`)
+      .then(r => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
+      .then(data => {
+        if (cancelled) return;
+        const parsed = parseProviderLimits((data as { provider_limits?: unknown })?.provider_limits);
+        const lim = parsed.ok && parsed.value ? parsed.value : {};
+        setStoredLimits(lim);
+        const drafts: Record<string, LimitFields> = {};
+        for (const [pid, entry] of Object.entries(lim)) drafts[pid] = fieldsFromEntry(entry);
+        setLimitDrafts(drafts);
+        setLimitsState('ready');
+      })
+      .catch(() => { if (!cancelled) setLimitsState('failed'); });
+    return () => { cancelled = true; };
+  }, [scheduleId]);
+
+  const setLimitField = (pid: string, field: keyof LimitFields, value: string) => {
+    setLimitDrafts(prev => {
+      const cur = prev[pid] ?? EMPTY_LIMIT_FIELDS;
+      const next: LimitFields = { ...cur, [field]: value };
+      // Mutual exclusion: filling Working Days clears Days Off and vice versa.
+      if (field === 'workingDays' && value.trim() !== '') next.daysOff = '';
+      if (field === 'daysOff' && value.trim() !== '') next.workingDays = '';
+      return { ...prev, [pid]: next };
+    });
+  };
+
+  const hasInvalidLimit = Object.values(limitDrafts).some(f =>
+    [f.c1, f.c2, f.c3, f.workingDays, f.daysOff].some(isInvalidLimitInput));
+
+  // Rebuild the stored map from drafts (edited rows) + untouched stored
+  // entries. Out-of-pool entries render inert below and round-trip unchanged.
+  const buildLimitsPayload = (): ProviderLimits | null => {
+    const out: ProviderLimits = {};
+    const pids = new Set([...Object.keys(storedLimits), ...Object.keys(limitDrafts)]);
+    for (const pid of pids) {
+      const fields = limitDrafts[pid];
+      const entry = fields ? entryFromFields(fields, storedLimits[pid]) : storedLimits[pid];
+      if (entry) out[pid] = entry;
+    }
+    return normalizeProviderLimits(out);
+  };
+
   useEffect(() => {
     let cancelled = false;
     fetch(`/api/scheduling/sites?org_id=${orgId}`)
@@ -2270,10 +2372,26 @@ function PoolSelectorModal({
       // indistinguishable from "you deselected everyone" — which is a
       // valid but nonsensical state we don't need to represent.
       const payload: string[] | null = asDefault ? null : Array.from(checked);
+      // Limits ride along on BOTH saves (they are keyed to providers, not the
+      // pool — resetting to the default pool keeps them; out-of-pool entries
+      // render inert but survive). If the limits fetch failed the key is
+      // OMITTED so a network blip can never clobber stored limits. It is ALSO
+      // omitted for a null→null no-op (nothing stored, nothing entered):
+      // pre-patch34 the provider_limits column doesn't exist, and riding a
+      // no-op null along would 500 the WHOLE pool save on the missing column
+      // (review fix 2026-07-22). Clearing previously-stored limits still
+      // sends null (storedLimits non-empty then).
+      const body: Record<string, unknown> = { included_provider_ids: payload };
+      if (limitsState === 'ready') {
+        const limitsPayload = buildLimitsPayload();
+        if (limitsPayload !== null || Object.keys(storedLimits).length > 0) {
+          body.provider_limits = limitsPayload;
+        }
+      }
       const res = await fetch(`/api/scheduling/schedules/${scheduleId}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ included_provider_ids: payload }),
+        body: JSON.stringify(body),
       });
       const data = await res.json();
       if (!res.ok) {
@@ -2320,10 +2438,37 @@ function PoolSelectorModal({
           </div>
         </div>
 
-        <div style={{ display: 'flex', gap: 6, margin: '10px 0 12px' }}>
-          <button onClick={resetToDefault} style={smallBtn}>Reset to Default</button>
-          <button onClick={clearAll} style={smallBtn}>Clear All</button>
+        {/* Tabs: Pool (the existing checkbox roster) | Limits (per-provider
+            expected call counts + working days / days off for this block). */}
+        <div style={{ display: 'flex', gap: 4, marginTop: 8, borderBottom: '1px solid var(--border)' }}>
+          {(['pool', 'limits'] as const).map(t => (
+            <button
+              key={t}
+              onClick={() => setTab(t)}
+              style={{
+                padding: '7px 14px', fontSize: 12.5, fontWeight: 700, cursor: 'pointer',
+                background: 'transparent', border: 'none',
+                borderBottom: tab === t ? '2px solid #0ea5e9' : '2px solid transparent',
+                color: tab === t ? 'var(--text-strong)' : 'var(--text-muted)',
+              }}
+            >
+              {t === 'pool' ? 'Pool' : 'Limits'}
+            </button>
+          ))}
         </div>
+
+        {tab === 'pool' && (
+          <div style={{ display: 'flex', gap: 6, margin: '10px 0 12px' }}>
+            <button onClick={resetToDefault} style={smallBtn}>Reset to Default</button>
+            <button onClick={clearAll} style={smallBtn}>Clear All</button>
+          </div>
+        )}
+        {tab === 'limits' && (
+          <div style={{ fontSize: 12, color: 'var(--text-muted)', margin: '10px 0 12px' }}>
+            Expected maximums per provider for this block. Blank = no limit (the engine
+            keeps its FTE-derived budget). Working Days and Days Off are mutually exclusive.
+          </div>
+        )}
 
         {error && (
           <div style={{
@@ -2332,6 +2477,7 @@ function PoolSelectorModal({
           }}>{error}</div>
         )}
 
+        {tab === 'pool' && (
         <div style={{ flex: 1, overflowY: 'auto', border: '1px solid var(--border)', borderRadius: 8 }}>
           {!sitesLoaded ? (
             <div style={{ padding: 20, color: 'var(--text-dim)', fontSize: 13 }}>Loading sites...</div>
@@ -2413,16 +2559,125 @@ function PoolSelectorModal({
             })
           )}
         </div>
+        )}
+
+        {/* ── Limits tab: one row per provider in the current pool selection
+            (default pool = the home-site roster when no custom pool is set);
+            providers with stored limits no longer in the pool render inert
+            below — their data is kept, never silently dropped. ── */}
+        {tab === 'limits' && (
+        <div style={{ flex: 1, overflowY: 'auto', border: '1px solid var(--border)', borderRadius: 8 }}>
+          {limitsState === 'loading' ? (
+            <div style={{ padding: 20, color: 'var(--text-dim)', fontSize: 13 }}>Loading limits...</div>
+          ) : limitsState === 'failed' ? (
+            <div style={{ padding: 20, color: '#f87171', fontSize: 13 }}>
+              Could not load the stored limits — saving will leave them untouched.
+              Close and reopen to retry.
+            </div>
+          ) : (() => {
+            const inPool = providers
+              .filter(p => checked.has(p.id))
+              .sort((a, b) => a.last_name.localeCompare(b.last_name));
+            const outOfPool = Object.keys(storedLimits)
+              .filter(pid => !checked.has(pid))
+              .map(pid => providers.find(p => p.id === pid)
+                ?? ({ id: pid, first_name: '(unknown', last_name: 'provider)' } as Provider))
+              .sort((a, b) => a.last_name.localeCompare(b.last_name));
+            const COLS: Array<{ field: keyof LimitFields; label: string }> = [
+              { field: 'c1', label: 'C1 max' },
+              { field: 'c2', label: 'C2 max' },
+              { field: 'c3', label: 'C3 max' },
+              { field: 'workingDays', label: 'Working Days' },
+              { field: 'daysOff', label: 'Days Off' },
+            ];
+            const limitRow = (p: Provider, inert: boolean) => {
+              const fields = limitDrafts[p.id] ?? EMPTY_LIMIT_FIELDS;
+              return (
+                <div key={p.id} style={{
+                  display: 'grid', gridTemplateColumns: '1fr repeat(5, 74px)',
+                  gap: 6, alignItems: 'center', padding: '5px 12px',
+                  borderBottom: '1px solid var(--border)',
+                  opacity: inert ? 0.55 : 1,
+                }}>
+                  <span style={{ fontSize: 13, color: 'var(--text)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                    {p.first_name} {p.last_name}
+                    {inert && (
+                      <span style={{
+                        fontSize: 9, fontWeight: 800, marginLeft: 6, padding: '1px 5px',
+                        borderRadius: 4, background: 'rgba(100,116,139,0.22)', color: 'var(--text-dim)',
+                        textTransform: 'uppercase', letterSpacing: 0.5,
+                      }}>not in pool</span>
+                    )}
+                  </span>
+                  {COLS.map(({ field }) => {
+                    // Mutual exclusion: the sibling day field is disabled while
+                    // this one holds a value.
+                    const exclusiveOff =
+                      (field === 'daysOff' && fields.workingDays.trim() !== '') ||
+                      (field === 'workingDays' && fields.daysOff.trim() !== '');
+                    const invalid = isInvalidLimitInput(fields[field]);
+                    return (
+                      <input
+                        key={field}
+                        type="text"
+                        inputMode="numeric"
+                        value={fields[field]}
+                        placeholder="—"
+                        disabled={inert || exclusiveOff}
+                        onChange={e => setLimitField(p.id, field, e.target.value)}
+                        title={exclusiveOff ? 'Working Days and Days Off are mutually exclusive' : undefined}
+                        style={{
+                          width: '100%', padding: '4px 6px', fontSize: 12.5, textAlign: 'center',
+                          borderRadius: 6,
+                          border: invalid ? '1px solid #f87171' : '1px solid var(--border)',
+                          background: (inert || exclusiveOff) ? 'rgba(100,116,139,0.10)' : 'var(--bg-surface)',
+                          color: invalid ? '#f87171' : 'var(--text)',
+                        }}
+                      />
+                    );
+                  })}
+                </div>
+              );
+            };
+            return (
+              <div>
+                <div style={{
+                  display: 'grid', gridTemplateColumns: '1fr repeat(5, 74px)', gap: 6,
+                  padding: '7px 12px', borderBottom: '1px solid var(--border)',
+                  background: 'rgba(14,165,233,0.04)', position: 'sticky', top: 0,
+                }}>
+                  <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-muted)' }}>Provider</span>
+                  {COLS.map(c => (
+                    <span key={c.field} style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-muted)', textAlign: 'center' }}>{c.label}</span>
+                  ))}
+                </div>
+                {inPool.length === 0 ? (
+                  <div style={{ padding: 20, color: 'var(--text-dim)', fontStyle: 'italic', fontSize: 13 }}>
+                    No providers in the current pool selection.
+                  </div>
+                ) : inPool.map(p => limitRow(p, false))}
+                {outOfPool.length > 0 && (
+                  <div style={{ padding: '7px 12px 3px', fontSize: 11, fontWeight: 700, color: 'var(--text-dim)' }}>
+                    Stored limits for providers not in the pool (kept, not applied to generation):
+                  </div>
+                )}
+                {outOfPool.map(p => limitRow(p, true))}
+              </div>
+            );
+          })()}
+        </div>
+        )}
 
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 14, gap: 8 }}>
           <button
             onClick={() => save(true)}
-            disabled={saving}
+            disabled={saving || hasInvalidLimit}
             style={{
               ...smallBtn,
-              opacity: saving ? 0.5 : 1, cursor: saving ? 'not-allowed' : 'pointer',
+              opacity: (saving || hasInvalidLimit) ? 0.5 : 1,
+              cursor: (saving || hasInvalidLimit) ? 'not-allowed' : 'pointer',
             }}
-            title="Revert to the default rule-based pool (home-site call-takers / day docs)"
+            title="Revert to the default rule-based pool (home-site call-takers / day docs). Limits are kept."
           >
             Use Default Pool
           </button>
@@ -2432,13 +2687,14 @@ function PoolSelectorModal({
             </button>
             <button
               onClick={() => save(false)}
-              disabled={saving || totalSelected === 0}
+              disabled={saving || totalSelected === 0 || hasInvalidLimit}
+              title={hasInvalidLimit ? 'Fix the highlighted limit values (whole numbers ≥ 0)' : undefined}
               style={{
                 padding: '7px 16px', fontSize: 12.5, fontWeight: 700, border: 'none', borderRadius: 8,
                 background: 'linear-gradient(135deg,#0ea5e9,#6366f1)',
                 color: '#fff', boxShadow: '0 4px 14px rgba(56,130,246,0.35)',
-                opacity: (saving || totalSelected === 0) ? 0.5 : 1,
-                cursor: (saving || totalSelected === 0) ? 'not-allowed' : 'pointer',
+                opacity: (saving || totalSelected === 0 || hasInvalidLimit) ? 0.5 : 1,
+                cursor: (saving || totalSelected === 0 || hasInvalidLimit) ? 'not-allowed' : 'pointer',
               }}
             >
               {saving ? 'Saving...' : `Save Pool (${totalSelected})`}

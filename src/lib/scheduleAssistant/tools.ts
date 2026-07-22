@@ -21,6 +21,7 @@ import { trimUnfilled, MAX_CANDIDATE_REASONS } from '@/lib/rulesEngine/trimUnfil
 import { addDays, datesOverlap, dayTypeBucket, isBlockingAvailability, isActiveSellback, isDateBlocked, AVAIL_WINDOW_DAYS, BLOCKING_AVAIL } from '@/lib/rulesEngine/shared';
 import { filterPublishedVersions } from '@/lib/rulesEngine/committedAssignments';
 import { parseEmbeddedFte } from '@/lib/rulesEngine/loadContext';
+import { parseProviderLimits, type ProviderLimits } from '@/lib/providerLimits';
 import { FTE_MIN, FTE_MAX } from '@/lib/validation/providers';
 import { replaceActivePattern, assignProviderToSlot, clearSlotAssignment, ToolInputError } from './mutations';
 import { chunk } from '@/lib/rulesEngine/batchValidate';
@@ -41,14 +42,30 @@ export interface ScheduleCtx {
   dateStart: string;
   dateEnd: string;
   overrideProviderIds?: string[];
+  // Parsed schedules.provider_limits (patch34) — READ-ONLY for the assistant
+  // (no write tool; 16/20 strict-tool budget). Undefined pre-patch34 /
+  // unset / malformed. get_schedule_context surfaces it.
+  providerLimits?: ProviderLimits;
 }
 
+const SCHEDULE_CTX_COLUMNS = 'id, site_id, schedule_name, date_start, date_end, included_provider_ids';
+
 export async function loadScheduleCtx(sb: SchedulingClient, scheduleId: string): Promise<ScheduleCtx> {
-  const { data: schedule, error: schedErr } = await sb
+  // Wide select includes provider_limits (patch34); a pre-patch34 DB errors on
+  // the missing column, so NARROW-RETRY without it — the assistant must keep
+  // working there (limits simply absent).
+  let { data: schedule, error: schedErr } = await sb
     .from('schedules')
-    .select('id, site_id, schedule_name, date_start, date_end, included_provider_ids')
+    .select(`${SCHEDULE_CTX_COLUMNS}, provider_limits`)
     .eq('id', scheduleId)
     .maybeSingle();
+  if (schedErr && /column|provider_limits/i.test(schedErr.message || '')) {
+    ({ data: schedule, error: schedErr } = await sb
+      .from('schedules')
+      .select(SCHEDULE_CTX_COLUMNS)
+      .eq('id', scheduleId)
+      .maybeSingle());
+  }
   if (schedErr) throw new Error(`schedule load failed: ${schedErr.message}`);
   if (!schedule) throw new Error(`schedule ${scheduleId} not found`);
 
@@ -72,6 +89,11 @@ export async function loadScheduleCtx(sb: SchedulingClient, scheduleId: string):
       ? rawOverride.filter((x: unknown): x is string => typeof x === 'string')
       : undefined;
 
+  // Lenient here (loud rejection belongs to the PATCH route): malformed
+  // stored limits read as "none" so the assistant keeps working.
+  const parsedLimits = parseProviderLimits((schedule as { provider_limits?: unknown }).provider_limits);
+  const providerLimits = parsedLimits.ok && parsedLimits.value ? parsedLimits.value : undefined;
+
   return {
     scheduleId,
     siteId: schedule.site_id as string,
@@ -80,6 +102,7 @@ export async function loadScheduleCtx(sb: SchedulingClient, scheduleId: string):
     dateStart: schedule.date_start as string,
     dateEnd: schedule.date_end as string,
     overrideProviderIds,
+    providerLimits,
   };
 }
 
@@ -971,6 +994,11 @@ export function createToolExecutors(deps?: Partial<ToolEngineDeps>): Record<stri
           rules,
           providers: providersRes.data ?? [],
           metrics: { total_slots: slotIds.length, assigned: assignedCount },
+          // Per-provider block limits (patch34) — READ-ONLY summary: per-code
+          // call caps are hard ceilings for auto-generation; workingDays /
+          // daysOff override that provider's workday budget. null = none
+          // stated. Edited only in the schedule page's Pool → Limits tab.
+          provider_limits: ctx.providerLimits ?? null,
           warnings,
         },
       };

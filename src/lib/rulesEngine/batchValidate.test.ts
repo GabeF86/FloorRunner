@@ -180,13 +180,16 @@ function serialTables(): Record<string, TableCfg> {
 }
 
 describe('batchValidateVersion', () => {
-  it('issues at most 7 queries for the whole version', async () => {
+  it('issues at most 9 queries for the whole version', async () => {
     // slots + providers + availability + credentials + the committed-scope
     // assignments window (TWO reads: published + this version, draft isolation)
-    // + one bulk write.
+    // + one bulk write + the provider-limits context (2026-07-22, patch34:
+    // schedule_versions parent lookup + schedules limits read; up to two more
+    // — holidays + netting availability — only when limits are actually
+    // stated, which this fixture does not).
     const { sb, calls } = makeFakeSupabase({ tables: batchTables() });
     await batchValidateVersion(sb, 'v1', siteCtx);
-    expect(fromCount(calls)).toBeLessThanOrEqual(7);
+    expect(fromCount(calls)).toBeLessThanOrEqual(9);
   });
 
   it('per-assignment violations are identical to serial evaluateAssignment', async () => {

@@ -161,4 +161,24 @@ describe('autoGenerate — fillMode threading', () => {
       slot_id: 'slot-d3-0930', assignment_id: 'a-d3-0930',
     })]);
   });
+
+  // ── provider call caps (2026-07-22, patch34) — result cap summary ──────────
+  it('surfaces providerCapSummary when the ctx states call caps', async () => {
+    holder.ctx = buildCtx(
+      [callSlot('mon', '2026-01-05', 'C1'), callSlot('wed', '2026-01-07', 'C1')],
+      [prov('p1')],
+      { providerLimits: { p1: { calls: { C1: 1 } } } },
+    );
+    const result = await autoGenerate({}, 'ver-1', { optimize: false });
+    expect(result.ok).toBe(true);
+    expect(result.providerCapSummary).toEqual({
+      rows: [{ provider_id: 'p1', provider_name: 'p1', code: 'C1', cap: 1, placed: 1 }],
+      cappedUnfilled: 1,
+    });
+  });
+
+  it('carries no providerCapSummary key when no call caps are stated', async () => {
+    const result = await autoGenerate({}, 'ver-1', { optimize: false });
+    expect(result.providerCapSummary).toBeUndefined();
+  });
 });

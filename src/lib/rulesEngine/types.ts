@@ -3,6 +3,8 @@
 // An evaluator inspects a single (slot, provider) assignment and returns
 // any violations of active rules. Each evaluator handles one rule category.
 
+import type { ProviderLimits } from '@/lib/providerLimits';
+
 export type RuleCategory =
   | 'coverage'
   | 'sequence'
@@ -157,6 +159,22 @@ export interface EvaluationContext {
 
   // Schedule version ID (for looking up related slots)
   scheduleVersionId: string | null;
+
+  // Provider-limits validation context (2026-07-22, patch34) — resolved at
+  // LOAD time by loadProviderLimitsValidationCtx (loadContext.ts) and threaded
+  // by BOTH the serial path and batchValidate (kept in parity). Absent/null =
+  // feature off (pre-patch34 column, no limits stated, or a degraded load) —
+  // the providerLimits evaluator is then inert. Soft flags ONLY.
+  providerLimitsCtx?: {
+    limits: ProviderLimits;                       // parent schedule's stated limits
+    blockStart: string;                           // schedules.date_start
+    blockEnd: string;                             // schedules.date_end
+    workingDaySet: ReadonlySet<string>;           // block weekdays minus major holidays
+    // Resolved stated working-days caps (workingDays as entered; daysOff
+    // re-derived as WD − ptoWeekdays − daysOff at load time). Only providers
+    // with a stated day limit appear.
+    workingDaysCapByProvider: ReadonlyMap<string, number>;
+  } | null;
 
   // Active rules for this site
   rules: RuleDefinition[];

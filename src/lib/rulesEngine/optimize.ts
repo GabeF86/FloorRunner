@@ -1,6 +1,7 @@
 import { solve, seedSolveState } from './solve';
 import { scoreSolution } from './metrics';
 import { evaluateEligibility } from './eligibility';
+import { buildCallCaps, planWithinCallCaps } from './providerCaps';
 import { CLASSIC_PATTERN } from './callPattern';
 import type { CallPatternDoc } from './callPattern';
 import type {
@@ -135,6 +136,18 @@ export function optimize(ctx: GenerationContext, opts: OptimizeOptions = {}): Op
     return true;
   };
 
+  // ── Provider call caps (2026-07-22, patch34 provider_limits) ──
+  // Caps are hard ceilings for ALL of auto-generation, the optimizer
+  // included. Inside a trial re-solve the pinned assignments re-validate with
+  // 'call-no-quota' — which rightly bypasses caps for incumbents — so a move
+  // ONTO a capped provider slips through the trial. The acceptance gate
+  // rejects any trial plan exceeding a stated cap (seeds counted): the greedy
+  // seed plan is cap-clean by construction, so acceptance stays monotone
+  // cap-clean. null caps ⇒ the check is inert (blank-fallback pin).
+  const callCaps = buildCallCaps(ctx.providerLimits);
+  const withinCallCaps = (trial: SolutionPlan): boolean =>
+    !callCaps || planWithinCallCaps(callCaps, trial, ctx.seedAssignments);
+
   // ── Eligibility pre-gate (built once — its inputs never change) ──
   // The gate state holds ONLY the seeded assignments (+ ctx-derived facts like
   // PTO, cross-site, credentials, weekday availability inside
@@ -214,7 +227,8 @@ export function optimize(ctx: GenerationContext, opts: OptimizeOptions = {}): Op
             trial.set(sId, qid);   // Q takes P's vacated slot
             resolvesUsed++;
             const { plan, metrics } = evaluate(ctx, trial);
-            if (keepsEveryIncumbentFill(plan) && compareMetrics(metrics, bestMetrics) < 0) {
+            if (keepsEveryIncumbentFill(plan) && withinCallCaps(plan)
+              && compareMetrics(metrics, bestMetrics) < 0) {
               best = plan; bestMetrics = metrics; bestAssign = extractCallAssignment(plan);
               bestFilled = filledSlotIds(plan);
               improved = true;
@@ -244,7 +258,8 @@ export function optimize(ctx: GenerationContext, opts: OptimizeOptions = {}): Op
         trial.set(sId, pid);
         resolvesUsed++;
         const { plan, metrics } = evaluate(ctx, trial);
-        if (keepsEveryIncumbentFill(plan) && compareMetrics(metrics, bestMetrics) < 0) {
+        if (keepsEveryIncumbentFill(plan) && withinCallCaps(plan)
+          && compareMetrics(metrics, bestMetrics) < 0) {
           best = plan; bestMetrics = metrics; bestAssign = extractCallAssignment(plan);
           bestFilled = filledSlotIds(plan);
           improved = true;

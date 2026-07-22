@@ -826,6 +826,72 @@ const poolEligibility: Evaluator = ctx => {
   return violations;
 };
 
+// ── Provider limits (2026-07-22, patch34) ──────────────────────────────────
+//
+// SOFT flags only — never hard, never blocking. The stated per-provider caps
+// (schedules.provider_limits) are hard ceilings for AUTO-GENERATION; manual /
+// assistant edits legitimately bypass them, and this evaluator is how such
+// overruns stay visible on the grid. Fires only when the load path resolved a
+// providerLimitsCtx (absent = feature off — pre-patch34 DBs stay silent).
+//
+//   • Per-code call cap: this assignment's code count within the block
+//     (neighbors are version+site scoped, window ±31d ≥ any monthly block)
+//     exceeds the stated calls[code] max.
+//   • Working-days cap: distinct ASSIGNED working days (weekdays minus major
+//     holidays, deduped per date) exceed the resolved stated max. Post-call
+//     rest / ICU credit deliberately do NOT count here — validation examines
+//     assignment rows, and undercounting only makes the soft flag quieter.
+
+const providerLimits: Evaluator = ctx => {
+  const plc = ctx.providerLimitsCtx;
+  if (!plc || !ctx.providerId) return [];
+  const entry = plc.limits[ctx.providerId];
+  const wdCap = plc.workingDaysCapByProvider.get(ctx.providerId);
+  if (!entry && wdCap == null) return [];
+  const violations: RuleViolation[] = [];
+  const inBlock = (d: string) => d >= plc.blockStart && d <= plc.blockEnd;
+
+  // Per-code call cap.
+  const code = ctx.shiftType.code;
+  const callCap = ctx.shiftType.category === 'call' ? entry?.calls?.[code] : undefined;
+  if (typeof callCap === 'number' && inBlock(ctx.slot.slot_date)) {
+    let count = 1; // this assignment
+    for (const n of ctx.neighborAssignments) {
+      if (n.shift_type_category === 'call' && n.shift_type_code === code && inBlock(n.slot_date)) count++;
+    }
+    if (count > callCap) {
+      violations.push({
+        rule_id: null,
+        rule_name: 'Provider limit (calls)',
+        category: 'frequency',
+        severity: 'soft',
+        message: `Provider has ${count} ${code} calls this block — stated max ${callCap}.`,
+        details: { code, count, cap: callCap },
+      });
+    }
+  }
+
+  // Working-days cap (workingDaySet is already block-scoped).
+  if (wdCap != null && plc.workingDaySet.has(ctx.slot.slot_date)) {
+    const days = new Set<string>([ctx.slot.slot_date]);
+    for (const n of ctx.neighborAssignments) {
+      if (plc.workingDaySet.has(n.slot_date)) days.add(n.slot_date);
+    }
+    if (days.size > wdCap) {
+      violations.push({
+        rule_id: null,
+        rule_name: 'Provider limit (working days)',
+        category: 'frequency',
+        severity: 'soft',
+        message: `Provider is assigned on ${days.size} working days this block — stated max ${wdCap}.`,
+        details: { workingDays: days.size, cap: wdCap },
+      });
+    }
+  }
+
+  return violations;
+};
+
 // ── Cross-Site ─────────────────────────────────────────────────────────────
 
 // Detects when a provider is assigned at more than one site on the same day.
@@ -878,5 +944,6 @@ export const evaluators: Evaluator[] = [
   fairness,
   openSlot,
   poolEligibility,
+  providerLimits,
   crossSite,
 ];

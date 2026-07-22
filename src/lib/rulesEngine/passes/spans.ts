@@ -4,7 +4,7 @@
 // main call loop individually. See ALGORITHM.md §15 field map.
 import { addDays } from '../shared';
 import { evaluateEligibility } from '../eligibility';
-import { record, applyDayChains, scoreCall, capRoom, pushUnfilled } from '../solveKernel';
+import { record, applyDayChains, scoreCall, capRoom, callCapRoom, pushUnfilled } from '../solveKernel';
 import type { SolverRun } from '../solveKernel';
 import type { SlotToFill } from '../genTypes';
 
@@ -26,19 +26,36 @@ export function runSpansPass(run: SolverRun, scheduleDates: string[]): void {
       const eligibleForSpan = ctx.providers.filter(p => spanSlots.every(
         s => evaluateEligibility(s, p, state, ctx,
           s.shift_type_category === 'call' ? 'call' : 'derived').eligible));
+      // Provider call caps (2026-07-22): a span is admitted WHOLE against the
+      // stated per-code caps — count its call slots per code and require room
+      // for every one (the whole-block-admission rule, span-shaped). Inert
+      // when no caps are stated.
+      let capAdmitted = eligibleForSpan;
+      if (run.callCaps) {
+        const needsByCode = new Map<string, number>();
+        for (const s of spanSlots) {
+          if (s.shift_type_category === 'call') {
+            needsByCode.set(s.shift_type_code, (needsByCode.get(s.shift_type_code) || 0) + 1);
+          }
+        }
+        capAdmitted = eligibleForSpan.filter(p =>
+          [...needsByCode].every(([code, n]) => callCapRoom(run, p.id, code) >= n));
+      }
       // Obligatory mode: a span is one atomic multi-call obligation — charge
       // its call slots against the cap upfront, same rule as chain blocks.
       const spanCallCount = spanSlots.filter(s => s.shift_type_category === 'call').length;
       const candidates = run.obligatory
-        ? eligibleForSpan.filter(p => capRoom(run, p.id) >= spanCallCount)
-        : eligibleForSpan;
+        ? capAdmitted.filter(p => capRoom(run, p.id) >= spanCallCount)
+        : capAdmitted;
       if (candidates.length === 0) {
-        // 'obligation-cap' only when the cap was the sole blocker (someone
-        // was otherwise able to cover the whole span). The slots stay in
-        // slotsToFill, so the main loop still attempts them individually
-        // (within caps) — mirroring the existing severed-span fallback.
-        const reason = run.obligatory && eligibleForSpan.length > 0
-          ? 'obligation-cap' : 'No provider can cover full span';
+        // 'obligation-cap'/'provider-cap' only when that cap was the binding
+        // blocker (someone was otherwise able to cover the whole span). The
+        // slots stay in slotsToFill, so the main loop still attempts them
+        // individually (within caps) — mirroring the severed-span fallback.
+        const reason = run.callCaps && eligibleForSpan.length > 0 && capAdmitted.length === 0
+          ? 'provider-cap'
+          : run.obligatory && capAdmitted.length > 0
+            ? 'obligation-cap' : 'No provider can cover full span';
         for (const s of spanSlots) pushUnfilled(run, s, reason);
         continue;
       }

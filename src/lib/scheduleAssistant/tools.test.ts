@@ -10,7 +10,7 @@
 // versions), so both reads page with count:'exact' + .range and must throw
 // rather than report a partial grid / partial slot count as fact.
 import { describe, it, expect } from 'vitest';
-import { createToolExecutors, type ScheduleCtx } from './tools';
+import { createToolExecutors, loadScheduleCtx, type ScheduleCtx } from './tools';
 import { makeFakeSupabase, callsFor, type Filter } from '@/lib/rulesEngine/__fixtures__/fakeSupabase';
 
 const ctx: ScheduleCtx = {
@@ -157,5 +157,81 @@ describe('assistant tool schemas — strict grammar limit', () => {
         `${t.name} strict schema too large — drop strict and validate in the executor`,
       ).toBeLessThanOrEqual(1000);
     }
+  });
+});
+
+// ── provider_limits (2026-07-22, patch34) — read-only assistant surface ──────
+// NO new tool (16/20 strict-tool budget): loadScheduleCtx carries the parsed
+// limits (narrow-retry when the column predates patch34) and
+// get_schedule_context summarizes them read-only.
+
+describe('loadScheduleCtx — provider_limits', () => {
+  const SCHED_ROW = {
+    id: 'sched-1', site_id: 'site-1', schedule_name: 'S',
+    date_start: '2026-01-01', date_end: '2026-01-31',
+    included_provider_ids: null,
+  };
+
+  it('parses stored limits onto the ctx', async () => {
+    const { sb } = makeFakeSupabase({ tables: {
+      schedules: { data: { ...SCHED_ROW, provider_limits: { p1: { calls: { C1: 2 }, daysOff: 3 } } }, error: null },
+      schedule_versions: { data: { id: 'ver-1', version_number: 1 }, error: null },
+    } });
+    const loaded = await loadScheduleCtx(sb as never, 'sched-1');
+    expect(loaded.providerLimits).toEqual({ p1: { calls: { C1: 2 }, daysOff: 3 } });
+  });
+
+  it('narrow-retries when the column is missing (pre-patch34) — ctx loads, limits undefined', async () => {
+    const { sb, calls } = makeFakeSupabase({ tables: {
+      schedules: (filters: Filter[]) => {
+        const sel = filters.find(f => f.method === 'select');
+        return String(sel?.args[0]).includes('provider_limits')
+          ? { data: null, error: { message: 'column schedules.provider_limits does not exist' } }
+          : { data: SCHED_ROW, error: null };
+      },
+      schedule_versions: { data: { id: 'ver-1', version_number: 1 }, error: null },
+    } });
+    const loaded = await loadScheduleCtx(sb as never, 'sched-1');
+    expect(loaded.siteId).toBe('site-1');
+    expect(loaded.providerLimits).toBeUndefined();
+    expect(callsFor(calls, 'schedules', 'select')).toHaveLength(2); // wide, then narrow retry
+  });
+
+  it('malformed stored limits are ignored (ctx still loads)', async () => {
+    const { sb } = makeFakeSupabase({ tables: {
+      schedules: { data: { ...SCHED_ROW, provider_limits: 'garbage' }, error: null },
+      schedule_versions: { data: { id: 'ver-1', version_number: 1 }, error: null },
+    } });
+    const loaded = await loadScheduleCtx(sb as never, 'sched-1');
+    expect(loaded.providerLimits).toBeUndefined();
+  });
+});
+
+describe('get_schedule_context — provider_limits summary', () => {
+  const contextTables = {
+    sites: { data: { id: 'site-1', name: 'Main', short_name: 'M' }, error: null },
+    shift_types: { data: [], error: null },
+    call_patterns: { data: null, error: null },
+    rule_sets: { data: [], error: null },
+    providers: { data: [], error: null },
+    schedule_slots: { data: [], error: null, count: 0 },
+    assignments: { data: [], error: null },
+  };
+
+  it('surfaces the ctx limits read-only on the result', async () => {
+    const { sb } = makeFakeSupabase({ tables: contextTables });
+    const executors = createToolExecutors();
+    const out = await executors.get_schedule_context(sb as never, {
+      ...ctx, providerLimits: { p1: { workingDays: 12 } },
+    }, {});
+    expect((out.result as { provider_limits: unknown }).provider_limits)
+      .toEqual({ p1: { workingDays: 12 } });
+  });
+
+  it('reports null when no limits are stated', async () => {
+    const { sb } = makeFakeSupabase({ tables: contextTables });
+    const executors = createToolExecutors();
+    const out = await executors.get_schedule_context(sb as never, ctx, {});
+    expect((out.result as { provider_limits: unknown }).provider_limits).toBeNull();
   });
 });

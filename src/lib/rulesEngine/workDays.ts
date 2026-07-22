@@ -20,6 +20,7 @@
 
 import { dayOfWeekUTC, BOOKEND_EXTENDING_TYPES, isDismissedAvailability, isActiveSellback, type SupabaseClient } from './shared';
 import { ICU_WEEK_REASON, ICU_POST_CALL_REASON } from '@/lib/icuRotation';
+import type { ProviderLimitEntry } from '@/lib/providerLimits';
 
 // Major-holiday dates within [start, end] for an organization (holiday rows
 // are org-wide, site_id NULL). Single home for the query both placement
@@ -156,6 +157,42 @@ export function requiredWorkDays(fte: number, workingDays: number, ptoWeekdays: 
 // entitledOffDays = WD − round(fte × WD), floored at 0. Independent of PTO.
 export function entitledOffDays(fte: number, workingDays: number): number {
   return Math.max(0, workingDays - Math.round(fte * workingDays));
+}
+
+// ── Provider-limit working-days override (2026-07-22, patch34) ──────────────
+// The STATED working-days cap from a provider-limit entry, or null when the
+// entry states none. Single-homed beside the netting formula it reuses:
+//   workingDays entry → that number, AS ENTERED.
+//   daysOff entry     → WD − ptoWeekdays − daysOff (same 1:1 netting as
+//                       requiredWorkDays; floored at 0). Re-derived at every
+//                       generation so later PTO changes shift it — live-lever
+//                       discipline: the stored daysOff is never frozen into a
+//                       converted number.
+// workingDays and daysOff are mutually exclusive at the parse gate
+// (parseProviderLimits); if a hand-edited row carries both, workingDays wins
+// deterministically.
+export function statedWorkingDaysCap(
+  limit: ProviderLimitEntry | undefined,
+  workingDays: number,
+  ptoWeekdays: number,
+): number | null {
+  if (limit?.workingDays != null) return Math.max(0, limit.workingDays);
+  if (limit?.daysOff != null) return Math.max(0, workingDays - ptoWeekdays - limit.daysOff);
+  return null;
+}
+
+// `required` with the optional provider-limit override. BLANK limit → the
+// existing round(FTE × WD) − PTO machinery UNTOUCHED (Gabriel, verbatim and
+// binding: "if the working days allowed or days off is left empty, continue
+// to use the current FTE derived workday budget that is already in place").
+export function requiredWorkDaysWithLimit(
+  fte: number,
+  workingDays: number,
+  ptoWeekdays: number,
+  limit: ProviderLimitEntry | undefined,
+): number {
+  return statedWorkingDaysCap(limit, workingDays, ptoWeekdays)
+    ?? requiredWorkDays(fte, workingDays, ptoWeekdays);
 }
 
 // Credit ledger writer (single home): mark `date` as a worked day for `pid`.

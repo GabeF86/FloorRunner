@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { sbSchedulingServer } from '@/lib/supabaseScheduling';
 import { publishRevalidation, type PublishValidationSummary } from '@/lib/rulesEngine/commit';
+import { parseProviderLimits } from '@/lib/providerLimits';
 
 // Never prerender — this route hits Supabase per request.
 export const dynamic = 'force-dynamic';
@@ -49,6 +50,20 @@ export async function PATCH(
   const sb = sbSchedulingServer();
   const { id } = await params;
   const body = await req.json();
+
+  // provider_limits hardening (2026-07-22, patch34): the PATCH is otherwise a
+  // passthrough, but this jsonb key is shape-validated (integers >= 0 only,
+  // unknown keys stripped, NaN rejected, workingDays/daysOff mutually
+  // exclusive) via the shared parseProviderLimits before any write. A
+  // malformed shape is a 400 — never stored. Valid shapes are written
+  // NORMALIZED (empty map → null).
+  if (body && typeof body === 'object' && 'provider_limits' in body) {
+    const parsed = parseProviderLimits((body as Record<string, unknown>).provider_limits);
+    if (!parsed.ok) {
+      return NextResponse.json({ error: parsed.error }, { status: 400 });
+    }
+    (body as Record<string, unknown>).provider_limits = parsed.value;
+  }
 
   const { data, error } = await sb
     .from('schedules')

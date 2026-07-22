@@ -5,7 +5,7 @@
 // so fall back to the shared builder (identical predicate). See ALGORITHM.md §7.
 import { buildPrePtoByThursday } from '../shared';
 import { evaluateEligibility } from '../eligibility';
-import { record, applyDayChains, capRoom } from '../solveKernel';
+import { record, applyDayChains, capRoom, callCapRoom } from '../solveKernel';
 import type { SolverRun } from '../solveKernel';
 import type { SlotToFill, CandidateProvider } from '../genTypes';
 
@@ -21,6 +21,11 @@ export function runPrePtoPass(run: SolverRun): void {
     // other — it needs cap-room. (tryPlacePrePto never fires block chains,
     // so one slot of room suffices.)
     if (run.obligatory && capRoom(run, p.id) < 1) return false;
+    // Provider call caps (2026-07-22): same single-slot rule — a pre-PTO
+    // placement is best-effort and silently skipped when the provider has no
+    // room left under their stated per-code cap (the slot falls through to
+    // the main loop / other candidates).
+    if (run.callCaps && callCapRoom(run, p.id, slot.shift_type_code) < 1) return false;
     if (!evaluateEligibility(slot, p, state, ctx, 'call').eligible) return false;
     record(run, slot, p, 'pre-pto-thursday');
     applyDayChains(run, slot, p);

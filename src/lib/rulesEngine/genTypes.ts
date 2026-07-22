@@ -2,6 +2,7 @@
 // Lifted from the interfaces formerly inline in autoGenerate.ts.
 import type { CallPatternDoc } from './callPattern';
 import type { WorkDayBudget } from './workDays';
+import type { ProviderLimits } from '@/lib/providerLimits';
 
 export interface SlotToFill {
   slot_id: string;
@@ -121,6 +122,15 @@ export interface GenerationContext {
   // engine (fillAllPlan.golden.json pin). When present, every placement engine
   // enforces the per-provider `required` cap on WEEKDAY placements.
   workDayBudget?: WorkDayBudget;
+  // ── Per-provider block limits (2026-07-22, patch34; OPT-IN like the budget) ──
+  // Parsed schedules.provider_limits for the parent schedule. ABSENT (absent
+  // column, no row, blank/{}) ⇒ zero behavior change — byte-identical plans
+  // (blank-fallback pin in providerLimitCaps.test.ts). When present:
+  //   • calls caps are hard per-code ceilings for auto-generation
+  //     (solve/providerCaps; seeds count; whole-block admission at anchors);
+  //   • workingDays/daysOff override the provider's workDayBudget.required
+  //     (requiredWorkDaysWithLimit, workDays.ts — applied at genContext build).
+  providerLimits?: ProviderLimits;
 }
 
 // WorkDayBudget / ProviderWorkDayBudget live beside their arithmetic in
@@ -159,7 +169,13 @@ export type RejectionReason =
   // has already been credited their `required` working days for the block, so a
   // further WEEKDAY placement is refused. Additive; only emitted when ctx
   // carries a workDayBudget (production). Never overrides a safety gate.
-  | 'workdays-cap';
+  | 'workdays-cap'
+  // 2026-07-22, provider_limits call caps: the provider passed every gate but
+  // placing this slot (or its whole designed block, at a chain anchor) would
+  // exceed their STATED per-code call maximum. Additive; only emitted when
+  // ctx.providerLimits states call caps. A slot nobody can take under caps
+  // stays OPEN with this reason — never silently reassigned past a stated max.
+  | 'provider-cap';
 
 export interface EligibilityResult {
   readonly eligible: boolean;

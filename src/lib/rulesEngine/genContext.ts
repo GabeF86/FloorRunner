@@ -32,7 +32,8 @@ import { CallPatternDocSchema, patternWarnings, callFillOrderWarnings, dayTypeFi
 import { fetchCommittedAssignments, filterPublishedVersions } from './committedAssignments';
 import { embedArray } from '@/lib/embed';
 import { clampParToPoolFte } from '@/lib/fteTarget';
-import { isWorkingDay, ptoWeekdaysCovered, requiredWorkDays, entitledOffDays, loadMajorHolidayDates } from './workDays';
+import { isWorkingDay, ptoWeekdaysCovered, requiredWorkDaysWithLimit, entitledOffDays, loadMajorHolidayDates } from './workDays';
+import { parseProviderLimits, type ProviderLimits } from '@/lib/providerLimits';
 
 // Fallback when site.call_par_level isn't set (or is 0/negative). Exported
 // (2026-07-20) so the planner API resolves the same default the engine does —
@@ -685,6 +686,39 @@ export async function loadGenerationContext(
     }
   }
 
+  // ── 6b. Per-provider block limits (2026-07-22, patch34) ───────────────────
+  // schedules.provider_limits for the parent schedule, parsed with the shared
+  // hardened parser. Degradation posture (review runs pre-patch34):
+  //   • missing column / no parent / no row / null → undefined, SILENT — an
+  //     absent column can hold no limits, so "no limits" is exact, and a
+  //     pre-patch warning on every generation would be noise;
+  //   • any OTHER load error → undefined + a LOUD warning (a transient
+  //     failure could be hiding real stated caps — never fail silent);
+  //   • malformed jsonb → undefined + warning (all-or-nothing: never enforce
+  //     a partially-parsed cap set).
+  let providerLimits: ProviderLimits | undefined;
+  if (parentScheduleId) {
+    countQ();
+    const limitsRes = await sb
+      .from('schedules')
+      .select('provider_limits')
+      .eq('id', parentScheduleId)
+      .maybeSingle();
+    if (limitsRes.error) {
+      const limitsErrMsg = (limitsRes.error as { message?: string }).message || '';
+      if (!/column|provider_limits/i.test(limitsErrMsg)) {
+        warnings.push(`schedules.provider_limits load failed — generating WITHOUT provider limits: ${limitsErrMsg || 'unknown error'}`);
+      }
+    } else {
+      const rawLimits = (limitsRes.data as { provider_limits?: unknown } | null)?.provider_limits;
+      if (rawLimits != null) {
+        const parsedLimits = parseProviderLimits(rawLimits);
+        if (parsedLimits.ok) providerLimits = parsedLimits.value ?? undefined;
+        else warnings.push(`schedules.provider_limits is malformed — limits IGNORED: ${parsedLimits.error}`);
+      }
+    }
+  }
+
   const crossWindowStart = addDays(allSlotDates[0], -1);
   const crossWindowEnd = addDays(allSlotDates[allSlotDates.length - 1], 1);
   countQ();
@@ -920,7 +954,11 @@ export async function loadGenerationContext(
       fte: p.fte_value,
       workingDays,
       ptoWeekdays: pto,
-      required: requiredWorkDays(p.fte_value, workingDays, pto),
+      // Provider-limit override (patch34): a stated workingDays IS required;
+      // a stated daysOff re-derives (WD − pto − daysOff) so future PTO edits
+      // keep shifting it. BLANK → the pre-limits round(FTE × WD) − PTO
+      // machinery, untouched (Gabriel's verbatim rule).
+      required: requiredWorkDaysWithLimit(p.fte_value, workingDays, pto, providerLimits?.[p.id]),
       entitledOff: entitledOffDays(p.fte_value, workingDays),
     });
   }
@@ -950,6 +988,7 @@ export async function loadGenerationContext(
       prePtoByThursday: buildPrePtoByThursday(providers, availByPid, slotIndex),
       scheduleDates: allSlotDates,
       workDayBudget,
+      providerLimits,
     },
     dbQueries,
     totalSlots: rawSlots.length,
