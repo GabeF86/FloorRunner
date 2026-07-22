@@ -18,8 +18,11 @@ export const GRID_SCHEDULE_COLUMNS =
 export const GRID_ASSIGNMENT_COLUMNS =
   'id, schedule_slot_id, provider_id, assignment_status, is_open_call, manually_overridden, validation_flags, providers(id, last_name, short_display_name, initials, provider_type)';
 
+// requires_post_call_rule rides on the shift_types join for the Call Counts
+// modal's Working Days credit (post-call rest days credit as worked —
+// plannerMath.computeScheduleActuals via lib/callCountDays.ts).
 export const GRID_SLOT_COLUMNS =
-  `id, slot_date, shift_type_id, slot_index, locked, derived_day_type, shift_types(id, code, name, color_hex, category, call_type, display_order, provider_group), assignments(${GRID_ASSIGNMENT_COLUMNS})` as const;
+  `id, slot_date, shift_type_id, slot_index, locked, derived_day_type, shift_types(id, code, name, color_hex, category, call_type, display_order, provider_group, requires_post_call_rule), assignments(${GRID_ASSIGNMENT_COLUMNS})` as const;
 
 // Per-assignment severity counts, computed server-side so the page doesn't
 // re-walk every flags array per render. `warning` counts sentinel flags
