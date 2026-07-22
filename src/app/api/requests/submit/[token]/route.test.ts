@@ -34,20 +34,25 @@ function setup(opts: {
   provider?: Record<string, unknown> | null;
   profile?: Record<string, unknown> | null;
   existingNoCallDates?: string[];
+  existingCallDates?: string[];
 } = {}) {
   const window = opts.window === undefined ? WINDOW : opts.window;
   const provider = opts.provider === undefined ? { id: 'prov-1', status: 'active' } : opts.provider;
   const profile = opts.profile === undefined ? { home_site_id: 'site-1' } : opts.profile;
   const existing = (opts.existingNoCallDates ?? []).map(d => ({ start_date: d }));
+  const existingCall = (opts.existingCallDates ?? []).map(d => ({ start_date: d }));
 
   const tables: Record<string, TableCfg> = {
     request_windows: { data: window, error: null },
     providers: { data: provider, error: null },
     provider_employment_profiles: { data: profile, error: null },
-    provider_availability: (filters: Filter[]) =>
-      filters.some(f => f.method === 'insert')
-        ? { data: null, error: null }
-        : { data: existing, error: null },
+    // The existing-rows SELECT runs per request type — dispatch on the
+    // availability_type filter so each cap counts only its own rows.
+    provider_availability: (filters: Filter[]) => {
+      if (filters.some(f => f.method === 'insert')) return { data: null, error: null };
+      const typeEq = filters.find(f => f.method === 'eq' && f.args[0] === 'availability_type');
+      return { data: typeEq?.args[1] === 'call_request' ? existingCall : existing, error: null };
+    },
     provider_requests: { data: null, error: null },
   };
   const { sb, calls } = makeFakeSupabase({ tables });
@@ -139,7 +144,7 @@ describe('POST /api/requests/submit/[token]', () => {
     }), params);
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body.created).toEqual({ pto: 1, days_off: 1, no_call: 2 });
+    expect(body.created).toEqual({ pto: 1, days_off: 1, no_call: 2, call: 0 });
 
     // PTO + Days Off → pending provider_requests feeding the approval queue.
     const reqInserts = callsFor(calls, 'provider_requests', 'insert');
@@ -172,6 +177,27 @@ describe('POST /api/requests/submit/[token]', () => {
     }
   });
 
+  it('rejects call dates when the window does not enable call requests', async () => {
+    // WINDOW carries no max_call_requests (pre-patch36 shape / admin left it
+    // Off) — call_dates must be refused with a clear message, no writes.
+    const { calls } = setup();
+    const res = await POST(fakeReq({ provider_id: 'prov-1', call_dates: ['2026-09-10'] }), params);
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toMatch(/call/i);
+    expect(writeCount(calls)).toBe(0);
+  });
+
+  it('rejects a call date submitted together with the same no-call date (contradictory)', async () => {
+    const { calls } = setup({ window: { ...WINDOW, max_call_requests: 3 } });
+    const res = await POST(fakeReq({
+      provider_id: 'prov-1',
+      no_call_dates: ['2026-09-10'],
+      call_dates: ['2026-09-10'],
+    }), params);
+    expect(res.status).toBe(400);
+    expect(writeCount(calls)).toBe(0);
+  });
+
   it('does not write no-call rows when only PTO is submitted', async () => {
     const { calls } = setup();
     const res = await POST(fakeReq({
@@ -181,5 +207,118 @@ describe('POST /api/requests/submit/[token]', () => {
     expect(res.status).toBe(200);
     expect(callsFor(calls, 'provider_availability', 'insert')).toHaveLength(0);
     expect(callsFor(calls, 'provider_requests', 'insert')).toHaveLength(1);
+  });
+});
+
+// ── call-shift requests (2026-07-22) — mirror of the no-call category ───────
+// Enabled by the admin per window (max_call_requests ≥ 1; NULL = category
+// off). One request = one requested DATE; the per-provider cap counts the
+// provider's existing window-sourced call_request rows exactly like no-call.
+describe('POST /api/requests/submit/[token] — call-shift requests', () => {
+  const CALL_WINDOW = { ...WINDOW, max_call_requests: 3 };
+
+  it('400s when a call date falls outside the block', async () => {
+    const { calls } = setup({ window: CALL_WINDOW });
+    const res = await POST(fakeReq({ provider_id: 'prov-1', call_dates: ['2026-12-01'] }), params);
+    expect(res.status).toBe(400);
+    expect(writeCount(calls)).toBe(0);
+  });
+
+  it('enforces the per-window call cap against existing window-sourced rows', async () => {
+    const { calls } = setup({
+      window: CALL_WINDOW,
+      existingCallDates: ['2026-09-10', '2026-09-17'],
+    });
+    const res = await POST(
+      fakeReq({ provider_id: 'prov-1', call_dates: ['2026-10-01', '2026-10-08'] }),
+      params,
+    );
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toMatch(/3/); // mentions the cap
+    expect(writeCount(calls)).toBe(0);
+  });
+
+  it('accepts a submission that lands exactly AT the cap', async () => {
+    const { calls } = setup({
+      window: CALL_WINDOW,
+      existingCallDates: ['2026-09-10', '2026-09-17'],
+    });
+    const res = await POST(fakeReq({ provider_id: 'prov-1', call_dates: ['2026-10-01'] }), params);
+    expect(res.status).toBe(200);
+    expect(callsFor(calls, 'provider_availability', 'insert')).toHaveLength(1);
+  });
+
+  it('scopes the cap to THIS window (queries rows by the window notes tag)', async () => {
+    const { calls } = setup({ window: CALL_WINDOW });
+    await POST(fakeReq({ provider_id: 'prov-1', call_dates: ['2026-10-01'] }), params);
+    const eqs = callsFor(calls, 'provider_availability', 'eq').map(c => c.args);
+    expect(eqs).toContainEqual(['availability_type', 'call_request']);
+    expect(eqs).toContainEqual(['notes', 'request_window:win-1']);
+    expect(eqs).toContainEqual(['source', 'request_window']);
+  });
+
+  it('the no-call cap and the call cap count independently', async () => {
+    // 3 no-call rows already used; a call date must still be accepted.
+    const { calls } = setup({
+      window: CALL_WINDOW,
+      existingNoCallDates: ['2026-09-10', '2026-09-17', '2026-09-24'],
+    });
+    const res = await POST(fakeReq({ provider_id: 'prov-1', call_dates: ['2026-10-01'] }), params);
+    expect(res.status).toBe(200);
+    expect(callsFor(calls, 'provider_availability', 'insert')).toHaveLength(1);
+  });
+
+  it('skips already-submitted call dates instead of double-counting them', async () => {
+    const { calls } = setup({ window: CALL_WINDOW, existingCallDates: ['2026-09-10'] });
+    const res = await POST(
+      fakeReq({ provider_id: 'prov-1', call_dates: ['2026-09-10', '2026-10-01'] }),
+      params,
+    );
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.created.call).toBe(2);       // what the provider asked for
+    expect(body.skipped_call).toBe(1);       // the resubmitted date
+    const inserts = callsFor(calls, 'provider_availability', 'insert');
+    expect(inserts).toHaveLength(1);
+    const rows = inserts[0].args[0] as Array<Record<string, unknown>>;
+    expect(rows.map(r => r.start_date)).toEqual(['2026-10-01']);
+  });
+
+  it('writes call_request rows in the exact no-call row shape', async () => {
+    const { calls } = setup({ window: CALL_WINDOW });
+    const res = await POST(fakeReq({
+      provider_id: 'prov-1',
+      call_dates: ['2026-09-10', '2026-09-24'],
+    }), params);
+    expect(res.status).toBe(200);
+    const inserts = callsFor(calls, 'provider_availability', 'insert');
+    expect(inserts).toHaveLength(1);
+    const rows = inserts[0].args[0] as Array<Record<string, unknown>>;
+    expect(rows).toHaveLength(2);
+    for (const row of rows) {
+      expect(row.availability_type).toBe('call_request');
+      expect(row.approval_status).toBe('approved');
+      expect(row.source).toBe('request_window');
+      expect(row.notes).toBe('request_window:win-1');
+      expect(row.site_id).toBe('site-1');
+      expect(row.start_date).toBe(row.end_date); // single dates
+      expect(row.all_day).toBe(true);
+    }
+  });
+
+  it('no-call and call rows can be submitted together (different dates)', async () => {
+    const { calls } = setup({ window: CALL_WINDOW });
+    const res = await POST(fakeReq({
+      provider_id: 'prov-1',
+      no_call_dates: ['2026-09-10'],
+      call_dates: ['2026-09-24'],
+    }), params);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.created.no_call).toBe(1);
+    expect(body.created.call).toBe(1);
+    const inserts = callsFor(calls, 'provider_availability', 'insert');
+    const allRows = inserts.flatMap(i => i.args[0] as Array<Record<string, unknown>>);
+    expect(allRows.map(r => r.availability_type).sort()).toEqual(['call_request', 'no_call_request']);
   });
 });

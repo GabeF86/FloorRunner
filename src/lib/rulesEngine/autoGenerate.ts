@@ -6,12 +6,12 @@ import { solve } from './solve';
 import { optimize } from './optimize';
 import { commitPlan, commitValidation, commitMetadata, hasGenerationMetadataColumn } from './commit';
 import { scoreSolution } from './metrics';
-import { computeRequestGrants } from './requestGrants';
+import { computeRequestGrants, computeCallRequestGrants } from './requestGrants';
 import { computeProviderCapSummary } from './providerCaps';
 import type { ProviderCapSummary } from './providerCaps';
 import { computeWorkDayReport } from './workDayReport';
 import type { WorkDayReportRow } from './workDayReport';
-import type { RequestGrant } from './requestGrants';
+import type { RequestGrant, CallRequestGrant } from './requestGrants';
 import type { OptimizeStats } from './optimize';
 import type { SupabaseClient } from './shared';
 import type { UnfilledSlot, PlannedAssignment, AssignmentExplanation, SolutionMetrics, PlacementSource, SkippedDerived, EvictedSeed, FillMode, AwaitingContinueSlot } from './genTypes';
@@ -99,6 +99,12 @@ export interface GenerationResult {
   // from the FINAL (post-optimize) plan. Empty when nobody requested. The UI
   // banner renders "N/M no-call requests honored" + the violated detail.
   requestGrants: RequestGrant[];
+  // Call-request grant report (2026-07-22, mirror of requestGrants): per
+  // provider with a live call_request in the block — requested dates split
+  // into granted (a call landed there) / not_granted. Empty when nobody
+  // requested. The UI banner renders "N/M call requests granted" + the
+  // not-granted detail — never silent.
+  callRequestGrants: CallRequestGrant[];
   // FTE working-days report (2026-07-17): per call-taker, the working-days
   // obligation vs credited-days accounting (fte / workingDays / pto / required /
   // credited breakdown / entitledOff / delta). Empty when ctx carries no
@@ -154,7 +160,7 @@ export async function autoGenerate(
   const t0 = Date.now();
   const result: GenerationResult = {
     filled: 0, skipped: 0, errors: [], assignments: [], unfilled: [],
-    warnings: [], requestGrants: [], workDayReport: [], ok: false,
+    warnings: [], requestGrants: [], callRequestGrants: [], workDayReport: [], ok: false,
   };
 
   const load = await loadGenerationContext(sb, scheduleVersionId, options);
@@ -202,9 +208,17 @@ export async function autoGenerate(
     return result; // commit failure -> ok false (assignments not reliably written)
   }
 
-  // Grant report from the FINAL plan (post-optimize when it ran) — computed
-  // after commit succeeds so it always describes what was actually written.
+  // Grant reports from the FINAL plan (post-optimize when it ran) — computed
+  // after commit succeeds so they always describe what was actually written.
   result.requestGrants = computeRequestGrants(ctx, plan);
+  result.callRequestGrants = computeCallRequestGrants(ctx, plan);
+  // Contradictory-request advisories (call + no-call on one date — treated
+  // as neither, warned once per provider by solve): surface with the load
+  // warnings so they are never silent. New array — result.warnings may alias
+  // ctx.warnings and pushing would mutate the context.
+  if (plan.requestWarnings?.length) {
+    result.warnings = [...result.warnings, ...plan.requestWarnings];
+  }
 
   // Validation is best-effort: the assignments are ALREADY committed at this
   // point, so a validation-pass failure must NOT flip the run to ok=false — it

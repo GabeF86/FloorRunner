@@ -76,6 +76,66 @@ describe('POST /api/scheduling/request-windows', () => {
     expect(row.max_no_call_requests).toBe(3);
   });
 
+  // ── admin-set call-request cap (2026-07-22) ───────────────────────────────
+  it('passes max_call_requests through when the admin enables call requests', async () => {
+    const { calls } = setup();
+    await POST(fakeReq({ ...VALID_BODY, max_call_requests: 2 }));
+    const row = callsFor(calls, 'request_windows', 'insert')[0].args[0] as Record<string, unknown>;
+    expect(row.max_call_requests).toBe(2);
+  });
+
+  it('defaults max_call_requests to null (call requests OFF)', async () => {
+    const { calls } = setup();
+    await POST(fakeReq(VALID_BODY));
+    const row = callsFor(calls, 'request_windows', 'insert')[0].args[0] as Record<string, unknown>;
+    expect(row.max_call_requests).toBeNull();
+  });
+
+  it('400s on max_call_requests below 1 (0 is not a valid cap — omit to disable)', async () => {
+    const { calls } = setup();
+    const res = await POST(fakeReq({ ...VALID_BODY, max_call_requests: 0 }));
+    expect(res.status).toBe(400);
+    expect(callsFor(calls, 'request_windows', 'insert')).toHaveLength(0);
+  });
+
+  it('pre-patch36 DB: retries the insert without max_call_requests when it was not set', async () => {
+    // Missing-column error on the first insert; the retry (without the
+    // column) succeeds — an unset cap loses nothing on a pre-patch36 DB.
+    const inserted = { id: 'win-1', ...VALID_BODY, token: 'tok', status: 'open' };
+    const { sb, calls } = makeFakeSupabase({
+      tables: {
+        request_windows: (filters: Filter[]) => {
+          const ins = filters.find(f => f.method === 'insert');
+          if (!ins) return { data: null, error: null }; // no existing open window
+          const row = ins.args[0] as Record<string, unknown>;
+          if ('max_call_requests' in row) {
+            return { data: null, error: { code: '42703', message: 'column request_windows.max_call_requests does not exist' } };
+          }
+          return { data: inserted, error: null };
+        },
+      },
+    });
+    holder.sb = sb;
+    const res = await POST(fakeReq(VALID_BODY));
+    expect(res.status).toBe(200);
+    expect(callsFor(calls, 'request_windows', 'insert')).toHaveLength(2);
+  });
+
+  it('pre-patch36 DB: surfaces the error when the admin actually SET a call cap', async () => {
+    // Never silently drop a cap the admin chose — apply patch36 first.
+    const { sb } = makeFakeSupabase({
+      tables: {
+        request_windows: (filters: Filter[]) =>
+          filters.some(f => f.method === 'insert')
+            ? { data: null, error: { code: '42703', message: 'column request_windows.max_call_requests does not exist' } }
+            : { data: null, error: null },
+      },
+    });
+    holder.sb = sb;
+    const res = await POST(fakeReq({ ...VALID_BODY, max_call_requests: 2 }));
+    expect(res.status).toBe(500);
+  });
+
   it('409s when the site already has an open window (no insert)', async () => {
     const { calls } = setup({ existingOpen: true });
     const res = await POST(fakeReq(VALID_BODY));

@@ -64,6 +64,22 @@ export function isActiveNoCallRequest(
   return entry.availability_type === 'no_call_request' && !isDismissedAvailability(entry);
 }
 
+// Single-home predicate for a LIVE call request (2026-07-22) — the MIRROR
+// IMAGE of isActiveNoCallRequest: same status semantics (pending counts;
+// denied/canceled don't), opposite engine meaning. NOT a gate-waiver — the
+// call engine's scoreCall LIFTS live requesters a sort tier (preferred,
+// solveKernel.ts) so they win call slots they are otherwise eligible for;
+// every safety gate, quota, cap and fill-mode rule still applies. A provider
+// with BOTH request types live on one date is contradictory — solve() treats
+// the date as neither and warns once (plan.requestWarnings). Consumers
+// (solve's preferred tier, the call grant report) route through here so they
+// can never disagree about which requests are live.
+export function isActiveCallRequest(
+  entry: { availability_type: string; approval_status: string },
+): boolean {
+  return entry.availability_type === 'call_request' && !isDismissedAvailability(entry);
+}
+
 // Canonical "does this availability entry block scheduling?" predicate
 // (clinical invariant 2 / spec §6.7): PENDING requests BLOCK — only entries
 // explicitly denied or canceled are ignored. Every engine (call gen, day-shift

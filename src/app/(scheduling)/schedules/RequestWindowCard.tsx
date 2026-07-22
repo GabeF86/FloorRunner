@@ -23,6 +23,9 @@ interface RequestWindow {
   block_start: string;
   block_end: string;
   max_no_call_requests: number;
+  // Admin-set per-provider cap on call-SHIFT requests (patch36). null (or
+  // absent on a pre-patch36 DB) = the category is OFF for this window.
+  max_call_requests?: number | null;
   token: string;
   status: 'open' | 'closed';
   opened_at: string;
@@ -43,6 +46,9 @@ export default function RequestWindowCard({ sites, initialSiteId }: {
   const [blockStart, setBlockStart] = useState('');
   const [blockEnd, setBlockEnd] = useState('');
   const [maxNoCall, setMaxNoCall] = useState('3');
+  // 'off' = call-shift requests disabled for the window (max_call_requests
+  // null). Off by default — Gabriel opts the category in per window.
+  const [maxCall, setMaxCall] = useState('off');
   const [busy, setBusy] = useState(false);
 
   // Keep site in sync when the page-level site filter changes.
@@ -75,11 +81,12 @@ export default function RequestWindowCard({ sites, initialSiteId }: {
           block_start: blockStart,
           block_end: blockEnd,
           max_no_call_requests: parseInt(maxNoCall, 10) || 3,
+          max_call_requests: maxCall === 'off' ? null : parseInt(maxCall, 10),
         }),
       });
       const data = await res.json();
       if (!res.ok) { setError(data.error || `Failed (${res.status})`); return; }
-      setBlockStart(''); setBlockEnd(''); setMaxNoCall('3');
+      setBlockStart(''); setBlockEnd(''); setMaxNoCall('3'); setMaxCall('off');
       await load();
     } finally {
       setBusy(false);
@@ -136,9 +143,10 @@ export default function RequestWindowCard({ sites, initialSiteId }: {
         </select>
       </div>
       <div style={{ fontSize: 11.5, color: 'var(--text-dim)', marginBottom: 12, lineHeight: 1.5 }}>
-        One shared link per site where providers submit PTO, days off, and up to N
-        no-call dates for the next block. PTO / days-off land in the Requests queue;
-        no-call dates go straight to the engine.
+        One shared link per site where providers submit PTO, days off, no-call dates,
+        and (when enabled) call-shift requests for the next block. PTO / days-off land
+        in the Requests queue; no-call and call dates go straight to the engine.
+        Each requested DATE counts as one request — a 3-day span counts as 3.
       </div>
 
       {error && (
@@ -157,6 +165,9 @@ export default function RequestWindowCard({ sites, initialSiteId }: {
             Block <b>{fmt(open.block_start)} – {fmt(open.block_end)}</b>
             <span style={{ color: 'var(--text-dim)', fontSize: 12 }}>
               {' '}· max {open.max_no_call_requests} no-call date{open.max_no_call_requests === 1 ? '' : 's'} per provider
+              {open.max_call_requests != null && open.max_call_requests >= 1
+                ? ` · max ${open.max_call_requests} call request${open.max_call_requests === 1 ? '' : 's'} per provider`
+                : ' · call requests off'}
             </span>
           </div>
           <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
@@ -196,6 +207,13 @@ export default function RequestWindowCard({ sites, initialSiteId }: {
             <label style={smallLabelStyle}>Max no-call</label>
             <select value={maxNoCall} onChange={e => setMaxNoCall(e.target.value)} style={{ ...smallInputStyle, width: 76 }}>
               {[0, 1, 2, 3, 4, 5, 6].map(n => <option key={n} value={String(n)}>{n}</option>)}
+            </select>
+          </div>
+          <div>
+            <label style={smallLabelStyle}>Max call req.</label>
+            <select value={maxCall} onChange={e => setMaxCall(e.target.value)} style={{ ...smallInputStyle, width: 76 }}>
+              <option value="off">Off</option>
+              {[1, 2, 3, 4, 5, 6].map(n => <option key={n} value={String(n)}>{n}</option>)}
             </select>
           </div>
           <Button size="sm" onClick={openWindow} disabled={busy || !blockStart || !blockEnd}>

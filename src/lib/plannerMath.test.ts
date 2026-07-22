@@ -593,6 +593,7 @@ describe('plannerYearCounters', () => {
     avail({ availability_type: 'blocked', start_date: '2026-06-10', end_date: '2026-06-10' }),      // other: 1
     avail({ availability_type: 'blocked', reason_code: 'icu_week', start_date: '2026-06-01', end_date: '2026-06-07' }), // ICU: excluded
     avail({ availability_type: 'no_call_request', start_date: '2026-06-15', end_date: '2026-06-15' }),                  // never counted
+    avail({ availability_type: 'call_request', start_date: '2026-06-16', end_date: '2026-06-16' }),                     // never counted (2026-07-22 mirror)
     avail({ availability_type: 'pto', start_date: '2026-07-01', end_date: '2026-07-02', approval_status: 'denied' }),   // dismissed
   ];
   const out = plannerYearCounters(rows, 2026);
@@ -609,10 +610,10 @@ describe('plannerYearCounters', () => {
     expect(out.pto.calendarBooked).toBe(7);
   });
 
-  it('category counters mirror the profile page split (ICU + no-call excluded, dismissed dropped)', () => {
+  it('category counters mirror the profile page split (ICU + both request types excluded, dismissed dropped)', () => {
     expect(out.sellbackDays).toBe(countDaysInYear([{ start_date: '2026-03-06', end_date: '2026-03-07' }], 2026));
     expect(out.sellbackDays).toBe(2);
     expect(out.daysOffDays).toBe(3);
-    expect(out.otherDays).toBe(3); // sick 2 + generic blocked 1; ICU rotation + no-call never count
+    expect(out.otherDays).toBe(3); // sick 2 + generic blocked 1; ICU rotation + no-call + call requests never count
   });
 });

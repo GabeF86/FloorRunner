@@ -247,16 +247,17 @@ const CALL_PATTERN_DOC_SCHEMA = {
 };
 
 // Availability types the assistant may WRITE — DERIVED from the engine's
-// canonical blocking set (BLOCKING_AVAIL, shared.ts) plus the two
-// engine-meaningful levers OUTSIDE that set: no_call_request (soft-flag,
-// evaluators.ts timeOff) and pto_sellback (date-level blocking OVERRIDE —
-// neither blocking nor a request; isDateBlocked/isSellbackOverridden,
-// shared.ts + ALGORITHM.md §6). Deriving from BLOCKING_AVAIL keeps the write
-// set from drifting; the two additions are deliberate and each names its
-// engine consumer. Purely-informational types (available, conference, admin,
-// cme) and the consumer-less call_request are excluded by construction. A
-// test pins this ⊆ AVAILABILITY_TYPES.
-const AVAILABILITY_WRITE_TYPES: string[] = [...BLOCKING_AVAIL, 'no_call_request', 'pto_sellback'];
+// canonical blocking set (BLOCKING_AVAIL, shared.ts) plus the three
+// engine-meaningful levers OUTSIDE that set: no_call_request (soft-avoid,
+// scoreCall penalty tier + evaluators.ts timeOff soft flag), call_request
+// (2026-07-22: soft-PREFER, scoreCall preferred tier — the mirror image of
+// no_call_request) and pto_sellback (date-level blocking OVERRIDE — neither
+// blocking nor a request; isDateBlocked/isSellbackOverridden, shared.ts +
+// ALGORITHM.md §6). Deriving from BLOCKING_AVAIL keeps the write set from
+// drifting; the additions are deliberate and each names its engine consumer.
+// Purely-informational types (available, conference, admin, cme) are
+// excluded by construction. A test pins this ⊆ AVAILABILITY_TYPES.
+const AVAILABILITY_WRITE_TYPES: string[] = [...BLOCKING_AVAIL, 'no_call_request', 'call_request', 'pto_sellback'];
 
 export const assistantTools: AssistantToolDef[] = [
   {
@@ -429,7 +430,7 @@ export const assistantTools: AssistantToolDef[] = [
   {
     name: 'list_availability',
     description:
-      'READ-ONLY list of provider_availability rows (PTO, sick, unavailable, no-call requests, leave, etc.) for this site\'s providers overlapping a window — defaults to the schedule range plus a 14-day bookend margin. Each row returns its id, provider, availability_type, start/end dates, approval_status and source. Call this to see the current time-off / no-call picture before recording new facts, and to get the id needed to cancel a mistaken entry. Optionally narrow to one provider_id and/or a date window.',
+      'READ-ONLY list of provider_availability rows (PTO, sick, unavailable, no-call requests, call requests, leave, etc.) for this site\'s providers overlapping a window — defaults to the schedule range plus a 14-day bookend margin. Each row returns its id, provider, availability_type, start/end dates, approval_status and source. Call this to see the current time-off / request picture before recording new facts, and to get the id needed to cancel a mistaken entry. Optionally narrow to one provider_id and/or a date window.',
     strict: true,
     input_schema: {
       type: 'object',
@@ -445,7 +446,7 @@ export const assistantTools: AssistantToolDef[] = [
   {
     name: 'record_availability',
     description:
-      'Record a scheduler-stated availability fact as an APPROVED, all-day provider_availability row. Vocabulary: PTO / vacation → "pto"; "out / off / unavailable / days off (recurring non-work days)" → "unavailable"; sick → "sick"; a named leave → "fmla" / "parental_leave" / "military_leave"; jury duty → "jury_duty"; a hard do-not-schedule range → "blocked"; an ICU week → TWO "blocked" rows (the week itself, plus a single-day row for the Monday immediately after the week ends — the post-ICU recovery day); "no call that day but still working" → "no_call_request"; "selling back PTO / buying back their PTO / working their PTO days" (a chief-entered decision, never a provider request) → "pto_sellback". Every type EXCEPT no_call_request and pto_sellback blocks the provider entirely for the whole range at every site. no_call_request never blocks — the call engine SOFT-AVOIDS it (a requester gets call only when nobody without a request passes the gates, and unavoidable denials are spread fairly across requesters) and validation soft-flags any call assignment that still lands on it. pto_sellback is the OPPOSITE of blocking: the provider IS WORKING the covered dates — it overrides any PTO or other blocking rows on exactly those dates (pending PTO included), and each sold-back weekday is owed again in the working-days budget; a row overlapping no blocking time changes nothing. The dates must OVERLAP this schedule\'s range ± 14 days (the undo window); for facts entirely outside it, tell the scheduler to open the schedule covering those dates. Resolve provider_id via get_schedule_context and confirm the name→provider mapping before writing.',
+      'Record a scheduler-stated availability fact as an APPROVED, all-day provider_availability row. Vocabulary: PTO / vacation → "pto"; "out / off / unavailable / days off (recurring non-work days)" → "unavailable"; sick → "sick"; a named leave → "fmla" / "parental_leave" / "military_leave"; jury duty → "jury_duty"; a hard do-not-schedule range → "blocked"; an ICU week → TWO "blocked" rows (the week itself, plus a single-day row for the Monday immediately after the week ends — the post-ICU recovery day); "no call that day but still working" → "no_call_request"; "wants / asks to TAKE call that day" → "call_request"; "selling back PTO / buying back their PTO / working their PTO days" (a chief-entered decision, never a provider request) → "pto_sellback". Every type EXCEPT no_call_request, call_request and pto_sellback blocks the provider entirely for the whole range at every site. no_call_request never blocks — the call engine SOFT-AVOIDS it (a requester gets call only when nobody without a request passes the gates, and unavoidable denials are spread fairly across requesters) and validation soft-flags any call assignment that still lands on it. call_request is its MIRROR: the engine SOFT-PREFERS the requester for call slots they are otherwise eligible for (never a gate-waiver — every safety check, quota and cap still applies; unavoidable non-grants are spread fairly), and a provider with BOTH request types on one date is contradictory (treated as neither, warned on generation). pto_sellback is the OPPOSITE of blocking: the provider IS WORKING the covered dates — it overrides any PTO or other blocking rows on exactly those dates (pending PTO included), and each sold-back weekday is owed again in the working-days budget; a row overlapping no blocking time changes nothing. The dates must OVERLAP this schedule\'s range ± 14 days (the undo window); for facts entirely outside it, tell the scheduler to open the schedule covering those dates. Resolve provider_id via get_schedule_context and confirm the name→provider mapping before writing.',
     strict: true,
     input_schema: {
       type: 'object',
@@ -805,7 +806,8 @@ const AssistantRuleInput = RuleDefinitionUpsertSchema.omit({ rule_set_id: true }
 
 // ── Intake tool input schemas ────────────────────────────────────────────────
 // (AVAILABILITY_WRITE_TYPES is defined above assistantTools, derived from
-// BLOCKING_AVAIL + no_call_request so the two enum surfaces cannot drift.)
+// BLOCKING_AVAIL + no_call_request/call_request/pto_sellback so the two enum
+// surfaces cannot drift.)
 const ListAvailabilityInputSchema = z.object({
   provider_id: z.string().min(1).optional(),
   date_start: IsoDate.optional(),

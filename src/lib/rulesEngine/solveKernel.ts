@@ -49,6 +49,14 @@ export interface SolverRun {
   // No-call request soft avoidance (§11 tier 0).
   noCallByPid: Map<string, Array<{ start_date: string; end_date: string }>>;
   noCallViolated: Map<string, number>;
+  // Call-request soft preference (2026-07-22, §11 — mirror of the no-call
+  // tier): live call_request coverage per provider, the fair-grant counter,
+  // and the per-provider CONTRADICTORY dates (covered by BOTH live request
+  // types — treated as neither, warned once on plan.requestWarnings). All
+  // three empty when no call_request rows exist ⇒ every branch inert.
+  callReqByPid: Map<string, Array<{ start_date: string; end_date: string }>>;
+  callReqGranted: Map<string, number>;
+  contraReqDates: Map<string, Set<string>>;
   // Structural bookkeeping.
   waivedLinkKeys: Set<string>;
   sequenceOwnedSlotIds: Set<string>;
@@ -79,6 +87,18 @@ export function pushUnfilled(
 export function hasNoCallRequest(run: SolverRun, pid: string, date: string): boolean {
   const live = run.noCallByPid.get(pid);
   if (!live) return false;
+  // Contradictory dates (both request types live) are treated as neither —
+  // no-op with zero call_request rows (contraReqDates is then always empty).
+  if (run.contraReqDates.get(pid)?.has(date)) return false;
+  return live.some(e => datesOverlap(e.start_date, e.end_date, date));
+}
+
+// Mirror of hasNoCallRequest for the preferred tier: a live call_request
+// covering the date, unless the date is contradictory (then neither).
+export function hasCallRequest(run: SolverRun, pid: string, date: string): boolean {
+  const live = run.callReqByPid.get(pid);
+  if (!live) return false;
+  if (run.contraReqDates.get(pid)?.has(date)) return false;
   return live.some(e => datesOverlap(e.start_date, e.end_date, date));
 }
 
@@ -88,6 +108,15 @@ export function hasNoCallRequest(run: SolverRun, pid: string, date: string): boo
 export function noteViolation(run: SolverRun, pid: string, date: string) {
   if (hasNoCallRequest(run, pid, date)) {
     run.noCallViolated.set(pid, (run.noCallViolated.get(pid) || 0) + 1);
+  }
+}
+
+// Fairness of grant (mirror of noteViolation): a call landing on the
+// provider's live call-request date is a granted request — count it so later
+// preferred-vs-preferred choices favor someone not yet granted.
+export function noteGrant(run: SolverRun, pid: string, date: string) {
+  if (hasCallRequest(run, pid, date)) {
+    run.callReqGranted.set(pid, (run.callReqGranted.get(pid) || 0) + 1);
   }
 }
 
@@ -198,6 +227,9 @@ export function record(
     // placement ALSO consumed the cap above: a violated request is still an
     // obligation call.
     noteViolation(run, p.id, slot.slot_date);
+    // Fair grant (mirror): a call landing on the provider's live
+    // call-request date is a granted request — spread later grants.
+    noteGrant(run, p.id, slot.slot_date);
   }
   state.handledSlotIds.add(slot.slot_id);
   // Working-days credit: any placement (call / d-chain / relief / mop-up /
@@ -214,29 +246,37 @@ export function record(
   });
 }
 
-// Main-loop scoring tuple: no-call-request sort tier first (soft avoidance
-// — never a gate), then fair-denial count within the penalized tier, then
-// lowest lifetime bucket-ratio, then least-recently called, then id.
-// Shared by the main loop, spans, and quota relaxation. `violated` is 0 for
-// every unpenalized candidate by construction, so both new keys are inert
-// outside the penalized tier — and with no live requests at all the tuple
-// is the pre-change ratio/recency/id sort, byte for byte.
+// Main-loop scoring tuple: request sort tier first (call-request PREFERRED
+// tier -1 sorts before every neutral candidate; no-call penalized tier 1
+// sorts after — soft in both directions, never a gate), then fair-grant
+// count within the preferred tier, then fair-denial count within the
+// penalized tier, then lowest lifetime bucket-ratio, then least-recently
+// called, then id. Shared by the main loop, spans, and quota relaxation.
+// `granted` is 0 outside the preferred tier and `violated` is 0 outside the
+// penalized tier by construction, so both fairness keys are inert across
+// tiers — and with no live requests at all every tier is 0 and the tuple is
+// the pre-change ratio/recency/id sort, byte for byte (a provider can never
+// be both: a date covered by both live request types is contradictory and
+// counts as neither — hasCallRequest/hasNoCallRequest, contraReqDates).
 export function scoreCall(run: SolverRun, cands: CandidateProvider[], slot: SlotToFill) {
   const { ctx, state } = run;
   const k = `${dayTypeBucket(slot.derived_day_type)}|${slot.shift_type_code}`;
   return cands.map(p => {
     const lifetime = (ctx.historicalAssignedByPid.get(p.id)?.get(k) || 0)
       + (state.bucketAssigned.get(`${p.id}|${k}`) || 0);
-    const penalized = hasNoCallRequest(run, p.id, slot.slot_date);
+    const preferred = hasCallRequest(run, p.id, slot.slot_date);
+    const penalized = !preferred && hasNoCallRequest(run, p.id, slot.slot_date);
     return {
       p,
-      tier: penalized ? 1 : 0,
+      tier: preferred ? -1 : penalized ? 1 : 0,
+      granted: preferred ? (run.callReqGranted.get(p.id) || 0) : 0,
       violated: penalized ? (run.noCallViolated.get(p.id) || 0) : 0,
       ratio: lifetime / Math.max(p.fte_value, 0.01),
       recency: daysSinceLastCall(state, p.id, slot.slot_date),
     };
   }).sort((a, b) =>
     a.tier - b.tier ||
+    a.granted - b.granted ||
     a.violated - b.violated ||
     a.ratio - b.ratio ||
     b.recency - a.recency ||

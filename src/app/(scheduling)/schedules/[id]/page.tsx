@@ -958,6 +958,12 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
       provider_id: string; provider_name: string;
       requested_dates: string[]; granted: string[]; violated: string[];
     }>;
+    // Call-request grant report (2026-07-22 mirror) — "N/M granted" + the
+    // not-granted detail.
+    callRequestGrants: Array<{
+      provider_id: string; provider_name: string;
+      requested_dates: string[]; granted: string[]; not_granted: string[];
+    }>;
     // FTE working-days report — per call-taker, required vs credited days,
     // over/under highlighted.
     workDayReport: Array<{
@@ -1044,6 +1050,7 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
         skippedDerived: Array.isArray(data.skippedDerived) ? data.skippedDerived : [],
         evictions: Array.isArray(data.evictions) ? data.evictions : [],
         requestGrants: Array.isArray(data.requestGrants) ? data.requestGrants : [],
+        callRequestGrants: Array.isArray(data.callRequestGrants) ? data.callRequestGrants : [],
         workDayReport: Array.isArray(data.workDayReport) ? data.workDayReport : [],
         fillMode: mode,
         awaitingContinue: data.awaitingContinue && typeof data.awaitingContinue.total === 'number'
@@ -1546,6 +1553,28 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
                     {genResult.requestGrants.filter(g => g.violated.length > 0).map(g => (
                       <li key={g.provider_id}>
                         {g.provider_name}: call landed on {g.violated.join(', ')} (requested no call)
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            )}
+            {/* Call-request grant report (mirror of the no-call report): soft
+                preference is best-effort, so the scheduler is told exactly
+                which requested call dates could not be granted. Hidden when
+                nobody requested. */}
+            {genResult.callRequestGrants.length > 0 && (
+              <div style={{ marginTop: 4, color: 'var(--text-dim)' }}>
+                <div>
+                  {genResult.callRequestGrants.reduce((n, g) => n + g.granted.length, 0)}
+                  /{genResult.callRequestGrants.reduce((n, g) => n + g.requested_dates.length, 0)}{' '}
+                  call request{genResult.callRequestGrants.reduce((n, g) => n + g.requested_dates.length, 0) !== 1 ? 's' : ''} granted.
+                </div>
+                {genResult.callRequestGrants.some(g => g.not_granted.length > 0) && (
+                  <ul style={{ margin: '2px 0 0 0', paddingLeft: 18 }}>
+                    {genResult.callRequestGrants.filter(g => g.not_granted.length > 0).map(g => (
+                      <li key={g.provider_id}>
+                        {g.provider_name}: no call landed on {g.not_granted.join(', ')} (requested call)
                       </li>
                     ))}
                   </ul>

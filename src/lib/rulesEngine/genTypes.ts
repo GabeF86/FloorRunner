@@ -321,6 +321,12 @@ export interface SolutionPlan {
   // materialized — absent unless an eviction actually happened, so seed-free
   // generations (the golden JSON pins included) are byte-identical.
   evictions?: EvictedSeed[];
+  // Request advisories (2026-07-22): contradictory call+no-call requests on
+  // one date (treated as neither). LAZILY materialized like evictions —
+  // absent unless a contradiction exists, so request-free generations (the
+  // golden JSON pins included) are byte-identical. Surfaced into
+  // GenerationResult.warnings by autoGenerate.
+  requestWarnings?: string[];
 }
 
 // SolveState + emptySolveState live in solveState.ts (2026-07-20 solve
