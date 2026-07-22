@@ -769,14 +769,18 @@ const openSlot: Evaluator = ctx => {
 
 // ── Pool eligibility ─────────────────────────────────────────────────────────
 //
-// Always-on (Gabriel 2026-07-14, spec 2026-07-14). The rule is ASYMMETRIC:
+// Always-on (Gabriel 2026-07-14; day-pool side tightened Gabriel 2026-07-21):
 //   - Call-engine-owned NON-call slots (generation_engine === 'call' with
 //     category !== 'call' — the derived/relief D1–D9 on live data) are
 //     reserved for call takers — a day doc placed there is a hard flag.
 //   - Day-pool slots (generation_engine === 'day_pool', e.g. 7-3/7-5) are
-//     auto-generated for day docs, but call takers may legitimately hold them
-//     (PTO sell-back, extra-shift pickup) — only a provider who is NEITHER a
-//     day doc nor a call taker flags.
+//     reserved for Day Docs. Gabriel 2026-07-21 (live-confirmed bug review,
+//     SUPERSEDES the 2026-07-14 generic-pickup allowance): call takers
+//     "should never be placed there unless they are selling back PTO" — the
+//     holder must be a Day Doc OR have a live pto_sellback row covering the
+//     slot date (shared isSellbackOverridden, same per-date predicate the
+//     engines use); otherwise hard. A covering sell-back is a chief-entered
+//     decision and clears the flag even with no profile on file.
 // Hard-flag, never block: exceptions stay possible, nothing is hidden. Keyed
 // entirely on generation_engine + category (data-driven, patch18) — never on
 // code-name patterns, so a future call-derived code not named D* can't
@@ -791,7 +795,8 @@ const poolEligibility: Evaluator = ctx => {
   if (!isDerivedCallSlot && !isDayPoolSlot) return [];
 
   // null poolFlags = no employment profile on file → ineligible for both pools
-  // (never silently pass — invariant 6 spirit).
+  // (never silently pass — invariant 6 spirit; the day-pool side's sole
+  // exception is a covering live sell-back row, an explicit affirmative record).
   const f = ctx.poolFlags;
   const noProfile = ' (no employment profile on file)';
   const isCallTaker = !!(f?.call_taker || f?.partial_call_taker);
@@ -807,13 +812,15 @@ const poolEligibility: Evaluator = ctx => {
       message: `${st.code} is reserved for call takers — this provider is not a call taker${f ? '' : noProfile}.`,
     });
   }
-  if (isDayPoolSlot && !(isDayDoc || isCallTaker)) {
+  if (isDayPoolSlot && !isDayDoc &&
+      !isSellbackOverridden(ctx.availability, ctx.slot.slot_date)) {
     violations.push({
       rule_id: null,
       rule_name: 'Pool eligibility',
       category: 'eligibility',
       severity: 'hard',
-      message: `${st.code} is a day shift — this provider is neither a Day Doc nor a call taker${f ? '' : noProfile}.`,
+      message: `${st.code} is a day shift reserved for Day Docs — a ${isCallTaker ? 'call taker' : 'non-Day-Doc'} ` +
+        `may hold it only when selling back PTO covering ${ctx.slot.slot_date}${f ? '' : noProfile}.`,
     });
   }
   return violations;

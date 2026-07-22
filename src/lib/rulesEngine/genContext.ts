@@ -479,11 +479,16 @@ export async function loadGenerationContext(
   // credential is only an "eligible for extras" flag and does NOT pull
   // someone into the auto-assignment pool.
   //
-  // Override pool: when the caller passes overrideProviderIds, the pool is
-  // exactly those UUIDs. The home_site/call_taker gates are skipped — the
-  // scheduler (a human) has made a deliberate call about who to include.
-  // Eligibility checks (credentials, availability, conflicts, FTE quotas)
-  // still apply later in the pipeline.
+  // Override pool = NARROWING (Gabriel 2026-07-21, both engines): when the
+  // caller passes overrideProviderIds, the list INTERSECTS the base pool
+  // criteria — it skips only the home_site gate (a hand-picked cross-site
+  // call taker stays eligible; the cross-schedule conflict scan still guards
+  // invariant 3), never the call_taker/partial_call_taker role criterion. A
+  // day doc in a custom pool must not become call-eligible; the pre-fix code
+  // took the list verbatim (the same defect class that day-shifted call
+  // takers on live data). Non-call-takers in the list are dropped with a
+  // loud warning, never silently. Eligibility checks (credentials,
+  // availability, conflicts, FTE quotas) still apply later in the pipeline.
   const override = options.overrideProviderIds && options.overrideProviderIds.length > 0
     ? options.overrideProviderIds
     : null;
@@ -502,19 +507,34 @@ export async function loadGenerationContext(
   const { data: profiles } = await profilesQuery;
 
   const profileByPid = new Map<string, { fte_value: number; home_site_id: string; available_weekdays: boolean[] }>();
+  const overrideNonCallTakers: string[] = [];
   for (const p of (profiles || []) as Array<Record<string, unknown>>) {
+    // Role criterion, enforced in code for BOTH paths (the default path's SQL
+    // `.or` already narrows against the live DB — this is the single-homed
+    // predicate the override path must intersect too).
+    if (!p.call_taker && !p.partial_call_taker) {
+      if (override) overrideNonCallTakers.push(p.provider_id as string);
+      continue;
+    }
     profileByPid.set(p.provider_id as string, {
       fte_value: (p.fte_value as number) || 1,
       home_site_id: p.home_site_id as string,
       available_weekdays: normalizeWeekdays(p.available_weekdays),
     });
   }
+  if (overrideNonCallTakers.length > 0) {
+    warnings.push(
+      `Override pool: ${overrideNonCallTakers.length} provider(s) excluded — not call takers ` +
+      `(override narrows the call-taker pool, never widens it; Gabriel 2026-07-21): ${overrideNonCallTakers.join(', ')}`,
+    );
+  }
   const providerIds = Array.from(profileByPid.keys());
   if (providerIds.length === 0) {
     return {
       ctx: null,
       error: override
-        ? `Override pool is empty or none of the selected providers have an employment profile.`
+        ? `Override pool has no call takers: the custom pool intersects the call-taker criterion ` +
+          `(a provider needs "Call Taker" or "Partial Call Taker" checked and an employment profile on file).`
         : `No call-takers found at this site. ` +
           `Providers must have home_site_id set to this site AND "Call Taker" ` +
           `or "Partial Call Taker" checked on their Employment & Scheduling tab.`,

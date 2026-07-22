@@ -167,19 +167,19 @@ describe('computeCallObligationCensus — ONE obligation input set for grid and 
     expect(census.effectivePar).toBeCloseTo(2.25, 9);
   });
 
-  it('override pool (included_provider_ids) is exactly those providers — home-site/taker gates skipped', () => {
+  it('override pool (included_provider_ids) INTERSECTS the call-taker criterion — narrowing, never widening (Gabriel 2026-07-21; mirrors loadGenerationContext)', () => {
     const census = computeCallObligationCensus({
       storedParLevel: 11, siteId: 'site1',
       includedProviderIds: ['p4', 'p5'],
       profiles: [
         profile('p1'),                                // taker but NOT in override → out
-        profile('p4', { call_taker: false }),          // non-taker, in override → in
-        profile('p5', { home_site_id: 'site2', fte_value: 0.5 }), // other site, in override → in
+        profile('p4', { call_taker: false }),          // non-taker in override → OUT (a day doc never becomes call-eligible)
+        profile('p5', { home_site_id: 'site2', fte_value: 0.5 }), // taker at another site, in override → in (home-site gate is skipped; role gate is not)
       ],
       slots: [],
     });
-    expect(census.poolFte).toBeCloseTo(1.5, 9);
-    expect(census.effectivePar).toBeCloseTo(1.5, 9);
+    expect(census.poolFte).toBeCloseTo(0.5, 9);
+    expect(census.effectivePar).toBeCloseTo(0.5, 9);
   });
 
   it('an EMPTY override array falls back to the default pool (mirrors the generate route)', () => {

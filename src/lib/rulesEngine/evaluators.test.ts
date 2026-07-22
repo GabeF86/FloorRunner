@@ -705,10 +705,13 @@ describe('eligibility evaluator', () => {
 });
 
 // ── poolEligibility ──────────────────────────────────────────────────────────
-// Asymmetric rule keyed on generation_engine + category, never code names:
+// Rule keyed on generation_engine + category, never code names:
 // call-engine-owned NON-call slots (D1–D9 on live data) are reserved for call
-// takers; day-pool slots (generation_engine 'day_pool', e.g. 7-3/7-5) are
-// auto-generated for day docs but call takers may legitimately hold them.
+// takers. Day-pool slots (generation_engine 'day_pool', e.g. 7-3/7-5) are
+// reserved for Day Docs — Gabriel 2026-07-21 (supersedes the 2026-07-14
+// generic-pickup allowance): call takers "should never be placed there unless
+// they are selling back PTO", so a non-Day-Doc holder is clean ONLY when a
+// live pto_sellback row covers the slot date (shared isSellbackOverridden).
 
 describe('poolEligibility evaluator', () => {
   const DAY_DOC = { call_taker: false, partial_call_taker: false, is_day_doc: true };
@@ -730,28 +733,68 @@ describe('poolEligibility evaluator', () => {
     expect(v[0].message).toContain('D5');
   });
 
-  it('call taker on a day-pool slot → NO violation (legitimate pickup)', () => {
-    expect(poolViolations(ctx({ shiftType: dayPool, poolFlags: CALL_TAKER }))).toHaveLength(0);
+  it('call taker on a day-pool slot with NO sell-back → HARD (Gabriel 2026-07-21)', () => {
+    const v = poolViolations(ctx({ shiftType: dayPool, poolFlags: CALL_TAKER }));
+    expect(v).toHaveLength(1);
+    expect(v[0].severity).toBe('hard');
+    expect(v[0].category).toBe('eligibility');
+    expect(v[0].message).toContain('selling back PTO');
+  });
+
+  it('call taker on a day-pool slot WITH a live sell-back covering the date → clean', () => {
+    const v = poolViolations(ctx({
+      shiftType: dayPool, poolFlags: CALL_TAKER,
+      // avail() default dates cover the slot date 2026-01-07.
+      availability: [avail({ availability_type: 'pto_sellback' })],
+    }));
+    expect(v).toHaveLength(0);
+  });
+
+  it('a sell-back on a DIFFERENT date does not excuse the day shift → hard', () => {
+    const v = poolViolations(ctx({
+      shiftType: dayPool, poolFlags: CALL_TAKER,
+      availability: [avail({ availability_type: 'pto_sellback', start_date: '2026-01-09', end_date: '2026-01-09' })],
+    }));
+    expect(v).toHaveLength(1);
+    expect(v[0].severity).toBe('hard');
+  });
+
+  it('a DENIED sell-back row is dead → hard (isActiveSellback polarity)', () => {
+    const v = poolViolations(ctx({
+      shiftType: dayPool, poolFlags: CALL_TAKER,
+      availability: [avail({ availability_type: 'pto_sellback', approval_status: 'denied' })],
+    }));
+    expect(v).toHaveLength(1);
   });
 
   it('day doc on a day-pool slot → no violation', () => {
     expect(poolViolations(ctx({ shiftType: dayPool, poolFlags: DAY_DOC }))).toHaveLength(0);
   });
 
-  it('call taker on a D-code → no violation', () => {
+  it('call taker on a D-code → no violation (D-code side unchanged)', () => {
     expect(poolViolations(ctx({ shiftType: dCode, poolFlags: CALL_TAKER }))).toHaveLength(0);
   });
 
-  it('partial call taker satisfies both pools', () => {
+  it('partial call taker: D-code clean, day-pool hard without a sell-back', () => {
     expect(poolViolations(ctx({ shiftType: dCode, poolFlags: PARTIAL }))).toHaveLength(0);
-    expect(poolViolations(ctx({ shiftType: dayPool, poolFlags: PARTIAL }))).toHaveLength(0);
+    const v = poolViolations(ctx({ shiftType: dayPool, poolFlags: PARTIAL }));
+    expect(v).toHaveLength(1);
+    expect(v[0].severity).toBe('hard');
   });
 
-  it('neither-flag provider on a day-pool slot → hard (neither Day Doc nor call taker)', () => {
+  it('neither-flag provider on a day-pool slot → hard', () => {
     const v = poolViolations(ctx({ shiftType: dayPool, poolFlags: NEITHER }));
     expect(v).toHaveLength(1);
     expect(v[0].severity).toBe('hard');
-    expect(v[0].message).toContain('neither a Day Doc nor a call taker');
+    expect(v[0].message).toContain('selling back PTO');
+  });
+
+  it('no profile but a live sell-back covering the date → clean (chief-entered decision wins)', () => {
+    const v = poolViolations(ctx({
+      shiftType: dayPool, poolFlags: null,
+      availability: [avail({ availability_type: 'pto_sellback' })],
+    }));
+    expect(v).toHaveLength(0);
   });
 
   it('neither-flag provider on a D-code → hard', () => {

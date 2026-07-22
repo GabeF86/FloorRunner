@@ -36,7 +36,7 @@ Historical fairness counts come from the `scheduling.historical_call_counts` RPC
 
 ## 3. Pool selection
 
-**Call gen default pool** (ignored when `included_provider_ids` is set):
+**Call gen default pool**:
 
 ```
 home_site_id = schedule.site_id
@@ -45,9 +45,9 @@ AND providers.status = 'active'
 AND provider_type = 'physician'
 ```
 
-**Day-shift default pool**: same but with `is_day_doc = true` instead of the call-taker flags.
+**Day-shift default pool**: same but the role criterion is `is_day_doc = true` **OR a live `pto_sellback` row covering the specific date being filled** (Gabriel 2026-07-21: selling back means they work that day — a call taker with a sell-back Tuesday is day-assignable Tuesday and only Tuesday). The sell-back half is per-date and enforced in code (`isSellbackOverridden`, shared.ts), so the profile query loads the whole home-site roster and the greedy loop applies the role gate per slot date.
 
-**Override pool**: `IN (schedules.included_provider_ids)`. Skips home-site + call-taker/day-doc gates. Eligibility (credentials, availability, conflicts, quotas) still applies.
+**Override pool = NARROWING** (Gabriel 2026-07-21, live-confirmed bug fix — supersedes the old "gates skipped" semantics): a non-empty `schedules.included_provider_ids` INTERSECTS the engine's base pool criteria, never replaces them. It skips only the home-site gate; each engine's role criterion still applies — a day doc in a custom pool never becomes call-eligible (dropped with a load warning), and a call taker in a custom pool is never day-shifted except on sell-back-covered dates. The UI census (`computeCallObligationCensus`, fteTarget.ts) applies the identical intersection so effective par cannot disagree. Eligibility (credentials, availability, conflicts, quotas) still applies on top. Validation mirrors the rule: `poolEligibility` (evaluators.ts) hard-flags a day-pool slot whose holder is neither a Day Doc nor covered by a live sell-back on that date.
 
 ## 4. Bucket quotas — FTE-weighted with deficit carryforward
 
