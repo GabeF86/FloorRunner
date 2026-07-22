@@ -2869,13 +2869,17 @@ function CallCountsModal({ grid, onClose }: { grid: GridData; onClose: () => voi
     census.fteFor(pid), composition.workingDays, ptoDaysForPid(pid), statedLimits?.[pid] ?? undefined);
 
   // Expected = FTE-weighted base target per (provider, bucket, code) —
-  // (block_total_in_bucket / effective par) × fte_value, using the census's
-  // clamped denominator (the engine's computeBucketTargets uses the same
-  // clamp for its category targets). Category-level values stay FRACTIONAL
-  // by design (they drive the engine's fairness ordering); only the
-  // TOTAL-level obligation below is rounded.
+  // (block_total_in_bucket / effective par) × POOL fte (census.poolFteFor: a
+  // provider outside the call pool owes 0 calls — weighting by real FTE
+  // inflated the Expected row past the slot count, Gabriel 2026-07-22),
+  // using the census's clamped denominator (the engine's computeBucketTargets
+  // uses the same clamp for its category targets). Category-level values stay
+  // FRACTIONAL by design (they drive the engine's fairness ordering); only
+  // the TOTAL-level obligation below is rounded. The WORKDAY columns
+  // (Days Off / Working Days required) deliberately stay on census.fteFor —
+  // the working-days contract applies to everyone, day docs included.
   const expectedFor = (pid: string, bucket: string, code: string) =>
-    fteWeightedTarget(blockTotals[`${bucket}|${code}`] || 0, census.effectivePar, census.fteFor(pid));
+    fteWeightedTarget(blockTotals[`${bucket}|${code}`] || 0, census.effectivePar, census.poolFteFor(pid));
   // TOTAL-level fractional expected — straight from the shared census (all
   // call slots ÷ effective par × FTE), NOT a sum of the display buckets: the
   // buckets exclude holiday-dated calls, the obligation never does.

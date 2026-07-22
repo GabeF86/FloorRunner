@@ -222,12 +222,18 @@ describe('callObligationFor + rosterPoolFte', () => {
     const census = computeCallObligationCensus({
       storedParLevel: 12, siteId: 'site-1', profiles, slots,
     });
+    // The census's obligation weight is POOL-scoped (poolFteFor: 0 for the
+    // day doc 'c' — 2026-07-22). callObligationFor stays FTE-parametric by
+    // design (the planner's what-if asks "at this FTE, what's the share"), so
+    // the identity holds when fed the same weight the census uses.
     for (const pid of ['a', 'b', 'c', 'e']) {
-      const est = callObligationFor(census.totalCallSlots, 12, census.poolFte, census.fteFor(pid));
+      const est = callObligationFor(census.totalCallSlots, 12, census.poolFte, census.poolFteFor(pid));
       expect(est.effectivePar).toBe(census.effectivePar);
       expect(est.totalExpected).toBe(census.totalExpectedFor(pid));
       expect(est.obligation).toBe(roundedObligation(census.totalExpectedFor(pid)));
     }
+    expect(census.poolFteFor('c')).toBe(0); // day doc — owes no calls
+    expect(census.fteFor('c')).toBe(1);     // real FTE intact for workday math
   });
 
   it('CROSS-CHECK: identical to the ENGINE obligation math (rulesEngine/obligation.ts) on the same context', () => {

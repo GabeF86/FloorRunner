@@ -554,10 +554,16 @@ export function providerPlannerNumbers(
   whatIf?: PlannerWhatIf,
 ): ProviderPlannerNumbers {
   const fte = whatIf?.fte ?? ctx.census.fteFor(providerId);
+  // Call-obligation weight is POOL-scoped for current stats (a day doc owes
+  // zero calls — census.poolFteFor, 2026-07-22); an explicit what-if FTE
+  // overrides it (the card's question is "at this FTE, taking call, what
+  // would they owe"). Workday stats below stay on real FTE — the working-days
+  // contract applies to everyone.
+  const callFte = whatIf?.fte ?? ctx.census.poolFteFor(providerId);
   const poolFte = whatIf?.poolFte ?? ctx.census.poolFte;
   const parLevel = whatIf?.parLevel ?? ctx.payload.site.call_par_level;
   const { effectivePar, totalExpected, obligation } =
-    callObligationFor(ctx.callEstimate.total, parLevel, poolFte, fte);
+    callObligationFor(ctx.callEstimate.total, parLevel, poolFte, callFte);
 
   const hasActuals = ctx.payload.actuals != null;
   const actuals = ctx.payload.actuals?.byProvider[providerId] ?? (hasActuals ? EMPTY_ACTUALS : null);
@@ -578,7 +584,7 @@ export function providerPlannerNumbers(
     return {
       bucket,
       slots,
-      expected: fteWeightedTarget(slots, effectivePar, fte),
+      expected: fteWeightedTarget(slots, effectivePar, callFte),
       assigned: actuals ? (assignedByBucket.get(bucket) ?? 0) : null,
     };
   });

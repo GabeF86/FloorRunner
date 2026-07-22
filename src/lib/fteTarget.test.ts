@@ -257,4 +257,51 @@ describe('computeCallObligationCensus — ONE obligation input set for grid and 
     expect(census.fteFor('no-profile')).toBe(1);
     expect(census.totalExpectedFor('p1')).toBeCloseTo(2, 9);
   });
+
+  it('poolFteFor: real FTE for pool members, 0 outside the pool; fteFor stays real for everyone (Gabriel 2026-07-22, the 53.3-expected report)', () => {
+    // A day doc owes zero calls. Weighting expected by REAL FTE summed 42
+    // slots × (11.1 ΣFTE ÷ 8.75 pool FTE) = 53.3 in the live modal — every
+    // non-pool physician phantom-contributed a share. Obligation weights must
+    // be pool-scoped; workday math keeps real FTE (day docs work weekdays).
+    const census = computeCallObligationCensus({
+      storedParLevel: 11, siteId: 'site1', includedProviderIds: null,
+      profiles: [
+        profile('p1'),                                                    // 1.0 taker → in pool
+        profile('dd', { call_taker: false, fte_value: 0.5 }),              // day doc → out
+        profile('p5', { home_site_id: 'site2', fte_value: 0.75 }),         // other-site taker → out
+      ],
+      slots: [slot('2026-01-05', 'C1'), slot('2026-01-06', 'C1')],
+    });
+    expect(census.poolFteFor('p1')).toBe(1);
+    expect(census.poolFteFor('dd')).toBe(0);
+    expect(census.poolFteFor('p5')).toBe(0);
+    expect(census.poolFteFor('no-profile')).toBe(0);
+    // Real FTE is untouched — the workday columns rely on it.
+    expect(census.fteFor('dd')).toBe(0.5);
+    expect(census.fteFor('p5')).toBe(0.75);
+    // Obligation-derived numbers ride the pool weight: non-pool expected = 0,
+    // and the sum of expected over ALL providers = the slot count exactly
+    // (poolFte / effectivePar = 1 when the par clamps down to the pool).
+    expect(census.totalExpectedFor('dd')).toBe(0);
+    expect(census.totalExpectedFor('p5')).toBe(0);
+    const sum = ['p1', 'dd', 'p5'].reduce((s, pid) => s + census.totalExpectedFor(pid), 0);
+    expect(sum).toBeCloseTo(census.totalCallSlots, 9);
+  });
+
+  it('a non-pool provider holding calls has obligation 0 — every one of their calls is over-par', () => {
+    // Out-of-pool call coverage is beyond obligation by definition: the OVER
+    // treatment shows it as extra rather than crediting a phantom fair share.
+    const census = computeCallObligationCensus({
+      storedParLevel: 11, siteId: 'site1', includedProviderIds: null,
+      profiles: [profile('p1'), profile('dd', { call_taker: false, fte_value: 0.5 })],
+      slots: [
+        slot('2026-01-05', 'C1', [asg('a1', 'p1')]),
+        slot('2026-01-06', 'C1', [asg('d1', 'dd')]),
+        slot('2026-01-07', 'C1', [asg('d2', 'dd')]),
+      ],
+    });
+    expect(census.overParAssignmentIds.has('d1')).toBe(true);
+    expect(census.overParAssignmentIds.has('d2')).toBe(true);
+    expect(census.overParAssignmentIds.has('a1')).toBe(false); // pool member within obligation
+  });
 });

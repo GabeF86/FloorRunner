@@ -128,7 +128,16 @@ export interface CallObligationCensus {
   effectivePar: number;
   totalCallSlots: number;
   callRecords: OverParCall[];
+  // Real FTE for ANY provider (profile value, engine coercion, `?? 1` when
+  // unprofiled) — for workday math and display, which apply to everyone.
   fteFor: (providerId: string) => number;
+  // CALL-OBLIGATION weight: the provider's FTE when they are a member of the
+  // call pool, 0 otherwise (2026-07-22, Gabriel's 53.3-expected report — a day
+  // doc owes zero calls; summing real FTE over non-pool providers inflated
+  // every Expected figure by nonPoolFte/effectivePar). All obligation-derived
+  // numbers (totalExpectedFor, over-par selection, the modal's Expected row)
+  // MUST weight by this, never by fteFor.
+  poolFteFor: (providerId: string) => number;
   totalExpectedFor: (providerId: string) => number;  // fractional — callers round via roundedObligation
   actualCallsFor: (providerId: string) => number;
   overParAssignmentIds: Set<string>;
@@ -141,6 +150,7 @@ export function computeCallObligationCensus(input: CallObligationCensusInput): C
 
   let poolFte = 0;
   const fteByPid = new Map<string, number>();
+  const poolPids = new Set<string>();
   for (const prof of input.profiles) {
     const fte = prof.fte_value || 1; // engine coercion (genContext profile load)
     fteByPid.set(prof.provider_id, fte);
@@ -149,7 +159,7 @@ export function computeCallObligationCensus(input: CallObligationCensusInput): C
     const inPool = (prof.call_taker || prof.partial_call_taker) && (override
       ? override.has(prof.provider_id)
       : prof.home_site_id === input.siteId);
-    if (inPool) poolFte += fte;
+    if (inPool) { poolFte += fte; poolPids.add(prof.provider_id); }
   }
   const effectivePar = clampParToPoolFte(input.storedParLevel, poolFte);
 
@@ -170,13 +180,18 @@ export function computeCallObligationCensus(input: CallObligationCensusInput): C
   }
 
   const fteFor = (pid: string) => fteByPid.get(pid) ?? 1;
-  const totalExpectedFor = (pid: string) => fteWeightedTarget(totalCallSlots, effectivePar, fteFor(pid));
+  // Obligation weight: pool members only. A non-pool provider (day doc, a
+  // visiting doc outside the override) owes zero calls — every call they DO
+  // hold is beyond obligation by definition (over-par selection sees it).
+  const poolFteFor = (pid: string) => (poolPids.has(pid) ? fteByPid.get(pid)! : 0);
+  const totalExpectedFor = (pid: string) => fteWeightedTarget(totalCallSlots, effectivePar, poolFteFor(pid));
   return {
     poolFte,
     effectivePar,
     totalCallSlots,
     callRecords,
     fteFor,
+    poolFteFor,
     totalExpectedFor,
     actualCallsFor: pid => actualByPid.get(pid) || 0,
     overParAssignmentIds: selectOverParAssignmentIds(callRecords, totalExpectedFor),
