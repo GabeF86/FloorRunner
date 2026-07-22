@@ -56,6 +56,15 @@ export default function RequestWindowCard({ sites, initialSiteId }: {
     if (initialSiteId) setSiteId(initialSiteId);
   }, [initialSiteId]);
 
+  // `sites` loads async: the card can mount with an empty list, initializing
+  // siteId to '' — and a controlled <select> with no matching option DISPLAYS
+  // the first site while the state stays ''. The submit then posts
+  // site_id: '' → 400 "Invalid request body." (Gabriel hit this 2026-07-22).
+  // Recover the moment sites arrive so display always matches state.
+  useEffect(() => {
+    if (sites.length > 0 && !sites.some(s => s.id === siteId)) setSiteId(sites[0].id);
+  }, [sites, siteId]);
+
   const load = useCallback(async () => {
     if (!siteId) { setWindows([]); setLoading(false); return; }
     setLoading(true);
@@ -71,6 +80,7 @@ export default function RequestWindowCard({ sites, initialSiteId }: {
 
   const openWindow = async () => {
     if (!blockStart || !blockEnd) return;
+    if (!siteId) { setError('Select a site for the window first.'); return; }
     setBusy(true); setError(null);
     try {
       const res = await fetch('/api/scheduling/request-windows', {
@@ -85,7 +95,15 @@ export default function RequestWindowCard({ sites, initialSiteId }: {
         }),
       });
       const data = await res.json();
-      if (!res.ok) { setError(data.error || `Failed (${res.status})`); return; }
+      if (!res.ok) {
+        // Zod 400s carry field-level issues — surface them instead of the
+        // bare envelope ("Invalid request body." alone is undebuggable).
+        const detail = Array.isArray(data.issues) && data.issues.length > 0
+          ? ` (${data.issues.map((i: { path: string; message: string }) => `${i.path}: ${i.message}`).join('; ')})`
+          : '';
+        setError((data.error || `Failed (${res.status})`) + detail);
+        return;
+      }
       setBlockStart(''); setBlockEnd(''); setMaxNoCall('3'); setMaxCall('off');
       await load();
     } finally {
@@ -216,7 +234,7 @@ export default function RequestWindowCard({ sites, initialSiteId }: {
               {[1, 2, 3, 4, 5, 6].map(n => <option key={n} value={String(n)}>{n}</option>)}
             </select>
           </div>
-          <Button size="sm" onClick={openWindow} disabled={busy || !blockStart || !blockEnd}>
+          <Button size="sm" onClick={openWindow} disabled={busy || !blockStart || !blockEnd || !siteId}>
             {busy ? 'Opening…' : 'Open Window'}
           </Button>
         </div>

@@ -1,8 +1,14 @@
 -- ╔══════════════════════════════════════════════════════════════════════════╗
--- ║ STATUS: NOT YET APPLIED.                                                  ║
--- ║ Apply to project qhwdbtixhzdsgwwtcfrm ("Floor Runner"), ref verified,     ║
--- ║ via the project-scoped supabase-floorrunner MCP server (or the dashboard  ║
--- ║ SQL editor). Never run through the atlas-staging / chiefos MCP servers.   ║
+-- ║ STATUS: APPLIED 2026-07-22T22:48:13Z to project qhwdbtixhzdsgwwtcfrm      ║
+-- ║ ("Floor Runner", ref verified against .env.local before applying).       ║
+-- ║ Spot checks (all passed): max_call_requests column integer/nullable;     ║
+-- ║ CHECK constraint request_windows_max_call_requests_check present;        ║
+-- ║ availability_type enum byte-identical before/after (call_request was     ║
+-- ║ pre-existing); zero data rows changed (request_windows 0→0,              ║
+-- ║ provider_availability 40→40). Live round-trip on merged main (port      ║
+-- ║ 3473): diagnostic window cap=2 → 1 call date accepted via tokened        ║
+-- ║ intake, row visible in availability API, +2 dates rejected 400           ║
+-- ║ ("1 already submitted"), window + row deleted, zero residue verified.    ║
 -- ╚══════════════════════════════════════════════════════════════════════════╝
 --
 -- Patch 36: call-shift requests in request windows. Additive only.
