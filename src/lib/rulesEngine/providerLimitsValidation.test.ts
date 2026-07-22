@@ -329,3 +329,23 @@ describe('providerLimits evaluator — weighted parent-mapped segments', () => {
     expect(limitFlags(c)).toHaveLength(0);
   });
 });
+
+// Open-slot warnings are category-keyed, so an OPEN call SEGMENT gets the
+// same soft open-call flag a whole call does (design: existing unfilled-call
+// warnings apply to segments as-is).
+describe('openSlot evaluator — call segments inherit the open-call warning', () => {
+  it('an open C1N12 segment slot soft-flags exactly like an open C1', () => {
+    const segShiftType: ShiftTypeRow = {
+      ...st('C1N12'), call_burden_weight: 0.5, parent_call_code: 'C1',
+    };
+    const c = ctx({
+      providerId: null,
+      shiftType: segShiftType,
+      slot: slot({ shift_type_id: 'st-C1N12' }),
+    });
+    const flags = evaluators.flatMap(e => e(c)).filter(v => v.rule_name === 'Open slot');
+    expect(flags).toHaveLength(1);
+    expect(flags[0].severity).toBe('soft');
+    expect(flags[0].message).toContain('C1N12');
+  });
+});

@@ -41,7 +41,7 @@ describe('grid column lists', () => {
     for (const col of ['id', 'slot_date', 'shift_type_id', 'slot_index', 'locked', 'derived_day_type']) {
       expect(GRID_SLOT_COLUMNS).toContain(col);
     }
-    expect(GRID_SLOT_COLUMNS).toContain('shift_types(id, code, name, color_hex, category, call_type, display_order, provider_group, requires_post_call_rule)');
+    expect(GRID_SLOT_COLUMNS).toContain('shift_types(id, code, name, color_hex, category, call_type, display_order, provider_group, requires_post_call_rule, parent_call_code, call_burden_weight)');
     expect(GRID_SLOT_COLUMNS).toContain(`assignments(${GRID_ASSIGNMENT_COLUMNS})`);
   });
 
@@ -144,6 +144,31 @@ describe('GET /api/scheduling/schedules/:id/grid', () => {
     const a = json.slots[0].assignments[0];
     expect(a.validation_summary).toEqual({ hard: 1, soft: 0, warning: 1 });
     expect(a.validation_flags).toEqual([{ severity: 'hard' }, { severity: 'warning' }]);
+  });
+
+  it('retries with the pre-patch35 slot columns when the call-split columns are missing (narrow-retry, no 500)', async () => {
+    const { sb, calls } = makeFakeSupabase({
+      tables: {
+        schedules: { data: { id: 'sched-1', organization_id: 'org-1', site_id: 'site-1', sites: null }, error: null },
+        schedule_versions: { data: { id: 'ver-1', version_number: 1, version_status: 'draft' }, error: null },
+        schedule_slots: (filters) => {
+          const sel = (filters.find(f => f.method === 'select')?.args[0] as string) ?? '';
+          if (sel.includes('call_burden_weight')) {
+            return { data: null, error: { message: 'column shift_types.call_burden_weight does not exist', code: '42703' } };
+          }
+          return { data: [{ id: 'slot-1', assignments: [] }], error: null };
+        },
+        providers: { data: [], error: null },
+        holiday_calendars: { data: [], error: null },
+      },
+    });
+    holder.sb = sb;
+    const { res, json } = await get();
+    expect(res.status).toBe(200);
+    expect(json.slots).toHaveLength(1);
+    const selects = callsFor(calls, 'schedule_slots', 'select').map(c => c.args[0]);
+    expect(selects).toHaveLength(2);
+    expect(selects[1]).not.toContain('call_burden_weight');
   });
 
   // Live DB: UNIQUE(schedule_slot_id) → PostgREST returns the embed as ONE

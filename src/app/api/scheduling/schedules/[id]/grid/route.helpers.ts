@@ -21,8 +21,22 @@ export const GRID_ASSIGNMENT_COLUMNS =
 // requires_post_call_rule rides on the shift_types join for the Call Counts
 // modal's Working Days credit (post-call rest days credit as worked —
 // plannerMath.computeScheduleActuals via lib/callCountDays.ts).
+// parent_call_code + call_burden_weight (2026-07-22, patch35) drive the
+// split-call stacked cell and the weighted obligation census; the route
+// retries with GRID_SLOT_COLUMNS_PRE35 on a pre-patch35 DB (missing-column
+// error) — an absent column can hold no segments, so the fallback is exact.
 export const GRID_SLOT_COLUMNS =
+  `id, slot_date, shift_type_id, slot_index, locked, derived_day_type, shift_types(id, code, name, color_hex, category, call_type, display_order, provider_group, requires_post_call_rule, parent_call_code, call_burden_weight), assignments(${GRID_ASSIGNMENT_COLUMNS})` as const;
+
+export const GRID_SLOT_COLUMNS_PRE35 =
   `id, slot_date, shift_type_id, slot_index, locked, derived_day_type, shift_types(id, code, name, color_hex, category, call_type, display_order, provider_group, requires_post_call_rule), assignments(${GRID_ASSIGNMENT_COLUMNS})` as const;
+
+// Missing-column detection for the pre-patch35 retry (42703 or a message
+// naming a column) — mirrors the engine's posture.
+export function isMissingColumnErr(e: unknown): boolean {
+  const err = e as { code?: string; message?: string } | null;
+  return err?.code === '42703' || /column/i.test(err?.message || '');
+}
 
 // Per-assignment severity counts, computed server-side so the page doesn't
 // re-walk every flags array per render. `warning` counts sentinel flags

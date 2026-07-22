@@ -4,6 +4,8 @@ import { embedArray } from '@/lib/embed';
 import {
   GRID_SCHEDULE_COLUMNS,
   GRID_SLOT_COLUMNS,
+  GRID_SLOT_COLUMNS_PRE35,
+  isMissingColumnErr,
   withValidationSummary,
 } from './route.helpers';
 
@@ -42,12 +44,26 @@ export async function GET(
   // never reads). Each assignment gets a server-computed validation_summary
   // ({hard, soft, warning}) alongside its full validation_flags (the page
   // still renders per-flag messages in tooltips and the cell detail panel).
-  const { data: rawSlots, error: slotErr } = await sb
+  // The two select strings infer different supabase-js row types; the route
+  // treats rows structurally (embedArray + validation summaries), so widen.
+  let slotRes: { data: unknown; error: { message: string; code?: string } | null } = await sb
     .from('schedule_slots')
     .select(GRID_SLOT_COLUMNS)
     .eq('schedule_version_id', version.id)
     .order('slot_date')
     .order('slot_index');
+  if (slotRes.error && isMissingColumnErr(slotRes.error)) {
+    // Pre-patch35 DB: the call-split columns don't exist yet — and can hold
+    // no segments, so the narrow select is exact (weights default to 1).
+    slotRes = await sb
+      .from('schedule_slots')
+      .select(GRID_SLOT_COLUMNS_PRE35)
+      .eq('schedule_version_id', version.id)
+      .order('slot_date')
+      .order('slot_index');
+  }
+  const rawSlots = slotRes.data as Array<{ assignments?: unknown }> | null;
+  const slotErr = slotRes.error;
   if (slotErr) return NextResponse.json({ error: slotErr.message }, { status: 500 });
 
   // UNIQUE(schedule_slot_id) makes PostgREST return the assignments embed as
