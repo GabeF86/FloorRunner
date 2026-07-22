@@ -79,6 +79,16 @@ export interface ShiftTypeInfo {
   generation_engine: 'call' | 'day_pool' | 'none';
   requires_post_call_rule: boolean;
   call_coverage_type: string | null;
+  // ── call splits (2026-07-22, patch35) ──
+  // manual_only: the engine NEVER places this type (segments live here —
+  // genContext excludes manual-only call slots from slotsToFill).
+  // call_burden_weight: fractional call credit (12h segment = 0.5, 8h =
+  // 0.3333; whole calls 1). parent_call_code: segment → parent grouping key
+  // (buckets/caps/obligations fold segments under it) — null for whole calls.
+  // Loads degrade to (false, 1, null) pre-patch35 — byte-identical behavior.
+  manual_only: boolean;
+  call_burden_weight: number;
+  parent_call_code: string | null;
 }
 
 // Immutable input to solve(). All reads have already happened.
@@ -105,6 +115,11 @@ export interface GenerationContext {
   bucketTarget: Map<string, number>;
   // Assignments already present before generation (manual/prior runs).
   seedAssignments: SeedAssignment[];
+  // OPEN call-category slots whose shift type is manual_only (call-split
+  // segments, 2026-07-22): excluded from slotsToFill — the engine never
+  // places them — but still call load the obligation census must count at
+  // weight. Optional: absent (bare fixtures, pre-patch35) means none.
+  manualCallSlots?: SlotToFill[];
   // ── v2 pattern-interpreter inputs (all optional; solve falls back to
   //    CLASSIC_PATTERN + code-derived shift info when absent) ──
   callPattern?: CallPatternDoc;

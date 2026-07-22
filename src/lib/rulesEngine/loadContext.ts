@@ -141,10 +141,20 @@ export async function loadSiteValidationContext(
     loadError: msg,
   });
 
-  const { data: shiftTypes, error: stErr } = await sb
+  // Call-split columns (patch35) ride the select with a pre-patch narrow
+  // retry: an absent column can hold no segments, so weight 1 / parent null
+  // is exact — silent degradation (the providerLimits posture).
+  let stRes = await sb
     .from('shift_types')
-    .select('id, site_id, code, name, category, requires_credential, requires_specific_skills, generation_engine')
+    .select('id, site_id, code, name, category, requires_credential, requires_specific_skills, generation_engine, call_burden_weight, parent_call_code')
     .eq('site_id', siteId);
+  if (stRes.error && /column/i.test((stRes.error as { message?: string }).message || '')) {
+    stRes = await sb
+      .from('shift_types')
+      .select('id, site_id, code, name, category, requires_credential, requires_specific_skills, generation_engine')
+      .eq('site_id', siteId);
+  }
+  const { data: shiftTypes, error: stErr } = stRes;
   if (stErr) return fail(`shift_types load failed: ${stErr.message}`);
   const shiftTypeRows: ShiftTypeRow[] = (shiftTypes || []).map((s: Record<string, unknown>) => ({
     id: s.id as string,
@@ -156,6 +166,8 @@ export async function loadSiteValidationContext(
     requires_specific_skills: Array.isArray(s.requires_specific_skills)
       ? (s.requires_specific_skills as string[]) : [],
     generation_engine: (s.generation_engine as string | null) ?? null,
+    call_burden_weight: (s.call_burden_weight as number | null) ?? null,
+    parent_call_code: (s.parent_call_code as string | null) ?? null,
   }));
   const { data: ruleSets, error: rsErr } = await sb
     .from('rule_sets').select('id').eq('site_id', siteId).eq('status', 'active');

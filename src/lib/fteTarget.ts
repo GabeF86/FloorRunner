@@ -1,3 +1,5 @@
+import { WEIGHT_EPSILON, callBurdenWeight, parentCallCodeOf } from './callBurden';
+
 // The house FTE-weighted call-obligation formula (spec choice A):
 //   target = (slots in the bucket ÷ site call_par_level) × provider FTE.
 // Single source for: grid over-par red cells, modal Extra Calls, and the
@@ -41,20 +43,29 @@ export function clampParToPoolFte(parLevel: number, poolFte: number): number {
   return poolFte > 0 ? Math.min(parLevel, poolFte) : parLevel;
 }
 
-// One call assignment as the OVER-selection helper sees it.
+// One call assignment as the OVER-selection helper sees it. `weight` /
+// `parent_code` (2026-07-22, call splits): fractional call credit + the
+// parent grouping code — optional so pre-split callers (and their literals)
+// keep compiling; absent means weight 1 / parent = own code.
 export interface OverParCall {
   id: string;           // assignment id
   provider_id: string;
   slot_date: string;    // ISO date
   shift_type_code: string;
+  weight?: number;
+  parent_code?: string;
 }
 
-// Per-slot OVER labeling (2026-07-17): when a provider exceeds their rounded
-// TOTAL obligation, only their LAST N call assignments get the OVER treatment
-// (N = extraCalls), chronological by slot_date with shift-code tiebreak — not
-// every cell they own. `totalExpectedFor` returns the provider's FRACTIONAL
-// total expected calls (the caller computes it from whatever slot totals it
-// already has; the rounding lives here).
+// Per-slot OVER labeling (2026-07-17; WEIGHTED 2026-07-22): when a provider's
+// cumulative call WEIGHT exceeds their rounded TOTAL obligation, whole
+// assignments are picked from the CHRONOLOGICAL END (slot_date, shift-code
+// tiebreak, then id) until the unpicked cumulative weight no longer exceeds
+// the obligation. With every weight 1 this selects exactly the last
+// N = actual − obligation assignments — the pre-split behavior, byte for
+// byte. WEIGHT_EPSILON absorbs stored-fraction noise (3 × 0.3333 = 0.9999
+// is not "over" a 1-call obligation). `totalExpectedFor` returns the
+// provider's FRACTIONAL total expected calls (the caller computes it from
+// whatever slot totals it already has; the rounding lives here).
 export function selectOverParAssignmentIds(
   calls: OverParCall[],
   totalExpectedFor: (providerId: string) => number,
@@ -66,13 +77,17 @@ export function selectOverParAssignmentIds(
   }
   const over = new Set<string>();
   for (const [pid, list] of byPid) {
-    const extra = extraCalls(list.length, totalExpectedFor(pid));
-    if (extra <= 0) continue;
+    const obligation = roundedObligation(totalExpectedFor(pid));
+    let remaining = list.reduce((s, c) => s + callBurdenWeight({ call_burden_weight: c.weight }), 0);
+    if (remaining <= obligation + WEIGHT_EPSILON) continue;
     list.sort((a, b) =>
       a.slot_date.localeCompare(b.slot_date)
       || a.shift_type_code.localeCompare(b.shift_type_code)
       || a.id.localeCompare(b.id));
-    for (const c of list.slice(-extra)) over.add(c.id);
+    for (let i = list.length - 1; i >= 0 && remaining > obligation + WEIGHT_EPSILON; i--) {
+      over.add(list[i].id);
+      remaining -= callBurdenWeight({ call_burden_weight: list[i].weight });
+    }
   }
   return over;
 }
@@ -111,7 +126,15 @@ export interface CensusProfile {
 
 export interface CensusSlot {
   slot_date: string;
-  shift_types: { category: string; code: string } | null;
+  // call_burden_weight / parent_call_code (2026-07-22, call splits): optional
+  // patch35 columns — absent (pre-patch payloads, unsplit schedules) means
+  // weight 1 / parent = own code via the callBurden.ts defaults.
+  shift_types: {
+    category: string;
+    code: string;
+    call_burden_weight?: number | null;
+    parent_call_code?: string | null;
+  } | null;
   assignments?: Array<{ id: string; provider_id: string | null }> | null;
 }
 
@@ -163,19 +186,27 @@ export function computeCallObligationCensus(input: CallObligationCensusInput): C
   }
   const effectivePar = clampParToPoolFte(input.storedParLevel, poolFte);
 
+  // WEIGHT SUMS (2026-07-22, call splits): every call-category slot counts its
+  // call_burden_weight (default 1 — unsplit schedules are byte-identical), so
+  // a split call (0.5 + 0.5, or 3 × 0.3333) totals exactly ONE call across
+  // obligation, actuals and the OVER selection. Records carry weight + the
+  // parent grouping code for the modal's parent-code columns.
   let totalCallSlots = 0;
   const callRecords: OverParCall[] = [];
   const actualByPid = new Map<string, number>();
   for (const slot of input.slots) {
     if (slot.shift_types?.category !== 'call') continue;
-    totalCallSlots++;
+    const weight = callBurdenWeight(slot.shift_types);
+    totalCallSlots += weight;
     for (const a of slot.assignments || []) {
       if (!a.provider_id) continue;
       callRecords.push({
         id: a.id, provider_id: a.provider_id,
         slot_date: slot.slot_date, shift_type_code: slot.shift_types.code,
+        weight,
+        parent_code: parentCallCodeOf(slot.shift_types.code, slot.shift_types),
       });
-      actualByPid.set(a.provider_id, (actualByPid.get(a.provider_id) || 0) + 1);
+      actualByPid.set(a.provider_id, (actualByPid.get(a.provider_id) || 0) + weight);
     }
   }
 

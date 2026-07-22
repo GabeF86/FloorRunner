@@ -390,9 +390,9 @@ describe('solve — degraded mode: ctx.shiftTypes undefined (pre-patch18 DB)', (
 // mop-up example, which pinned the live bug).
 describe('solve — mop-up sweep for orphaned call-engine day slots', () => {
   const engineShiftTypes = () => new Map([
-    ['C2', { code: 'C2', category: 'call', call_rank: 1, relief_rank: null, is_overlay: false, generation_engine: 'call' as const, requires_post_call_rule: true, call_coverage_type: null }],
-    ['D5', { code: 'D5', category: 'regular', call_rank: null, relief_rank: null, is_overlay: false, generation_engine: 'call' as const, requires_post_call_rule: false, call_coverage_type: null }],
-    ['D8', { code: 'D8', category: 'regular', call_rank: null, relief_rank: null, is_overlay: false, generation_engine: 'day_pool' as const, requires_post_call_rule: false, call_coverage_type: null }],
+    ['C2', { code: 'C2', category: 'call', call_rank: 1, relief_rank: null, is_overlay: false, generation_engine: 'call' as const, requires_post_call_rule: true, call_coverage_type: null, manual_only: false, call_burden_weight: 1, parent_call_code: null }],
+    ['D5', { code: 'D5', category: 'regular', call_rank: null, relief_rank: null, is_overlay: false, generation_engine: 'call' as const, requires_post_call_rule: false, call_coverage_type: null, manual_only: false, call_burden_weight: 1, parent_call_code: null }],
+    ['D8', { code: 'D8', category: 'regular', call_rank: null, relief_rank: null, is_overlay: false, generation_engine: 'day_pool' as const, requires_post_call_rule: false, call_coverage_type: null, manual_only: false, call_burden_weight: 1, parent_call_code: null }],
   ]);
 
   it('fills an open non-chain call-engine day slot (D5, relief_rank null) via the mop-up', () => {
@@ -439,7 +439,7 @@ describe('solve — mop-up sweep for orphaned call-engine day slots', () => {
   it('does not double-report a relief slot the relief pass already left unfilled', () => {
     const d4 = dSlot('d4', '2026-01-07', 'D4');
     const shiftTypes = new Map([
-      ['D4', { code: 'D4', category: 'regular', call_rank: null, relief_rank: 1, is_overlay: false, generation_engine: 'call' as const, requires_post_call_rule: false, call_coverage_type: null }],
+      ['D4', { code: 'D4', category: 'regular', call_rank: null, relief_rank: 1, is_overlay: false, generation_engine: 'call' as const, requires_post_call_rule: false, call_coverage_type: null, manual_only: false, call_burden_weight: 1, parent_call_code: null }],
     ]);
     // CRNA can't take the physician slot → relief reports it unfilled once.
     const plan = solve(buildCtx([d4], [{ ...prov('p1'), provider_type: 'crna' }], { shiftTypes }));

@@ -1136,3 +1136,89 @@ describe('sequenceAutoFill — pre-patch18 degraded mode', () => {
     expect(err).toHaveBeenCalled();
   });
 });
+
+// ── call splits (2026-07-22): segment triggers + the rest guard ─────────────
+// The patch35 pattern-doc update gives the C2 OVERNIGHT segment codes
+// (C2N12 / C2N8) dayChains mirroring C2's +1 D1 — manually assigning the
+// overnight segment auto-fills next-day D1 through THIS existing machinery.
+// The post-call rest guard keys on requires_post_call_rule, which only the
+// overnight segments inherit — a day segment must never trigger it.
+
+describe('applySequenceAutoFill — call-split segments (patch35 doc)', () => {
+  it('manual C2N12 (overnight segment) on Mon fills the open D1 slot on Tue via the pattern chain', async () => {
+    const { sb, calls } = makeFakeSupabase({
+      tables: tables({
+        trigger: triggerSlot({ date: MON, code: 'C2N12', stOpts: { category: 'call', call_rank: 1 } }),
+        slots: [slot({ id: 'slot-d1-tue', date: TUE, code: 'D1', assignments: [openRow('open-1')] })],
+      }),
+    });
+    const result = await applySequenceAutoFill(sb, 'trig', 'p1', WEEKEND_V2_PATTERN);
+    expect(result.filledSlotIds).toEqual(['slot-d1-tue']);
+    const up = updates(calls);
+    expect(up).toHaveLength(1);
+    expect(up[0].provider_id).toBe('p1');
+    // The segment chain carries ONLY +1 D1 — no D3 pre-fill, so no no-slot skip.
+    expect(result.skips).toEqual([]);
+  });
+
+  it('manual C2N8 (8h overnight segment) also fills next-day D1', async () => {
+    const { sb } = makeFakeSupabase({
+      tables: tables({
+        trigger: triggerSlot({ date: MON, code: 'C2N8', stOpts: { category: 'call', call_rank: 1 } }),
+        slots: [slot({ id: 'slot-d1-tue', date: TUE, code: 'D1', assignments: [openRow('open-1')] })],
+      }),
+    });
+    const result = await applySequenceAutoFill(sb, 'trig', 'p1', WEEKEND_V2_PATTERN);
+    expect(result.filledSlotIds).toEqual(['slot-d1-tue']);
+  });
+
+  it('a DAY segment (C2D12) triggers no chain at all — day/evening segments carry no sequence structure', async () => {
+    const { sb, calls } = makeFakeSupabase({
+      tables: tables({
+        trigger: triggerSlot({ date: MON, code: 'C2D12', stOpts: { category: 'call', call_rank: 1 } }),
+        slots: [slot({ id: 'slot-d1-tue', date: TUE, code: 'D1', assignments: [openRow('open-1')] })],
+      }),
+    });
+    const result = await applySequenceAutoFill(sb, 'trig', 'p1', WEEKEND_V2_PATTERN);
+    expect(result.filledSlotIds).toEqual([]);
+    expect(updates(calls)).toHaveLength(0);
+  });
+
+  it('REST GUARD fires off a filled OVERNIGHT segment: a rest-requiring C1N12 yesterday blocks a link fill onto the rest day', async () => {
+    // Trigger C2 Mon → +1 D1 Tue; the provider holds a PUBLISHED C1N12
+    // (requires_post_call_rule inherited true) on Mon at another site → Tue is
+    // their post-call day off; the D1 fill must decline (recorded, not silent).
+    const { sb, calls } = makeFakeSupabase({
+      tables: tables({
+        trigger: triggerSlot({ date: MON }),
+        slots: [slot({ id: 'slot-d1-tue', date: TUE, code: 'D1', assignments: [openRow('open-1')] })],
+        assignments: [winAssign({
+          id: 'w1', date: MON, code: 'C1N12', site: 'siteB', version: 'v9', status: 'published',
+          stOpts: { category: 'call', call_rank: 0, requires_post_call_rule: true },
+        })],
+      }),
+    });
+    const result = await applySequenceAutoFill(sb, 'trig', 'p1', CLASSIC_PATTERN);
+    expect(result.filledSlotIds).toEqual([]);
+    expect(updates(calls)).toHaveLength(0);
+    expect(result.skips).toEqual([
+      expect.objectContaining({ code: 'D3', reason: 'no-slot' }), // classic −1 D3 first, no Sunday slot
+      expect.objectContaining({ date: TUE, code: 'D1', reason: 'ineligible' }),
+    ]);
+  });
+
+  it('REST GUARD does NOT fire off a DAY segment: C1D12 (requires_post_call_rule false) yesterday leaves the fill alone', async () => {
+    const { sb } = makeFakeSupabase({
+      tables: tables({
+        trigger: triggerSlot({ date: MON }),
+        slots: [slot({ id: 'slot-d1-tue', date: TUE, code: 'D1', assignments: [openRow('open-1')] })],
+        assignments: [winAssign({
+          id: 'w1', date: MON, code: 'C1D12', site: 'siteB', version: 'v9', status: 'published',
+          stOpts: { category: 'call', call_rank: 0, requires_post_call_rule: false },
+        })],
+      }),
+    });
+    const result = await applySequenceAutoFill(sb, 'trig', 'p1', CLASSIC_PATTERN);
+    expect(result.filledSlotIds).toEqual(['slot-d1-tue']);
+  });
+});

@@ -42,6 +42,11 @@ import {
 // container ONLY — uniform scaling keeps every inline sizing literal and
 // sticky header offset coupled by construction.
 import { GRID_ZOOM_LEVELS, loadGridZoom, saveGridZoom, type GridZoomLevel } from './gridZoom';
+// Call splits (2026-07-22): segments render STACKED inside the parent call's
+// row cell (parent_call_code lookup — no new grid rows); weights fold under
+// the parent for the Call Counts modal via the single-homed callBurden math.
+import { isSegmentType, segmentKey, groupSegmentSlots, segmentTag } from './gridSegments';
+import { callBurdenWeight, parentCallCodeOf, formatCallWeight } from '@/lib/callBurden';
 
 /* ── Interfaces ──────────────────────────────────────────────────────────── */
 
@@ -118,6 +123,10 @@ interface ShiftTypeInfo {
   // rest days credit as worked). Older cached payloads may omit it; the
   // credit math treats absent as false.
   requires_post_call_rule?: boolean | null;
+  // Call splits (2026-07-22, patch35): segment → parent grouping key +
+  // fractional call credit. Absent (pre-patch payloads) = whole call.
+  parent_call_code?: string | null;
+  call_burden_weight?: number | null;
 }
 
 interface ProviderInfo {
@@ -357,10 +366,11 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
 
   /* ── Derived Data ───────────────────────────────────────────────────────── */
 
-  const { shiftTypes, allDates, slotMap, holidayMap, assignedOnDate, availableByDate, offByDate, offTitleByDate, ptoByDate, postCallByDate, maxAvailable, maxOff, maxPto, maxPostCall, callTakerIds, sellbackByDate } = useMemo(() => {
+  const { shiftTypes, allDates, slotMap, segmentsByParent, holidayMap, assignedOnDate, availableByDate, offByDate, offTitleByDate, ptoByDate, postCallByDate, maxAvailable, maxOff, maxPto, maxPostCall, callTakerIds, sellbackByDate } = useMemo(() => {
     const empty = {
       shiftTypes: [] as ShiftTypeInfo[], allDates: [] as string[],
       slotMap: {} as Record<string, Record<string, Slot>>,
+      segmentsByParent: new Map<string, Slot[]>(),
       holidayMap: {} as Record<string, Holiday>,
       assignedOnDate: {} as Record<string, Set<string>>,
       availableByDate: {} as Record<string, Provider[]>,
@@ -374,12 +384,34 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
     };
     if (!grid) return empty;
 
-    // Unique shift types sorted by display_order
+    // Unique shift types sorted by display_order. Call-split SEGMENT types
+    // (parent_call_code set) get NO row of their own — their slots render
+    // stacked inside the parent call's row via segmentsByParent below.
     const stMap = new Map<string, ShiftTypeInfo>();
     for (const slot of grid.slots) {
+      if (isSegmentType(slot.shift_types)) continue;
       if (!stMap.has(slot.shift_type_id)) stMap.set(slot.shift_type_id, slot.shift_types);
     }
+    // Orphan-parent fallback: if EVERY slot of a parent call got split (no
+    // whole slot left anywhere in the block), synthesize a minimal row from
+    // the segment metadata so the split cells still have a row to live in.
+    for (const slot of grid.slots) {
+      const st = slot.shift_types;
+      if (!isSegmentType(st)) continue;
+      const parentCode = st.parent_call_code!;
+      const hasParentRow = [...stMap.values()].some(row => row.code === parentCode);
+      if (!hasParentRow && !stMap.has(`segment-parent-${parentCode}`)) {
+        stMap.set(`segment-parent-${parentCode}`, {
+          id: `segment-parent-${parentCode}`, code: parentCode, name: `${parentCode} (split)`,
+          color_hex: st.color_hex, category: st.category, call_type: st.call_type,
+          display_order: (st.display_order ?? 999) - 1, provider_group: st.provider_group,
+        });
+      }
+    }
     const shiftTypes = Array.from(stMap.values()).sort((a, b) => (a.display_order ?? 999) - (b.display_order ?? 999));
+
+    // Segment slots grouped under `${parentCode}|${date}` for the stacked cell.
+    const segmentsByParent = groupSegmentSlots(grid.slots);
 
     const allDates = allDatesInRange(grid.schedule.date_start, grid.schedule.date_end);
 
@@ -522,6 +554,12 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
       const st = slot.shift_types;
       if (!st || st.category !== 'call') continue;
       if (NON_POST_CALL_CODES.has(st.code)) continue;
+      // Call splits (2026-07-22, decision 3): post-call rest belongs to the
+      // OVERNIGHT segment holder only. A day/evening SEGMENT (parent set,
+      // requires_post_call_rule false) confers no rest — its holder stays
+      // Available tomorrow, never in this row. Whole-call rows (incl. C2's
+      // colloquial post-call display) keep the pre-split behavior.
+      if (isSegmentType(st) && !st.requires_post_call_rule) continue;
       for (const a of slot.assignments || []) {
         if (!a.provider_id) continue;
         const nextDay = addDaysStr(slot.slot_date, 1);
@@ -579,7 +617,7 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
     const maxPto = Math.max(0, ...Object.values(ptoByDate).map(v => v.length));
     const maxPostCall = Math.max(0, ...Object.values(postCallByDate).map(v => v.length));
 
-    return { shiftTypes, allDates, slotMap, holidayMap, assignedOnDate, availableByDate, offByDate, offTitleByDate, ptoByDate, postCallByDate, maxAvailable, maxOff, maxPto, maxPostCall, callTakerIds, sellbackByDate };
+    return { shiftTypes, allDates, slotMap, segmentsByParent, holidayMap, assignedOnDate, availableByDate, offByDate, offTitleByDate, ptoByDate, postCallByDate, maxAvailable, maxOff, maxPto, maxPostCall, callTakerIds, sellbackByDate };
   }, [grid]);
 
   /* ── Per-date working roster + over-par detection ───────────────────────── */
@@ -827,6 +865,47 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
     } catch {
       setGrid({ ...grid, slots: prevSlots });
       setActionError('Failed to remove assignment');
+    }
+  };
+
+  // ── Call splits (2026-07-22): per-day split/unsplit actions ─────────────
+  // Structure changes — no optimistic paint; the grid reloads so the parent
+  // row shows the stacked segment mini-cells (or the restored whole call).
+  // Server guards own correctness (open assignment, current version, not a
+  // segment); a 4xx surfaces through the standard action-error toast.
+  const splitSlot = async (slotId: string, mode: '2x12' | '3x8') => {
+    setActiveCell(null);
+    setPickerSearch('');
+    try {
+      const res = await fetch(`/api/scheduling/schedule-slots/${slotId}/split`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mode }),
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok) {
+        setActionError(data?.error || 'Failed to split call');
+        return;
+      }
+      await loadGrid();
+    } catch (e) {
+      setActionError(e instanceof Error ? e.message : 'Failed to split call');
+    }
+  };
+
+  const unsplitSlot = async (slotId: string) => {
+    setActiveCell(null);
+    setPickerSearch('');
+    try {
+      const res = await fetch(`/api/scheduling/schedule-slots/${slotId}/unsplit`, { method: 'POST' });
+      const data = await res.json().catch(() => null);
+      if (!res.ok) {
+        setActionError(data?.error || 'Failed to unsplit call');
+        return;
+      }
+      await loadGrid();
+    } catch (e) {
+      setActionError(e instanceof Error ? e.message : 'Failed to unsplit call');
     }
   };
 
@@ -1699,6 +1778,109 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
               {/* Assignment cells */}
               {visibleDates.map((date, i) => {
                 const slot = slotMap[st.id]?.[date];
+
+                // ── Call splits: stacked segment mini-cells ──────────────
+                // A split day has NO whole-call slot; its segment slots render
+                // stacked inside this parent row cell, each independently
+                // fillable via the normal picker (click → setActiveCell on
+                // the SEGMENT slot). Works at every zoom level — the cell is
+                // ordinary grid content under the uniform CSS zoom.
+                const segs = !slot ? segmentsByParent.get(segmentKey(st.code, date)) : undefined;
+                if (segs && segs.length > 0) {
+                  const dow = getDayOfWeek(date);
+                  const isWeekend = dow === 0 || dow === 6;
+                  const isHoliday = !!holidayMap[date];
+                  const isToday = date === todayStr;
+                  const isSatBorder = dow === 6 && i > 0;
+                  return (
+                    <div
+                      key={`cell-${st.id}-${date}`}
+                      style={{
+                        background: cellBackground({ isOverPar: false, isExtraCall: false, isHoliday, isWeekend }),
+                        borderBottom: '1px solid ' + gridTokens.line,
+                        borderRight: '1px solid ' + gridTokens.line,
+                        borderLeft: isToday ? '2px solid ' + gridTokens.accentStrong : isSatBorder ? '2px solid #1e3a5f' : 'none',
+                        padding: 0,
+                        minHeight: 20,
+                        display: 'flex', flexDirection: 'column', justifyContent: 'stretch',
+                        position: 'relative',
+                      }}
+                    >
+                      {segs.map((seg, sIdx) => {
+                        const segAssignment = seg.assignments?.[0] ?? null;
+                        const segProvider = segAssignment?.providers ?? null;
+                        const segFlags = segAssignment?.validation_flags ?? [];
+                        const segHard = segFlags.some(f => f.severity === 'hard');
+                        const segSoft = !segHard && segFlags.some(f => f.severity === 'soft');
+                        const segOver = !!segAssignment && !!segProvider && overParAssignmentIds.has(segAssignment.id);
+                        // Extra-call parity with whole call cells: a holder
+                        // outside the regular call pool gets the same EXTRA
+                        // signal (OVER wins, mirroring the whole-cell tag
+                        // precedence) — segments must not hide pool pickups.
+                        const segExtra = !!segProvider && !callTakerIds.has(segProvider.id);
+                        return (
+                          <div
+                            key={seg.id}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setActiveCell({
+                                slotId: seg.id,
+                                assignmentId: segAssignment?.id ?? null,
+                                x: e.clientX, y: e.clientY,
+                              });
+                              setPickerSearch('');
+                            }}
+                            title={`${seg.shift_types.name}${segProvider ? ` — ${segProvider.short_display_name}` : ' — open'}${segExtra ? ' — extra call (not in the regular call pool at this site)' : ''}`}
+                            style={{
+                              flex: 1,
+                              display: 'flex', alignItems: 'center', gap: 3,
+                              padding: '0 3px', minHeight: 14, cursor: 'pointer',
+                              borderTop: sIdx > 0 ? '1px dashed ' + gridTokens.line : 'none',
+                              background: colorWithAlpha(seg.shift_types.color_hex, segProvider ? 0.14 : 0.05),
+                            }}
+                            onMouseEnter={(e) => { (e.currentTarget as HTMLDivElement).style.background = colorWithAlpha(seg.shift_types.color_hex, 0.26); }}
+                            onMouseLeave={(e) => { (e.currentTarget as HTMLDivElement).style.background = colorWithAlpha(seg.shift_types.color_hex, segProvider ? 0.14 : 0.05); }}
+                          >
+                            <span style={{
+                              fontSize: 7.5, fontWeight: 800, letterSpacing: '0.03em',
+                              color: gridTokens.chromeMuted, flexShrink: 0, minWidth: 16,
+                            }}>{segmentTag(seg.shift_types.code, st.code)}</span>
+                            {segProvider ? (
+                              <span style={{
+                                fontSize: viewMode === 'month' ? 9.5 : 11, fontWeight: 800, color: gridTokens.name,
+                                whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', flex: 1,
+                              }}>{segProvider.short_display_name}</span>
+                            ) : (
+                              <span style={{ fontSize: 8.5, fontWeight: 800, letterSpacing: '0.03em', color: gridTokens.open }}>OPEN</span>
+                            )}
+                            {segOver ? (
+                              <span aria-label="Over par for this shift" style={{
+                                fontSize: 6.5, fontWeight: 800, letterSpacing: '0.03em',
+                                color: '#b91c1c', flexShrink: 0,
+                              }}>OVER</span>
+                            ) : segExtra ? (
+                              <span aria-label="Extra call" style={{
+                                fontSize: 6.5, fontWeight: 800, letterSpacing: '0.03em',
+                                color: '#0369a1', flexShrink: 0,
+                              }}>EXTRA</span>
+                            ) : null}
+                            {(segHard || segSoft) && (
+                              <span
+                                aria-label={segHard ? 'Hard rule violation' : 'Soft rule warning'}
+                                title={segFlags.map(f => `${f.severity === 'hard' ? '!' : '?'} ${f.message}`).join('\n')}
+                                style={{
+                                  width: 6, height: 6, borderRadius: 3, flexShrink: 0,
+                                  background: segHard ? gridTokens.hard : gridTokens.soft,
+                                }}
+                              />
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  );
+                }
+
                 const assignment = slot?.assignments?.[0] ?? null;
                 const provider = assignment?.providers ?? null;
                 const isAssigned = !!provider;
@@ -2028,11 +2210,72 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
                 >
                   {activeSlot?.locked ? 'Unlock Slot' : 'Lock Slot'}
                 </button>
+                {/* Unsplit stays discoverable on an ASSIGNED segment too — the
+                    server 409s with "remove the segment assignments first",
+                    which surfaces through the action toast. */}
+                {activeSlot && isSegmentType(activeSlot.shift_types) && (
+                  <button
+                    onClick={() => unsplitSlot(activeSlot.id)}
+                    style={{
+                      padding: '9px 12px', fontSize: 12.5, fontWeight: 700, border: '1px solid var(--border)',
+                      borderRadius: 8, background: 'transparent', color: 'var(--text-muted)', cursor: 'pointer',
+                      textAlign: 'left',
+                    }}
+                  >
+                    Unsplit — restore whole {activeSlot.shift_types.parent_call_code} call
+                  </button>
+                )}
               </div>
             </div>
           ) : (
             /* ── Unassigned cell: provider picker ───────────────────────────── */
             <>
+              {/* Call splits (2026-07-22): structure actions on the OPEN cell.
+                  A whole call splits into 2×12 / 3×8 segment slots; any open
+                  segment offers Unsplit (server guard: every sibling segment
+                  must be open — a 409 surfaces via the action toast). */}
+              {activeSlot && activeSlot.shift_types.category === 'call' && (
+                isSegmentType(activeSlot.shift_types) ? (
+                  <div style={{ padding: '10px 10px 0 10px' }}>
+                    <button
+                      onClick={() => unsplitSlot(activeSlot.id)}
+                      style={{
+                        width: '100%', padding: '8px 12px', fontSize: 12, fontWeight: 700,
+                        border: '1px solid var(--border)', borderRadius: 8,
+                        background: 'transparent', color: 'var(--text-muted)', cursor: 'pointer',
+                        textAlign: 'left',
+                      }}
+                    >
+                      Unsplit — restore whole {activeSlot.shift_types.parent_call_code} call
+                    </button>
+                  </div>
+                ) : (
+                  <div style={{ padding: '10px 10px 0 10px', display: 'flex', gap: 6 }}>
+                    <button
+                      onClick={() => splitSlot(activeSlot.id, '2x12')}
+                      title="Split this call into two 12-hour segments (07-19 and 19-07). Each segment counts 0.5 call."
+                      style={{
+                        flex: 1, padding: '8px 10px', fontSize: 12, fontWeight: 700,
+                        border: '1px solid var(--border)', borderRadius: 8,
+                        background: 'transparent', color: 'var(--text-muted)', cursor: 'pointer',
+                      }}
+                    >
+                      Split 2×12h
+                    </button>
+                    <button
+                      onClick={() => splitSlot(activeSlot.id, '3x8')}
+                      title="Split this call into three 8-hour segments (07-15, 15-23, 23-07). Each segment counts one third of a call."
+                      style={{
+                        flex: 1, padding: '8px 10px', fontSize: 12, fontWeight: 700,
+                        border: '1px solid var(--border)', borderRadius: 8,
+                        background: 'transparent', color: 'var(--text-muted)', cursor: 'pointer',
+                      }}
+                    >
+                      Split 3×8h
+                    </button>
+                  </div>
+                )
+              )}
               <div style={{ padding: '10px 10px 6px 10px' }}>
                 <input
                   ref={searchInputRef}
@@ -2817,9 +3060,16 @@ function CallCountsModal({ grid, onClose }: { grid: GridData; onClose: () => voi
   const providersWithCalls = new Set<string>();
   for (const rec of census.callRecords) providersWithCalls.add(rec.provider_id);
 
+  // Call splits (2026-07-22): bucket columns aggregate SEGMENTS under their
+  // PARENT code by weight — a split Sat C1 with both halves filled shows
+  // 0.5 + 0.5 across its takers, and column totals still sum to the
+  // slot-weight total. Whole calls keep weight 1 / their own code.
   for (const slot of grid.slots) {
-    const code = slot.shift_types?.code;
-    if (!code || !CODES.includes(code as typeof CODES[number])) continue;
+    const rawCode = slot.shift_types?.code;
+    if (!rawCode) continue;
+    const code = parentCallCodeOf(rawCode, slot.shift_types);
+    if (!CODES.includes(code as typeof CODES[number])) continue;
+    const weight = callBurdenWeight(slot.shift_types);
     const dt = slot.derived_day_type;
     let bucket: string;
     if (dt === 'weekday') bucket = 'weekday';
@@ -2828,11 +3078,11 @@ function CallCountsModal({ grid, onClose }: { grid: GridData; onClose: () => voi
     else if (dt === 'sunday') bucket = 'sunday';
     else continue; // no holiday display column — the census above still counts these slots
     const key = `${bucket}|${code}`;
-    blockTotals[key] = (blockTotals[key] || 0) + 1;
+    blockTotals[key] = (blockTotals[key] || 0) + weight;
     for (const a of slot.assignments || []) {
       if (!a.provider_id) continue;
       if (!counts[a.provider_id]) counts[a.provider_id] = {};
-      counts[a.provider_id][key] = (counts[a.provider_id][key] || 0) + 1;
+      counts[a.provider_id][key] = (counts[a.provider_id][key] || 0) + weight;
     }
   }
 
@@ -2966,11 +3216,13 @@ function CallCountsModal({ grid, onClose }: { grid: GridData; onClose: () => voi
   // up from a prior block. Documented in the column tooltip.
   const rowObligation = (pid: string) => roundedObligation(rowExpected(pid));
   const overIds = census.overParAssignmentIds;
+  // Extra columns group by the PARENT code at weight (census records carry
+  // both since the call-split change) — an over 0.5 segment shows as 0.5.
   const overByPidCode: Record<string, number> = {};
   for (const rec of census.callRecords) {
     if (!overIds.has(rec.id)) continue;
-    const k = `${rec.provider_id}|${rec.shift_type_code}`;
-    overByPidCode[k] = (overByPidCode[k] || 0) + 1;
+    const k = `${rec.provider_id}|${rec.parent_code ?? rec.shift_type_code}`;
+    overByPidCode[k] = (overByPidCode[k] || 0) + (rec.weight ?? 1);
   }
   const getExtra = (pid: string, code: string): number =>
     overByPidCode[`${pid}|${code}`] || 0;
@@ -3140,7 +3392,7 @@ function CallCountsModal({ grid, onClose }: { grid: GridData; onClose: () => voi
                       borderLeft: c === 'C1' ? '1px solid var(--border)' : 'none',
                       fontWeight: n > 0 ? 600 : 400,
                     }}>
-                      {n || '—'}
+                      {n ? formatCallWeight(n) : '—'}
                       {exp >= EXPECTED_DISPLAY_MIN && (
                         <span style={{ fontSize: 10, opacity: 0.7, marginLeft: 3, fontWeight: 400 }}>
                           ({exp.toFixed(1)})
@@ -3157,7 +3409,7 @@ function CallCountsModal({ grid, onClose }: { grid: GridData; onClose: () => voi
                       color: n === 0 ? 'var(--text-dim)' : '#ef4444',
                       borderLeft: c === 'C1' ? '1px solid var(--border)' : 'none',
                       fontWeight: n > 0 ? 700 : 400,
-                    }}>{n || '—'}</td>
+                    }}>{n ? formatCallWeight(n) : '—'}</td>
                   );
                 })}
                 <td
@@ -3171,7 +3423,7 @@ function CallCountsModal({ grid, onClose }: { grid: GridData; onClose: () => voi
                 <td style={{
                   padding: '6px 10px', textAlign: 'center',
                   borderLeft: '1px solid var(--border)', fontWeight: 700, color: 'var(--text)',
-                }}>{rowTotal(p.id)}</td>
+                }}>{formatCallWeight(rowTotal(p.id))}</td>
                 <td style={{
                   padding: '6px 10px', textAlign: 'center',
                   borderLeft: '1px solid var(--border)', fontWeight: 600,
@@ -3200,21 +3452,27 @@ function CallCountsModal({ grid, onClose }: { grid: GridData; onClose: () => voi
             {/* Totals row */}
             <tr style={{ background: 'var(--bg)', fontWeight: 700, color: 'var(--text)' }}>
               <td style={{ padding: '8px 10px', borderTop: '2px solid var(--border)' }}>Total</td>
-              {BUCKETS.map(b => CODES.map(c => (
-                <td key={`total-${b.key}|${c}`} style={{
-                  padding: '8px 10px', textAlign: 'center',
-                  borderLeft: c === 'C1' ? '1px solid var(--border)' : 'none',
-                  borderTop: '2px solid var(--border)',
-                }}>{colTotal(b.key, c) || '—'}</td>
-              )))}
-              {CODES.map(c => (
-                <td key={`total-extra|${c}`} style={{
-                  padding: '8px 10px', textAlign: 'center',
-                  borderLeft: c === 'C1' ? '1px solid var(--border)' : 'none',
-                  borderTop: '2px solid var(--border)',
-                  color: '#ef4444',
-                }}>{colExtraTotal(c) || '—'}</td>
-              ))}
+              {BUCKETS.map(b => CODES.map(c => {
+                const t = colTotal(b.key, c);
+                return (
+                  <td key={`total-${b.key}|${c}`} style={{
+                    padding: '8px 10px', textAlign: 'center',
+                    borderLeft: c === 'C1' ? '1px solid var(--border)' : 'none',
+                    borderTop: '2px solid var(--border)',
+                  }}>{t ? formatCallWeight(t) : '—'}</td>
+                );
+              }))}
+              {CODES.map(c => {
+                const t = colExtraTotal(c);
+                return (
+                  <td key={`total-extra|${c}`} style={{
+                    padding: '8px 10px', textAlign: 'center',
+                    borderLeft: c === 'C1' ? '1px solid var(--border)' : 'none',
+                    borderTop: '2px solid var(--border)',
+                    color: '#ef4444',
+                  }}>{t ? formatCallWeight(t) : '—'}</td>
+                );
+              })}
               <td style={{
                 padding: '8px 10px', textAlign: 'center',
                 borderLeft: '1px solid var(--border)', borderTop: '2px solid var(--border)',
@@ -3222,7 +3480,7 @@ function CallCountsModal({ grid, onClose }: { grid: GridData; onClose: () => voi
               <td style={{
                 padding: '8px 10px', textAlign: 'center',
                 borderLeft: '1px solid var(--border)', borderTop: '2px solid var(--border)',
-              }}>{providers.reduce((s, p) => s + rowTotal(p.id), 0)}</td>
+              }}>{formatCallWeight(providers.reduce((s, p) => s + rowTotal(p.id), 0))}</td>
               <td style={{
                 padding: '8px 10px', textAlign: 'center',
                 borderLeft: '1px solid var(--border)', borderTop: '2px solid var(--border)',

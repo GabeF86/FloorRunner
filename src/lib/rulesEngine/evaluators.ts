@@ -18,6 +18,7 @@ import {
   isActiveNoCallRequest,
   isSellbackOverridden,
 } from './shared';
+import { WEIGHT_EPSILON, callBurdenWeight, parentCallCodeOf, formatCallWeight } from '@/lib/callBurden';
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -851,22 +852,31 @@ const providerLimits: Evaluator = ctx => {
   const violations: RuleViolation[] = [];
   const inBlock = (d: string) => d >= plc.blockStart && d <= plc.blockEnd;
 
-  // Per-code call cap.
-  const code = ctx.shiftType.code;
-  const callCap = ctx.shiftType.category === 'call' ? entry?.calls?.[code] : undefined;
+  // Per-code call cap — WEIGHTED + PARENT-MAPPED (2026-07-22, call splits):
+  // caps are stated per PARENT code (C1/C2…); a segment assignment counts
+  // against its parent's cap at its fractional call_burden_weight (a C1N12 =
+  // 0.5 of C1). Whole calls: parent = own code, weight 1 — byte-identical.
+  // Weight/parent come from shiftTypesByCode (loadSiteValidationContext rides
+  // the patch35 columns with a pre-patch narrow retry).
+  const stOf = (c: string) => ctx.shiftTypesByCode.get(c);
+  const capCode = parentCallCodeOf(ctx.shiftType.code, ctx.shiftType);
+  const callCap = ctx.shiftType.category === 'call' ? entry?.calls?.[capCode] : undefined;
   if (typeof callCap === 'number' && inBlock(ctx.slot.slot_date)) {
-    let count = 1; // this assignment
+    let count = callBurdenWeight(ctx.shiftType); // this assignment
     for (const n of ctx.neighborAssignments) {
-      if (n.shift_type_category === 'call' && n.shift_type_code === code && inBlock(n.slot_date)) count++;
+      if (n.shift_type_category === 'call' && inBlock(n.slot_date)
+        && parentCallCodeOf(n.shift_type_code, stOf(n.shift_type_code)) === capCode) {
+        count += callBurdenWeight(stOf(n.shift_type_code));
+      }
     }
-    if (count > callCap) {
+    if (count > callCap + WEIGHT_EPSILON) {
       violations.push({
         rule_id: null,
         rule_name: 'Provider limit (calls)',
         category: 'frequency',
         severity: 'soft',
-        message: `Provider has ${count} ${code} calls this block — stated max ${callCap}.`,
-        details: { code, count, cap: callCap },
+        message: `Provider has ${formatCallWeight(count)} ${capCode} calls this block — stated max ${callCap}.`,
+        details: { code: capCode, count, cap: callCap },
       });
     }
   }

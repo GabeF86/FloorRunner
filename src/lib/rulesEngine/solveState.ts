@@ -57,8 +57,14 @@ export function creditWorkDay(s: SolveState, budget: WorkDayBudget | undefined, 
   creditWorkedDay(s.creditedWorkDays, budget.workingDaySet, pid, date);
 }
 export function incBucket(s: SolveState, pid: string, dt: string, code: string) {
+  incBucketBy(s, pid, dt, code, 1);
+}
+// Weighted variant (2026-07-22, call splits): segment SEEDS count under the
+// PARENT code at their fractional call_burden_weight — the caller maps the
+// code and supplies the weight. Placements stay on incBucket (weight 1).
+export function incBucketBy(s: SolveState, pid: string, dt: string, code: string, n: number) {
   const k = `${pid}|${dayTypeBucket(dt)}|${code}`;
-  s.bucketAssigned.set(k, (s.bucketAssigned.get(k) || 0) + 1);
+  s.bucketAssigned.set(k, (s.bucketAssigned.get(k) || 0) + n);
 }
 // The per-provider call-date lists are kept sorted ascending and deduped;
 // the three helpers below exploit that (2026-07-20 C2.5): binary insert, a

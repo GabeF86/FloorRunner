@@ -5,9 +5,10 @@ import { computeSequenceOwnedSlotIds } from './sequenceOwnership';
 import { exceedsWorkDayCap, creditsAsWorkedAvailability } from './workDays';
 import {
   emptySolveState, markAssigned, markBlocked, creditWorkDay,
-  incBucket, addCallDate,
+  incBucketBy, addCallDate,
 } from './solveState';
-import { CLASSIC_PATTERN, postCallBlockOffsets } from './callPattern';
+import { callBurdenWeight, parentCallCodeOf } from '@/lib/callBurden';
+import { CLASSIC_PATTERN, postCallBlockOffsets, dayChainsFor } from './callPattern';
 import type { CallPatternDoc } from './callPattern';
 import {
   record, overrideFor, scoreCall, applyDayChains, applyBlockChains,
@@ -179,11 +180,17 @@ export function solve(ctx: GenerationContext, opts: SolveOptions = {}): Solution
   const awaitingContinue: AwaitingContinueSlot[] | null = weekendOnly ? [] : null;
   if (awaitingContinue) plan.awaitingContinue = awaitingContinue;
   const obligationByPid = obligatory ? computeObligations(ctx) : null;
+  // Segment seeds (call splits, 2026-07-22) consume the obligation cap and the
+  // per-code call caps at their fractional weight, under the PARENT code —
+  // whole-call seeds keep weight 1 / their own code, byte-identical.
+  const seedWeight = (code: string) => callBurdenWeight(shiftInfo(code));
+  const seedCapCode = (code: string) => parentCallCodeOf(code, shiftInfo(code));
   const callCountByPid = new Map<string, number>();
   if (obligatory) {
     for (const seed of ctx.seedAssignments) {
       if (seed.shift_type_category === 'call') {
-        callCountByPid.set(seed.provider_id, (callCountByPid.get(seed.provider_id) || 0) + 1);
+        callCountByPid.set(seed.provider_id,
+          (callCountByPid.get(seed.provider_id) || 0) + seedWeight(seed.shift_type_code));
       }
     }
   }
@@ -199,8 +206,8 @@ export function solve(ctx: GenerationContext, opts: SolveOptions = {}): Solution
   if (callCaps) {
     for (const seed of ctx.seedAssignments) {
       if (seed.shift_type_category === 'call') {
-        const k = `${seed.provider_id}|${seed.shift_type_code}`;
-        callCodeTally.set(k, (callCodeTally.get(k) || 0) + 1);
+        const k = `${seed.provider_id}|${seedCapCode(seed.shift_type_code)}`;
+        callCodeTally.set(k, (callCodeTally.get(k) || 0) + seedWeight(seed.shift_type_code));
       }
     }
   }
@@ -408,13 +415,19 @@ export function solve(ctx: GenerationContext, opts: SolveOptions = {}): Solution
 export function seedSolveState(ctx: GenerationContext, doc: CallPatternDoc): SolveState {
   const state = emptySolveState();
   const budget = ctx.workDayBudget;
-  const isOverlay = (code: string) => ctx.shiftTypes?.get(code)?.is_overlay ?? false;
+  const infoOf = (code: string) => ctx.shiftTypes?.get(code);
+  const isOverlay = (code: string) => infoOf(code)?.is_overlay ?? false;
   for (const seed of ctx.seedAssignments) {
+    const info = infoOf(seed.shift_type_code);
     // Overlay seeds do NOT consume the one-assignment-per-day budget (mirrors
     // record()); the post-call block offsets below STILL apply unconditionally.
     if (!isOverlay(seed.shift_type_code)) markAssigned(state, seed.slot_date, seed.provider_id);
     if (seed.shift_type_category === 'call') {
-      incBucket(state, seed.provider_id, seed.derived_day_type, seed.shift_type_code);
+      // Call splits (2026-07-22): a SEGMENT seed counts under its PARENT code
+      // at its fractional weight (a C1N12 seed = 0.5 of C1 toward buckets and
+      // fairness). Whole calls: parent = own code, weight 1 — byte-identical.
+      incBucketBy(state, seed.provider_id, seed.derived_day_type,
+        parentCallCodeOf(seed.shift_type_code, info), callBurdenWeight(info));
       addCallDate(state, seed.provider_id, seed.slot_date);
     }
     // Working-days credit: a seeded/manual assignment on a working day is a
@@ -425,7 +438,23 @@ export function seedSolveState(ctx: GenerationContext, doc: CallPatternDoc): Sol
     // recorded in blockedOnDate so OVERLAY placements (which skip the
     // assignedOnDate budget) still respect the blocked day (invariant 1 —
     // review finding 2).
-    for (const off of postCallBlockOffsets(doc, seed.shift_type_code, seed.derived_day_type)) {
+    //
+    // SEGMENT rest inheritance (2026-07-22, decision 3: post-call rest goes to
+    // the OVERNIGHT segment holder only): a SEGMENT seed (parent_call_code
+    // set) whose type carries requires_post_call_rule and whose OWN code has
+    // no chain data in the doc rides the PARENT code's post-call blocks — a
+    // seeded C1 overnight segment blocks its holder's next day exactly like a
+    // seeded C1 (invariant 1 includes seeds). Segment codes the doc DOES
+    // handle (patch35's C2N12/C2N8 +1 D1 links) mirror their parent's fill-
+    // not-block semantics and never reach the fallback. Day/evening segments
+    // (requires_post_call_rule false) block nothing. Non-segment seeds
+    // (parent_call_code null — every pre-patch35 shape) never take this path.
+    let blockCode = seed.shift_type_code;
+    if (info?.parent_call_code && info.requires_post_call_rule
+      && dayChainsFor(doc, seed.shift_type_code, seed.derived_day_type).length === 0) {
+      blockCode = info.parent_call_code;
+    }
+    for (const off of postCallBlockOffsets(doc, blockCode, seed.derived_day_type)) {
       const blockedDate = addDays(seed.slot_date, off);
       markAssigned(state, blockedDate, seed.provider_id);
       markBlocked(state, blockedDate, seed.provider_id);

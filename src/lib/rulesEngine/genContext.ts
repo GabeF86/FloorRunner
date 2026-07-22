@@ -32,6 +32,7 @@ import { CallPatternDocSchema, patternWarnings, callFillOrderWarnings, dayTypeFi
 import { fetchCommittedAssignments, filterPublishedVersions } from './committedAssignments';
 import { embedArray } from '@/lib/embed';
 import { clampParToPoolFte } from '@/lib/fteTarget';
+import { callBurdenWeight, parentCallCodeOf } from '@/lib/callBurden';
 import { isWorkingDay, ptoWeekdaysCovered, requiredWorkDaysWithLimit, entitledOffDays, loadMajorHolidayDates } from './workDays';
 import { parseProviderLimits, type ProviderLimits } from '@/lib/providerLimits';
 
@@ -209,11 +210,16 @@ export async function loadGenerationContext(
   };
 
   // 1b. Full shift-type metadata for the site. Drives generation behavior
-  // (call/relief rank, overlay, engine, post-call flag, coverage type). On ANY
-  // load failure shiftTypes stays undefined so solve's documented legacy
-  // fallbacks (LEGACY_RELIEF_CODES, call-rank literals) engage uniformly —
-  // attaching a rank-less map here would make reliefCodesFor() return [] and
-  // silently kill the relief pass.
+  // (call/relief rank, overlay, engine, post-call flag, coverage type, and —
+  // patch35 — the call-split columns manual_only/call_burden_weight/
+  // parent_call_code). On ANY load failure shiftTypes stays undefined so
+  // solve's documented legacy fallbacks (LEGACY_RELIEF_CODES, call-rank
+  // literals) engage uniformly — attaching a rank-less map here would make
+  // reliefCodesFor() return [] and silently kill the relief pass.
+  //   • Missing patch35 columns (pre-patch35 live DB): retry with the patch18
+  //     select SILENTLY — an absent column can hold no segments, so weight 1 /
+  //     parent null is exact (the providerLimits degradation posture).
+  //     manual_only is base-schema and rides in both wide selects.
   //   • Missing engine columns (pre-patch18 live DB): warn "apply patch18" and
   //     retry with code+category ONLY to feed the pattern cross-check below.
   //   • Any other error (timeout, RLS, transient): warn with the error message.
@@ -225,23 +231,23 @@ export async function loadGenerationContext(
     let shiftTypes: Map<string, ShiftTypeInfo> | undefined;
     const knownShiftCodes = new Set<string>();
     const memberWarnings: string[] = [];
-    countQ();
-    const wide = await sb
-      .from('shift_types')
-      .select('code, category, call_rank, relief_rank, is_overlay, generation_engine, requires_post_call_rule, call_coverage_type')
-      .eq('site_id', siteId)
-      .eq('is_active', true);
+    const stSelect = (cols: string) => {
+      countQ();
+      return sb.from('shift_types').select(cols).eq('site_id', siteId).eq('is_active', true);
+    };
+    const isColumnErr = (e: unknown) => /column/i.test((e as { message?: string })?.message || '');
+
+    let wide = await stSelect('code, category, call_rank, relief_rank, is_overlay, generation_engine, requires_post_call_rule, call_coverage_type, manual_only, call_burden_weight, parent_call_code');
+    if (wide.error && isColumnErr(wide.error)) {
+      // Pre-patch35 narrow retry (silent — see above).
+      wide = await stSelect('code, category, call_rank, relief_rank, is_overlay, generation_engine, requires_post_call_rule, call_coverage_type, manual_only');
+    }
 
     if (wide.error) {
       const wideErrMsg = (wide.error as { message?: string }).message || '';
-      if (/column/i.test(wideErrMsg)) {
+      if (isColumnErr(wide.error)) {
         memberWarnings.push('shift_types engine columns missing — apply patch18');
-        countQ();
-        const narrow = await sb
-          .from('shift_types')
-          .select('code, category')
-          .eq('site_id', siteId)
-          .eq('is_active', true);
+        const narrow = await stSelect('code, category');
         for (const r of ((narrow.data as Array<Record<string, unknown>> | null) || [])) {
           if (r.code) knownShiftCodes.add(r.code as string);
         }
@@ -264,6 +270,9 @@ export async function loadGenerationContext(
           generation_engine: (r.generation_engine as ShiftTypeInfo['generation_engine']) || engineDefault,
           requires_post_call_rule: !!r.requires_post_call_rule,
           call_coverage_type: (r.call_coverage_type as string | null) ?? null,
+          manual_only: !!r.manual_only,
+          call_burden_weight: callBurdenWeight(r as { call_burden_weight?: number | null }),
+          parent_call_code: typeof r.parent_call_code === 'string' && r.parent_call_code ? r.parent_call_code : null,
         });
         knownShiftCodes.add(code);
       }
@@ -339,7 +348,11 @@ export async function loadGenerationContext(
   // ── 2. Build slot index ───────────────────────────────────────────────────
   // slotsToFill = call-category slots that need assignment (main loop)
   // slotIndex   = ALL open slots by date+code (used for weekend chaining and D-fill)
+  // manualCallSlots = OPEN call slots whose shift type is manual_only (call-
+  // split segments) — the engine NEVER places them (pinned in
+  // callSplitWeighting.test.ts), but the obligation census counts their weight.
   const slotsToFill: SlotToFill[] = [];
+  const manualCallSlots: SlotToFill[] = [];
   const slotIndex = new Map<string, Map<string, SlotToFill>>();
   // Sibling slots (Task 11) are the multi-coverage mechanism: schedule
   // creation materializes required_count as N slot rows of required_count 1.
@@ -383,7 +396,12 @@ export async function loadGenerationContext(
 
     // Only call slots go through the quota-based main loop.
     // D-slots are filled deterministically in the post-pass from the call schedule.
-    if (st.category === 'call') slotsToFill.push(slot);
+    // manual_only call slots (split segments) NEVER enter the main loop —
+    // they stay scheduler-filled; recorded separately for the weighted census.
+    if (st.category === 'call') {
+      if (shiftTypes?.get(st.code)?.manual_only) manualCallSlots.push(slot);
+      else slotsToFill.push(slot);
+    }
   }
 
   for (const [code, n] of multiFillOpenByCode) {
@@ -461,6 +479,7 @@ export async function loadGenerationContext(
         bucketTotals: new Map(),
         bucketTarget: new Map(),
         seedAssignments: [],
+        manualCallSlots,
         callPattern,
         shiftTypes,
         warnings,
@@ -773,11 +792,17 @@ export async function loadGenerationContext(
   // the legacy row scan so dev environments keep working, and warn.
   const historicalAssignedByPid = new Map<string, Map<string, number>>();
   const historicalTotalByBucket = new Map<string, number>();
-  const addHistorical = (pid: string, key: string, n: number) => {
+  // Historical rows arrive keyed by their OWN code (the RPC aggregates raw
+  // assignment rows); segment codes fold under the parent at weight here —
+  // a past C1N12 row is 0.5 of C1 history. Codes without a live shift-type
+  // row (renamed/other-era codes) keep weight 1 / their own key, as before.
+  const addHistorical = (pid: string, bucket: string, code: string, n: number) => {
+    const key = `${bucket}|${parentCallCodeOf(code, shiftTypes?.get(code))}`;
+    const weighted = n * callBurdenWeight(shiftTypes?.get(code));
     const byProv = historicalAssignedByPid.get(pid) || new Map<string, number>();
-    byProv.set(key, (byProv.get(key) || 0) + n);
+    byProv.set(key, (byProv.get(key) || 0) + weighted);
     historicalAssignedByPid.set(pid, byProv);
-    historicalTotalByBucket.set(key, (historicalTotalByBucket.get(key) || 0) + n);
+    historicalTotalByBucket.set(key, (historicalTotalByBucket.get(key) || 0) + weighted);
   };
   countQ();
   const rpcRes = await sb.rpc('historical_call_counts', { p_site_id: siteId, p_before: minDate });
@@ -819,7 +844,7 @@ export async function loadGenerationContext(
       if (!pid || !ss) continue;
       const code = ss.shift_types?.code;
       if (!code) continue;
-      addHistorical(pid, `${dayTypeBucket(ss.derived_day_type || 'weekday')}|${code}`, 1);
+      addHistorical(pid, dayTypeBucket(ss.derived_day_type || 'weekday'), code, 1);
     }
   } else {
     for (const row of (rpcRes.data || []) as Array<Record<string, unknown>>) {
@@ -827,15 +852,23 @@ export async function loadGenerationContext(
       const bucket = row.bucket as string | null;
       const code = row.code as string | null;
       if (!pid || !bucket || !code) continue;
-      addHistorical(pid, `${bucket}|${code}`, Number(row.n) || 0);
+      addHistorical(pid, bucket, code, Number(row.n) || 0);
     }
   }
 
   // ── 7. Compute bucket totals & targets ────────────────────────────────────
+  // Weighted + parent-mapped (2026-07-22, call splits): every call slot
+  // contributes its call_burden_weight under its PARENT code's bucket key, so
+  // a split call (open or filled, in any combination) totals exactly ONE call
+  // of load. Whole calls are weight 1 / parent = own code — unsplit schedules
+  // produce the identical integer totals (fill-mode golden pins).
+  const bucketKeyFor = (dt: string, code: string) =>
+    `${dayTypeBucket(dt)}|${parentCallCodeOf(code, shiftTypes?.get(code))}`;
+  const weightFor = (code: string) => callBurdenWeight(shiftTypes?.get(code));
   const bucketTotals = new Map<string, number>();
-  for (const s of slotsToFill) {
-    const key = `${dayTypeBucket(s.derived_day_type)}|${s.shift_type_code}`;
-    bucketTotals.set(key, (bucketTotals.get(key) || 0) + s.required_count);
+  for (const s of [...slotsToFill, ...manualCallSlots]) {
+    const key = bucketKeyFor(s.derived_day_type, s.shift_type_code);
+    bucketTotals.set(key, (bucketTotals.get(key) || 0) + s.required_count * weightFor(s.shift_type_code));
   }
   // Include already-assigned slots so targets reflect total schedule load
   for (const raw of rawSlots as Array<Record<string, unknown>>) {
@@ -845,8 +878,8 @@ export async function loadGenerationContext(
     const n = assignments.filter(a => a.provider_id).length;
     if (n > 0) {
       const dt = (raw.derived_day_type as string) || 'weekday';
-      const key = `${dayTypeBucket(dt)}|${st.code}`;
-      bucketTotals.set(key, (bucketTotals.get(key) || 0) + n);
+      const key = bucketKeyFor(dt, st.code);
+      bucketTotals.set(key, (bucketTotals.get(key) || 0) + n * weightFor(st.code));
     }
   }
 
@@ -980,6 +1013,7 @@ export async function loadGenerationContext(
       bucketTotals,
       bucketTarget,
       seedAssignments,
+      manualCallSlots,
       // ── v2 pattern-interpreter inputs + precomputed invariants ──
       callPattern,
       shiftTypes,

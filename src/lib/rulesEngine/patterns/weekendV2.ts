@@ -78,6 +78,21 @@ export const WEEKEND_V2_PATTERN: CallPatternDoc = CallPatternDocSchema.parse({
     { trigger: 'C2', dayTypes: ['weekday', 'friday', 'federal_holiday', 'major_holiday'],
       links: [{ offset: -1, code: 'D3' }, { offset: 1, code: 'D1' }] },
     { trigger: 'C2', dayTypes: ['sunday'], links: [{ offset: 1, code: 'D1' }] },
+    // ── call splits (2026-07-22, patch35): C2 OVERNIGHT segment codes mirror
+    // C2's +1 D1 on the same dayTypes — a manual C2N12/C2N8 auto-fills the
+    // next-day D1 via sequenceAutoFill, and seeded segments transfer D1
+    // sequence ownership exactly like a seeded C2. ONLY the +1 D1 (no −1 D3
+    // pre-fill: pre-call status belongs to the following day's whole-call
+    // machinery, not the segment). C1's overnight segments carry NO chain
+    // data — their post-call rest rides requires_post_call_rule via the rest
+    // guards + the engine's segment rest inheritance (seedSolveState). Day/
+    // evening segments carry no sequence structure at all.
+    { trigger: 'C2N12', dayTypes: ['weekday', 'friday', 'federal_holiday', 'major_holiday'],
+      links: [{ offset: 1, code: 'D1' }] },
+    { trigger: 'C2N12', dayTypes: ['sunday'], links: [{ offset: 1, code: 'D1' }] },
+    { trigger: 'C2N8', dayTypes: ['weekday', 'friday', 'federal_holiday', 'major_holiday'],
+      links: [{ offset: 1, code: 'D1' }] },
+    { trigger: 'C2N8', dayTypes: ['sunday'], links: [{ offset: 1, code: 'D1' }] },
   ],
   reliefPass: { enabled: true, dayTypes: ['weekday', 'friday'] },
   placementPasses: [
