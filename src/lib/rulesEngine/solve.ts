@@ -12,7 +12,9 @@ import type { CallPatternDoc } from './callPattern';
 import {
   record, overrideFor, scoreCall, applyDayChains, applyBlockChains,
   capRoom, chainCallNeeds, noteViolation, buildProviderCalls, pushUnfilled,
+  admitsUnderCallCaps,
 } from './solveKernel';
+import { buildCallCaps } from './providerCaps';
 import type { SolverRun } from './solveKernel';
 import { runPrePtoPass } from './passes/prePto';
 import { runSpansPass } from './passes/spans';
@@ -186,6 +188,23 @@ export function solve(ctx: GenerationContext, opts: SolveOptions = {}): Solution
     }
   }
 
+  // ── provider call caps (2026-07-22, patch34 provider_limits) ──
+  // Per-code HARD CEILINGS for auto-generation, in EVERY fill mode. null when
+  // the schedule states no call caps — every cap branch below and in the
+  // kernel/passes is then inert, byte-identical to the pre-limits engine
+  // (blank-fallback pin). Seeds consume the caps up front; record() maintains
+  // the tally for every real call placement.
+  const callCaps = buildCallCaps(ctx.providerLimits);
+  const callCodeTally = new Map<string, number>();
+  if (callCaps) {
+    for (const seed of ctx.seedAssignments) {
+      if (seed.shift_type_category === 'call') {
+        const k = `${seed.provider_id}|${seed.shift_type_code}`;
+        callCodeTally.set(k, (callCodeTally.get(k) || 0) + 1);
+      }
+    }
+  }
+
   // The bundled run context every kernel function and pass consumes.
   // waivedLinkKeys: (date|code) keys of chain links WAIVED by
   // unlessCallWithinDays — the anchor filled but the link deliberately did
@@ -197,6 +216,7 @@ export function solve(ctx: GenerationContext, opts: SolveOptions = {}): Solution
     ctx, doc, plan, state, budget,
     isOverlay, callRank, reliefCodes,
     obligatory, obligationByPid, callCountByPid,
+    callCaps, callCodeTally,
     noCallByPid, noCallViolated: new Map<string, number>(),
     waivedLinkKeys: new Set<string>(),
     sequenceOwnedSlotIds, providerById,
@@ -257,19 +277,30 @@ export function solve(ctx: GenerationContext, opts: SolveOptions = {}): Solution
     const sweep = ctx.providers.map(p => ({ p, r: evaluateEligibility(slot, p, state, ctx, 'call') }));
     const eligible = sweep.filter(x => x.r.eligible).map(x => x.p);
 
+    // Provider call caps: WHOLE-BLOCK admission (anchor + every live
+    // call-category chain link, per code — admitsUnderCallCaps). Applied
+    // BEFORE the obligatory filter so a cap-blocked candidate reports
+    // 'provider-cap', an obligation-blocked one 'obligation-cap'. Inert
+    // (capAdmitted === eligible) when no caps are stated.
+    const capAdmitted = callCaps
+      ? eligible.filter(p => admitsUnderCallCaps(run, p.id, slot))
+      : eligible;
     // Obligatory mode: charge the whole prospective block against the cap
     // upfront (1 for this slot + its live call-category chain links). When
     // nobody has room, the slot is DELIBERATELY left open — no relaxation,
     // reason 'obligation-cap' when the cap was the binding constraint.
     const candidates = obligatory
-      ? eligible.filter(p => capRoom(run, p.id) >= 1 + chainCallNeeds(run, slot))
-      : eligible;
+      ? capAdmitted.filter(p => capRoom(run, p.id) >= 1 + chainCallNeeds(run, slot))
+      : capAdmitted;
     if (obligatory && candidates.length === 0) {
       pushUnfilled(run, slot,
-        eligible.length > 0 ? 'obligation-cap' : 'No eligible providers',
+        capAdmitted.length > 0 ? 'obligation-cap'
+          : eligible.length > 0 ? 'provider-cap' : 'No eligible providers',
         sweep.map(x => ({
           provider_id: x.p.id, provider_name: x.p.short_display_name,
-          reason: x.r.eligible ? 'obligation-cap' as const : (x.r.reason ?? 'bucket-quota'),
+          reason: x.r.eligible
+            ? (admitsUnderCallCaps(run, x.p.id, slot) ? 'obligation-cap' as const : 'provider-cap' as const)
+            : (x.r.reason ?? 'bucket-quota'),
         })));
       continue;
     }
@@ -290,14 +321,20 @@ export function solve(ctx: GenerationContext, opts: SolveOptions = {}): Solution
         p, r: evaluateEligibility(slot, p, state, ctx, 'call-no-quota'),
       }));
       const relaxable = relaxSweep.filter(x => x.r.eligible).map(x => x.p);
+      // Provider call caps bind under relaxation too: relaxation may waive the
+      // QUOTA, never a stated maximum — a slot only cap-holders could take
+      // stays open ('provider-cap'), never silently reassigned past the cap.
+      const relaxAdmitted = callCaps
+        ? relaxable.filter(p => admitsUnderCallCaps(run, p.id, slot))
+        : relaxable;
       // Re-apply the workdays cap here: eligibility waives it under
       // 'call-no-quota' (so optimizer pins never self-reject), but quota
       // relaxation must still honor it — a slot left open by the cap is
       // legitimate, exactly like obligatory mode's obligation-cap. Weekend /
       // holiday slots are never capped (workDayCapped short-circuits).
       const relaxableUncapped = budget
-        ? relaxable.filter(p => !workDayCapped(p.id, slot.slot_date))
-        : relaxable;
+        ? relaxAdmitted.filter(p => !workDayCapped(p.id, slot.slot_date))
+        : relaxAdmitted;
       if (relaxableUncapped.length > 0) {
         const winner = scoreCall(run, relaxableUncapped, slot)[0];
         record(run, slot, winner.p, 'quota-relaxed', {
@@ -310,17 +347,24 @@ export function solve(ctx: GenerationContext, opts: SolveOptions = {}): Solution
         continue;
       }
       // Nobody is placeable even with the quota waived. When the ONLY reason the
-      // relaxable set emptied is the workdays cap (relaxable existed pre-filter,
-      // all capped), the binding reason is 'workdays-cap' — otherwise report the
+      // relaxable set emptied is the workdays cap (cap-admitted candidates
+      // existed pre-filter, all workday-capped), the binding reason is
+      // 'workdays-cap'; when it emptied at the CALL-cap filter (relaxable
+      // existed, none admitted), it is 'provider-cap' — otherwise report the
       // REAL per-candidate blockers (a quota-only rejection stays 'bucket-quota',
       // though such a provider would have been relaxable — belt-and-suspenders).
-      const capBound = !!budget && relaxable.length > 0;
+      const capBound = !!budget && relaxAdmitted.length > 0;
+      const providerCapBound = !!callCaps && relaxable.length > 0 && relaxAdmitted.length === 0;
       const candidateReasons: CandidateRejection[] = relaxSweep.map(x => ({
         provider_id: x.p.id, provider_name: x.p.short_display_name,
-        reason: capBound && x.r.eligible ? 'workdays-cap' : (x.r.reason ?? 'bucket-quota'),
+        reason: x.r.eligible
+          ? (callCaps && !admitsUnderCallCaps(run, x.p.id, slot) ? 'provider-cap'
+            : capBound ? 'workdays-cap' : (x.r.reason ?? 'bucket-quota'))
+          : (x.r.reason ?? 'bucket-quota'),
       }));
       pushUnfilled(run, slot,
-        capBound ? 'workdays-cap' : 'No eligible providers', candidateReasons);
+        capBound ? 'workdays-cap' : providerCapBound ? 'provider-cap' : 'No eligible providers',
+        candidateReasons);
       continue;
     }
 

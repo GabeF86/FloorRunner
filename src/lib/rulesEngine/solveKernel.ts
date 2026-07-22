@@ -14,6 +14,7 @@ import type { RankableShiftType } from './preFillEviction';
 import type { CallPatternDoc } from './callPattern';
 import { creditWorkDay, markAssigned, markBlocked, incBucket, addCallDate, daysSinceLastCall, hadCallWithin } from './solveState';
 import type { SolveState } from './solveState';
+import type { CallCaps } from './providerCaps';
 import type {
   GenerationContext, SlotToFill, CandidateProvider, SolutionPlan,
   PlacementSource, AssignmentExplanation, SkippedDerived, WorkDayBudget,
@@ -39,6 +40,12 @@ export interface SolverRun {
   obligatory: boolean;
   obligationByPid: Map<string, number> | null;
   callCountByPid: Map<string, number>;
+  // Provider call caps (2026-07-22, patch34 provider_limits): null unless the
+  // parent schedule states per-code call caps — every cap branch is inert then
+  // (blank-fallback pin). callCodeTally (`${pid}|${code}` → count) is seeded
+  // from call seeds and maintained by record() only when callCaps is non-null.
+  callCaps: CallCaps | null;
+  callCodeTally: Map<string, number>;
   // No-call request soft avoidance (§11 tier 0).
   noCallByPid: Map<string, Array<{ start_date: string; end_date: string }>>;
   noCallViolated: Map<string, number>;
@@ -106,6 +113,48 @@ export function chainCallNeeds(run: SolverRun, slot: SlotToFill): number {
   return n;
 }
 
+// ── Provider call caps (2026-07-22, patch34 provider_limits) ────────────────
+// Remaining room under the provider's stated per-code cap. Infinity when no
+// cap is stated for (pid, code) — the common case stays branch-cheap.
+export function callCapRoom(run: SolverRun, pid: string, code: string): number {
+  const cap = run.callCaps?.get(pid)?.get(code);
+  if (cap == null) return Infinity;
+  return cap - (run.callCodeTally.get(`${pid}|${code}`) || 0);
+}
+
+// WHOLE-BLOCK per-code needs at a prospective anchor: the anchor's own code
+// plus every LIVE call-category block-chain link (target slot exists,
+// unhandled, category 'call') — the per-code sibling of chainCallNeeds.
+// Links that later sever don't consume the tally (only real placements
+// increment it in record()), so reserved-but-unused room frees back up.
+export function blockCallCodeNeeds(run: SolverRun, slot: SlotToFill): Map<string, number> {
+  const needs = new Map<string, number>([[slot.shift_type_code, 1]]);
+  const links = blockChainsFor(run.doc, slot.derived_day_type).get(slot.shift_type_code);
+  if (links) {
+    for (const link of links) {
+      const t = run.ctx.slotIndex.get(addDays(slot.slot_date, link.offset))?.get(link.code);
+      if (t && !run.state.handledSlotIds.has(t.slot_id) && t.shift_type_category === 'call') {
+        needs.set(link.code, (needs.get(link.code) || 0) + 1);
+      }
+    }
+  }
+  return needs;
+}
+
+// Cap admission for a call placement — WHOLE-BLOCK at anchor time: the anchor
+// plus every same-provider call the designed block will place must fit under
+// that provider's caps, per code. Never sever a designed pairing halfway
+// (the 2026-07-16 severance-bug class). Non-anchor slots degenerate to a
+// single-code room check. Always true when no caps are stated.
+export function admitsUnderCallCaps(run: SolverRun, pid: string, slot: SlotToFill): boolean {
+  if (!run.callCaps || slot.shift_type_category !== 'call') return true;
+  if (!run.callCaps.has(pid)) return true; // no caps stated for this provider
+  for (const [code, n] of blockCallCodeNeeds(run, slot)) {
+    if (callCapRoom(run, pid, code) < n) return false;
+  }
+  return true;
+}
+
 // Resolve a call slot's override: undefined → not overridden; null → forced
 // provider ineligible (leave unfilled); provider → forced and eligible.
 // Gate 'call-no-quota' (2026-07-16): a pin re-asserts an ALREADY-MADE
@@ -137,6 +186,12 @@ export function record(
     // Obligatory mode: every REAL call placement (any source — chain links
     // included) consumes the provider's cap.
     if (run.obligatory) run.callCountByPid.set(p.id, (run.callCountByPid.get(p.id) || 0) + 1);
+    // Provider call caps: every REAL call placement (any source — chain links
+    // and overridden pins included) maintains the per-code tally.
+    if (run.callCaps) {
+      const k = `${p.id}|${slot.shift_type_code}`;
+      run.callCodeTally.set(k, (run.callCodeTally.get(k) || 0) + 1);
+    }
     // Fair denial: a call landing on the provider's live no-call-request
     // date is a violated request — count it so later penalized-vs-penalized
     // choices prefer someone not yet denied. In obligatory mode the same

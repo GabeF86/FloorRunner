@@ -7,6 +7,8 @@ import { optimize } from './optimize';
 import { commitPlan, commitValidation, commitMetadata, hasGenerationMetadataColumn } from './commit';
 import { scoreSolution } from './metrics';
 import { computeRequestGrants } from './requestGrants';
+import { computeProviderCapSummary } from './providerCaps';
+import type { ProviderCapSummary } from './providerCaps';
 import { computeWorkDayReport } from './workDayReport';
 import type { WorkDayReportRow } from './workDayReport';
 import type { RequestGrant } from './requestGrants';
@@ -107,6 +109,11 @@ export interface GenerationResult {
   // NOT counted in `skipped` — the UI banner renders "N placed · M slots
   // awaiting Continue" and offers the Continue ('all') button.
   awaitingContinue?: { total: number; byDayType: Record<string, number> };
+  // Provider call caps (2026-07-22, patch34): per stated (provider, code) cap,
+  // placed-vs-cap from the FINAL plan + seeds, plus the count of slots left
+  // open under caps ('provider-cap'). ABSENT unless the schedule states call
+  // caps — additive, so pre-limits consumers see no new key.
+  providerCapSummary?: ProviderCapSummary;
   // Distinguishes a hard failure (no slots / empty pool / DB error) from a
   // legitimate partial fill. The route maps this to an HTTP status.
   ok: boolean;
@@ -242,6 +249,10 @@ export async function autoGenerate(
   // materialized only in that mode — present even when empty, so the UI can
   // always render the staged banner + Continue affordance).
   if (plan.awaitingContinue) result.awaitingContinue = summarizeAwaitingContinue(plan.awaitingContinue);
+  // Provider call caps: placed-vs-cap summary from the FINAL plan (null when
+  // the schedule states no call caps — the key stays absent).
+  const capSummary = computeProviderCapSummary(ctx, plan);
+  if (capSummary) result.providerCapSummary = capSummary;
   result.metrics = scoreSolution(plan, ctx);
   result.seedMetrics = seedMetrics;
   // Working-days report from the FINAL (post-optimize) plan + seeds — describes

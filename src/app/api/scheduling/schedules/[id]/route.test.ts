@@ -108,6 +108,72 @@ function demoteAware(rows: VersionRow[], latest: { id: string; version_number: n
   return { cfg, demoted };
 }
 
+// ── provider_limits hardening (2026-07-22, patch34) ──────────────────────────
+// The PATCH is otherwise a passthrough update; the provider_limits key gets
+// route-hardened parsing (shape-validate; integers >= 0 only; strip unknown
+// keys; reject NaN) via the shared parseProviderLimits. Malformed shapes are
+// rejected 400 BEFORE any DB write; valid ones are written NORMALIZED.
+describe('PATCH /api/scheduling/schedules/:id — provider_limits hardening', () => {
+  const updateArgs = (calls: ReturnType<typeof setup>['calls']) =>
+    callsFor(calls, 'schedules', 'update').map(c => c.args[0] as Record<string, unknown>);
+
+  it('rejects a non-object provider_limits with 400 and writes nothing', async () => {
+    const { calls } = setup();
+    const { res, json } = await patch({ provider_limits: 'bad' });
+    expect(res.status).toBe(400);
+    expect(json.error).toMatch(/provider_limits/);
+    expect(updateArgs(calls)).toHaveLength(0);
+  });
+
+  it('rejects NaN / negative / fractional counts', async () => {
+    for (const bad of [
+      { p1: { calls: { C1: NaN } } },
+      { p1: { calls: { C1: -1 } } },
+      { p1: { workingDays: 2.5 } },
+    ]) {
+      setup();
+      const { res } = await patch({ provider_limits: bad });
+      expect(res.status).toBe(400);
+    }
+  });
+
+  it('rejects workingDays together with daysOff (mutually exclusive)', async () => {
+    setup();
+    const { res, json } = await patch({ provider_limits: { p1: { workingDays: 10, daysOff: 2 } } });
+    expect(res.status).toBe(400);
+    expect(json.error).toMatch(/mutually exclusive/);
+  });
+
+  it('writes a valid shape NORMALIZED (unknown keys stripped, empty entries dropped)', async () => {
+    const { calls } = setup();
+    const { res } = await patch({
+      provider_limits: { p1: { calls: { C1: 2 }, sneaky: true }, p2: {} },
+      notes: 'other fields pass through',
+    });
+    expect(res.status).toBe(200);
+    const written = updateArgs(calls);
+    expect(written).toHaveLength(1);
+    expect(written[0].provider_limits).toEqual({ p1: { calls: { C1: 2 } } });
+    expect(written[0].notes).toBe('other fields pass through');
+  });
+
+  it('null clears the limits (and an all-blank map normalizes to null)', async () => {
+    const { calls } = setup();
+    await patch({ provider_limits: null });
+    expect(updateArgs(calls)[0].provider_limits).toBeNull();
+
+    const { calls: calls2 } = setup();
+    await patch({ provider_limits: { p1: {} } });
+    expect(updateArgs(calls2)[0].provider_limits).toBeNull();
+  });
+
+  it('a PATCH without the key is untouched (no provider_limits in the update)', async () => {
+    const { calls } = setup();
+    await patch({ notes: 'edit' });
+    expect('provider_limits' in updateArgs(calls)[0]).toBe(false);
+  });
+});
+
 describe('PATCH /api/scheduling/schedules/:id — superseded published siblings (C1)', () => {
   it('publishing archives the published sibling ONLY — drafts and the target untouched; revalidation still runs', async () => {
     const { cfg, demoted } = demoteAware([

@@ -31,6 +31,7 @@ import {
   mapCredentialsRow,
   mapNeighborRow,
   mapCrossSiteRow,
+  loadProviderLimitsValidationCtx,
 } from './loadContext';
 import type { SiteValidationContext, JoinedAssignmentRow } from './loadContext';
 import { evaluateContext } from './evaluate';
@@ -241,6 +242,14 @@ export async function batchValidateVersion(
     }
   }
 
+  // ── Provider-limits soft-flag context (2026-07-22, patch34) ────────────────
+  // Same shared loader the serial path uses (parity home) — loaded ONCE per
+  // pass and threaded onto every context. Degrades to null (feature off);
+  // never bails the pass (it feeds SOFT flags only).
+  const limitsLoad = await loadProviderLimitsValidationCtx(sb, scheduleVersionId);
+  dbQueries += limitsLoad.dbQueries;
+  const providerLimitsCtx = limitsLoad.ctx;
+
   // ── sameDay index (from the step-1 rows, mirrors serial query 5) ───────────
   const slotsByDate = new Map<string, RawSlotRow[]>();
   for (const s of slots) {
@@ -345,6 +354,7 @@ export async function batchValidateVersion(
       sameDayAssignments: sameDayFor(slot.slot_date),
       crossSiteAssignments,
       scheduleVersionId,
+      providerLimitsCtx,
       rules: siteCtx.rules,
       shiftTypesByCode: siteCtx.shiftTypesByCode,
       shiftTypesById: siteCtx.shiftTypesById,

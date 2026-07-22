@@ -4,6 +4,8 @@
 type SupabaseClient = any;
 import { addDays, NEIGHBOR_WINDOW_DAYS, AVAIL_WINDOW_DAYS } from './shared';
 import { fetchCommittedAssignments } from './committedAssignments';
+import { isWorkingDay, ptoWeekdaysCovered, statedWorkingDaysCap, loadMajorHolidayDates } from './workDays';
+import { parseProviderLimits } from '@/lib/providerLimits';
 import { embedArray } from '@/lib/embed';
 import type {
   EvaluationContext,
@@ -175,6 +177,131 @@ export async function loadSiteValidationContext(
   };
 }
 
+// ── Provider-limits validation context (2026-07-22, patch34) ─────────────────
+// The ONE loader both validation paths use (serial loadContext below;
+// batchValidateVersion once per pass) so they cannot drift. Resolves the
+// parent schedule's stated limits into what the providerLimits evaluator
+// consumes: the raw limits map, the block span, the block working-day set
+// (weekdays minus major holidays) and per-provider resolved working-days caps
+// (workingDays as entered; daysOff re-derived WD − ptoWeekdays − daysOff via
+// the single-homed statedWorkingDaysCap).
+//
+// DEGRADATION → null (feature off): missing provider_limits column
+// (pre-patch34), no parent/row, no stated limits, malformed jsonb (never a
+// partial cap set), or any load failure (a soft advisory quietly absent —
+// console.warn'd, never a crash; the hard/safety evaluators keep their own
+// fail-closed posture, this context feeds SOFT flags only).
+
+export type ProviderLimitsValidationCtx = NonNullable<EvaluationContext['providerLimitsCtx']>;
+
+export async function loadProviderLimitsValidationCtx(
+  sb: SupabaseClient,
+  scheduleVersionId: string | null,
+): Promise<{ ctx: ProviderLimitsValidationCtx | null; dbQueries: number }> {
+  let dbQueries = 0;
+  if (!scheduleVersionId) return { ctx: null, dbQueries };
+  try {
+    dbQueries++;
+    const { data: ver } = await sb
+      .from('schedule_versions')
+      .select('schedule_id')
+      .eq('id', scheduleVersionId)
+      .maybeSingle();
+    const scheduleId = (ver as { schedule_id?: string } | null)?.schedule_id;
+    if (!scheduleId) return { ctx: null, dbQueries };
+
+    dbQueries++;
+    const { data: sched, error: schedErr } = await sb
+      .from('schedules')
+      .select('provider_limits, date_start, date_end, organization_id')
+      .eq('id', scheduleId)
+      .maybeSingle();
+    if (schedErr) {
+      // Pre-patch34 column, or a transient failure — soft advisory off.
+      if (!/column|provider_limits/i.test((schedErr as { message?: string }).message || '')) {
+        console.warn(`[rulesEngine] provider_limits validation context load failed: ${(schedErr as { message?: string }).message}`);
+      }
+      return { ctx: null, dbQueries };
+    }
+    const row = sched as { provider_limits?: unknown; date_start?: string; date_end?: string; organization_id?: string | null } | null;
+    if (!row || row.provider_limits == null || !row.date_start || !row.date_end) {
+      return { ctx: null, dbQueries };
+    }
+    const parsed = parseProviderLimits(row.provider_limits);
+    if (!parsed.ok || !parsed.value) {
+      if (!parsed.ok) console.warn(`[rulesEngine] schedules.provider_limits malformed — limit flags off: ${parsed.error}`);
+      return { ctx: null, dbQueries };
+    }
+    const limits = parsed.value;
+
+    // Block working-day set (weekday minus major holidays — same predicate as
+    // the engine's budget build).
+    let majors: Set<string> = new Set();
+    if (row.organization_id) {
+      dbQueries++;
+      majors = await loadMajorHolidayDates(sb, row.organization_id, row.date_start, row.date_end);
+    }
+    const workingDaySet = new Set<string>();
+    for (let d = row.date_start; d <= row.date_end; d = addDays(d, 1)) {
+      if (isWorkingDay(d, majors)) workingDaySet.add(d);
+    }
+
+    // Resolve stated working-days caps. daysOff needs the provider's netting
+    // PTO over the block — ONE availability query scoped to those providers.
+    const daysOffPids = Object.entries(limits)
+      .filter(([, e]) => e.workingDays == null && e.daysOff != null)
+      .map(([pid]) => pid);
+    const availByPid = new Map<string, Array<{ availability_type: string; start_date: string; end_date: string; approval_status: string }>>();
+    if (daysOffPids.length > 0) {
+      dbQueries++;
+      const { data: avail, error: availErr } = await sb
+        .from('provider_availability')
+        .select('provider_id, availability_type, start_date, end_date, approval_status')
+        .in('provider_id', daysOffPids)
+        .lte('start_date', row.date_end)
+        .gte('end_date', row.date_start);
+      if (availErr) {
+        // Without the netting the daysOff caps would resolve too HIGH or too
+        // LOW unpredictably — decline the whole context instead.
+        console.warn(`[rulesEngine] provider_limits availability load failed — limit flags off: ${(availErr as { message?: string }).message}`);
+        return { ctx: null, dbQueries };
+      }
+      for (const a of (avail || []) as Array<Record<string, unknown>>) {
+        const list = availByPid.get(a.provider_id as string) || [];
+        list.push({
+          availability_type: a.availability_type as string,
+          start_date: a.start_date as string,
+          end_date: a.end_date as string,
+          approval_status: a.approval_status as string,
+        });
+        availByPid.set(a.provider_id as string, list);
+      }
+    }
+    const workingDaysCapByProvider = new Map<string, number>();
+    for (const [pid, entry] of Object.entries(limits)) {
+      const pto = entry.workingDays == null && entry.daysOff != null
+        ? ptoWeekdaysCovered(availByPid.get(pid) ?? [], workingDaySet).size
+        : 0;
+      const cap = statedWorkingDaysCap(entry, workingDaySet.size, pto);
+      if (cap != null) workingDaysCapByProvider.set(pid, cap);
+    }
+
+    return {
+      ctx: {
+        limits,
+        blockStart: row.date_start,
+        blockEnd: row.date_end,
+        workingDaySet,
+        workingDaysCapByProvider,
+      },
+      dbQueries,
+    };
+  } catch (e) {
+    console.warn(`[rulesEngine] provider_limits validation context load threw: ${e instanceof Error ? e.message : String(e)}`);
+    return { ctx: null, dbQueries };
+  }
+}
+
 /**
  * Load everything an evaluator might need to validate a single (slot, provider).
  * One round-trip per logical entity — we accept the chattiness for clarity.
@@ -215,6 +342,7 @@ export async function loadContext(
   let poolFlags: EvaluationContext['poolFlags'] = null;
   let neighborAssignments: EvaluationContext['neighborAssignments'] = [];
   let availability: AvailabilityRow[] = [];
+  let providerLimitsCtx: EvaluationContext['providerLimitsCtx'] = null;
 
   // FAIL CLOSED on every context query below: a transient failure that
   // silently emptied availability/neighbors/cross-site/same-day data would let
@@ -288,6 +416,11 @@ export async function loadContext(
       .gte('end_date', availStart);
     if (availErr) return null; // PENDING/approved PTO must never silently vanish
     availability = (avail || []) as AvailabilityRow[];
+
+    // Provider-limits soft-flag context (2026-07-22, patch34) — same shared
+    // loader batchValidate uses (parity). Degrades to null (feature off);
+    // only loaded when a provider is assigned (the evaluator no-ops otherwise).
+    providerLimitsCtx = (await loadProviderLimitsValidationCtx(sb, scheduleVersionId)).ctx;
   }
 
   // 5. All assignments on the same date in the same schedule version
@@ -354,6 +487,7 @@ export async function loadContext(
     sameDayAssignments,
     crossSiteAssignments,
     scheduleVersionId,
+    providerLimitsCtx,
     rules,
     shiftTypesByCode,
     shiftTypesById,
