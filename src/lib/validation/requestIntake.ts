@@ -75,3 +75,65 @@ export function countWindowRequestRows(
   const tag = windowNotesTag(windowId);
   return rows.filter(r => r.availability_type === type && r.notes === tag).length;
 }
+
+/** The start_dates of a provider's availability rows of `type` tagged to
+ * window `windowId` — the date list the NO-CALL unit counter needs (a bare
+ * row count can't collapse a weekend into one request). */
+export function windowRequestDates(
+  rows: ReadonlyArray<{ availability_type: string; notes: string | null; start_date: string }>,
+  windowId: string,
+  type: 'no_call_request' | 'call_request',
+): string[] {
+  const tag = windowNotesTag(windowId);
+  return rows.filter(r => r.availability_type === type && r.notes === tag).map(r => r.start_date);
+}
+
+// ── Weekend no-call unit counting (Gabriel 2026-07-22) ──────────────────────
+// "A no weekend call (no Friday, no Saturday and no Sunday call) is considered
+// one request not three." NO-CALL request dates count against
+// max_no_call_requests in UNITS: a weekday (Mon–Thu) date = 1 unit; Fri/Sat/
+// Sun dates of the SAME weekend group into 1 unit total (Fri 8/14 + Sat 8/15 +
+// Sun 8/16 = ONE request; a lone Sat = one; two different weekends = two).
+// The weekend key is that weekend's Saturday (Fri → +1 day, Sat → itself,
+// Sun → −1 day) — pure UTC date math, single-homed HERE; every cap read
+// (route enforcement, both request forms, the profile tab) goes through these.
+// BOUNDARY: this is the NO-CALL category only — Gabriel's rule is about "no
+// weekend call". CALL-shift requests stay one request per DATE.
+// The engine is untouched: its soft-avoid / fair-denial logic reads DATES.
+
+function addDays(date: string, days: number): string {
+  const d = new Date(date + 'T00:00:00Z');
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
+}
+
+/** Saturday (YYYY-MM-DD) of the Fri/Sat/Sun weekend containing `date`;
+ * null for Mon–Thu. */
+export function weekendGroupKey(date: string): string | null {
+  const dow = new Date(date + 'T00:00:00Z').getUTCDay();
+  if (dow === 5) return addDays(date, 1);   // Fri → its Saturday
+  if (dow === 6) return date;               // Sat → itself
+  if (dow === 0) return addDays(date, -1);  // Sun → its Saturday
+  return null;
+}
+
+/** The [Fri, Sat, Sun] dates of `date`'s weekend group; [] for Mon–Thu. */
+export function weekendGroupDates(date: string): string[] {
+  const sat = weekendGroupKey(date);
+  return sat ? [addDays(sat, -1), sat, addDays(sat, 1)] : [];
+}
+
+/** Cap unit for one no-call date: weekday → the date itself; Fri/Sat/Sun →
+ * the weekend's Saturday key (so the three collapse into one unit). */
+export function noCallUnitKey(date: string): string {
+  return weekendGroupKey(date) ?? date;
+}
+
+/** Distinct no-call request UNITS across `dates` — duplicates and dates of
+ * the same weekend collapse. This, not a date count, is what the
+ * max_no_call_requests cap compares against. */
+export function countNoCallRequestUnits(dates: Iterable<string>): number {
+  const units = new Set<string>();
+  for (const d of dates) units.add(noCallUnitKey(d));
+  return units.size;
+}

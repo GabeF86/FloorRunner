@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { sbSchedulingServer } from '@/lib/supabaseScheduling';
 import { publishRevalidation, type PublishValidationSummary } from '@/lib/rulesEngine/commit';
 import { parseProviderLimits } from '@/lib/providerLimits';
+import { parseScheduleName } from '@/lib/scheduleName';
 
 // Never prerender — this route hits Supabase per request.
 export const dynamic = 'force-dynamic';
@@ -63,6 +64,19 @@ export async function PATCH(
       return NextResponse.json({ error: parsed.error }, { status: 400 });
     }
     (body as Record<string, unknown>).provider_limits = parsed.value;
+  }
+
+  // schedule_name rename (Gabriel 2026-07-22) — same route-hardening style:
+  // when the key is present it must be a non-empty trimmed string ≤ 120 chars
+  // (a schedule can never lose its name), validated BEFORE any write. Written
+  // TRIMMED; every schedule_name display reads the column, so renames show up
+  // everywhere.
+  if (body && typeof body === 'object' && 'schedule_name' in body) {
+    const parsed = parseScheduleName((body as Record<string, unknown>).schedule_name, { blankIsDefault: false });
+    if (!parsed.ok) {
+      return NextResponse.json({ error: parsed.error }, { status: 400 });
+    }
+    (body as Record<string, unknown>).schedule_name = parsed.value;
   }
 
   const { data, error } = await sb

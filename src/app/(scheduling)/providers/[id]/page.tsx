@@ -24,7 +24,9 @@ import {
 // which rows are live (denied/canceled = dismissed), blocking, or
 // bookend-extended (effectivePtoRange).
 import { BLOCKING_AVAIL, effectivePtoRange, isDismissedAvailability } from '@/lib/rulesEngine/shared';
-import { callRequestsEnabled, countWindowRequestRows } from '@/lib/validation/requestIntake';
+import {
+  callRequestsEnabled, windowRequestDates, countNoCallRequestUnits,
+} from '@/lib/validation/requestIntake';
 import { collapseDatesToRanges, countDaysInYear, ptoCounterStats, type DateRange, type PtoCounterStats } from '@/lib/dateRanges';
 import { CalendarMultiPicker } from '@/components/CalendarMultiPicker';
 import { SiteShiftTypePicker } from '@/components/ShiftTypePicker';
@@ -1799,12 +1801,13 @@ function AvailabilityTab({ providerId, profile }: { providerId: string; profile:
         <AvailSection
           title="No Call Requests"
           hint={`Request window open for the block ${formatDate(openWindow.block_start)} – ${formatDate(openWindow.block_end)}. ` +
-            `Up to ${openWindow.max_no_call_requests} dates; the schedule generator avoids them when it can (soft — no approval step).`}
+            `Up to ${openWindow.max_no_call_requests} requests — a full weekend (Fri, Sat, Sun) counts as ONE request; ` +
+            `the schedule generator avoids them when it can (soft — no approval step).`}
         >
           <NoCallAddForm
             providerId={providerId}
             window={openWindow}
-            usedCount={countWindowRequestRows(noCallRows, openWindow.id, 'no_call_request')}
+            usedDates={windowRequestDates(noCallRows, openWindow.id, 'no_call_request')}
             onAdded={loadAvailability}
           />
           <SectionRows rows={noCallRows} onDelete={deleteEntry} formatDate={formatDate} emptyText="No no-call requests yet." />
@@ -1830,7 +1833,7 @@ function AvailabilityTab({ providerId, profile }: { providerId: string; profile:
           <CallRequestAddForm
             providerId={providerId}
             window={openWindow}
-            usedCount={countWindowRequestRows(callReqRows, openWindow.id, 'call_request')}
+            usedDates={windowRequestDates(callReqRows, openWindow.id, 'call_request')}
             onAdded={loadAvailability}
           />
           <SectionRows rows={callReqRows} onDelete={deleteEntry} formatDate={formatDate} emptyText="No call requests yet." />
@@ -2313,11 +2316,14 @@ function RangeAddForm({ providerId, availabilityType, addLabel, accent = '#0ea5e
 
 // Window request add (no-call + its 2026-07-22 call-request mirror) — routes
 // through the SAME token-gated intake endpoint the public form uses, so each
-// per-window cap has exactly one enforcement point.
-function WindowRequestAddForm({ providerId, window: win, usedCount, onAdded, kind }: {
+// per-window cap has exactly one enforcement point. The cap is counted in
+// REQUESTS: per-date for call; in weekend units for no-call (a full Fri/Sat/
+// Sun weekend = ONE request — countNoCallRequestUnits, Gabriel 2026-07-22),
+// which is why the form takes the used DATES, not a bare row count.
+function WindowRequestAddForm({ providerId, window: win, usedDates, onAdded, kind }: {
   providerId: string;
   window: RequestWindowInfo;
-  usedCount: number;
+  usedDates: string[];
   onAdded: () => Promise<void>;
   kind: 'no_call' | 'call';
 }) {
@@ -2331,7 +2337,7 @@ function WindowRequestAddForm({ providerId, window: win, usedCount, onAdded, kin
   const [error, setError] = useState<string | null>(null);
   const max = kind === 'no_call' ? win.max_no_call_requests : (win.max_call_requests ?? 0);
   const accent = kind === 'no_call' ? '#fbbf24' : '#34d399'; // AVAILABILITY_TYPES colors
-  const remaining = Math.max(0, max - usedCount);
+  const usedCount = kind === 'no_call' ? countNoCallRequestUnits(usedDates) : usedDates.length;
 
   const add = async () => {
     const dates = mode === 'calendar' ? days : (date ? [date] : []);
@@ -2358,8 +2364,15 @@ function WindowRequestAddForm({ providerId, window: win, usedCount, onAdded, kin
     }
   };
 
-  const selectedCount = mode === 'calendar' ? days.length : (date ? 1 : 0);
-  const canAdd = selectedCount > 0 && selectedCount <= remaining;
+  const selected = mode === 'calendar' ? days : (date ? [date] : []);
+  const selectedCount = selected.length;
+  // Projected usage if this selection lands: unit math for no-call (union
+  // with existing dates, so completing an already-counted weekend is free);
+  // plain addition for call.
+  const projectedCount = kind === 'no_call'
+    ? countNoCallRequestUnits([...usedDates, ...selected])
+    : usedDates.length + selectedCount;
+  const canAdd = selectedCount > 0 && projectedCount <= max;
 
   return (
     <div style={addFormBoxStyle}>
@@ -2401,9 +2414,9 @@ function WindowRequestAddForm({ providerId, window: win, usedCount, onAdded, kin
           </div>
         )}
         <div style={{ fontSize: 11, color: 'var(--text-dim)', paddingBottom: 7 }}>
-          {usedCount}/{max} used
-          {mode === 'calendar' && selectedCount > remaining && (
-            <span style={{ color: '#f87171', fontWeight: 700 }}> — {selectedCount} selected exceeds the {remaining} remaining</span>
+          {usedCount}/{max} request{max === 1 ? '' : 's'} used
+          {mode === 'calendar' && selectedCount > 0 && projectedCount > max && (
+            <span style={{ color: '#f87171', fontWeight: 700 }}> — the selection needs {projectedCount} total, over the {max} allowed</span>
           )}
         </div>
         <button onClick={add} disabled={busy || !canAdd} style={{
@@ -2419,7 +2432,7 @@ function WindowRequestAddForm({ providerId, window: win, usedCount, onAdded, kin
 function NoCallAddForm(props: {
   providerId: string;
   window: RequestWindowInfo;
-  usedCount: number;
+  usedDates: string[];
   onAdded: () => Promise<void>;
 }) {
   return <WindowRequestAddForm {...props} kind="no_call" />;
@@ -2428,7 +2441,7 @@ function NoCallAddForm(props: {
 function CallRequestAddForm(props: {
   providerId: string;
   window: RequestWindowInfo;
-  usedCount: number;
+  usedDates: string[];
   onAdded: () => Promise<void>;
 }) {
   return <WindowRequestAddForm {...props} kind="call" />;

@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import Link from 'next/link';
 import { PageHeader, Card, Badge, Button, Table, EmptyState, Banner, Modal, scheduleStatusTone, scheduleStatusLabel, SCHEDULE_STATUSES } from '@/components/ui';
+import { defaultScheduleName, SCHEDULE_NAME_MAX } from '@/lib/scheduleName';
 import AssistantPanel from './[id]/AssistantPanel';
 import RequestWindowCard from './RequestWindowCard';
 
@@ -294,7 +295,16 @@ function CreateScheduleModal({ orgId, sites, onClose, onCreated }: { orgId: stri
   const [providerGroup, setProviderGroup] = useState('both');
   const [dateStart, setDateStart] = useState('');
   const [dateEnd, setDateEnd] = useState('');
+  // Optional custom name (Gabriel 2026-07-22) — blank keeps the generated
+  // default, which the placeholder previews (defaultScheduleName is the same
+  // single-homed helper the POST route uses, so the preview can't drift).
+  const [name, setName] = useState('');
   const [saving, setSaving] = useState(false);
+
+  const siteName = sites.find(s => s.id === siteId)?.name;
+  const namePlaceholder = siteName && dateStart
+    ? defaultScheduleName(siteName, dateStart)
+    : 'Auto-generated from site + start month';
 
   // Snap end date from a week count. Blocks in anesthesia are usually talked
   // about in whole weeks (e.g. "11-week block", "12-week rotation"). The
@@ -320,6 +330,8 @@ function CreateScheduleModal({ orgId, sites, onClose, onCreated }: { orgId: stri
         provider_group: providerGroup,
         date_start: dateStart,
         date_end: dateEnd,
+        // Blank → the route falls back to the generated default.
+        schedule_name: name,
       }),
     });
     const data = await res.json();
@@ -364,6 +376,17 @@ function CreateScheduleModal({ orgId, sites, onClose, onCreated }: { orgId: stri
         <option value="">— Select Site —</option>
         {sites.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
       </select>
+
+      <label style={labelStyle}>Schedule Name (optional)</label>
+      <input
+        type="text"
+        style={inputStyle}
+        value={name}
+        maxLength={SCHEDULE_NAME_MAX}
+        placeholder={namePlaceholder}
+        title="Leave blank to use the auto-generated name shown as the placeholder"
+        onChange={e => setName(e.target.value)}
+      />
 
       <label style={labelStyle}>Provider Group *</label>
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8, marginBottom: 14 }}>

@@ -174,6 +174,53 @@ describe('PATCH /api/scheduling/schedules/:id — provider_limits hardening', ()
   });
 });
 
+// ── schedule_name rename (Gabriel 2026-07-22) ────────────────────────────────
+// Inline rename from the schedule detail header PATCHes schedule_name through
+// this route. Same route-hardening style as provider_limits: the key is
+// validated BEFORE any write (trimmed, non-empty, ≤ 120 chars); everywhere
+// schedule_name is read (dashboard, pickers, banners) sees the new value
+// because they read the column.
+describe('PATCH /api/scheduling/schedules/:id — schedule_name rename', () => {
+  const updateArgs = (calls: ReturnType<typeof setup>['calls']) =>
+    callsFor(calls, 'schedules', 'update').map(c => c.args[0] as Record<string, unknown>);
+
+  it('accepts a rename and writes it TRIMMED', async () => {
+    const { calls } = setup();
+    const { res } = await patch({ schedule_name: '  September Draft — final  ' });
+    expect(res.status).toBe(200);
+    const written = updateArgs(calls);
+    expect(written).toHaveLength(1);
+    expect(written[0].schedule_name).toBe('September Draft — final');
+  });
+
+  it('rejects empty and whitespace-only names with 400 and writes nothing', async () => {
+    for (const bad of ['', '   ', null]) {
+      const { calls } = setup();
+      const { res, json } = await patch({ schedule_name: bad });
+      expect(res.status).toBe(400);
+      expect(json.error).toMatch(/schedule_name/);
+      expect(updateArgs(calls)).toHaveLength(0);
+    }
+  });
+
+  it('rejects over-long and non-string names with 400', async () => {
+    for (const bad of ['x'.repeat(121), 42]) {
+      setup();
+      const { res } = await patch({ schedule_name: bad });
+      expect(res.status).toBe(400);
+    }
+  });
+
+  it('other fields ride along with a valid rename', async () => {
+    const { calls } = setup();
+    const { res } = await patch({ schedule_name: 'New Name', notes: 'kept' });
+    expect(res.status).toBe(200);
+    const written = updateArgs(calls)[0];
+    expect(written.schedule_name).toBe('New Name');
+    expect(written.notes).toBe('kept');
+  });
+});
+
 describe('PATCH /api/scheduling/schedules/:id — superseded published siblings (C1)', () => {
   it('publishing archives the published sibling ONLY — drafts and the target untouched; revalidation still runs', async () => {
     const { cfg, demoted } = demoteAware([

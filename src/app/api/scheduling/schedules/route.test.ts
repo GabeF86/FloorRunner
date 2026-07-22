@@ -207,3 +207,70 @@ describe('POST /api/scheduling/schedules — friday template union', () => {
     expect(slots.map(s => s.shift_type_id)).toEqual(['st-C1sat']);
   });
 });
+
+// ── Nameable schedules (Gabriel 2026-07-22) ─────────────────────────────────
+// "I also want to be able to name the draft schedule I am creating so I can
+// keep track of the different schedules." An optional schedule_name in the
+// POST body overrides the generated default when non-empty (trimmed, capped
+// at 120, route-hardened); blank/absent keeps the historical generated name.
+// The rest of the creation flow (slot/assignment seeding) is byte-identical.
+describe('POST /api/scheduling/schedules — custom schedule_name', () => {
+  const scheduleInsertRow = (calls: ReturnType<typeof setup>['calls']) => {
+    const inserts = callsFor(calls, 'schedules', 'insert');
+    expect(inserts).toHaveLength(1);
+    return inserts[0].args[0] as Record<string, unknown>;
+  };
+
+  it('a custom name is used TRIMMED', async () => {
+    const { calls } = setup([template()]);
+    const res = await POST(fakeReq({ ...BODY, schedule_name: '  Fall Draft — plan B  ' }));
+    expect(res.status).toBe(200);
+    expect(scheduleInsertRow(calls).schedule_name).toBe('Fall Draft — plan B');
+  });
+
+  it('absent, blank, and whitespace-only names keep the generated default', async () => {
+    for (const body of [
+      BODY,
+      { ...BODY, schedule_name: '' },
+      { ...BODY, schedule_name: '   ' },
+    ]) {
+      const { calls } = setup([template()]);
+      const res = await POST(fakeReq(body));
+      expect(res.status).toBe(200);
+      expect(scheduleInsertRow(calls).schedule_name).toBe('Mercy General - Schedule - January 2026');
+    }
+  });
+
+  it('rejects an over-long name with 400 before any write', async () => {
+    const { calls } = setup([template()]);
+    const res = await POST(fakeReq({ ...BODY, schedule_name: 'x'.repeat(121) }));
+    expect(res.status).toBe(400);
+    expect(((await res.json()).error as string)).toMatch(/schedule_name/);
+    expect(callsFor(calls, 'schedules', 'insert')).toHaveLength(0);
+    expect(callsFor(calls, 'schedule_slots', 'insert')).toHaveLength(0);
+  });
+
+  it('rejects a non-string name with 400 before any write', async () => {
+    const { calls } = setup([template()]);
+    const res = await POST(fakeReq({ ...BODY, schedule_name: 42 }));
+    expect(res.status).toBe(400);
+    expect(callsFor(calls, 'schedules', 'insert')).toHaveLength(0);
+  });
+
+  it('a custom name changes ONLY schedule_name — slot/assignment seeding is byte-identical', async () => {
+    const { calls: namedCalls } = setup([template({ required_count: 2 })]);
+    await POST(fakeReq({ ...BODY, schedule_name: 'My Custom Draft' }));
+    const { calls: defaultCalls } = setup([template({ required_count: 2 })]);
+    await POST(fakeReq(BODY));
+
+    const rows = (calls: typeof namedCalls, table: string) =>
+      callsFor(calls, table, 'insert').map(c => c.args[0]);
+    expect(rows(namedCalls, 'schedule_slots')).toEqual(rows(defaultCalls, 'schedule_slots'));
+    expect(rows(namedCalls, 'assignments')).toEqual(rows(defaultCalls, 'assignments'));
+    expect(rows(namedCalls, 'schedule_versions')).toEqual(rows(defaultCalls, 'schedule_versions'));
+    const named = rows(namedCalls, 'schedules')[0] as Record<string, unknown>;
+    const dflt = rows(defaultCalls, 'schedules')[0] as Record<string, unknown>;
+    expect(named.schedule_name).toBe('My Custom Draft');
+    expect({ ...named, schedule_name: null }).toEqual({ ...dflt, schedule_name: null });
+  });
+});

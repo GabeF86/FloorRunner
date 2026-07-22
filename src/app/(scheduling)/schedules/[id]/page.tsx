@@ -16,6 +16,7 @@ import { bucketDayCounts, daysOffFor, creditedWorkingDayTotals } from '@/lib/cal
 import { rangeComposition } from '@/lib/plannerMath';
 import AssistantPanel from './AssistantPanel';
 import { PageHeader, Badge, Button, Banner, scheduleStatusTone } from '@/components/ui';
+import { SCHEDULE_NAME_MAX } from '@/lib/scheduleName';
 import { reasonCodeLabel } from '@/lib/validation/providers';
 // Pure row-level classifier for LIVE pto_sellback rows — the grid must agree
 // with the engine's date-level override (rulesEngine/shared.ts isDateBlocked)
@@ -307,6 +308,13 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
   const [actionError, setActionError] = useState<string | null>(null);
   const [showCounts, setShowCounts] = useState(false);
   const [showAssistant, setShowAssistant] = useState(false);
+  // Inline rename (Gabriel 2026-07-22): the header pencil PATCHes
+  // schedule_name (route-validated: trimmed, non-empty, ≤ 120). Local grid
+  // state is patched on success — every other surface (dashboard, pickers,
+  // banners) reads the column, so the rename propagates on their next load.
+  const [renaming, setRenaming] = useState(false);
+  const [renameValue, setRenameValue] = useState('');
+  const [renameBusy, setRenameBusy] = useState(false);
   const pickerRef = useRef<HTMLDivElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
 
@@ -328,6 +336,31 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
   }, [id]);
 
   useEffect(() => { loadGrid(); }, [loadGrid]);
+
+  const saveRename = useCallback(async () => {
+    const trimmed = renameValue.trim();
+    if (!grid || !trimmed || trimmed === grid.schedule.schedule_name) {
+      setRenaming(false);
+      return;
+    }
+    setRenameBusy(true);
+    try {
+      const res = await fetch(`/api/scheduling/schedules/${id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ schedule_name: trimmed }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        setActionError(data.error || `Rename failed (${res.status})`);
+        return;
+      }
+      setGrid(g => g ? { ...g, schedule: { ...g.schedule, schedule_name: trimmed } } : g);
+      setRenaming(false);
+    } finally {
+      setRenameBusy(false);
+    }
+  }, [grid, id, renameValue]);
 
   /* ── Close picker on outside click / Escape ─────────────────────────────── */
 
@@ -1173,10 +1206,51 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
         <span style={{ color: 'var(--text-muted)' }}>{schedule.schedule_name}</span>
       </div>
 
-      {/* Top Bar — identity row */}
+      {/* Top Bar — identity row (title carries the inline-rename pencil) */}
       <PageHeader
         compact
-        title={schedule.schedule_name}
+        title={renaming ? (
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+            <input
+              autoFocus
+              value={renameValue}
+              maxLength={SCHEDULE_NAME_MAX}
+              onChange={e => setRenameValue(e.target.value)}
+              onKeyDown={e => {
+                if (e.key === 'Enter') saveRename();
+                if (e.key === 'Escape') setRenaming(false);
+              }}
+              aria-label="Schedule name"
+              style={{
+                fontSize: 14, fontWeight: 700, minWidth: 280,
+                padding: '3px 8px', borderRadius: 6,
+                border: '1px solid var(--border)', background: 'var(--bg-deep)',
+                color: 'var(--text-strong)', outline: 'none',
+              }}
+            />
+            <Button size="sm" onClick={saveRename} disabled={renameBusy || !renameValue.trim()}>
+              {renameBusy ? 'Saving…' : 'Save'}
+            </Button>
+            <Button size="sm" variant="ghost" onClick={() => setRenaming(false)} disabled={renameBusy}>
+              Cancel
+            </Button>
+          </span>
+        ) : (
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 7 }}>
+            {schedule.schedule_name}
+            <button
+              onClick={() => { setRenameValue(schedule.schedule_name); setRenaming(true); }}
+              title="Rename this schedule"
+              aria-label="Rename schedule"
+              style={{
+                background: 'none', border: 'none', cursor: 'pointer', padding: 2,
+                color: 'var(--text-dim)', fontSize: 13, lineHeight: 1,
+              }}
+            >
+              ✎
+            </button>
+          </span>
+        )}
         subtitle={
           <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
             <Badge tone={scheduleStatusTone(schedule.status)}>{schedule.status}</Badge>
