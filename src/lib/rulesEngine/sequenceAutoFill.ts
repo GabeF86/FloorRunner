@@ -29,6 +29,7 @@ import {
   dayChainsFor,
   type CallPatternDoc,
 } from './callPattern';
+import { mayEvictPreFill, preFillCodes, shiftRank } from './preFillEviction';
 import type { SkippedDerived } from './genTypes';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -138,35 +139,9 @@ interface AvailRow {
   end_date: string;
 }
 
-// Same-day precedence between pattern fills, from the shift_types rows (never
-// code literals): ranked calls (call_rank, lower wins) beat relief shifts
-// (relief_rank) beat plain derived codes (D1/D2/D3/…, both ranks null).
-// "Lower call_rank trigger wins"; a realized call trigger therefore always
-// outranks a derived pre-fill — the old hard-coded "D1 beats D3".
-//
-// `degradedRanks` = the rank columns were unreadable (pre-patch18 DB, narrow
-// retry): calls outrank non-calls, ties within a class are stable.
-function shiftRank(st: StRow | null | undefined, degradedRanks = false): number {
-  if (degradedRanks) {
-    return st?.category === 'call' ? 0 : Number.MAX_SAFE_INTEGER;
-  }
-  if (st?.call_rank != null) return st.call_rank;
-  if (st?.relief_rank != null) return 1000 + st.relief_rank;
-  return Number.MAX_SAFE_INTEGER;
-}
-
-// Codes the pattern fills via NEGATIVE offsets (pre-call fills). These are the
-// only occupants a positive-offset (post-call) fill may evict — replaces the
-// old literal `code === 'D3'`.
-function preFillCodes(doc: CallPatternDoc): Set<string> {
-  const out = new Set<string>();
-  for (const chain of doc.dayChains) {
-    for (const link of chain.links ?? []) {
-      if (link.offset < 0) out.add(link.code);
-    }
-  }
-  return out;
-}
+// Same-day precedence (shiftRank) and the pattern's pre-fill code set
+// (preFillCodes) moved to preFillEviction.ts (2026-07-21) — the single home
+// they now share with the engine's seed-eviction path. Imported above.
 
 // ── loaders — wide select, narrow retry on missing patch18 columns ──────────
 //
@@ -501,11 +476,15 @@ export async function applySequenceAutoFill(
     if (link.offset > 0) {
       for (const a of windowAssignments) {
         if (a.slot_date !== linkedDate || evictedIds.has(a.id)) continue;
-        if (a.schedule_version_id !== trigger.schedule_version_id) continue;
-        if (a.source_type !== 'auto_generated') continue;
-        if (a.st?.category === 'call') continue;
-        if (!a.st?.code || !evictableCodes.has(a.st.code)) continue;
-        if (triggerRank > rank(a.st)) continue; // occupant outranks the incoming fill
+        // The eviction decision itself is the SHARED predicate
+        // (preFillEviction.mayEvictPreFill): auto_generated only, same
+        // version only, pattern pre-fill codes only, never calls, and the
+        // occupant must not outrank the incoming fill (ties to post-call).
+        if (!mayEvictPreFill(triggerRank, {
+          source_type: a.source_type,
+          same_version: a.schedule_version_id === trigger.schedule_version_id,
+          st: a.st,
+        }, evictableCodes, rank)) continue;
         if (await revertToOpen(sb, a.id)) {
           evictedIds.add(a.id);
           result.evictedSlotIds.push(a.slot_id);

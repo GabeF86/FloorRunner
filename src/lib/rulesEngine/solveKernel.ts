@@ -9,6 +9,8 @@
 import { addDays, daysBetween, dayTypeBucket, datesOverlap } from './shared';
 import { evaluateEligibility } from './eligibility';
 import { dayChainsFor, blockChainsFor } from './callPattern';
+import { mayEvictPreFill, preFillCodes, shiftRank } from './preFillEviction';
+import type { RankableShiftType } from './preFillEviction';
 import type { CallPatternDoc } from './callPattern';
 import { creditWorkDay, markAssigned, markBlocked, incBucket, addCallDate, daysSinceLastCall, hadCallWithin } from './solveState';
 import type { SolveState } from './solveState';
@@ -188,7 +190,14 @@ export function scoreCall(run: SolverRun, cands: CandidateProvider[], slot: Slot
 }
 
 // ── derived (D-chain / span) fills — record every suppression (IF-4) ──
-export function tryFillDerived(run: SolverRun, date: string, code: string, p: CandidateProvider) {
+// `postCallTrigger` (2026-07-21): the just-placed anchor slot, passed ONLY for
+// POSITIVE-offset dayChain links. It arms the seed-eviction path below —
+// Gabriel's D1-overrides-pre-call rule for stale multi-pass seeds. Absent
+// (negative links, spans) the body is the pre-change code byte for byte.
+export function tryFillDerived(
+  run: SolverRun, date: string, code: string, p: CandidateProvider,
+  postCallTrigger?: SlotToFill,
+) {
   const target = run.ctx.slotIndex.get(date)?.get(code);
   if (!target) { run.skippedDerived.push({ date, code, provider_id: p.id, reason: 'no-slot' }); return; }
   if (run.state.handledSlotIds.has(target.slot_id)) {
@@ -196,10 +205,93 @@ export function tryFillDerived(run: SolverRun, date: string, code: string, p: Ca
   }
   const elig = evaluateEligibility(target, p, run.state, run.ctx, 'derived');
   if (!elig.eligible) {
+    // A post-call link blocked by the provider's OWN stale pre-fill seed
+    // evicts it and places the fill (the Hussain 9/30 bug). Any other
+    // blocker — or a seed failing an eviction gate — falls through to the
+    // unchanged skip record (invariant 4).
+    if (postCallTrigger && elig.reason === 'same-date'
+      && tryEvictSeedAndFill(run, target, p, postCallTrigger)) return;
     run.skippedDerived.push({ date, code, provider_id: p.id, reason: skipReasonFrom(elig.reason) });
     return;
   }
   record(run, target, p, 'd-chain');
+}
+
+// ── engine seed eviction (2026-07-21, the Hussain 9/30 bug) ─────────────────
+// Multi-pass generation: run 1's C2 pre-filled a D3 the day before it; run 2
+// filled the still-open PRIOR day's C2 with the same provider, and its +1 D1
+// link found the provider "already assigned" — their own STALE auto-generated
+// D3 seed — stranding the D1. Gabriel's standing rule (2026-07-19, the Jones
+// fix): the post-call fill OVERRIDES any pre-call status. sequenceAutoFill has
+// evicted such rows since then; this is the engine-side equivalent for SEEDS.
+//
+// Fires only when the positive-offset link fill is blocked ONLY by the
+// provider's own seeded assignment(s) on the target date, every such seed
+// passes the SHARED eviction gates (preFillEviction.mayEvictPreFill — one
+// predicate, never two divergent copies), and the fill is otherwise eligible
+// once the seed's claim is released (PTO/cross-site/caps still decline, seed
+// intact). Evictions land on plan.evictions (never silent) and are EXECUTED
+// by commitPlan before the fill writes.
+function tryEvictSeedAndFill(
+  run: SolverRun, target: SlotToFill, p: CandidateProvider, trigger: SlotToFill,
+): boolean {
+  const { ctx, state } = run;
+  const date = target.slot_date;
+  // "Blocked ONLY by the seed": a pattern post-call BLOCK (mandated day off)
+  // on the date is inviolable (invariant 1), and an in-plan same-run
+  // placement is a live decision, not a stale seed — both refuse.
+  if (state.blockedOnDate.get(date)?.has(p.id)) return false;
+  if (run.plan.assignments.some(a => a.provider_id === p.id && a.slot_date === date)) return false;
+
+  // The claim holders: the provider's NON-OVERLAY seeds on the date (overlay
+  // seeds never consumed the one-assignment-per-day budget, so they are not
+  // the 'same-date' blocker). ALL of them must pass the shared gates —
+  // missing eviction provenance (bare fixtures, pre-extension loads) is
+  // conservatively non-evictable.
+  const blockers = ctx.seedAssignments.filter(s =>
+    s.provider_id === p.id && s.slot_date === date && !run.isOverlay(s.shift_type_code));
+  if (blockers.length === 0) return false;
+
+  const degraded = !ctx.shiftTypes;
+  const stOf = (code: string, category: string): RankableShiftType =>
+    ctx.shiftTypes?.get(code) ?? { code, category };
+  const rank = (st: RankableShiftType | null | undefined) => shiftRank(st, degraded);
+  const incomingRank = rank(stOf(trigger.shift_type_code, trigger.shift_type_category));
+  const evictableCodes = preFillCodes(run.doc);
+  for (const s of blockers) {
+    if (!s.slot_id || !s.assignment_id) return false; // commit couldn't execute it
+    if (!mayEvictPreFill(incomingRank, {
+      source_type: s.source_type,
+      same_version: s.schedule_version_id != null
+        && s.schedule_version_id === ctx.scheduleVersionId,
+      st: stOf(s.shift_type_code, s.shift_type_category),
+    }, evictableCodes, rank)) return false;
+  }
+
+  // Tentatively release the seeds' one-assignment-per-day claim, then re-run
+  // the FULL derived gate: the eviction proceeds only when the seed was the
+  // ONLY blocker. Otherwise roll the claim back — the caller records the
+  // original skip and the plan is byte-identical to the pre-change engine.
+  state.assignedOnDate.get(date)?.delete(p.id);
+  if (!evaluateEligibility(target, p, state, ctx, 'derived').eligible) {
+    markAssigned(state, date, p.id);
+    return false;
+  }
+  // Workday-credit bookkeeping: the seed's credit for the date is deliberately
+  // NOT removed — record() below re-credits the SAME date and the ledger is a
+  // per-(provider,date) set, so eviction + refill nets to exactly one credit
+  // (pinned in seedEviction.test.ts). Bucket counts are untouched: pre-fills
+  // are non-call by gate (mayEvictPreFill refuses call-category occupants).
+  for (const s of blockers) {
+    (run.plan.evictions ??= []).push({
+      date, code: s.shift_type_code,
+      provider_id: p.id, provider_name: p.short_display_name,
+      slot_id: s.slot_id!, assignment_id: s.assignment_id!,
+      trigger_date: trigger.slot_date, trigger_code: trigger.shift_type_code,
+    });
+  }
+  record(run, target, p, 'd-chain');
+  return true;
 }
 
 // dayChains: per-code pre/post fills (links) and post-call blocks for the
@@ -213,7 +305,11 @@ export function applyDayChains(run: SolverRun, slot: SlotToFill, p: CandidatePro
         run.waivedLinkKeys.add(`${addDays(slot.slot_date, link.offset)}|${link.code}`);
         continue;
       }
-      tryFillDerived(run, addDays(slot.slot_date, link.offset), link.code, p);
+      // Positive-offset (post-call) links arm the seed-eviction path with the
+      // just-placed anchor as the trigger; negative (pre-call) links never
+      // evict — mirroring sequenceAutoFill's offset gate.
+      tryFillDerived(run, addDays(slot.slot_date, link.offset), link.code, p,
+        link.offset > 0 ? slot : undefined);
     }
     for (const block of chain.blocks ?? []) {
       const blockedDate = addDays(slot.slot_date, block.offset);

@@ -839,6 +839,9 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
     filled: number; skipped: number; errors: string[];
     warnings: string[];                              // load-time advisories (apply patch18, quota shortfalls, …)
     skippedDerived: Array<{ reason: string }>;       // suppressed derived fills (clinical invariant 4)
+    // Stale pre-fill seeds evicted by post-call chain fills (D1 overrides
+    // pre-call, 2026-07-21) — the vacated slots stay open.
+    evictions: Array<{ date: string; code: string; provider_name: string }>;
     // No-call request grant report — "N/M honored" + violated detail.
     requestGrants: Array<{
       provider_id: string; provider_name: string;
@@ -909,6 +912,7 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
         filled: data.filled, skipped: data.skipped, errors: data.errors,
         warnings: Array.isArray(data.warnings) ? data.warnings : [],
         skippedDerived: Array.isArray(data.skippedDerived) ? data.skippedDerived : [],
+        evictions: Array.isArray(data.evictions) ? data.evictions : [],
         requestGrants: Array.isArray(data.requestGrants) ? data.requestGrants : [],
         workDayReport: Array.isArray(data.workDayReport) ? data.workDayReport : [],
         fillMode: mode,
@@ -1350,6 +1354,17 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
                   return m;
                 }, {})).map(([reason, n]) => `${n} ${reason}`).join(', ')}
                 ) — left unassigned, see unfilled/derived report.
+              </div>
+            )}
+            {/* Seed evictions (2026-07-21): a regenerate's post-call chain
+                displaced stale auto-generated pre-fills (D1 overrides
+                pre-call). The vacated slots stay OPEN — this line is their
+                report; they are never backfilled with someone else. */}
+            {genResult.evictions.length > 0 && (
+              <div style={{ marginTop: 4, color: 'var(--text-dim)' }}>
+                {genResult.evictions.length} stale pre-call fill{genResult.evictions.length !== 1 ? 's' : ''} evicted
+                (post-call coverage overrides pre-call): {genResult.evictions
+                  .map(e => `${e.code} ${e.date} (${e.provider_name})`).join(', ')} — vacated slot{genResult.evictions.length !== 1 ? 's' : ''} left open.
               </div>
             )}
             {/* No-call request grant report: soft avoidance is best-effort, so

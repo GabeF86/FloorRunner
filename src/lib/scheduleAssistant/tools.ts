@@ -1688,6 +1688,9 @@ export function createToolExecutors(deps?: Partial<ToolEngineDeps>): Record<stri
           unfilled,
           warnings: result.warnings,
           skippedDerived: result.skippedDerived ?? [],
+          // Stale pre-fill seeds evicted by post-call chain fills (2026-07-21)
+          // — reported alongside skippedDerived; vacated slots stay open.
+          evictions: result.evictions ?? [],
           errors: result.errors,
           metrics: result.metrics ?? null,
         },

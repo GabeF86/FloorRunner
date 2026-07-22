@@ -246,3 +246,109 @@ describe('commitPlan — bulk failure resilience', () => {
     expect(callsFor(calls, 'assignments', 'update')).toHaveLength(2);
   });
 });
+
+// ── commitPlan executes seed evictions BEFORE the fill writes (2026-07-21) ──
+describe('commitPlan — seed evictions', () => {
+  const eviction = {
+    date: '2026-09-30', code: 'D3',
+    provider_id: 'hussain', provider_name: 'hussain',
+    slot_id: 'slot-d3-0930', assignment_id: 'a-d3-0930',
+    trigger_date: '2026-09-29', trigger_code: 'C2',
+  };
+
+  it('reverts the evicted seed row to open BEFORE any fill write lands', async () => {
+    const { sb, calls } = makeFakeSupabase({ tables: { assignments: { data: [], error: null } } });
+    const plan = {
+      assignments: [pa({
+        slot_id: 'd1-0930', slot_date: '2026-09-30', shift_type_code: 'D1',
+        shift_type_category: 'regular', provider_id: 'hussain',
+        existing_assignment_id: 'row-d1', source: 'd-chain' as const,
+      })],
+      unfilled: [],
+      evictions: [eviction],
+    };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const res = await commitPlan(sb, plan as any);
+    expect(res.evicted).toBe(1);
+    expect(res.filled).toBe(1);
+    expect(res.errors).toEqual([]);
+
+    const upserts = callsFor(calls, 'assignments', 'upsert');
+    expect(upserts).toHaveLength(2);
+    // FIRST write = the eviction revert (provider null, open, source manual —
+    // mirroring sequenceAutoFill's revertToOpen), THEN the fill batch.
+    const revertRows = upserts[0].args[0] as Array<Record<string, unknown>>;
+    expect(revertRows).toEqual([{
+      id: 'a-d3-0930', schedule_slot_id: 'slot-d3-0930',
+      provider_id: null, assignment_status: 'open', source_type: 'manual',
+      assigned_at: null, validation_flags: null,
+    }]);
+    const fillRows = upserts[1].args[0] as Array<Record<string, unknown>>;
+    expect(fillRows.map(r => r.id)).toEqual(['row-d1']);
+  });
+
+  it('withholds the dependent post-call fill when the eviction revert fails (no double-booking)', async () => {
+    const { sb, calls } = makeFakeSupabase({
+      tables: {
+        assignments: (filters) => {
+          // Fail every REVERT write (bulk upsert of provider_id:null rows AND
+          // its per-row update fallback); let everything else succeed.
+          const up = filters.find(f => f.method === 'upsert');
+          if (up && Array.isArray(up.args[0])
+            && (up.args[0] as Array<Record<string, unknown>>)[0]?.provider_id === null) {
+            return { data: null, error: { message: 'revert boom' } };
+          }
+          const upd = filters.find(f => f.method === 'update');
+          if (upd && (upd.args[0] as Record<string, unknown>)?.provider_id === null) {
+            return { data: null, error: { message: 'revert boom' } };
+          }
+          return { data: [], error: null };
+        },
+      },
+    });
+    const plan = {
+      assignments: [
+        // Dependent fill: same provider + date as the failed eviction → must
+        // NOT be written (it would double-book against the surviving D3 row).
+        pa({
+          slot_id: 'd1-0930', slot_date: '2026-09-30', shift_type_code: 'D1',
+          shift_type_category: 'regular', provider_id: 'hussain',
+          existing_assignment_id: 'row-d1', source: 'd-chain' as const,
+        }),
+        // Unrelated fill: different date — still written.
+        pa({
+          slot_id: 'c2-0929', slot_date: '2026-09-29', shift_type_code: 'C2',
+          provider_id: 'hussain', existing_assignment_id: 'row-c2',
+        }),
+      ],
+      unfilled: [],
+      evictions: [eviction],
+    };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const res = await commitPlan(sb, plan as any);
+    expect(res.evicted).toBe(0);
+    expect(res.filled).toBe(1); // only the unrelated fill landed
+    expect(res.errors.join(' ')).toContain('revert boom');
+    expect(res.errors.join(' ')).toContain('Withheld the C2-chain fill on 2026-09-30');
+
+    // The fill batch never contains the withheld row.
+    const upserts = callsFor(calls, 'assignments', 'upsert');
+    const fillBatches = upserts
+      .map(u => u.args[0] as Array<Record<string, unknown>>)
+      .filter(rows => rows[0]?.provider_id !== null);
+    expect(fillBatches).toHaveLength(1);
+    expect(fillBatches[0].map(r => r.id)).toEqual(['row-c2']);
+  });
+
+  it('a plan without evictions issues no revert write (pre-change byte path)', async () => {
+    const { sb, calls } = makeFakeSupabase({ tables: { assignments: { data: [], error: null } } });
+    const plan = {
+      assignments: [pa({ slot_id: 'sA', existing_assignment_id: 'row-a' })],
+      unfilled: [],
+    };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const res = await commitPlan(sb, plan as any);
+    expect(res.evicted).toBe(0);
+    expect(callsFor(calls, 'assignments', 'upsert')).toHaveLength(1); // fills only
+  });
+});

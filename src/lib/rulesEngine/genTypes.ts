@@ -54,6 +54,15 @@ export interface SeedAssignment {
   shift_type_code: string;
   shift_type_category: string;
   derived_day_type: string;
+  // ── seed-eviction provenance (2026-07-21, the Hussain 9/30 bug) ──
+  // The fields the eviction gates + commitPlan need to safely evict a STALE
+  // auto-generated pre-fill seed (preFillEviction.ts). genContext stamps all
+  // four; OPTIONAL so bare/parity fixtures stay small — a seed missing any of
+  // them is conservatively NEVER evicted.
+  slot_id?: string;
+  assignment_id?: string;
+  source_type?: string;
+  schedule_version_id?: string;
 }
 
 // Per-code shift-type metadata that drives generation behavior. Loaded from
@@ -231,6 +240,25 @@ export interface SkippedDerived {
   reason: 'pto' | 'cross-site' | 'occupied' | 'no-slot' | 'ineligible' | 'already-handled' | 'overridden';
 }
 
+// A stale auto-generated pre-fill SEED evicted in-plan by a positive-offset
+// dayChain link fill for the same provider (2026-07-21, the Hussain 9/30 bug;
+// Gabriel's D1-overrides-pre-call rule). Recorded on the plan — never silent
+// (invariant-4 spirit) — and EXECUTED by commitPlan (seed row reverted to
+// open BEFORE the fill writes land). The vacated slot has no valid person
+// (its designated person is consumed by the post-call override): it stays
+// OPEN — sequence ownership keeps it out of mop-up/relief inventory — and
+// this record is its report.
+export interface EvictedSeed {
+  date: string;            // the seed's (and the incoming fill's) date
+  code: string;            // the evicted pre-fill's shift code (e.g. D3)
+  provider_id: string;
+  provider_name: string;
+  slot_id: string;         // the vacated slot — stays open
+  assignment_id: string;   // the row commitPlan reverts to open
+  trigger_date: string;    // the realized call that fired the +offset link
+  trigger_code: string;
+}
+
 // A call slot the weekend-only main loop deliberately did NOT attempt (out of
 // weekend scope: not saturday/sunday/friday). NOT a failure — the staged
 // Continue run ('all') attempts it. See FillMode 'weekend-only'.
@@ -258,6 +286,10 @@ export interface SolutionPlan {
   // call slots the main loop skipped, in slotsToFill order. Kept absent in
   // 'all'/'obligatory' so the fillAllPlan.golden.json JSON pin is untouched.
   awaitingContinue?: AwaitingContinueSlot[];
+  // Stale pre-fill seeds evicted in-plan (see EvictedSeed). LAZILY
+  // materialized — absent unless an eviction actually happened, so seed-free
+  // generations (the golden JSON pins included) are byte-identical.
+  evictions?: EvictedSeed[];
 }
 
 // SolveState + emptySolveState live in solveState.ts (2026-07-20 solve

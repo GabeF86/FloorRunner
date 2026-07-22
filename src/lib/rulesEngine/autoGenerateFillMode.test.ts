@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { autoGenerate, resolveFillMode } from './autoGenerate';
-import { buildCtx, prov, callSlot } from './__fixtures__/buildContext';
-import type { GenerationContext } from './genTypes';
+import { buildCtx, prov, callSlot, dSlot, shiftInfo } from './__fixtures__/buildContext';
+import type { GenerationContext, ShiftTypeInfo } from './genTypes';
 
 // ── resolveFillMode (pure) ───────────────────────────────────────────────────
 
@@ -51,7 +51,7 @@ vi.mock('./optimize', async (importOriginal) => ({
 }));
 vi.mock('./commit', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
-  commitPlan: async () => ({ filled: 0, errors: [], dbQueries: 0 }),
+  commitPlan: async () => ({ filled: 0, evicted: 0, errors: [], dbQueries: 0 }),
   commitValidation: async () => ({ dbQueries: 0, errors: [] }),
   hasGenerationMetadataColumn: async () => false,
 }));
@@ -119,5 +119,46 @@ describe('autoGenerate — fillMode threading', () => {
   it("other modes carry no awaitingContinue key", async () => {
     const result = await autoGenerate({}, 'ver-1', { fillMode: 'all' });
     expect(result.awaitingContinue).toBeUndefined();
+  });
+
+  it('a plan without evictions surfaces an empty evictions list', async () => {
+    const result = await autoGenerate({}, 'ver-1', { optimize: false });
+    expect(result.evictions).toEqual([]);
+  });
+
+  it('surfaces plan.evictions on the generation result (alongside skippedDerived)', async () => {
+    // Minimal Hussain repro (see seedEviction.test.ts): a stale auto-generated
+    // D3 seed on the +1 D1 chain day of the still-open 9/29 C2.
+    holder.ctx = buildCtx(
+      [callSlot('c2-0929', '2026-09-29', 'C2'), dSlot('d1-0930', '2026-09-30', 'D1')],
+      [prov('hussain')],
+      {
+        seedAssignments: [
+          {
+            slot_date: '2026-09-30', provider_id: 'hussain',
+            shift_type_code: 'D3', shift_type_category: 'regular', derived_day_type: 'weekday',
+            slot_id: 'slot-d3-0930', assignment_id: 'a-d3-0930',
+            source_type: 'auto_generated', schedule_version_id: 'v1',
+          },
+          {
+            slot_date: '2026-10-01', provider_id: 'hussain',
+            shift_type_code: 'C2', shift_type_category: 'call', derived_day_type: 'weekday',
+            slot_id: 'slot-c2-1001', assignment_id: 'a-c2-1001',
+            source_type: 'auto_generated', schedule_version_id: 'v1',
+          },
+        ],
+        shiftTypes: new Map<string, ShiftTypeInfo>([
+          ['C2', shiftInfo('C2', { category: 'call', call_rank: 1, generation_engine: 'call' })],
+          ['D1', shiftInfo('D1', { generation_engine: 'call' })],
+          ['D3', shiftInfo('D3', { generation_engine: 'call' })],
+        ]),
+      },
+    );
+    const result = await autoGenerate({}, 'ver-1', { optimize: false });
+    expect(result.ok).toBe(true);
+    expect(result.evictions).toEqual([expect.objectContaining({
+      date: '2026-09-30', code: 'D3',
+      slot_id: 'slot-d3-0930', assignment_id: 'a-d3-0930',
+    })]);
   });
 });
