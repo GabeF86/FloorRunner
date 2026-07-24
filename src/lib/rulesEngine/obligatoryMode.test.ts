@@ -4,7 +4,7 @@ import { join } from 'path';
 import { solve } from './solve';
 import { computeObligations } from './obligation';
 import { computeBucketTargets, floorBucketTargets } from './genContext';
-import { buildFixtureContext, buildCtx, prov, callSlot, dSlot } from './__fixtures__/buildContext';
+import { buildFixtureContext, buildCtx, prov, callSlot, dSlot, shiftInfo } from './__fixtures__/buildContext';
 import { CLASSIC_PATTERN, type CallPatternDoc } from './callPattern';
 import type { GenerationContext } from './genTypes';
 
@@ -275,6 +275,302 @@ describe("fillMode 'obligatory' — spans respect the cap atomically", () => {
     const byId = new Map(plan.assignments.map(a => [a.slot_id, a.provider_id]));
     expect(byId.get('friC1')).toBe('p1');
     expect(byId.get('satC1')).toBe('p2'); // p1 at cap (and post-call blocked)
+    for (const [pid, n] of callCountsByPid(plan)) {
+      expect(n).toBeLessThanOrEqual(computeObligations(ctx).get(pid)!);
+    }
+  });
+});
+
+// ═══ Obligation-cap hardening (2026-07-24, "obligatory gave extra calls") ═══
+// Gabriel's design: obligation calls are OWED; anything beyond is a PAID
+// pickup a human places after the schedule is made. The engine must NEVER
+// auto-place past the cap, on ANY call-placing path — pins, dayChain links,
+// spans and the pre-PTO pass included. NOTE the fill-overhaul rule "quota
+// never blocks fills" (2026-07-16) is about the FAIRNESS bucket quota; the
+// obligation cap is a Gabriel-stated ceiling exactly like provider_limits:
+// slots it blocks stay OPEN and are reported 'obligation-cap' (the paid-
+// pickup layer), never relaxed through.
+
+describe("fillMode 'obligatory' — callOverrides pins respect the cap", () => {
+  // p1's seed already meets obligation 1 (2 call slots ÷ par 2 × 1.0 FTE).
+  const mkCtx = () => buildCtx(
+    [callSlot('monC1', '2026-01-05', 'C1')],
+    [prov('p1'), prov('p2')],
+    {
+      parLevel: 2,
+      seedAssignments: [{
+        slot_date: '2026-01-02', provider_id: 'p1',
+        shift_type_code: 'C1', shift_type_category: 'call', derived_day_type: 'weekday',
+      }],
+    },
+  );
+
+  it("a pin forcing an at-cap provider is refused — the slot stays open 'obligation-cap'", () => {
+    const ctx = mkCtx();
+    expect(computeObligations(ctx).get('p1')).toBe(1);
+    const plan = solve(ctx, {
+      fillMode: 'obligatory',
+      callOverrides: new Map([['monC1', 'p1']]),
+    });
+    expect(plan.assignments.filter(a => a.provider_id === 'p1')).toHaveLength(0);
+    expect(plan.unfilled).toHaveLength(1);
+    expect(plan.unfilled[0].slot_id).toBe('monC1');
+    expect(plan.unfilled[0].reason).toBe('obligation-cap');
+  });
+
+  it('a forced chain anchor is admitted whole-block or refused whole — never severed', () => {
+    // Classic Saturday chain: Sat C1 anchor + live call links Sun C2 + Fri C2.
+    // p1 (0.5 FTE at par 1) owes 2 — room for only 2 of the block's 3 calls.
+    const slots = [
+      callSlot('satC1', '2026-01-10', 'C1', 'saturday'),
+      callSlot('friC2', '2026-01-09', 'C2', 'friday'),
+      callSlot('sunC2', '2026-01-11', 'C2', 'sunday'),
+    ];
+    const ctx = buildCtx(slots, [prov('p1', 0.5), prov('p2', 1)], { parLevel: 1 });
+    expect(computeObligations(ctx).get('p1')).toBe(2);
+    const plan = solve(ctx, {
+      fillMode: 'obligatory',
+      callOverrides: new Map([['satC1', 'p1']]),
+    });
+    const p1Calls = plan.assignments
+      .filter(a => a.provider_id === 'p1' && a.shift_type_category === 'call');
+    expect(p1Calls.length).toBeLessThanOrEqual(2);
+    expect(plan.unfilled.find(u => u.slot_id === 'satC1')?.reason).toBe('obligation-cap');
+    for (const [pid, n] of callCountsByPid(plan)) {
+      expect(n).toBeLessThanOrEqual(computeObligations(ctx).get(pid)!);
+    }
+  });
+});
+
+describe("fillMode 'obligatory' — call-category dayChain links are charged upfront", () => {
+  // Synthetic pattern: weekday C2 chains a NEXT-DAY call CX. No shipped
+  // pattern has a call-category dayChain link (classic/weekend-v2 links are
+  // all D-codes) — this pins the seam before one ever ships.
+  const cxDoc: CallPatternDoc = {
+    ...CLASSIC_PATTERN,
+    blocks: [],
+    dayChains: [{ trigger: 'C2', dayTypes: ['weekday'], links: [{ offset: 1, code: 'CX' }] }],
+    placementPasses: [],
+  };
+  const slots = [
+    callSlot('monC2', '2026-01-05', 'C2'),
+    callSlot('tueCX', '2026-01-06', 'CX'),
+  ];
+
+  it('the pair goes to a provider with room for both — never split past a cap', () => {
+    // par 1: p1 (0.5) owes 1 — no room for anchor + link; p2 (1.0) owes 2.
+    const ctx = buildCtx(slots, [prov('p1', 0.5), prov('p2', 1)],
+      { parLevel: 1, callPattern: cxDoc });
+    expect(computeObligations(ctx).get('p1')).toBe(1);
+    expect(computeObligations(ctx).get('p2')).toBe(2);
+    const plan = solve(ctx, { fillMode: 'obligatory' });
+    const byId = new Map(plan.assignments.map(a => [a.slot_id, a.provider_id]));
+    expect(byId.get('monC2')).toBe('p2');
+    expect(byId.get('tueCX')).toBe('p2');
+    for (const [pid, n] of callCountsByPid(plan)) {
+      expect(n).toBeLessThanOrEqual(computeObligations(ctx).get(pid)!);
+    }
+  });
+
+  it("when nobody can absorb the pair the anchor stays open 'obligation-cap' and the target fills singly", () => {
+    // par 2, both 1.0 FTE → obligation 1 each: neither can take C2 + CX.
+    const ctx = buildCtx(slots, [prov('p1'), prov('p2')],
+      { parLevel: 2, callPattern: cxDoc });
+    const plan = solve(ctx, { fillMode: 'obligatory' });
+    expect(plan.unfilled.find(u => u.slot_id === 'monC2')?.reason).toBe('obligation-cap');
+    const byId = new Map(plan.assignments.map(a => [a.slot_id, a.provider_id]));
+    expect(byId.get('tueCX')).toBeDefined();
+    for (const [, n] of callCountsByPid(plan)) expect(n).toBeLessThanOrEqual(1);
+  });
+
+  it('a call link nested under a block-chain link is refused at the cap and RECORDED, never placed past it', () => {
+    // Sat C1 anchor → block link Sun C2; Sun C2's dayChain chains Mon CX
+    // (call). Anchor admission reserves the anchor + its block links (2) but
+    // cannot see the NESTED link (documented recursion boundary) — the
+    // tryFillDerived cap guard refuses it, records the skip (invariant 4),
+    // and the slot falls to the main loop for providers with room.
+    const nestedDoc: CallPatternDoc = {
+      ...CLASSIC_PATTERN,
+      blocks: [{ anchorDayType: 'saturday', chains: [
+        { trigger: 'C1', links: [{ offset: 1, code: 'C2' }] },
+      ] }],
+      dayChains: [{ trigger: 'C2', dayTypes: ['sunday'], links: [{ offset: 1, code: 'CX' }] }],
+      placementPasses: [],
+    };
+    const slots = [
+      callSlot('satC1', '2026-01-10', 'C1', 'saturday'),
+      callSlot('sunC2', '2026-01-11', 'C2', 'sunday'),
+      callSlot('monCX', '2026-01-12', 'CX'),
+    ];
+    // par 1.5: obligation 2 each — exactly the Sat block, no room for the CX.
+    const ctx = buildCtx(slots, [prov('p1'), prov('p2')],
+      { parLevel: 1.5, callPattern: nestedDoc });
+    expect(computeObligations(ctx).get('p1')).toBe(2);
+    const plan = solve(ctx, { fillMode: 'obligatory' });
+    expect(plan.skippedDerived).toContainEqual({
+      date: '2026-01-12', code: 'CX', provider_id: 'p1', reason: 'obligation-cap',
+    });
+    const byId = new Map(plan.assignments.map(a => [a.slot_id, a.provider_id]));
+    expect(byId.get('monCX')).toBe('p2');
+    expect(callCountsByPid(plan).get('p1')).toBe(2);
+  });
+});
+
+describe("fillMode 'obligatory' — the pre-PTO pass charges dayChain call links upfront", () => {
+  // The pre-PTO pass fires dayChains (never block chains): a C1 whose weekday
+  // dayChain chains a call CX needs room 2, not 1.
+  const prePtoCxDoc: CallPatternDoc = {
+    ...CLASSIC_PATTERN,
+    blocks: [],
+    dayChains: [{ trigger: 'C1', dayTypes: ['weekday'], links: [{ offset: 1, code: 'CX' }] }],
+  };
+  const slots = [
+    callSlot('thuC1', '2026-01-08', 'C1'),
+    callSlot('friCX', '2026-01-09', 'CX', 'friday'),
+  ];
+  const availByPid = new Map([['p1', [{
+    availability_type: 'pto', start_date: '2026-01-12', end_date: '2026-01-16',
+    approval_status: 'approved',
+  }]]]);
+
+  it('a PTO-bound provider with room for the anchor but not its call link is skipped', () => {
+    // par 2 → obligation 1 each; thuC1 + its CX link need 2.
+    const ctx = buildCtx(slots, [prov('p1'), prov('p2')],
+      { parLevel: 2, availByPid, callPattern: prePtoCxDoc });
+    expect(computeObligations(ctx).get('p1')).toBe(1);
+    const plan = solve(ctx, { fillMode: 'obligatory' });
+    for (const [, n] of callCountsByPid(plan)) expect(n).toBeLessThanOrEqual(1);
+    // Nobody can absorb the thuC1+CX pair → the anchor stays open at the cap;
+    // the CX target fills singly.
+    expect(plan.unfilled.find(u => u.slot_id === 'thuC1')?.reason).toBe('obligation-cap');
+    expect(plan.assignments.find(a => a.slot_id === 'friCX')).toBeDefined();
+  });
+});
+
+describe("fillMode 'obligatory' — spans charge their dayChain call links too", () => {
+  const spanCxDoc: CallPatternDoc = {
+    ...CLASSIC_PATTERN,
+    blocks: [],
+    spans: [{ code: 'C1', anchorDayType: 'friday', offsets: [0, 1] }],
+    dayChains: [{ trigger: 'C1', dayTypes: ['friday'], links: [{ offset: 3, code: 'CX' }] }],
+    placementPasses: [],
+  };
+  const slots = [
+    callSlot('friC1', '2026-01-09', 'C1', 'friday'),
+    callSlot('satC1', '2026-01-10', 'C1', 'saturday'),
+    callSlot('monCX', '2026-01-12', 'CX'),
+  ];
+
+  it('a span whose slots + dayChain call links exceed everyone’s room severs to capped individual fills', () => {
+    // par 1.5: p1 (0.5) owes 1, p2 (1.0) owes 2. The span costs 2 + 1 linked
+    // CX = 3 — beyond both. It severs; individual fills stay within caps.
+    const ctx = buildCtx(slots, [prov('p1', 0.5), prov('p2', 1)],
+      { parLevel: 1.5, callPattern: spanCxDoc });
+    expect(computeObligations(ctx).get('p1')).toBe(1);
+    expect(computeObligations(ctx).get('p2')).toBe(2);
+    const plan = solve(ctx, { fillMode: 'obligatory' });
+    for (const [pid, n] of callCountsByPid(plan)) {
+      expect(n).toBeLessThanOrEqual(computeObligations(ctx).get(pid)!);
+    }
+    expect(plan.assignments.some(a => a.source === 'span')).toBe(false);
+  });
+});
+
+describe("fillMode 'obligatory' — the obligation cap is NOT the fairness quota", () => {
+  // At-cap-but-otherwise-eligible providers leave the slot OPEN — the
+  // relaxation sweep ("quota never blocks fills") waives only the FAIRNESS
+  // quota and is structurally unreachable behind the obligation cap.
+  const mkCtx = (bucketTarget?: Map<string, number>) => buildCtx(
+    [callSlot('wedC1', '2026-01-07', 'C1')],
+    [prov('p1'), prov('p2')],
+    {
+      parLevel: 3, // 1 open + 2 seeds = 3 call slots → obligation 1 each
+      seedAssignments: [
+        { slot_date: '2026-01-02', provider_id: 'p1',
+          shift_type_code: 'C1', shift_type_category: 'call', derived_day_type: 'weekday' },
+        { slot_date: '2026-01-05', provider_id: 'p2',
+          shift_type_code: 'C1', shift_type_category: 'call', derived_day_type: 'weekday' },
+      ],
+      ...(bucketTarget ? { bucketTarget } : {}),
+    },
+  );
+
+  it("everyone at cap → slot open 'obligation-cap', no 'quota-relaxed' source (fill-all control fills)", () => {
+    const ctx = mkCtx();
+    expect(computeObligations(ctx).get('p1')).toBe(1);
+    const plan = solve(ctx, { fillMode: 'obligatory' });
+    expect(plan.assignments).toHaveLength(0);
+    expect(plan.unfilled).toHaveLength(1);
+    expect(plan.unfilled[0].reason).toBe('obligation-cap');
+    expect(plan.assignments.some(a => a.source === 'quota-relaxed')).toBe(false);
+    // Control: fill-all places the same slot (past someone's obligation).
+    const all = solve(mkCtx(), { fillMode: 'all' });
+    expect(all.assignments.find(a => a.slot_id === 'wedC1')).toBeDefined();
+  });
+
+  it('at cap AND quota-blocked → still open, still never relaxed', () => {
+    const quotaBlocked = new Map([
+      ['p1|weekday|C1', 0], ['p2|weekday|C1', 0],
+    ]);
+    const plan = solve(mkCtx(quotaBlocked), { fillMode: 'obligatory' });
+    expect(plan.assignments).toHaveLength(0);
+    expect(plan.unfilled).toHaveLength(1);
+    expect(plan.assignments.some(a => a.source === 'quota-relaxed')).toBe(false);
+    // Control: fill-all relaxes the quota and fills.
+    const all = solve(mkCtx(quotaBlocked), { fillMode: 'all' });
+    expect(all.assignments.find(a => a.slot_id === 'wedC1')?.source).toBe('quota-relaxed');
+  });
+});
+
+describe("fillMode 'obligatory' — the relief pass never fills call slots (review pin)", () => {
+  // Adversarial config: a CALL-category shift type carrying relief_rank makes
+  // its slots relief inventory — and the relief pass has no call gates (no
+  // obligation cap, no provider caps, no quota). No shipped shift type has
+  // this shape; the pin keeps it that way behaviorally: call slots belong to
+  // the main loop ONLY (mirrors mopUp's explicit call-slot skip).
+  it('a call-category relief-ranked slot left open at the cap stays open', () => {
+    const shiftTypes = new Map([
+      ['CR', shiftInfo('CR', { category: 'call', relief_rank: 1 })],
+      ['C1', shiftInfo('C1', { category: 'call' })],
+    ]);
+    const ctx = buildCtx([callSlot('monCR', '2026-01-05', 'CR')], [prov('p1')], {
+      parLevel: 2, shiftTypes,
+      seedAssignments: [{
+        slot_date: '2026-01-02', provider_id: 'p1',
+        shift_type_code: 'C1', shift_type_category: 'call', derived_day_type: 'weekday',
+      }],
+    });
+    expect(computeObligations(ctx).get('p1')).toBe(1); // the seed consumes it fully
+    const plan = solve(ctx, { fillMode: 'obligatory' });
+    expect(plan.assignments.filter(a => a.shift_type_category === 'call')).toHaveLength(0);
+    expect(plan.assignments.some(a => a.source === 'relief-order')).toBe(false);
+    expect(plan.unfilled.find(u => u.slot_id === 'monCR')?.reason).toBe('obligation-cap');
+  });
+});
+
+describe("fillMode 'obligatory' — reserved chain room frees back up when a link severs", () => {
+  it('a severed link never consumed the cap: the provider keeps room for a later single', () => {
+    // Sat C1 anchor reserves 2 (anchor + live Sun C2 link); the link severs
+    // on p1's Sunday cross-site block. Only REAL placements consume the cap,
+    // so p1's second slot of room is free for Monday's single C1.
+    const slots = [
+      callSlot('satC1', '2026-01-10', 'C1', 'saturday'),
+      callSlot('sunC2', '2026-01-11', 'C2', 'sunday'),
+      callSlot('monC1', '2026-01-12', 'C1'),
+    ];
+    const ctx = buildCtx(slots, [prov('p1'), prov('p2')], {
+      parLevel: 1.5, // 3 slots ÷ 1.5 → obligation 2 each
+      crossSiteByDate: new Map([['p1', new Set(['2026-01-11'])]]),
+    });
+    expect(computeObligations(ctx).get('p1')).toBe(2);
+    const plan = solve(ctx, { fillMode: 'obligatory' });
+    const byId = new Map(plan.assignments.map(a => [a.slot_id, a.provider_id]));
+    expect(byId.get('satC1')).toBe('p1');
+    expect(plan.skippedDerived).toContainEqual({
+      date: '2026-01-11', code: 'C2', provider_id: 'p1', reason: 'cross-site',
+    });
+    expect(byId.get('sunC2')).toBe('p2');
+    expect(byId.get('monC1')).toBe('p1'); // the reserved-but-unused room came back
     for (const [pid, n] of callCountsByPid(plan)) {
       expect(n).toBeLessThanOrEqual(computeObligations(ctx).get(pid)!);
     }

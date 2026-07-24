@@ -317,6 +317,17 @@ export function solve(ctx: GenerationContext, opts: SolveOptions = {}): Solution
       continue;
     }
     if (forced) {
+      // Obligation cap gates EVERY call-placing path — pins included
+      // (2026-07-24, Gabriel: obligation calls are OWED; anything past the
+      // cap is a PAID pickup a human places after the schedule is made — the
+      // engine must never auto-place it). Whole-block admission, same charge
+      // as the un-forced path below: the pin is refused unless the anchor
+      // AND its live call-category chain links all fit. The slot stays open,
+      // reported 'obligation-cap' (the pickup layer the banner counts).
+      if (obligatory && capRoom(run, forced.id) < 1 + chainCallNeeds(run, slot)) {
+        pushUnfilled(run, slot, 'obligation-cap');
+        continue;
+      }
       record(run, slot, forced, 'main-loop');
       applyDayChains(run, slot, forced);
       applyBlockChains(run, slot, forced);
@@ -337,9 +348,17 @@ export function solve(ctx: GenerationContext, opts: SolveOptions = {}): Solution
       ? eligible.filter(p => admitsUnderCallCaps(run, p.id, slot))
       : eligible;
     // Obligatory mode: charge the whole prospective block against the cap
-    // upfront (1 for this slot + its live call-category chain links). When
-    // nobody has room, the slot is DELIBERATELY left open — no relaxation,
-    // reason 'obligation-cap' when the cap was the binding constraint.
+    // upfront (1 for this slot + its live call-category chain links — block
+    // AND dayChain). When nobody has room, the slot is DELIBERATELY left
+    // open — reason 'obligation-cap' when the cap was the binding constraint.
+    // DO NOT confuse this cap with the fairness quota: the fill-overhaul rule
+    // "quota never blocks fills" (2026-07-16, IF-3 below) waives the FAIRNESS
+    // bucket quota only. The obligation cap is a Gabriel-stated ceiling
+    // exactly like provider_limits — relaxation must never fill past it
+    // (hence the `continue` on the obligatory branch below, BEFORE the
+    // relaxation sweep: structurally unreachable, pinned in
+    // obligatoryMode.test.ts). Open capped slots are the paid-pickup layer,
+    // not failures.
     const candidates = obligatory
       ? capAdmitted.filter(p => capRoom(run, p.id) >= 1 + chainCallNeeds(run, slot))
       : capAdmitted;

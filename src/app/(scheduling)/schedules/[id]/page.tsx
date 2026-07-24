@@ -986,6 +986,10 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
   const [genResult, setGenResult] = useState<{
     filled: number; skipped: number; errors: string[];
     warnings: string[];                              // load-time advisories (apply patch18, quota shortfalls, …)
+    // Per-slot open reasons (2026-07-24): lets the obligatory banner split the
+    // paid-pickup layer ('obligation-cap' — by design) from hard clinical
+    // blockers, instead of lumping both as one number.
+    unfilled: Array<{ reason: string }>;
     skippedDerived: Array<{ reason: string }>;       // suppressed derived fills (clinical invariant 4)
     // Stale pre-fill seeds evicted by post-call chain fills (D1 overrides
     // pre-call, 2026-07-21) — the vacated slots stay open.
@@ -1088,6 +1092,7 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
       setGenResult({
         filled: data.filled, skipped: data.skipped, errors: data.errors,
         warnings: Array.isArray(data.warnings) ? data.warnings : [],
+        unfilled: Array.isArray(data.unfilled) ? data.unfilled : [],
         skippedDerived: Array.isArray(data.skippedDerived) ? data.skippedDerived : [],
         evictions: Array.isArray(data.evictions) ? data.evictions : [],
         requestGrants: Array.isArray(data.requestGrants) ? data.requestGrants : [],
@@ -1583,10 +1588,17 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
               <span>
                 Filled {genResult.filled} slot{genResult.filled !== 1 ? 's' : ''}.
                 {/* Obligatory mode's leftovers are ordinary open call slots by
-                    design (par-authoritative 2026-07-24): the paid-pickup
-                    layer, taken after the schedule is made — not failures. */}
+                    design (par-authoritative 2026-07-24): 'obligation-cap'
+                    ones are the paid-pickup layer, taken after the schedule
+                    is made — NOT failures — and are reported separately from
+                    hard clinical blockers (PTO/cross-site/no-eligible). */}
                 {genResult.skipped > 0 && (genResult.fillMode === 'obligatory'
-                  ? ` ${genResult.skipped} left open — obligation caps hit; open slots are the paid-pickup layer (hard blockers, if any, are in the unfilled report).`
+                  ? (() => {
+                      const cap = genResult.unfilled.filter(u => u.reason === 'obligation-cap').length;
+                      const hard = genResult.skipped - cap;
+                      return ` ${cap} left open as the paid-pickup layer (obligation caps — by design)`
+                        + (hard > 0 ? `; ${hard} unfillable by hard blockers — see the unfilled report.` : '.');
+                    })()
                   : ` ${genResult.skipped} could not be filled.`)}
                 {genResult.errors.length > 0 && ` ${genResult.errors.length} error(s).`}
               </span>

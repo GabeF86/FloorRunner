@@ -377,3 +377,35 @@ describe('golden-master / equivalence', () => {
     }
   });
 });
+
+// ── Obligation cap (2026-07-24, "obligatory gave extra calls") ───────────────
+// autoGenerate NEVER optimizes obligatory plans (autoGenerateFillMode pin),
+// but optimize() itself must still be safe for a direct caller: with
+// fillMode 'obligatory' the seed, every trial re-solve, AND the acceptance
+// gate (planWithinObligations — mirror of planWithinCallCaps) all hold the
+// per-provider obligation ceiling. The cap is a Gabriel-stated maximum like
+// provider_limits, NOT the fairness quota — capped slots stay open
+// ('obligation-cap', the paid-pickup layer), never "improved" into fills.
+describe("optimize — fillMode 'obligatory' never exceeds an obligation", () => {
+  it('returns a cap-clean plan; capped slots stay open as obligation-cap', () => {
+    // 4 weekday C1 slots at par 3, three 1.0 FTE providers → obligation 1
+    // each (Σ 3 of 4): exactly one slot must stay open.
+    const slots = [
+      callSlot('mon', '2026-01-05', 'C1'),
+      callSlot('tue', '2026-01-06', 'C1'),
+      callSlot('wed', '2026-01-07', 'C1'),
+      callSlot('thu', '2026-01-08', 'C1'),
+    ];
+    const ctx = buildCtx(slots, [prov('p1'), prov('p2'), prov('p3')], { parLevel: 3 });
+    const { plan } = optimize(ctx, { fillMode: 'obligatory' });
+    const counts = new Map<string, number>();
+    for (const a of plan.assignments) {
+      if (a.shift_type_category === 'call') {
+        counts.set(a.provider_id, (counts.get(a.provider_id) || 0) + 1);
+      }
+    }
+    for (const [, n] of counts) expect(n).toBeLessThanOrEqual(1);
+    expect(plan.assignments.filter(a => a.shift_type_category === 'call')).toHaveLength(3);
+    expect(plan.unfilled.some(u => u.reason === 'obligation-cap')).toBe(true);
+  });
+});

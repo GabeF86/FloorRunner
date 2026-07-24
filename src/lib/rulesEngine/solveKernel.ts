@@ -128,16 +128,40 @@ export function capRoom(run: SolverRun, pid: string): number {
 
 // Chain-block atomicity: the WHOLE block counts against the cap upfront —
 // an anchor is only eligible when cap-room >= 1 + its LIVE call-category
-// links (target slot exists, unhandled, category 'call'). Links that later
-// sever don't consume the cap (only real placements increment the counter),
-// so reserved-but-unused room frees back up for later slots.
+// links: block-chain links AND dayChain links (2026-07-24 — a call-category
+// dayChain link is a real call the placement will fire via applyDayChains;
+// no shipped pattern has one, but the seam is pinned). Target slot exists,
+// unhandled, category 'call'. Links that later sever don't consume the cap
+// (only real placements increment the counter), so reserved-but-unused room
+// frees back up for later slots. Waivable links (unlessCallWithinDays) are
+// counted even when they would waive — a per-slot over-reservation the same
+// free-back-up rule absorbs (keeps this per-slot, not per-provider).
 export function chainCallNeeds(run: SolverRun, slot: SlotToFill): number {
+  let n = dayChainCallNeeds(run, slot);
   const links = blockChainsFor(run.doc, slot.derived_day_type).get(slot.shift_type_code);
-  if (!links) return 0;
+  if (links) {
+    for (const link of links) {
+      const t = run.ctx.slotIndex.get(addDays(slot.slot_date, link.offset))?.get(link.code);
+      if (t && !run.state.handledSlotIds.has(t.slot_id) && t.shift_type_category === 'call') n++;
+    }
+  }
+  return n;
+}
+
+// LIVE call-category dayChain links a placement on `slot` would fire
+// (applyDayChains). Split out from chainCallNeeds for the passes that fire
+// dayChains but never block chains (pre-PTO, spans) — they charge
+// 1 + THIS per slot, not the full block. NOTE the recursion boundary: links
+// of a chain's own targets are NOT counted (a call link nested under a
+// block-chain link) — the tryFillDerived obligation-cap guard refuses those
+// at fill time, recorded, never past the cap.
+export function dayChainCallNeeds(run: SolverRun, slot: SlotToFill): number {
   let n = 0;
-  for (const link of links) {
-    const t = run.ctx.slotIndex.get(addDays(slot.slot_date, link.offset))?.get(link.code);
-    if (t && !run.state.handledSlotIds.has(t.slot_id) && t.shift_type_category === 'call') n++;
+  for (const chain of dayChainsFor(run.doc, slot.shift_type_code, slot.derived_day_type)) {
+    for (const link of chain.links ?? []) {
+      const t = run.ctx.slotIndex.get(addDays(slot.slot_date, link.offset))?.get(link.code);
+      if (t && !run.state.handledSlotIds.has(t.slot_id) && t.shift_type_category === 'call') n++;
+    }
   }
   return n;
 }
@@ -309,6 +333,18 @@ export function tryFillDerived(
     run.skippedDerived.push({ date, code, provider_id: p.id, reason: skipReasonFrom(elig.reason) });
     return;
   }
+  // Obligation cap (2026-07-24): a CALL-category link fill is a real call —
+  // it must NEVER land past the provider's obligation (Gabriel: everything
+  // past the cap is a PAID pickup a human places, the engine never does).
+  // Properly admitted anchors reserved this room upfront (chainCallNeeds /
+  // dayChainCallNeeds), so this guard only fires on placements no admission
+  // gate could see — a call link nested under a chain link (the documented
+  // recursion boundary). Refused and RECORDED (invariant 4), never silent;
+  // the open slot falls to the main loop for providers with room.
+  if (run.obligatory && target.shift_type_category === 'call' && capRoom(run, p.id) < 1) {
+    run.skippedDerived.push({ date, code, provider_id: p.id, reason: 'obligation-cap' });
+    return;
+  }
   record(run, target, p, 'd-chain');
 }
 
@@ -458,6 +494,21 @@ export function applyBlockChains(run: SolverRun, slot: SlotToFill, chosen: Candi
     }
     if (overrides?.has(target.slot_id)) {
       const f = overrideFor(run, target);
+      // Obligation cap (2026-07-24): a link pin for a DIFFERENT provider than
+      // the designed partner was never reserved at anchor admission — an
+      // at-cap pin is refused here, the severance recorded, and the slot
+      // falls through to the main loop's forced gate ('obligation-cap').
+      // The designed partner (f === chosen) IS reserved (chainCallNeeds
+      // counted this link at the anchor) and stays un-gated: gating it would
+      // sever a healthy designed pairing at the recursion boundary.
+      if (f && f.id !== chosen.id && run.obligatory
+        && target.shift_type_category === 'call' && capRoom(run, f.id) < 1) {
+        skippedDerived.push({
+          date: target.slot_date, code: target.shift_type_code,
+          provider_id: f.id, reason: 'obligation-cap',
+        });
+        continue; // slot stays unhandled — main loop reports it
+      }
       if (f) {
         // Invariant 4, eligible-pin half (2026-07-16 final PROOF run): the
         // optimizer pins EVERY incumbent call fill on each trial re-solve,

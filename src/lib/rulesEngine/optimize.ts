@@ -2,10 +2,12 @@ import { solve, seedSolveState } from './solve';
 import { scoreSolution } from './metrics';
 import { evaluateEligibility } from './eligibility';
 import { buildCallCaps, planWithinCallCaps } from './providerCaps';
+import { computeObligations, planWithinObligations } from './obligation';
 import { CLASSIC_PATTERN } from './callPattern';
 import type { CallPatternDoc } from './callPattern';
 import type {
   GenerationContext, SolutionPlan, SolutionMetrics, SlotToFill, UnfilledSlot,
+  FillMode,
 } from './genTypes';
 
 const MAX_ITERATIONS = 200; // bound on accepted moves (hill-climb is monotone)
@@ -23,6 +25,13 @@ export interface OptimizeOptions {
   maxIterations?: number;
   maxResolves?: number;
   wallClockMs?: number;
+  // Fill mode threaded into the seed solve AND every trial re-solve
+  // (2026-07-24). autoGenerate never optimizes non-'all' plans (its gate is
+  // pinned in autoGenerateFillMode.test.ts) — this exists so a DIRECT caller
+  // can never use optimize() to place past an obligation: in 'obligatory'
+  // every trial solves under the cap gates and acceptance additionally
+  // requires planWithinObligations (mirror of the planWithinCallCaps gate).
+  fillMode?: FillMode;
 }
 
 // Observability counters for a single optimize() run.
@@ -86,10 +95,12 @@ export function filledSlotIds(plan: SolutionPlan): Set<string> {
   return ids;
 }
 
-// Re-solve from a (perturbed) call assignment and score it.
-function evaluate(ctx: GenerationContext, callAssign: Map<string, string>):
+// Re-solve from a (perturbed) call assignment and score it. The caller's
+// fillMode rides along so an obligatory trial re-solves under the same
+// obligation-cap gates as its seed (undefined = 'all', the pre-change byte).
+function evaluate(ctx: GenerationContext, callAssign: Map<string, string>, fillMode?: FillMode):
   { plan: SolutionPlan; metrics: SolutionMetrics } {
-  const plan = solve(ctx, { callOverrides: callAssign });
+  const plan = solve(ctx, { callOverrides: callAssign, fillMode });
   return { plan, metrics: scoreSolution(plan, ctx) };
 }
 
@@ -103,6 +114,7 @@ export function optimize(ctx: GenerationContext, opts: OptimizeOptions = {}): Op
   const maxIters = opts.maxIterations ?? MAX_ITERATIONS;
   const maxResolves = opts.maxResolves ?? DEFAULT_MAX_RESOLVES;
   const wallClockMs = opts.wallClockMs ?? DEFAULT_WALL_CLOCK_MS;
+  const fillMode = opts.fillMode; // undefined = 'all', the pre-change engine byte for byte
   const doc = ctx.callPattern ?? CLASSIC_PATTERN;
   const providerIds = ctx.providers.map(p => p.id).sort();
   const providerById = ctx.providerById ?? new Map(ctx.providers.map(p => [p.id, p]));
@@ -113,7 +125,7 @@ export function optimize(ctx: GenerationContext, opts: OptimizeOptions = {}): Op
   const isCallUnfilled = (u: UnfilledSlot): boolean =>
     (u.shift_type_category ?? ctx.shiftTypes?.get(u.shift_type_code)?.category) === 'call';
 
-  let best = solve(ctx);
+  let best = solve(ctx, { fillMode });
   let bestMetrics = scoreSolution(best, ctx);
   let bestAssign = extractCallAssignment(best);
   let bestFilled = filledSlotIds(best);
@@ -147,6 +159,20 @@ export function optimize(ctx: GenerationContext, opts: OptimizeOptions = {}): Op
   const callCaps = buildCallCaps(ctx.providerLimits);
   const withinCallCaps = (trial: SolutionPlan): boolean =>
     !callCaps || planWithinCallCaps(callCaps, trial, ctx.seedAssignments, ctx.shiftTypes);
+
+  // ── Obligation cap (2026-07-24, obligatory fill mode only) ──
+  // The TOTAL-level mirror of the per-code call-caps gate above: no accepted
+  // trial may hold any provider past their rounded obligation (seeds
+  // counted). Every in-solve placement path is capRoom-gated — pins included
+  // — so trials are cap-clean by construction; this acceptance gate is the
+  // planWithinCallCaps-style backstop that keeps it that way structurally.
+  // The obligation cap is a Gabriel-stated ceiling like provider_limits, NOT
+  // the fairness quota — the optimizer must never "improve" a deliberately
+  // open 'obligation-cap' slot (the paid-pickup layer) into a fill. Inert
+  // (null) outside obligatory mode.
+  const obligations = fillMode === 'obligatory' ? computeObligations(ctx) : null;
+  const withinObligations = (trial: SolutionPlan): boolean =>
+    !obligations || planWithinObligations(obligations, trial, ctx.seedAssignments, ctx.shiftTypes);
 
   // ── Eligibility pre-gate (built once — its inputs never change) ──
   // The gate state holds ONLY the seeded assignments (+ ctx-derived facts like
@@ -226,8 +252,9 @@ export function optimize(ctx: GenerationContext, opts: OptimizeOptions = {}): Op
             trial.set(uId, pid);   // P fills the gap
             trial.set(sId, qid);   // Q takes P's vacated slot
             resolvesUsed++;
-            const { plan, metrics } = evaluate(ctx, trial);
+            const { plan, metrics } = evaluate(ctx, trial, fillMode);
             if (keepsEveryIncumbentFill(plan) && withinCallCaps(plan)
+              && withinObligations(plan)
               && compareMetrics(metrics, bestMetrics) < 0) {
               best = plan; bestMetrics = metrics; bestAssign = extractCallAssignment(plan);
               bestFilled = filledSlotIds(plan);
@@ -257,8 +284,9 @@ export function optimize(ctx: GenerationContext, opts: OptimizeOptions = {}): Op
         const trial = new Map(bestAssign);
         trial.set(sId, pid);
         resolvesUsed++;
-        const { plan, metrics } = evaluate(ctx, trial);
+        const { plan, metrics } = evaluate(ctx, trial, fillMode);
         if (keepsEveryIncumbentFill(plan) && withinCallCaps(plan)
+          && withinObligations(plan)
           && compareMetrics(metrics, bestMetrics) < 0) {
           best = plan; bestMetrics = metrics; bestAssign = extractCallAssignment(plan);
           bestFilled = filledSlotIds(plan);

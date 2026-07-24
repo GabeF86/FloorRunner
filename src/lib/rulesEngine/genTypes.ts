@@ -268,7 +268,12 @@ export interface SkippedDerived {
   // 'overridden' (2026-07-16): a callOverrides pin severed a chain pairing
   // whose designed partner had NO hard block — recorded so the severance
   // stays observable even when the pinned provider fills the slot.
-  reason: 'pto' | 'cross-site' | 'occupied' | 'no-slot' | 'ineligible' | 'already-handled' | 'overridden';
+  // 'obligation-cap' (2026-07-24): obligatory mode refused a CALL-category
+  // link fill that would land past the provider's obligation (a nested call
+  // link no admission gate could reserve, or an unreserved at-cap link pin)
+  // — recorded, never silently placed past the cap.
+  reason: 'pto' | 'cross-site' | 'occupied' | 'no-slot' | 'ineligible' | 'already-handled'
+    | 'overridden' | 'obligation-cap';
 }
 
 // A stale auto-generated pre-fill SEED evicted in-plan by a positive-offset
@@ -362,10 +367,12 @@ export type FillMode = 'all' | 'obligatory' | 'weekend-only';
 // (a pin re-asserts an ALREADY-MADE placement — quota-relaxed ones included —
 // so re-checking the quota would self-reject it; see solve's overrideFor);
 // used by the local-search optimizer to re-solve a perturbed call assignment.
-// fillMode: see FillMode. The optimizer never runs in obligatory mode
-// (autoGenerate skips it), so callOverrides and 'obligatory' don't combine in
-// production; if a caller does combine them, a pin takes precedence over the
-// cap (overrides are an optimizer re-assertion seam, not a placement policy).
+// fillMode: see FillMode. autoGenerate never optimizes obligatory plans, so
+// callOverrides and 'obligatory' don't combine on the production path — but
+// when a caller DOES combine them (optimize() invoked directly with
+// fillMode 'obligatory'), the obligation cap wins over the pin (2026-07-24,
+// Gabriel: the engine must never auto-place past the cap on ANY path; the
+// refused slot stays open, reported 'obligation-cap').
 export interface SolveOptions {
   callOverrides?: Map<string, string>;
   fillMode?: FillMode;

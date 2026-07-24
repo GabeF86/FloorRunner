@@ -4,7 +4,7 @@
 // main call loop individually. See ALGORITHM.md §15 field map.
 import { addDays } from '../shared';
 import { evaluateEligibility } from '../eligibility';
-import { record, applyDayChains, scoreCall, capRoom, callCapRoom, pushUnfilled } from '../solveKernel';
+import { record, applyDayChains, scoreCall, capRoom, callCapRoom, dayChainCallNeeds, pushUnfilled } from '../solveKernel';
 import type { SolverRun } from '../solveKernel';
 import type { SlotToFill } from '../genTypes';
 
@@ -42,8 +42,17 @@ export function runSpansPass(run: SolverRun, scheduleDates: string[]): void {
           [...needsByCode].every(([code, n]) => callCapRoom(run, p.id, code) >= n));
       }
       // Obligatory mode: a span is one atomic multi-call obligation — charge
-      // its call slots against the cap upfront, same rule as chain blocks.
-      const spanCallCount = spanSlots.filter(s => s.shift_type_category === 'call').length;
+      // its call slots against the cap upfront, same rule as chain blocks,
+      // PLUS every live call-category dayChain link its placements will fire
+      // (2026-07-24: applyDayChains runs per span slot; a call link is a real
+      // call). A link targeting another span slot double-counts — a per-span
+      // over-reservation the free-back-up rule absorbs (only real placements
+      // consume the cap). The cap here is the obligation ceiling, NOT the
+      // fairness quota — a refused span severs to capped individual fills.
+      const spanCallCount = run.obligatory
+        ? spanSlots.reduce((n, s) =>
+            n + (s.shift_type_category === 'call' ? 1 : 0) + dayChainCallNeeds(run, s), 0)
+        : 0;
       const candidates = run.obligatory
         ? capAdmitted.filter(p => capRoom(run, p.id) >= spanCallCount)
         : capAdmitted;

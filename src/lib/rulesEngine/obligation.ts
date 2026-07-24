@@ -22,8 +22,10 @@
 // single-homed in src/lib/fteTarget.ts, shared with the schedule grid and the
 // Call Counts modal so engine and UI can't drift.
 import { fteWeightedTarget, roundedObligation } from '@/lib/fteTarget';
-import { callBurdenWeight } from '@/lib/callBurden';
-import type { GenerationContext } from './genTypes';
+import { WEIGHT_EPSILON, callBurdenWeight } from '@/lib/callBurden';
+import type {
+  GenerationContext, SolutionPlan, SeedAssignment, ShiftTypeInfo,
+} from './genTypes';
 
 // pid -> fractional total expected calls for THIS block (no deficit — pure
 // base share). Total call slots = open call slots (slotsToFill required
@@ -58,4 +60,39 @@ export function computeObligations(ctx: GenerationContext): Map<string, number> 
     out.set(pid, roundedObligation(expected));
   }
   return out;
+}
+
+// Does the plan (plus seeds) keep EVERY provider at or under their rounded
+// obligation? The optimizer's obligatory-mode trial-acceptance gate — the
+// exact mirror of providerCaps.planWithinCallCaps, TOTAL-level instead of
+// per-code: with every placement path capRoom-gated the greedy seed plan is
+// cap-clean by construction, and this keeps every accepted trial cap-clean
+// too (defense in depth against any future path that slips the in-solve
+// gates). WEIGHTED like the in-solve seeding (a fractional call-split seed
+// counts its call_burden_weight; engine placements are whole calls, weight
+// 1); WEIGHT_EPSILON absorbs stored-fraction noise, same as the caps gate.
+// NOTE: this is the OBLIGATION ceiling (a Gabriel-stated maximum, like
+// provider_limits) — not the fairness quota, which never gates acceptance.
+export function planWithinObligations(
+  obligations: Map<string, number>,
+  plan: Pick<SolutionPlan, 'assignments'>,
+  seeds: ReadonlyArray<SeedAssignment>,
+  shiftTypes?: Map<string, ShiftTypeInfo>,
+): boolean {
+  const weightOf = (code: string) => callBurdenWeight(shiftTypes?.get(code));
+  const tally = new Map<string, number>();
+  for (const a of plan.assignments) {
+    if (a.shift_type_category === 'call') {
+      tally.set(a.provider_id, (tally.get(a.provider_id) || 0) + weightOf(a.shift_type_code));
+    }
+  }
+  for (const s of seeds) {
+    if (s.shift_type_category === 'call') {
+      tally.set(s.provider_id, (tally.get(s.provider_id) || 0) + weightOf(s.shift_type_code));
+    }
+  }
+  for (const [pid, total] of tally) {
+    if (total > (obligations.get(pid) ?? 0) + WEIGHT_EPSILON) return false;
+  }
+  return true;
 }
