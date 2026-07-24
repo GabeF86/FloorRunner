@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest';
-import { computeObligations, totalExpectedCalls } from './obligation';
+import { computeObligations, totalExpectedCalls, planWithinObligations } from './obligation';
 import { computeCallObligationCensus, roundedObligation, type CensusSlot } from '@/lib/fteTarget';
-import { buildCtx, prov, callSlot, dSlot } from './__fixtures__/buildContext';
+import { buildCtx, prov, callSlot, dSlot, shiftInfo } from './__fixtures__/buildContext';
+import type { SolutionPlan, SeedAssignment } from './genTypes';
 
 // Whole-number TOTAL-level obligations (2026-07-17): per provider,
 //   obligation = roundedObligation( Σ_call-buckets (bucketTotal / par) × fte )
@@ -214,5 +215,62 @@ describe('engine ↔ UI agreement — computeCallObligationCensus mirrors totalE
     for (const p of providers) {
       expect(census.totalExpectedFor(p.id)).toBeCloseTo(engine.get(p.id)!, 9);
     }
+  });
+});
+
+// ── planWithinObligations (2026-07-24) ──────────────────────────────────────
+// The optimizer's obligatory-mode trial-acceptance gate — the TOTAL-level
+// mirror of providerCaps.planWithinCallCaps: no accepted trial may hold any
+// provider past their rounded obligation, seeds counted, call-split segments
+// at their fractional call_burden_weight, WEIGHT_EPSILON absorbing stored-
+// fraction noise. This is the obligation CEILING (a stated maximum like
+// provider_limits), not the fairness quota.
+describe('planWithinObligations — optimizer acceptance mirror of planWithinCallCaps', () => {
+  const asg = (pid: string, code = 'C1', slot = 's1'): SolutionPlan['assignments'][number] => ({
+    slot_id: slot, slot_date: '2026-01-05', shift_type_code: code,
+    shift_type_category: 'call', derived_day_type: 'weekday',
+    provider_id: pid, provider_name: pid, existing_assignment_id: null,
+    source: 'main-loop',
+  });
+  const seed = (pid: string, code = 'C1'): SeedAssignment => ({
+    slot_date: '2026-01-02', provider_id: pid,
+    shift_type_code: code, shift_type_category: 'call', derived_day_type: 'weekday',
+  });
+
+  it('accepts a plan at exactly the obligation and rejects one past it', () => {
+    const obligations = new Map([['p1', 1]]);
+    expect(planWithinObligations(obligations, { assignments: [asg('p1')] }, [])).toBe(true);
+    expect(planWithinObligations(
+      obligations, { assignments: [asg('p1'), asg('p1', 'C2', 's2')] }, [],
+    )).toBe(false);
+  });
+
+  it('seeds consume the obligation exactly like placements', () => {
+    const obligations = new Map([['p1', 1]]);
+    expect(planWithinObligations(obligations, { assignments: [asg('p1')] }, [seed('p1')])).toBe(false);
+    expect(planWithinObligations(obligations, { assignments: [] }, [seed('p1')])).toBe(true);
+  });
+
+  it('a provider with NO stated obligation may hold no calls (obligation 0)', () => {
+    expect(planWithinObligations(new Map(), { assignments: [asg('p1')] }, [])).toBe(false);
+  });
+
+  it('weights call-split segments fractionally with epsilon at the boundary', () => {
+    const shiftTypes = new Map([
+      ['C1N12', shiftInfo('C1N12', {
+        category: 'call', call_burden_weight: 0.5, parent_call_code: 'C1',
+      })],
+    ]);
+    const obligations = new Map([['p1', 1]]);
+    // Two half-weight segment seeds = exactly ONE call of obligation.
+    expect(planWithinObligations(
+      obligations, { assignments: [] },
+      [seed('p1', 'C1N12'), seed('p1', 'C1N12')], shiftTypes,
+    )).toBe(true);
+    // A third half tips past the cap.
+    expect(planWithinObligations(
+      obligations, { assignments: [] },
+      [seed('p1', 'C1N12'), seed('p1', 'C1N12'), seed('p1', 'C1N12')], shiftTypes,
+    )).toBe(false);
   });
 });

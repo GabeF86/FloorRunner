@@ -5,7 +5,7 @@
 // so fall back to the shared builder (identical predicate). See ALGORITHM.md §7.
 import { buildPrePtoByThursday } from '../shared';
 import { evaluateEligibility } from '../eligibility';
-import { record, applyDayChains, capRoom, callCapRoom } from '../solveKernel';
+import { record, applyDayChains, capRoom, callCapRoom, dayChainCallNeeds } from '../solveKernel';
 import type { SolverRun } from '../solveKernel';
 import type { SlotToFill, CandidateProvider } from '../genTypes';
 
@@ -18,9 +18,12 @@ export function runPrePtoPass(run: SolverRun): void {
     if (run.overrides?.has(slot.slot_id)) return false; // override authoritative; main loop handles it
     if (state.handledSlotIds.has(slot.slot_id)) return false;
     // Obligatory mode: a pre-PTO placement is a call assignment like any
-    // other — it needs cap-room. (tryPlacePrePto never fires block chains,
-    // so one slot of room suffices.)
-    if (run.obligatory && capRoom(run, p.id) < 1) return false;
+    // other — it needs cap-room for itself PLUS every live call-category
+    // dayChain link the placement will fire (2026-07-24 whole-block rule;
+    // tryPlacePrePto never fires block chains, so dayChain links are the
+    // whole charge). A provider without room is skipped — the slot falls to
+    // the main loop / other candidates, never placed past the cap.
+    if (run.obligatory && capRoom(run, p.id) < 1 + dayChainCallNeeds(run, slot)) return false;
     // Provider call caps (2026-07-22): same single-slot rule — a pre-PTO
     // placement is best-effort and silently skipped when the provider has no
     // room left under their stated per-code cap (the slot falls through to
