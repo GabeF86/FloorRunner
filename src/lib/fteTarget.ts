@@ -30,18 +30,19 @@ export function extraCalls(actualCalls: number, totalExpected: number): number {
   return Math.max(0, actualCalls - roundedObligation(totalExpected));
 }
 
-// ── Effective par: the clamp shared by engine and UI (2026-07-17) ────────────
-// A stored `sites.call_par_level` above the pool's summed FTE would make every
-// FTE share proportionally short, so the engine clamps its quota denominator
-// DOWN to Σ pool FTE (genContext.effectiveParLevel, which delegates here) —
-// never up. The UI's obligation math MUST use the same clamp: with the live
-// data (par 11, pool ΣFTE 8.82) a stored-par denominator makes every UI
-// obligation ~20-25% lower than the engine's cap, so an obligatory-mode
-// generation would render OVER labels on calls the engine placed WITHIN
-// obligation. Zero/empty pool keeps the stored par (nothing to clamp to).
-export function clampParToPoolFte(parLevel: number, poolFte: number): number {
-  return poolFte > 0 ? Math.min(parLevel, poolFte) : parLevel;
-}
+// ── Par-authoritative (Gabriel 2026-07-24, SUPERSEDES the 2026-07-16 clamp) ──
+// The stored `sites.call_par_level` is THE obligation denominator, in BOTH
+// directions, unconditionally. His verbatim decision: "I want the math to use
+// a par of 11 and even though there are only 8.75 FTE thats fine. I want the
+// left over call shifts to be taken after the schedule is made." When the
+// pool's ΣFTE is below the par, obligations deliberately UNDER-COVER the
+// schedule — the uncovered remainder is the paid-pickup layer, filled after
+// the schedule is built (an assignment past the rounded obligation gets the
+// OVER treatment and is paid extra). A par below the pool ΣFTE remains the
+// legitimate spread-thinner choice it always was. The old clampParToPoolFte
+// helper is deleted; every consumer (engine obligation census, this file's
+// UI census, plannerMath) now uses the stored par directly, so engine cap and
+// UI labeling still cannot disagree — they share the same denominator rule.
 
 // One call assignment as the OVER-selection helper sees it. `weight` /
 // `parent_code` (2026-07-22, call splits): fractional call credit + the
@@ -104,7 +105,9 @@ export function selectOverParAssignmentIds(
 //   - totalCallSlots = EVERY call-category slot instance — holiday-dated
 //     included, ANY call code (CB/beeper etc.), filled or not. Engine
 //     equivalent: open call slots + call seeds.
-//   - effectivePar  = clampParToPoolFte(stored par, generation-pool ΣFTE).
+//   - effectivePar  = the stored par, verbatim (par-authoritative 2026-07-24;
+//     pool ΣFTE below the par means the obligations under-cover the schedule
+//     and the remainder is the paid-pickup layer).
 //     Pool mirrors loadGenerationContext: a non-empty `included_provider_ids`
 //     override NARROWS the pool (Gabriel 2026-07-21) — it skips only the
 //     home-site gate; the call_taker/partial_call_taker role criterion is
@@ -184,7 +187,9 @@ export function computeCallObligationCensus(input: CallObligationCensusInput): C
       : prof.home_site_id === input.siteId);
     if (inPool) { poolFte += fte; poolPids.add(prof.provider_id); }
   }
-  const effectivePar = clampParToPoolFte(input.storedParLevel, poolFte);
+  // Par-authoritative (2026-07-24): the stored par IS the denominator — never
+  // clamped to poolFte. See the doc block above `OverParCall`.
+  const effectivePar = input.storedParLevel;
 
   // WEIGHT SUMS (2026-07-22, call splits): every call-category slot counts its
   // call_burden_weight (default 1 — unsplit schedules are byte-identical), so

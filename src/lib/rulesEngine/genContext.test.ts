@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { emptySolveState } from './genTypes';
-import { loadGenerationContext, computeBucketTargets, effectiveParLevel, floorBucketTargets } from './genContext';
+import { loadGenerationContext, computeBucketTargets, floorBucketTargets } from './genContext';
 import { buildPrePtoByThursday } from './shared';
 import { CLASSIC_PATTERN } from './callPattern';
 import type {
@@ -63,19 +63,28 @@ describe('computeBucketTargets', () => {
   });
 });
 
-// ── 2026-07-16 quota starvation fixes: par clamp + at-least-one floor ─────────
-describe('effectiveParLevel — quota denominator clamped to the pool', () => {
-  it('clamps DOWN to Σ pool FTE when the stored par exceeds it', () => {
-    // Paoli shape: stored par 12, pool 8.82 FTE → Σ targets covered only 73%
-    // of every bucket. The denominator must reflect the real pool.
-    expect(effectiveParLevel(12, [prov('p1', 1), prov('p2', 0.5)])).toBeCloseTo(1.5);
+// ── Par-authoritative denominator (Gabriel 2026-07-24) ───────────────────────
+// The 2026-07-16 effectiveParLevel pool clamp is DELETED: the stored
+// sites.call_par_level is the target/obligation denominator in both
+// directions. computeBucketTargets is denominator-parametric; pin that the
+// stored par flows through it untouched (the loadGenerationContext tests
+// below pin the load path end to end).
+describe('bucket targets use the STORED par — never clamped to the pool', () => {
+  it('a par above pool ΣFTE keeps the stored denominator (under-coverage = the pickup layer)', () => {
+    // Pool 1.5 FTE, par 12, 12 slots: p1 target = 12/12 × 1 = 1 — NOT 12/1.5 × 1 = 8.
+    const targets = computeBucketTargets(
+      new Map([['weekday|C1', 12]]), new Map(), new Map(),
+      [prov('p1', 1), prov('p2', 0.5)], 12,
+    );
+    expect(targets.get('p1|weekday|C1')).toBeCloseTo(1);
+    expect(targets.get('p2|weekday|C1')).toBeCloseTo(0.5);
   });
-  it('never clamps UP — a par below pool FTE is a legitimate spread-thinner choice', () => {
-    expect(effectiveParLevel(2, [prov('p1', 1), prov('p2', 1), prov('p3', 1)])).toBe(2);
-  });
-  it('keeps the stored par when the pool has no FTE (nothing to clamp to)', () => {
-    expect(effectiveParLevel(12, [])).toBe(12);
-    expect(effectiveParLevel(12, [prov('p1', 0)])).toBe(12);
+  it('a par below pool ΣFTE is unchanged (legitimate spread-thinner choice)', () => {
+    const targets = computeBucketTargets(
+      new Map([['weekday|C1', 2]]), new Map(), new Map(),
+      [prov('p1', 1), prov('p2', 1), prov('p3', 1)], 2,
+    );
+    expect(targets.get('p1|weekday|C1')).toBeCloseTo(1); // 2/2 × 1
   });
 });
 
@@ -682,10 +691,10 @@ describe('loadGenerationContext — load-time warnings (requirement 6-9)', () =>
     expect(warnings.some(w => w.includes('C1') && w.includes('required_count'))).toBe(true);
   });
 
-  // 2026-07-16: a stale par must stay VISIBLE but never starve quotas — the
-  // shortfall warning is computed from the STORED par while the actual targets
-  // are clamped to pool FTE and floored at 1.
-  it('stale par: warning fires from the STORED par, targets are clamped + floored', async () => {
+  // Par-authoritative (2026-07-24, re-pinned — was: targets clamped to pool
+  // FTE): a par above the pool ΣFTE keeps the stored denominator; the coverage
+  // warning still fires but now names the paid-pickup layer, not a stale row.
+  it('par above pool: coverage advisory fires, targets stay at the STORED par (floored)', async () => {
     const { res } = await run({
       sites: { data: { call_par_level: 12 }, error: null }, // pool FTE is 1.5 (p1 1.0 + p2 0.5)
       schedule_slots: { data: [
@@ -695,14 +704,15 @@ describe('loadGenerationContext — load-time warnings (requirement 6-9)', () =>
     });
     const ctx = res.ctx!;
     const warnings = ctx.warnings ?? [];
-    // Raw math at stored par 12: Σ = (2/12)×1.5 = 0.25 < 2 → warning fires and
-    // names both the stored par and the clamp so the operator fixes the row.
+    // Raw math at stored par 12: Σ = (2/12)×1.5 = 0.25 < 2 → the advisory
+    // fires and says the gap is the paid-pickup layer (par-authoritative).
     const w = warnings.find(x => /Bucket weekday\|C1: FTE-weighted quota .* cannot cover 2 slots/.test(x));
     expect(w).toBeDefined();
-    expect(w).toContain('clamped');
-    // Effective targets: par clamped to 1.5 → p1 (2/1.5)×1 = 1.33 (no floor
-    // needed), p2 (2/1.5)×0.5 = 0.67 → floored to 1.
-    expect(ctx.bucketTarget.get('p1|weekday|C1')).toBeCloseTo(4 / 3);
+    expect(w).toContain('paid pickups');
+    expect(w).not.toContain('clamped');
+    // Targets at the stored par 12: p1 (2/12)×1 = 0.17 → floored to 1,
+    // p2 (2/12)×0.5 = 0.08 → floored to 1. (Old clamp gave 4/3 and 1.)
+    expect(ctx.bucketTarget.get('p1|weekday|C1')).toBe(1);
     expect(ctx.bucketTarget.get('p2|weekday|C1')).toBe(1);
   });
 

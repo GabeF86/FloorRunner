@@ -3,13 +3,16 @@
 // A provider's obligatory call count for a block is the ROUNDED total of their
 // FTE share of every call slot in the block:
 //
-//   totalExpected_i = Σ_buckets (bucketTotal / effectivePar) × fte_i
-//                   = totalCallSlots / effectivePar × fte_i        (linearity)
+//   totalExpected_i = Σ_buckets (bucketTotal / par) × fte_i
+//                   = totalCallSlots / par × fte_i                 (linearity)
 //   obligation_i    = roundedObligation(totalExpected_i)           (half-up)
 //
-// effectivePar = min(stored call_par_level, Σ pool FTE) — the same clamp the
-// quota math uses (genContext.effectiveParLevel), so obligations line up with
-// what the engine can actually distribute.
+// par = ctx.parLevel (stored sites.call_par_level), AUTHORITATIVE — Gabriel
+// 2026-07-24, superseding the 2026-07-16 pool-ΣFTE clamp: when the pool's
+// summed FTE is below the par, Σ obligations deliberately UNDER-COVER the
+// block; the obligatory fill mode leaves the remainder OPEN and those slots
+// are the paid-pickup layer, taken after the schedule is made. Fill-all mode
+// still fills everything it can (quota never blocks fills).
 //
 // This math defines obligation/extra ACCOUNTING and the obligatory fill-mode
 // cap ONLY. Category-level fairness/rotation (fractional bucketTarget map,
@@ -20,7 +23,6 @@
 // Call Counts modal so engine and UI can't drift.
 import { fteWeightedTarget, roundedObligation } from '@/lib/fteTarget';
 import { callBurdenWeight } from '@/lib/callBurden';
-import { effectiveParLevel } from './genContext';
 import type { GenerationContext } from './genTypes';
 
 // pid -> fractional total expected calls for THIS block (no deficit — pure
@@ -33,7 +35,7 @@ import type { GenerationContext } from './genTypes';
 // call_burden_weight (1 when absent — unsplit inputs unchanged), so a split
 // call totals exactly ONE call of obligation.
 export function totalExpectedCalls(ctx: GenerationContext): Map<string, number> {
-  const par = effectiveParLevel(ctx.parLevel, ctx.providers);
+  const par = ctx.parLevel; // authoritative — never clamped to the pool (2026-07-24)
   const weightOf = (code: string) => callBurdenWeight(ctx.shiftTypes?.get(code));
   let totalCallSlots = 0;
   for (const s of ctx.slotsToFill) totalCallSlots += s.required_count * weightOf(s.shift_type_code);

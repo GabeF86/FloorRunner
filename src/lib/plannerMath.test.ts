@@ -29,7 +29,6 @@ import {
   extraCalls,
   fteWeightedTarget,
   roundedObligation,
-  clampParToPoolFte,
 } from './fteTarget';
 import { countDaysInYear, ptoCounterStats } from './dateRanges';
 import {
@@ -199,18 +198,18 @@ describe('callObligationFor + rosterPoolFte', () => {
     expect(rosterPoolFte(profiles, 'site-1')).toBeCloseTo(2.6, 10); // a(1) + b(0.6) + e(1)
   });
 
-  it('hand-computed pin: 40 slots, par 10, pool 12 → fte 0.8 expects 3.2, obligation 3', () => {
-    const est = callObligationFor(40, 10, 12, 0.8);
-    expect(est.effectivePar).toBe(10);           // pool above par: no clamp
+  it('hand-computed pin: 40 slots, par 10 → fte 0.8 expects 3.2, obligation 3', () => {
+    const est = callObligationFor(40, 10, 0.8);
     expect(est.totalExpected).toBeCloseTo(3.2, 10);
     expect(est.obligation).toBe(3);
   });
 
-  it('par clamps DOWN to pool ΣFTE, never up (live-data shape: par 12, pool 2.6)', () => {
-    const est = callObligationFor(26, 12, 2.6, 1);
-    expect(est.effectivePar).toBeCloseTo(2.6, 10);
-    expect(est.totalExpected).toBeCloseTo(10, 10);
-    expect(est.effectivePar).toBe(clampParToPoolFte(12, 2.6));
+  it('par-authoritative (2026-07-24, re-pinned): par 12 over pool ΣFTE 2.6 divides by 12, not 2.6', () => {
+    // Was: clamped to 2.6 → 26/2.6 × 1 = 10. Now: 26/12 × 1 = 2.167 → 2 —
+    // the uncovered remainder is the paid-pickup layer.
+    const est = callObligationFor(26, 12, 1);
+    expect(est.totalExpected).toBeCloseTo(26 / 12, 10);
+    expect(est.obligation).toBe(2);
   });
 
   it('CROSS-CHECK: identical to computeCallObligationCensus on the same slot census', () => {
@@ -226,9 +225,9 @@ describe('callObligationFor + rosterPoolFte', () => {
     // day doc 'c' — 2026-07-22). callObligationFor stays FTE-parametric by
     // design (the planner's what-if asks "at this FTE, what's the share"), so
     // the identity holds when fed the same weight the census uses.
+    expect(census.effectivePar).toBe(12); // par-authoritative — pool 2.6 does not clamp
     for (const pid of ['a', 'b', 'c', 'e']) {
-      const est = callObligationFor(census.totalCallSlots, 12, census.poolFte, census.poolFteFor(pid));
-      expect(est.effectivePar).toBe(census.effectivePar);
+      const est = callObligationFor(census.totalCallSlots, 12, census.poolFteFor(pid));
       expect(est.totalExpected).toBe(census.totalExpectedFor(pid));
       expect(est.obligation).toBe(roundedObligation(census.totalExpectedFor(pid)));
     }
@@ -252,12 +251,11 @@ describe('callObligationFor + rosterPoolFte', () => {
         { shift_type_category: 'regular' }, // never a call slot
       ],
     } as unknown as GenerationContext;
-    const engineExpected = totalExpectedCalls(ctx); // 16 call slots, effectivePar = min(12, 2.6)
+    const engineExpected = totalExpectedCalls(ctx); // 16 call slots at the stored par 12 (par-authoritative)
     const engineObligations = computeObligations(ctx);
-    const poolFte = 1 + 0.6 + 1;
     for (const [pid, expected] of engineExpected) {
       const fte = ctx.providers.find(p => p.id === pid)!.fte_value;
-      const est = callObligationFor(16, 12, poolFte, fte);
+      const est = callObligationFor(16, 12, fte);
       expect(est.totalExpected).toBe(expected);
       expect(est.obligation).toBe(engineObligations.get(pid));
     }
@@ -488,14 +486,15 @@ describe('buildPlannerContext + providerPlannerNumbers', () => {
 
   it('CROSS-CHECK: current numbers are exactly the engine-helper composition on identical inputs', () => {
     const n = providerPlannerNumbers(ctx, 'b');
-    const effectivePar = clampParToPoolFte(12, ctx.census.poolFte);
+    // Par-authoritative (2026-07-24, re-pinned): the denominator is the stored
+    // par 12 verbatim — the pool ΣFTE (2.6) no longer clamps it.
     expect(n.fte).toBe(0.6);
-    expect(n.effectivePar).toBe(effectivePar);
-    expect(n.totalExpected).toBe(fteWeightedTarget(29, effectivePar, 0.6));
+    expect(n.parLevel).toBe(12);
+    expect(n.totalExpected).toBe(fteWeightedTarget(29, 12, 0.6));
     expect(n.obligation).toBe(roundedObligation(n.totalExpected));
     // Per-bucket expected is the raw fteWeightedTarget of that bucket's slots…
     for (const b of n.buckets) {
-      expect(b.expected).toBe(fteWeightedTarget(b.slots, effectivePar, 0.6));
+      expect(b.expected).toBe(fteWeightedTarget(b.slots, 12, 0.6));
     }
     // …and sums back to the total by linearity.
     const summed = n.buckets.reduce((acc, b) => acc + b.expected, 0);
@@ -519,10 +518,11 @@ describe('buildPlannerContext + providerPlannerNumbers', () => {
   });
 
   it('what-if overrides replace exactly one input each, through the same formulas', () => {
+    // (poolFte override removed 2026-07-24 — par-authoritative made it dead.)
     const wi = providerPlannerNumbers(ctx, 'b', {
-      fte: 1, parLevel: 10, poolFte: 20, extraPtoWeekdays: 2,
+      fte: 1, parLevel: 10, extraPtoWeekdays: 2,
     });
-    expect(wi.effectivePar).toBe(clampParToPoolFte(10, 20)); // pool above par: no clamp
+    expect(wi.parLevel).toBe(10); // the authoritative denominator
     expect(wi.totalExpected).toBe(fteWeightedTarget(29, 10, 1));
     expect(wi.obligation).toBe(roundedObligation(wi.totalExpected));
     expect(wi.days.ptoWeekdays).toBe(7); // 5 real + 2 hypothetical
@@ -536,7 +536,7 @@ describe('buildPlannerContext + providerPlannerNumbers', () => {
   it('census fte coercion applies (null fte → 1), matching the engine profile load', () => {
     const n = providerPlannerNumbers(ctx, 'e');
     expect(n.fte).toBe(1);
-    expect(n.totalExpected).toBe(fteWeightedTarget(29, n.effectivePar, 1));
+    expect(n.totalExpected).toBe(fteWeightedTarget(29, n.parLevel, 1));
   });
 
   it('wires actuals: assigned/remaining/extras + credited breakdown + day delta', () => {

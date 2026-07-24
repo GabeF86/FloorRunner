@@ -76,6 +76,22 @@ describe('provider limits — per-code call caps in the main loop', () => {
     expect(plan.unfilled).toHaveLength(0);
   });
 
+  it('a stated cap BELOW the par-authoritative obligation still wins — caps are hard ceilings, obligations are targets (2026-07-24)', () => {
+    // Par 1 → obligation = 3 slots / 1 × 1.0 = 3, but the stated C1 cap is 1:
+    // the provider receives exactly 1 call in BOTH modes; the rest stay open
+    // with the cap reason, never force-filled up to the obligation.
+    const mk = () => buildCtx(slots, [prov('p1')], {
+      parLevel: 1,
+      providerLimits: { p1: { calls: { C1: 1 } } },
+    });
+    for (const fillMode of ['all', 'obligatory'] as const) {
+      const plan = solve(mk(), { fillMode });
+      expect(callsByPidCode(plan).get('p1|C1')).toBe(1);
+      expect(plan.unfilled).toHaveLength(2);
+      expect(plan.unfilled.every(u => u.reason === 'provider-cap')).toBe(true);
+    }
+  });
+
   it('a capped provider never strands a slot another provider can take', () => {
     // p2 carries heavy history so p1 would win BOTH slots on score; the cap
     // hands the second to p2 instead.

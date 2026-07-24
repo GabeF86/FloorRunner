@@ -31,7 +31,6 @@ import type {
 import { CallPatternDocSchema, patternWarnings, callFillOrderWarnings, dayTypeFillOrderWarnings, type CallPatternDoc } from './callPattern';
 import { fetchCommittedAssignments, filterPublishedVersions } from './committedAssignments';
 import { embedArray } from '@/lib/embed';
-import { clampParToPoolFte } from '@/lib/fteTarget';
 import { callBurdenWeight, parentCallCodeOf } from '@/lib/callBurden';
 import { isWorkingDay, ptoWeekdaysCovered, requiredWorkDaysWithLimit, entitledOffDays, loadMajorHolidayDates } from './workDays';
 import { parseProviderLimits, type ProviderLimits } from '@/lib/providerLimits';
@@ -78,27 +77,6 @@ export function computeBucketTargets(
     }
   }
   return out;
-}
-
-/**
- * The quota DENOMINATOR the engine actually uses (2026-07-16). A stored
- * `sites.call_par_level` above the pool's summed FTE makes every FTE-weighted
- * target proportionally short (Σ targets = bucketTotal × poolFte/par <
- * bucketTotal) — the schedule is then structurally under-quota'd no matter how
- * the slots distribute. Clamp DOWN to Σ pool FTE; never up (a par below pool
- * FTE is a legitimate "spread thinner across more people" choice). An
- * empty/zero-FTE pool keeps the stored par — nothing to clamp to.
- *
- * The stored par still drives the load-time shortfall warning so a stale row
- * stays visible; this clamp only stops it from starving the quotas.
- *
- * The clamp itself is single-homed in `clampParToPoolFte` (src/lib/fteTarget.ts)
- * because the schedule page's obligation census must apply the IDENTICAL clamp
- * (2026-07-17) — a UI denominator at the stored par would label calls the
- * obligatory-mode cap placed within obligation as extra.
- */
-export function effectiveParLevel(parLevel: number, providers: CandidateProvider[]): number {
-  return clampParToPoolFte(parLevel, providers.reduce((s, p) => s + p.fte_value, 0));
 }
 
 /**
@@ -887,13 +865,14 @@ export async function loadGenerationContext(
   // forward from past blocks at this site (formula + max(0, …) rationale:
   // computeBucketTargets' docstring above).
   //
-  // 2026-07-16: targets are computed TWICE. The RAW pass (stored par, no
-  // floor) exists only to keep the shortfall warning honest — a stale
-  // sites.call_par_level must stay visible. The EFFECTIVE pass clamps the
-  // denominator to Σ pool FTE (effectiveParLevel) and floors every
-  // positive-FTE provider's target to ≥ 1 (floorBucketTargets) so quota math
-  // can never structurally starve a bucket. ctx.parLevel stays the STORED
-  // value (display/reporting).
+  // Par-authoritative (Gabriel 2026-07-24, supersedes the 2026-07-16 pool
+  // clamp): the denominator is the STORED sites.call_par_level, in both
+  // directions. A par above the pool's ΣFTE deliberately under-targets the
+  // block — the fill-all relaxation/mop-up passes still fill every slot they
+  // can ("quota never blocks fills"), and the obligatory mode leaves the
+  // remainder open as the paid-pickup layer. Targets are still floored at
+  // ≥ 1 per positive-FTE provider (floorBucketTargets) so quota math can
+  // never structurally zero out a bucket.
   const rawTargets = computeBucketTargets(
     bucketTotals,
     historicalTotalByBucket,
@@ -901,29 +880,19 @@ export async function loadGenerationContext(
     providers,
     parLevel,
   );
-  const effectivePar = effectiveParLevel(parLevel, providers);
-  const bucketTarget = floorBucketTargets(
-    effectivePar === parLevel
-      ? rawTargets
-      : computeBucketTargets(
-          bucketTotals, historicalTotalByBucket, historicalAssignedByPid,
-          providers, effectivePar,
-        ),
-    providers,
-  );
+  const bucketTarget = floorBucketTargets(rawTargets, providers);
 
-  // Quota sanity: if the RAW (stored-par) FTE-weighted targets across the
-  // whole pool can't sum to the bucket's slot count, the stored par is out of
-  // line with the pool (par too high, or pool FTE too low). The engine now
-  // CLAMPS the denominator and floors targets so slots still fill — but the
-  // stale row should be fixed, so warn loudly either way.
+  // Coverage advisory: when the stored-par FTE-weighted targets across the
+  // whole pool can't sum to a bucket's slot count (par above pool ΣFTE), the
+  // gap is the paid-pickup layer — expected under Gabriel's 2026-07-24 model,
+  // so say what it means instead of calling the par stale.
   for (const [key, total] of bucketTotals) {
     let sum = 0;
     for (const p of providers) sum += rawTargets.get(`${p.id}|${key}`) || 0;
     if (sum < total) {
       warnings.push(
-        `Bucket ${key}: FTE-weighted quota (${sum.toFixed(2)} at stored call_par_level ${parLevel}) cannot cover ${total} slots — ` +
-        `targets clamped to pool FTE (${effectivePar.toFixed(2)}) and floored at 1 so slots still fill; update sites.call_par_level to match the pool`,
+        `Bucket ${key}: FTE-weighted quota (${sum.toFixed(2)} at call_par_level ${parLevel}) cannot cover ${total} slots — ` +
+        `obligations under-cover by design (par-authoritative); fill-all still fills via relaxation/mop-up, and obligatory mode leaves the remainder open as paid pickups`,
       );
     }
   }

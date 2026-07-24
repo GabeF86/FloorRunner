@@ -210,7 +210,9 @@ describe('contradictory requests — call + no-call on one date is treated as ne
 
 // ── obligatory-mode interaction ─────────────────────────────────────────────
 describe('obligatory mode — preference applies; granted placements consume the cap', () => {
-  // 2 weekday C1 slots, ΣFTE 2, par clamps to 2 → obligation 1 each.
+  // 2 weekday C1 slots at par 2 → obligation 1 each. (parLevel pinned
+  // explicitly 2026-07-24 — par-authoritative deleted the implicit pool
+  // clamp these tests leaned on; 2 is the value the clamp used to produce.)
   const slots = [
     callSlot('mon', '2026-01-05', 'C1'),
     callSlot('wed', '2026-01-07', 'C1'),
@@ -218,6 +220,7 @@ describe('obligatory mode — preference applies; granted placements consume the
 
   it("the preferred tier orders candidates in fillMode 'obligatory' too", () => {
     const ctx = buildCtx(slots, [prov('p1'), prov('p2')], {
+      parLevel: 2,
       availByPid: new Map([['p2', [creq('2026-01-05')]]]),
     });
     const plan = solve(ctx, { fillMode: 'obligatory' });
@@ -228,6 +231,7 @@ describe('obligatory mode — preference applies; granted placements consume the
 
   it('a requester at their obligation cap gets no further slots (request never a gate-waiver)', () => {
     const ctx = buildCtx(slots, [prov('p1'), prov('p2')], {
+      parLevel: 2,
       availByPid: new Map([['p2', [creq('2026-01-05', '2026-01-07')]]]),
     });
     const plan = solve(ctx, { fillMode: 'obligatory' });

@@ -145,16 +145,17 @@ export function bucketLabel(b: string): string {
 // nothing (the current value stays in force); a fully empty form yields null
 // so the card can tell "no hypothetical" from "hypothetical equal to current".
 
+// (The pool ΣFTE override is GONE — par-authoritative 2026-07-24: the pool no
+// longer feeds any obligation denominator, so the lever was dead.)
 export interface WhatIfInputs {
   fte: string;      // 0.1..1.0
   extraPto: string; // additional hypothetical PTO weekdays, ≥ 0
   sellback: string; // hypothetical sell-back weekdays, ≥ 0
-  par: string;      // par-level override, > 0
-  pool: string;     // pool ΣFTE override (advanced), > 0
+  par: string;      // par-level override, > 0 (the authoritative denominator)
 }
 
 export const EMPTY_WHAT_IF_INPUTS: WhatIfInputs = {
-  fte: '', extraPto: '', sellback: '', par: '', pool: '',
+  fte: '', extraPto: '', sellback: '', par: '',
 };
 
 export function parseFteInput(v: string): number | undefined {
@@ -188,8 +189,6 @@ export function buildWhatIf(i: WhatIfInputs): PlannerWhatIf | null {
   if (sell !== undefined && sell > 0) wi.sellbackWeekdays = sell;
   const par = parsePositiveInput(i.par);
   if (par !== undefined) wi.parLevel = par;
-  const pool = parsePositiveInput(i.pool);
-  if (pool !== undefined) wi.poolFte = pool;
   return Object.keys(wi).length > 0 ? wi : null;
 }
 
