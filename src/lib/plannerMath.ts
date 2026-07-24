@@ -2,7 +2,8 @@
 // computation the planner card/API needs that isn't already single-homed
 // elsewhere. This module ASSEMBLES — it never re-implements:
 //   - obligation arithmetic     → lib/fteTarget.ts (fteWeightedTarget,
-//     roundedObligation, clampParToPoolFte, computeCallObligationCensus)
+//     roundedObligation, computeCallObligationCensus; par-authoritative
+//     2026-07-24 — the stored par is the denominator, never pool-clamped)
 //   - working-days arithmetic   → rulesEngine/workDays.ts (isWorkingDay,
 //     ptoWeekdaysCovered, requiredWorkDays, entitledOffDays,
 //     creditsAsWorkedAvailability)
@@ -33,7 +34,6 @@ import {
   requiredWorkDays,
 } from './rulesEngine/workDays';
 import {
-  clampParToPoolFte,
   computeCallObligationCensus,
   extraCalls,
   fteWeightedTarget,
@@ -205,7 +205,7 @@ export function estimateCallSlots(
 // CensusProfile.
 export function rosterPoolFte(profiles: ReadonlyArray<CensusProfile>, siteId: string): number {
   return computeCallObligationCensus({
-    storedParLevel: 0, // irrelevant to poolFte; clamp not consumed here
+    storedParLevel: 0, // irrelevant — poolFte never depends on the par
     siteId,
     profiles: [...profiles],
     slots: [],
@@ -213,24 +213,23 @@ export function rosterPoolFte(profiles: ReadonlyArray<CensusProfile>, siteId: st
 }
 
 export interface CallObligationEstimate {
-  effectivePar: number;   // clampParToPoolFte(storedPar, poolFte)
   totalExpected: number;  // fractional FTE share of every call slot
   obligation: number;     // roundedObligation(totalExpected) — half-up
 }
 
-// One provider's call obligation for `totalCallSlots` given the stored par,
-// the pool ΣFTE (default from rosterPoolFte; what-if may override either) and
-// the provider FTE (what-if may override). Pure composition of the fteTarget
-// helpers — identical by construction to the engine's obligation.ts math.
+// One provider's call obligation for `totalCallSlots` at the stored par (the
+// what-if may override par or FTE). Par-authoritative (Gabriel 2026-07-24):
+// the denominator is the par verbatim — the pool's ΣFTE no longer clamps it,
+// so when the pool is smaller than the par the obligations under-cover the
+// range and the remainder is the paid-pickup layer. Pure composition of the
+// fteTarget helpers — identical by construction to the engine's obligation.ts.
 export function callObligationFor(
   totalCallSlots: number,
-  storedPar: number,
-  poolFte: number,
+  parLevel: number,
   fte: number,
 ): CallObligationEstimate {
-  const effectivePar = clampParToPoolFte(storedPar, poolFte);
-  const totalExpected = fteWeightedTarget(totalCallSlots, effectivePar, fte);
-  return { effectivePar, totalExpected, obligation: roundedObligation(totalExpected) };
+  const totalExpected = fteWeightedTarget(totalCallSlots, parLevel, fte);
+  return { totalExpected, obligation: roundedObligation(totalExpected) };
 }
 
 // ── Working-days assembly (current + what-if) ────────────────────────────────
@@ -500,28 +499,27 @@ export function buildPlannerContext(payload: PlannerPayload): PlannerContext {
 // anything; the card labels the output as such. Each override replaces one
 // input of the SAME formulas the current numbers use:
 //   fte       → replaces the profile's coerced FTE (obligation AND days math)
-//   parLevel  → replaces sites.call_par_level (still clamped to the pool)
-//   poolFte   → replaces the roster-derived pool ΣFTE (advanced)
+//   parLevel  → replaces sites.call_par_level (authoritative denominator)
 //   extraPtoWeekdays / sellbackWeekdays → DayStatsWhatIf (providerDayStats)
+// (The old poolFte override is GONE — par-authoritative 2026-07-24 made the
+// pool ΣFTE irrelevant to obligation math, so the lever was dead.)
 export interface PlannerWhatIf extends DayStatsWhatIf {
   fte?: number;
   parLevel?: number;
-  poolFte?: number;
 }
 
 export interface PlannerBucketRow {
   bucket: string;          // fairness bucket (dayTypeBucket)
   slots: number;           // call slots the range materializes in this bucket
-  expected: number;        // fteWeightedTarget(slots, effectivePar, fte) — fractional
+  expected: number;        // fteWeightedTarget(slots, parLevel, fte) — fractional
   assigned: number | null; // filled call assignments (null without actuals)
 }
 
 export interface ProviderPlannerNumbers {
   providerId: string;
   fte: number;             // what-if override or the census-coerced profile FTE
-  poolFte: number;
-  parLevel: number;        // pre-clamp denominator input (stored or what-if)
-  effectivePar: number;    // clampParToPoolFte(parLevel, poolFte)
+  poolFte: number;         // roster pool ΣFTE — display/coverage context only
+  parLevel: number;        // THE obligation denominator (stored or what-if) — par-authoritative
   totalCallSlots: number;
   totalExpected: number;   // fractional
   obligation: number;      // roundedObligation(totalExpected)
@@ -560,10 +558,10 @@ export function providerPlannerNumbers(
   // would they owe"). Workday stats below stay on real FTE — the working-days
   // contract applies to everyone.
   const callFte = whatIf?.fte ?? ctx.census.poolFteFor(providerId);
-  const poolFte = whatIf?.poolFte ?? ctx.census.poolFte;
+  const poolFte = ctx.census.poolFte; // context/coverage display only — never a denominator
   const parLevel = whatIf?.parLevel ?? ctx.payload.site.call_par_level;
-  const { effectivePar, totalExpected, obligation } =
-    callObligationFor(ctx.callEstimate.total, parLevel, poolFte, callFte);
+  const { totalExpected, obligation } =
+    callObligationFor(ctx.callEstimate.total, parLevel, callFte);
 
   const hasActuals = ctx.payload.actuals != null;
   const actuals = ctx.payload.actuals?.byProvider[providerId] ?? (hasActuals ? EMPTY_ACTUALS : null);
@@ -584,7 +582,7 @@ export function providerPlannerNumbers(
     return {
       bucket,
       slots,
-      expected: fteWeightedTarget(slots, effectivePar, callFte),
+      expected: fteWeightedTarget(slots, parLevel, callFte),
       assigned: actuals ? (assignedByBucket.get(bucket) ?? 0) : null,
     };
   });
@@ -608,7 +606,6 @@ export function providerPlannerNumbers(
     fte,
     poolFte,
     parLevel,
-    effectivePar,
     totalCallSlots: ctx.callEstimate.total,
     totalExpected,
     obligation,

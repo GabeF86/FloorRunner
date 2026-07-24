@@ -1,11 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import {
   fteWeightedTarget, roundedObligation, extraCalls, selectOverParAssignmentIds,
-  clampParToPoolFte, computeCallObligationCensus,
+  computeCallObligationCensus,
   type CensusProfile, type CensusSlot,
 } from './fteTarget';
-import { effectiveParLevel } from './rulesEngine/genContext';
-import { prov } from './rulesEngine/__fixtures__/buildContext';
 
 describe('fteWeightedTarget', () => {
   it('is (bucketTotal / parLevel) × fte', () => {
@@ -119,23 +117,85 @@ describe('selectOverParAssignmentIds — only the LAST N calls carry the OVER tr
   });
 });
 
-describe('clampParToPoolFte — the effective-par clamp shared by engine and UI', () => {
-  it('clamps DOWN to the pool ΣFTE when the stored par exceeds it (live: 11 vs 8.82)', () => {
-    expect(clampParToPoolFte(11, 8.82)).toBeCloseTo(8.82, 9);
-    expect(clampParToPoolFte(12, 1.5)).toBeCloseTo(1.5, 9);
+// ── Par-authoritative (Gabriel 2026-07-24, SUPERSEDES the 2026-07-16 clamp) ──
+// The stored sites.call_par_level is THE obligation denominator, never clamped
+// to the pool's ΣFTE. When pool ΣFTE < par, obligations deliberately UNDER-
+// COVER the schedule — the uncovered remainder is the paid-pickup layer,
+// filled after the schedule is built.
+describe('par-authoritative effective par — stored par is the denominator, unconditionally', () => {
+  const profile = (pid: string, fte = 1): CensusProfile => ({
+    provider_id: pid, home_site_id: 'site1',
+    call_taker: true, partial_call_taker: false, fte_value: fte,
   });
-  it('never clamps up — a par below pool FTE is a legitimate spread-thinner choice', () => {
-    expect(clampParToPoolFte(2, 3)).toBe(2);
+  const openCall = (date: string): CensusSlot =>
+    ({ slot_date: date, shift_types: { category: 'call', code: 'C1' }, assignments: [] });
+
+  it('pool ΣFTE below the stored par NO LONGER clamps (live: par 11, pool 8.75)', () => {
+    // Pool = 8 × 1.0 + 0.75 = 8.75 < stored par 11 → effectivePar stays 11.
+    const census = computeCallObligationCensus({
+      storedParLevel: 11, siteId: 'site1', includedProviderIds: null,
+      profiles: [...Array.from({ length: 8 }, (_, i) => profile(`p${i}`)), profile('pt', 0.75)],
+      slots: [],
+    });
+    expect(census.poolFte).toBeCloseTo(8.75, 9);
+    expect(census.effectivePar).toBe(11);
   });
-  it('empty / zero-FTE pool keeps the stored par (nothing to clamp to)', () => {
-    expect(clampParToPoolFte(12, 0)).toBe(12);
-    expect(clampParToPoolFte(12, -1)).toBe(12);
+
+  it("Gabriel's worked example: 42 call slots ÷ par 11 × FTE 1.0 = 3.82 → obligation 4; assignment #5 is a paid extra (OVER)", () => {
+    // 42 weekday C1s over a pool whose ΣFTE (8.75) is BELOW the par — the
+    // denominator stays 11: 42/11 × 1.0 = 3.818… → rounds to 4. A 5th call is
+    // past the obligation → exactly the LAST one gets the OVER treatment.
+    const slots = Array.from({ length: 42 }, (_, i) => {
+      const d = new Date(Date.UTC(2026, 0, 5 + i));
+      const date = d.toISOString().slice(0, 10);
+      const held = i < 5 ? [{ id: `a${i}`, provider_id: 'p0' }] : [];
+      return { slot_date: date, shift_types: { category: 'call', code: 'C1' }, assignments: held } as CensusSlot;
+    });
+    const census = computeCallObligationCensus({
+      storedParLevel: 11, siteId: 'site1', includedProviderIds: null,
+      profiles: [...Array.from({ length: 8 }, (_, i) => profile(`p${i}`)), profile('pt', 0.75)],
+      slots,
+    });
+    expect(census.effectivePar).toBe(11);
+    expect(census.totalExpectedFor('p0')).toBeCloseTo(42 / 11, 9); // 3.818…
+    expect(roundedObligation(census.totalExpectedFor('p0'))).toBe(4);
+    expect(census.overParAssignmentIds).toEqual(new Set(['a4'])); // 5 held − 4 owed = last 1
   });
-  it('is the SAME clamp the engine quota math uses (genContext.effectiveParLevel delegates)', () => {
-    const pool = [prov('p1', 1), prov('p2', 0.5)];
-    expect(effectiveParLevel(12, pool)).toBe(clampParToPoolFte(12, 1.5));
-    expect(effectiveParLevel(1, pool)).toBe(clampParToPoolFte(1, 1.5));
-    expect(effectiveParLevel(12, [])).toBe(clampParToPoolFte(12, 0));
+
+  it('his "11/11 is 1": 11 call slots ÷ par 11 × FTE 1.0 = exactly 1 expected', () => {
+    const census = computeCallObligationCensus({
+      storedParLevel: 11, siteId: 'site1', includedProviderIds: null,
+      profiles: [profile('p1')],
+      slots: Array.from({ length: 11 }, (_, i) =>
+        openCall(`2026-01-${String(2 + i).padStart(2, '0')}`)),
+    });
+    expect(census.totalExpectedFor('p1')).toBeCloseTo(1, 9);
+    expect(roundedObligation(census.totalExpectedFor('p1'))).toBe(1);
+  });
+
+  it('a par BELOW pool ΣFTE also stays authoritative (legitimate spread-thinner, unchanged)', () => {
+    // Par 2, pool 3 × 1.0 = 3 → denominator stays 2 (this direction never clamped).
+    const census = computeCallObligationCensus({
+      storedParLevel: 2, siteId: 'site1', includedProviderIds: null,
+      profiles: [profile('p1'), profile('p2'), profile('p3')],
+      slots: [openCall('2026-01-05'), openCall('2026-01-06')],
+    });
+    expect(census.effectivePar).toBe(2);
+    expect(census.totalExpectedFor('p1')).toBeCloseTo(1, 9); // 2/2 × 1.0
+  });
+
+  it('obligations deliberately UNDER-COVER when pool < par: Σ expected = slots × poolFte/par — the remainder is the pickup layer', () => {
+    // 22 slots, par 11, pool 2 → Σ expected = 22 × 2/11 = 4; 18 slots' worth
+    // of coverage is left to paid pickups after the schedule is built.
+    const census = computeCallObligationCensus({
+      storedParLevel: 11, siteId: 'site1', includedProviderIds: null,
+      profiles: [profile('p1'), profile('p2')],
+      slots: Array.from({ length: 22 }, (_, i) =>
+        openCall(`2026-02-${String(1 + i).padStart(2, '0')}`)),
+    });
+    const sumExpected = ['p1', 'p2'].reduce((s, pid) => s + census.totalExpectedFor(pid), 0);
+    expect(sumExpected).toBeCloseTo(22 * 2 / 11, 9); // 4 — NOT 22
+    expect(sumExpected).toBeLessThan(census.totalCallSlots);
   });
 });
 
@@ -151,7 +211,7 @@ describe('computeCallObligationCensus — ONE obligation input set for grid and 
   ): CensusSlot => ({ slot_date: date, shift_types: { category, code }, assignments });
   const asg = (id: string, pid: string | null) => ({ id, provider_id: pid });
 
-  it('default pool = home-site call/partial-call takers; effectivePar clamps to their ΣFTE', () => {
+  it('default pool = home-site call/partial-call takers; effectivePar stays the STORED par (par-authoritative 2026-07-24)', () => {
     const census = computeCallObligationCensus({
       storedParLevel: 11, siteId: 'site1', includedProviderIds: null,
       profiles: [
@@ -164,7 +224,8 @@ describe('computeCallObligationCensus — ONE obligation input set for grid and 
       slots: [],
     });
     expect(census.poolFte).toBeCloseTo(2.25, 9);
-    expect(census.effectivePar).toBeCloseTo(2.25, 9);
+    // Re-pinned 2026-07-24: was 2.25 (clamped to pool ΣFTE); par is authoritative now.
+    expect(census.effectivePar).toBe(11);
   });
 
   it('override pool (included_provider_ids) INTERSECTS the call-taker criterion — narrowing, never widening (Gabriel 2026-07-21; mirrors loadGenerationContext)', () => {
@@ -179,7 +240,8 @@ describe('computeCallObligationCensus — ONE obligation input set for grid and 
       slots: [],
     });
     expect(census.poolFte).toBeCloseTo(0.5, 9);
-    expect(census.effectivePar).toBeCloseTo(0.5, 9);
+    // Re-pinned 2026-07-24 (par-authoritative): was 0.5 (clamped to the pool).
+    expect(census.effectivePar).toBe(11);
   });
 
   it('an EMPTY override array falls back to the default pool (mirrors the generate route)', () => {
@@ -212,11 +274,12 @@ describe('computeCallObligationCensus — ONE obligation input set for grid and 
     expect(census.actualCallsFor('p1')).toBe(3);
   });
 
-  it('expected + obligation use effectivePar, NOT the stored par', () => {
-    // storedPar 11 but pool ΣFTE 2 → effectivePar 2. Six call slots.
-    // p1 (1.0): 6/2×1 = 3 expected. At the stored par it would be 6/11 ≈ 0.55
-    // → obligation 1 — the engine-vs-UI mismatch this census kills: the engine
-    // caps at 3, so the UI must owe 3 too or it mislabels calls 2-3 as extra.
+  it('expected + obligation use the STORED par even when the pool ΣFTE is smaller (par-authoritative 2026-07-24)', () => {
+    // Re-pinned (was: effectivePar clamped to pool 2 → p1 expected 3).
+    // storedPar 11, pool ΣFTE 2, six call slots: p1 (1.0) = 6/11 ≈ 0.545 →
+    // obligation 1. The other 6 − 2×0.545 ≈ 4.9 slots' worth of coverage is
+    // the paid-pickup layer, filled after the schedule is built — the engine's
+    // obligatory-mode cap uses the same denominator so the two still agree.
     const slots: CensusSlot[] = [];
     for (let d = 5; d <= 10; d++) slots.push(slot(`2026-01-${String(d).padStart(2, '0')}`, 'C1'));
     const census = computeCallObligationCensus({
@@ -224,16 +287,18 @@ describe('computeCallObligationCensus — ONE obligation input set for grid and 
       profiles: [profile('p1'), profile('p2')],
       slots,
     });
-    expect(census.effectivePar).toBe(2);
-    expect(census.totalExpectedFor('p1')).toBeCloseTo(3, 9);
-    expect(roundedObligation(census.totalExpectedFor('p1'))).toBe(3);
+    expect(census.effectivePar).toBe(11);
+    expect(census.totalExpectedFor('p1')).toBeCloseTo(6 / 11, 9);
+    expect(roundedObligation(census.totalExpectedFor('p1'))).toBe(1);
   });
 
   it('over-par selection runs on the FULL census — a holiday call is selectable and counted', () => {
-    // p1 owes 2 (4 slots / pool 2 × 1.0), holds 3 → last 1 chronological is
+    // p1 owes 2 (4 slots ÷ par 2 × 1.0), holds 3 → last 1 chronological is
     // OVER, and that latest call sits on a holiday date the modal used to drop.
+    // (storedParLevel 11→2, 2026-07-24: par is authoritative now — pinning it
+    // at the pool ΣFTE the old clamp produced keeps the obligation at 2.)
     const census = computeCallObligationCensus({
-      storedParLevel: 11, siteId: 'site1', includedProviderIds: null,
+      storedParLevel: 2, siteId: 'site1', includedProviderIds: null,
       profiles: [profile('p1'), profile('p2')],
       slots: [
         slot('2026-05-04', 'C1', [asg('a1', 'p1')]),
@@ -247,8 +312,10 @@ describe('computeCallObligationCensus — ONE obligation input set for grid and 
 
   it('fte coercion matches the engine: null fte → 1; providers without a profile default to 1', () => {
     // genContext coerces profile fte with `|| 1`; the census must not drift.
+    // (storedParLevel 11→1, 2026-07-24 par-authoritative: pinned at the old
+    // clamped value — pool ΣFTE 1 — so expected stays 2/1×1 = 2.)
     const census = computeCallObligationCensus({
-      storedParLevel: 11, siteId: 'site1', includedProviderIds: null,
+      storedParLevel: 1, siteId: 'site1', includedProviderIds: null,
       profiles: [profile('p1', { fte_value: null })],
       slots: [slot('2026-01-05', 'C1'), slot('2026-01-06', 'C1')],
     });
@@ -279,13 +346,15 @@ describe('computeCallObligationCensus — ONE obligation input set for grid and 
     // Real FTE is untouched — the workday columns rely on it.
     expect(census.fteFor('dd')).toBe(0.5);
     expect(census.fteFor('p5')).toBe(0.75);
-    // Obligation-derived numbers ride the pool weight: non-pool expected = 0,
-    // and the sum of expected over ALL providers = the slot count exactly
-    // (poolFte / effectivePar = 1 when the par clamps down to the pool).
+    // Obligation-derived numbers ride the pool weight: non-pool expected = 0.
     expect(census.totalExpectedFor('dd')).toBe(0);
     expect(census.totalExpectedFor('p5')).toBe(0);
+    // Re-pinned 2026-07-24 (par-authoritative): the sum of expected is now
+    // slots × poolFte/par = 2 × 1/11, NOT the full slot count — with pool ΣFTE
+    // (1) below the stored par (11) the shortfall is the deliberate paid-
+    // pickup layer. (Old clamp made poolFte/effectivePar = 1 → sum = 2.)
     const sum = ['p1', 'dd', 'p5'].reduce((s, pid) => s + census.totalExpectedFor(pid), 0);
-    expect(sum).toBeCloseTo(census.totalCallSlots, 9);
+    expect(sum).toBeCloseTo(census.totalCallSlots * census.poolFte / 11, 9);
   });
 
   it('WEIGHTED census (call splits, 2026-07-22): totalCallSlots and actualCallsFor are weight sums; segments group under the parent code', () => {
@@ -319,11 +388,13 @@ describe('computeCallObligationCensus — ONE obligation input set for grid and 
   });
 
   it('WEIGHTED over-par selection: whole assignments from the chronological end whose cumulative weight exceeds the rounded obligation', () => {
-    // Obligation 1 (2 weighted slots ÷ pool 2 × 1.0 = 1). p1 holds a whole
+    // Obligation 1 (2 weighted slots ÷ par 2 × 1.0 = 1). p1 holds a whole
     // call + a later 0.5 night segment → total 1.5 > 1 → exactly the LAST
     // assignment (the segment) is OVER; the whole call within obligation is not.
+    // (storedParLevel 11→2, 2026-07-24 par-authoritative: pinned at the old
+    // clamped value — pool ΣFTE 2 — to keep the obligation at 1.)
     const census = computeCallObligationCensus({
-      storedParLevel: 11, siteId: 'site1', includedProviderIds: null,
+      storedParLevel: 2, siteId: 'site1', includedProviderIds: null,
       profiles: [profile('p1'), profile('p2')],
       slots: [
         slot('2026-01-05', 'C1', [asg('a1', 'p1')]),
@@ -336,8 +407,10 @@ describe('computeCallObligationCensus — ONE obligation input set for grid and 
   });
 
   it('WEIGHTED over-par: two 0.5 segments summing to exactly one call are NOT over a 1-call obligation', () => {
+    // (storedParLevel 11→2, 2026-07-24 par-authoritative: pinned at the old
+    // clamped value — pool ΣFTE 2 — to keep the obligation at 1.)
     const census = computeCallObligationCensus({
-      storedParLevel: 11, siteId: 'site1', includedProviderIds: null,
+      storedParLevel: 2, siteId: 'site1', includedProviderIds: null,
       profiles: [profile('p1'), profile('p2')],
       slots: [
         { slot_date: '2026-01-05', shift_types: { category: 'call', code: 'C1D12', call_burden_weight: 0.5, parent_call_code: 'C1' }, assignments: [asg('s1', 'p1')] },
@@ -355,23 +428,28 @@ describe('computeCallObligationCensus — ONE obligation input set for grid and 
       shift_types: { category: 'call', code, call_burden_weight: 0.3333, parent_call_code: 'C1' },
       assignments: [asg(id, 'p1')],
     });
+    // (storedParLevel 11→2, 2026-07-24 par-authoritative: pinned at the old
+    // clamped value — pool ΣFTE 2 — to keep the obligation at 1.)
     const census = computeCallObligationCensus({
-      storedParLevel: 11, siteId: 'site1', includedProviderIds: null,
+      storedParLevel: 2, siteId: 'site1', includedProviderIds: null,
       profiles: [profile('p1'), profile('p2')],
       slots: [
         third('t1', '2026-01-05', 'C1D8'), third('t2', '2026-01-06', 'C1E8'), third('t3', '2026-01-07', 'C1N8'),
         slot('2026-01-08', 'C1', [asg('b1', 'p2')]),
       ],
     });
-    // ~2 weighted slots ÷ pool 2 × 1.0 ≈ 1 → obligation 1; p1 holds 0.9999.
+    // ~2 weighted slots ÷ par 2 × 1.0 ≈ 1 → obligation 1; p1 holds 0.9999.
     expect(census.overParAssignmentIds).toEqual(new Set());
   });
 
   it('a non-pool provider holding calls has obligation 0 — every one of their calls is over-par', () => {
     // Out-of-pool call coverage is beyond obligation by definition: the OVER
     // treatment shows it as extra rather than crediting a phantom fair share.
+    // (storedParLevel 11→1, 2026-07-24 par-authoritative: pinned at the old
+    // clamped value — pool ΣFTE 1 (p1 only) — so p1's obligation stays 3 and
+    // a1 stays within it.)
     const census = computeCallObligationCensus({
-      storedParLevel: 11, siteId: 'site1', includedProviderIds: null,
+      storedParLevel: 1, siteId: 'site1', includedProviderIds: null,
       profiles: [profile('p1'), profile('dd', { call_taker: false, fte_value: 0.5 })],
       slots: [
         slot('2026-01-05', 'C1', [asg('a1', 'p1')]),

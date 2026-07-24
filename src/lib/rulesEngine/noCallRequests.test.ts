@@ -134,7 +134,9 @@ describe('fair denial — among penalized candidates, fewest already-violated re
 
 // ── obligatory-mode interaction ─────────────────────────────────────────────
 describe('obligatory mode — penalty applies; violated placements consume the cap', () => {
-  // 2 weekday C1 slots, ΣFTE 2, par clamps to 2 → obligation 1 each.
+  // 2 weekday C1 slots at par 2 → obligation 1 each. (parLevel pinned
+  // explicitly 2026-07-24 — par-authoritative deleted the implicit pool
+  // clamp these tests leaned on; 2 is the value the clamp used to produce.)
   const slots = [
     callSlot('mon', '2026-01-05', 'C1'),
     callSlot('wed', '2026-01-07', 'C1'),
@@ -142,6 +144,7 @@ describe('obligatory mode — penalty applies; violated placements consume the c
 
   it("the penalty tier orders candidates in fillMode 'obligatory' too", () => {
     const ctx = buildCtx(slots, [prov('p1'), prov('p2')], {
+      parLevel: 2,
       availByPid: new Map([['p1', [req('2026-01-05')]]]),
     });
     const plan = solve(ctx, { fillMode: 'obligatory' });
@@ -154,6 +157,7 @@ describe('obligatory mode — penalty applies; violated placements consume the c
     // p2 is on PTO Mon → p1 must violate their own request; that call
     // consumes p1's 1-call obligation, so Wed falls to p2.
     const ctx = buildCtx(slots, [prov('p1'), prov('p2')], {
+      parLevel: 2,
       availByPid: new Map([
         ['p1', [req('2026-01-05')]],
         ['p2', [{
