@@ -4,7 +4,7 @@ import { join } from 'path';
 import { solve } from './solve';
 import { computeObligations } from './obligation';
 import { computeBucketTargets, floorBucketTargets } from './genContext';
-import { buildFixtureContext, buildCtx, prov, callSlot, dSlot } from './__fixtures__/buildContext';
+import { buildFixtureContext, buildCtx, prov, callSlot, dSlot, shiftInfo } from './__fixtures__/buildContext';
 import { CLASSIC_PATTERN, type CallPatternDoc } from './callPattern';
 import type { GenerationContext } from './genTypes';
 
@@ -519,6 +519,32 @@ describe("fillMode 'obligatory' — the obligation cap is NOT the fairness quota
     // Control: fill-all relaxes the quota and fills.
     const all = solve(mkCtx(quotaBlocked), { fillMode: 'all' });
     expect(all.assignments.find(a => a.slot_id === 'wedC1')?.source).toBe('quota-relaxed');
+  });
+});
+
+describe("fillMode 'obligatory' — the relief pass never fills call slots (review pin)", () => {
+  // Adversarial config: a CALL-category shift type carrying relief_rank makes
+  // its slots relief inventory — and the relief pass has no call gates (no
+  // obligation cap, no provider caps, no quota). No shipped shift type has
+  // this shape; the pin keeps it that way behaviorally: call slots belong to
+  // the main loop ONLY (mirrors mopUp's explicit call-slot skip).
+  it('a call-category relief-ranked slot left open at the cap stays open', () => {
+    const shiftTypes = new Map([
+      ['CR', shiftInfo('CR', { category: 'call', relief_rank: 1 })],
+      ['C1', shiftInfo('C1', { category: 'call' })],
+    ]);
+    const ctx = buildCtx([callSlot('monCR', '2026-01-05', 'CR')], [prov('p1')], {
+      parLevel: 2, shiftTypes,
+      seedAssignments: [{
+        slot_date: '2026-01-02', provider_id: 'p1',
+        shift_type_code: 'C1', shift_type_category: 'call', derived_day_type: 'weekday',
+      }],
+    });
+    expect(computeObligations(ctx).get('p1')).toBe(1); // the seed consumes it fully
+    const plan = solve(ctx, { fillMode: 'obligatory' });
+    expect(plan.assignments.filter(a => a.shift_type_category === 'call')).toHaveLength(0);
+    expect(plan.assignments.some(a => a.source === 'relief-order')).toBe(false);
+    expect(plan.unfilled.find(u => u.slot_id === 'monCR')?.reason).toBe('obligation-cap');
   });
 });
 

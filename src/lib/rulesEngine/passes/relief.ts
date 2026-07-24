@@ -40,6 +40,13 @@ export function runReliefPass(run: SolverRun, scheduleDates: string[]): void {
       const slot = codeMap.get(code);
       if (!slot) continue;
       if (state.handledSlotIds.has(slot.slot_id)) continue;
+      // CALL-category slots are NEVER relief inventory (2026-07-24 review pin,
+      // mirroring mopUp's explicit skip): the main loop is the only fill path
+      // for call slots — it already ran every call gate (obligation cap,
+      // provider call caps, quota/fairness scoring) and reported this slot if
+      // it stayed open. Filling it here would bypass them all. Inert on every
+      // shipped shape (no call-category shift type carries relief_rank).
+      if (slot.shift_type_category === 'call') continue;
       // Sequence-owned relief-code slot (e.g. weekend-v2's Friday D4, the
       // Sat-C3 block-chain link): NOT relief inventory. If its chain fired,
       // it is already handled above; if the chain broke, it must stay open
