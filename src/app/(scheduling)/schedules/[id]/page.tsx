@@ -256,10 +256,13 @@ function allDatesInRange(start: string, end: string): string[] {
 // grid over-par memo AND the Call Counts modal, so the two surfaces literally
 // cannot diverge on denominator or call census. computeCallObligationCensus
 // (src/lib/fteTarget.ts) mirrors the engine:
-//   - effectivePar = min(stored call_par_level, generation-pool ΣFTE) — the
-//     same clamp solve()'s obligatory-mode cap uses (genContext
-//     .effectiveParLevel). Pool = included_provider_ids override when set,
-//     else home-site call/partial-call takers (loadGenerationContext's rule).
+//   - effectivePar = the stored call_par_level, verbatim (par-authoritative,
+//     Gabriel 2026-07-24 — never clamped to the pool's ΣFTE; when the pool is
+//     smaller, obligations under-cover the schedule and the remainder is the
+//     paid-pickup layer). Same denominator solve()'s obligatory-mode cap uses
+//     (rulesEngine/obligation.ts). Pool = included_provider_ids override when
+//     set, else home-site call/partial-call takers (loadGenerationContext's
+//     rule) — it scopes WHO owes calls, never the denominator.
 //   - totalCallSlots = every call-category slot — holiday-dated included, any
 //     call code, filled or not (the engine's open-slots + call-seeds census).
 function callCensusFromGrid(grid: GridData): CallObligationCensus {
@@ -656,12 +659,13 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
   /* ── Per-date working roster + over-par detection ───────────────────────── */
 
   // Whole-number obligations, TOTAL level (2026-07-17): a provider's
-  // obligation = round(total call slots ÷ effective par × FTE) — summed
-  // across every call code and day bucket, then rounded half-up. Effective
-  // par clamps the stored call_par_level to the generation pool's ΣFTE, the
-  // SAME denominator the engine's obligatory-mode cap uses — at the stored
-  // par (live: 11 vs pool 8.82) the UI would owe less than the engine and
-  // mislabel in-obligation calls as extra. When actual count exceeds the
+  // obligation = round(total call slots ÷ par × FTE) — summed across every
+  // call code and day bucket, then rounded half-up. Par-authoritative
+  // (Gabriel 2026-07-24): the denominator is the stored call_par_level
+  // verbatim — the SAME one the engine's obligatory-mode cap uses. With the
+  // live shape (par 11, pool 8.75 FTE) obligations deliberately under-cover
+  // the schedule; calls past someone's obligation are the paid-pickup layer
+  // and get the OVER treatment. When actual count exceeds the
   // obligation, only the LAST N call assignments (chronological by slot_date,
   // shift-code tiebreak) get the OVER treatment, N = actual − rounded
   // obligation. Calls up to the rounded obligation are NEVER labeled extra.
@@ -1501,7 +1505,7 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
               disabled={generating}
               aria-label="Auto-generate fill mode"
               title={genFillMode === 'obligatory'
-                ? 'Fill only obligatory call slots — each provider receives at most their rounded call obligation; the rest stay open.'
+                ? 'Fill only obligatory call slots — each provider receives at most their rounded call obligation at the site par (par-authoritative); the rest stay open as the paid-pickup layer.'
                 : genFillMode === 'weekend-only'
                   ? 'Fill only the weekend call schedule (Fri/Sat/Sun + chained shifts) now; press Continue in the result banner to fill the rest.'
                   : 'Fill all open slots with the available pool (default).'}
@@ -1574,7 +1578,12 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
             ) : (
               <span>
                 Filled {genResult.filled} slot{genResult.filled !== 1 ? 's' : ''}.
-                {genResult.skipped > 0 && ` ${genResult.skipped} could not be filled.`}
+                {/* Obligatory mode's leftovers are ordinary open call slots by
+                    design (par-authoritative 2026-07-24): the paid-pickup
+                    layer, taken after the schedule is made — not failures. */}
+                {genResult.skipped > 0 && (genResult.fillMode === 'obligatory'
+                  ? ` ${genResult.skipped} left open — obligation caps hit; open slots are the paid-pickup layer (hard blockers, if any, are in the unfilled report).`
+                  : ` ${genResult.skipped} could not be filled.`)}
                 {genResult.errors.length > 0 && ` ${genResult.errors.length} error(s).`}
               </span>
             )}
@@ -3152,8 +3161,8 @@ function CallCountsModal({ grid, onClose }: { grid: GridData; onClose: () => voi
   for (const p of grid.providers) providerById[p.id] = p;
 
   // Shared obligation census — the IDENTICAL inputs the grid's over-par memo
-  // uses (callCensusFromGrid): effective-par denominator (stored par clamped
-  // to the generation pool's ΣFTE, matching the engine's obligatory-mode cap)
+  // uses (callCensusFromGrid): the stored par as denominator (par-
+  // authoritative 2026-07-24, matching the engine's obligatory-mode cap)
   // and an every-call-slot count — holiday-dated slots and non-C1/C2/C3 call
   // codes included. The bucketed columns below are DISPLAY grouping only
   // (C1–C3 across the four day-type buckets; holiday-dated calls have no
@@ -3283,11 +3292,12 @@ function CallCountsModal({ grid, onClose }: { grid: GridData; onClose: () => voi
     census.fteFor(pid), composition.workingDays, ptoDaysForPid(pid), statedLimits?.[pid] ?? undefined);
 
   // Expected = FTE-weighted base target per (provider, bucket, code) —
-  // (block_total_in_bucket / effective par) × POOL fte (census.poolFteFor: a
+  // (block_total_in_bucket / par) × POOL fte (census.poolFteFor: a
   // provider outside the call pool owes 0 calls — weighting by real FTE
   // inflated the Expected row past the slot count, Gabriel 2026-07-22),
-  // using the census's clamped denominator (the engine's computeBucketTargets
-  // uses the same clamp for its category targets). Category-level values stay
+  // at the stored par (par-authoritative 2026-07-24 — the engine's
+  // computeBucketTargets uses the same denominator for its category
+  // targets). Category-level values stay
   // FRACTIONAL by design (they drive the engine's fairness ordering); only
   // the TOTAL-level obligation below is rounded. The WORKDAY columns
   // (Days Off / Working Days required) deliberately stay on census.fteFor —
@@ -3337,6 +3347,14 @@ function CallCountsModal({ grid, onClose }: { grid: GridData; onClose: () => voi
   const fmtFte = (fte: number) => fte.toFixed(2).replace(/\.?0+$/, '');
   // Hide sub-noise expectations — anything under this rounds to 0.0 anyway.
   const EXPECTED_DISPLAY_MIN = 0.05;
+
+  // Coverage line (par-authoritative, Gabriel 2026-07-24): Σ rounded
+  // obligations vs the weighted call-slot total, straight from the shared
+  // census — no new math homes. When the pool's ΣFTE is below the par the
+  // obligations deliberately under-cover the schedule; the gap is the paid-
+  // pickup layer, taken after the schedule is made.
+  const totalObligation = providers.reduce((s, p) => s + rowObligation(p.id), 0);
+  const pickupGap = Math.max(0, census.totalCallSlots - totalObligation);
 
   const handlePrint = () => {
     // Native print dialog → Save as PDF gets you a file. Relies on the
@@ -3389,6 +3407,16 @@ function CallCountsModal({ grid, onClose }: { grid: GridData; onClose: () => voi
             <div style={{ fontSize: 12, color: 'var(--text-dim)', marginTop: 2 }}>
               {grid.schedule.schedule_name} — per provider, per day bucket, per call tier. PTO days (M–F only), FTE days off, and credited working days shown separately.
             </div>
+            <div
+              style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 4, fontWeight: 600 }}
+              title="Par is authoritative (never reduced to the pool's summed FTE). Obligations = each provider's round(call slots ÷ par × FTE), summed. When the pool is smaller than the par they deliberately cover less than the schedule — the remainder is taken as paid pickups after the schedule is made; a pickup past someone's obligation is paid extra."
+            >
+              Par {fmtFte(census.effectivePar)} · pool {fmtFte(census.poolFte)} FTE · obligations
+              cover Σ{totalObligation} of {formatCallWeight(census.totalCallSlots)} call
+              slots{pickupGap > 0
+                ? ` — ${formatCallWeight(pickupGap)} left as paid pickups`
+                : ' — fully covered'}
+            </div>
           </div>
           <div className="no-print" style={{ display: 'flex', gap: 6 }}>
             <button onClick={handlePrint} style={{
@@ -3422,13 +3450,13 @@ function CallCountsModal({ grid, onClose }: { grid: GridData; onClose: () => voi
                 padding: '6px 10px', textAlign: 'center',
                 borderBottom: '1px solid var(--border)', borderLeft: '1px solid var(--border)',
                 color: '#ef4444',
-              }} title="Calls beyond the provider's ROUNDED total obligation — round(total call slots ÷ effective par × FTE). Effective par = call par level clamped down to the generation pool's summed FTE (the engine's obligatory-mode denominator). Every call slot counts — holiday-dated included. Only their LAST N calls (chronological) count as extra, N = actual − obligation; calls up to the obligation are never extra. Same selection as the red grid cells. Deficit carry-forward is not included.">
+              }} title="Calls beyond the provider's ROUNDED total obligation — round(total call slots ÷ par × FTE). The stored call par level is the denominator (par-authoritative; never reduced to the pool's summed FTE) — the engine's obligatory-mode denominator. Every call slot counts — holiday-dated included. Only their LAST N calls (chronological) count as extra, N = actual − obligation; calls up to the obligation are never extra — extras are the paid-pickup layer. Same selection as the red grid cells. Deficit carry-forward is not included.">
                 Extra Calls
               </th>
               <th rowSpan={2} style={{
                 padding: '6px 10px', textAlign: 'center', fontWeight: 700,
                 borderBottom: '1px solid var(--border)', borderLeft: '1px solid var(--border)',
-              }} title="Rounded total obligation: round(total call slots ÷ effective par × FTE), rounding half up — 1.5 owes 2, 1.3 owes 1. Effective par = call par level clamped down to the generation pool's summed FTE, matching the engine's obligatory-mode cap. Hover a value for the fractional expected behind it.">
+              }} title="Rounded total obligation: round(total call slots ÷ par × FTE), rounding half up — 1.5 owes 2, 1.3 owes 1. The stored call par level is the denominator (par-authoritative; never reduced to the pool's summed FTE), matching the engine's obligatory-mode cap — assuming a full roster at par, this is what each person owes; calls past it are paid pickups. Hover a value for the fractional expected behind it.">
                 Obligation
               </th>
               <th rowSpan={2} style={{
@@ -3603,11 +3631,11 @@ function CallCountsModal({ grid, onClose }: { grid: GridData; onClose: () => voi
               })()}</td>
             </tr>
             {/* Expected row — Σ of per-provider FTE-weighted targets (from slot counts,
-                at the effective par). A gap vs Total means unfilled slots in that column,
-                a stored par below the pool's FTE, or holiday-dated calls (counted in the
-                Call Total column but carrying no bucket column). */}
+                at the stored par — par-authoritative 2026-07-24). A gap vs Total now
+                ALSO legitimately means the paid-pickup layer: with the pool's ΣFTE
+                below the par, expected covers less than the slot count by design. */}
             <tr style={{ color: 'var(--text-dim)', fontWeight: 600 }}
-                title="Sum of each provider's FTE-weighted target: (bucket slot count ÷ effective par) × FTE, where effective par = call par level clamped down to the generation pool's summed FTE. A gap versus Total means slots in that column are unfilled, the stored par is below the pool's FTE, or calls sit on holiday dates (no bucket column) — check the grid for open slots before concluding under-staffing.">
+                title="Sum of each provider's FTE-weighted target: (bucket slot count ÷ par) × FTE, at the stored call par level (par-authoritative — never reduced to the pool's summed FTE). A gap versus Total legitimately means the paid-pickup layer (pool ΣFTE below the par under-covers by design), slots in that column are unfilled, a stored par above/below the pool, or calls on holiday dates (no bucket column) — check the coverage line in the header and the grid before concluding under-staffing.">
               <td style={{ padding: '6px 10px' }}>Expected</td>
               {BUCKETS.map(b => CODES.map(c => {
                 const exp = colExpected(b.key, c);

@@ -168,8 +168,9 @@ describe('what-if input parsing', () => {
     expect(buildWhatIf(EMPTY_WHAT_IF_INPUTS)).toBeNull();
     // Zero extra PTO / sell-back is "no change", not an override.
     expect(buildWhatIf({ ...EMPTY_WHAT_IF_INPUTS, extraPto: '0', sellback: '0' })).toBeNull();
-    expect(buildWhatIf({ fte: '0.8', extraPto: '2', sellback: '1', par: '10', pool: '8.8' })).toEqual({
-      fte: 0.8, extraPtoWeekdays: 2, sellbackWeekdays: 1, parLevel: 10, poolFte: 8.8,
+    // (pool override removed 2026-07-24 — par-authoritative made it dead.)
+    expect(buildWhatIf({ fte: '0.8', extraPto: '2', sellback: '1', par: '10' })).toEqual({
+      fte: 0.8, extraPtoWeekdays: 2, sellbackWeekdays: 1, parLevel: 10,
     });
     // Garbage fields drop out; valid ones survive.
     expect(buildWhatIf({ ...EMPTY_WHAT_IF_INPUTS, fte: 'x', par: '9' })).toEqual({ parLevel: 9 });

@@ -5,7 +5,7 @@
 //
 //   B. Current stats  — picker + call obligation / working-days numbers for a
 //      range, with draft-schedule actuals when one overlaps.
-//   C. What-if        — hypothetical FTE / PTO / sell-back / par / pool
+//   C. What-if        — hypothetical FTE / PTO / sell-back / par
 //      overrides, side-by-side vs current. Changes nothing.
 //   D. Future block   — template×day-type estimates for a range with no
 //      schedule yet (default: next month).
@@ -287,7 +287,7 @@ interface SiteOption {
 // ── Tooltip copy (single place, so the formulas read consistently) ───────────
 
 function obligationTip(n: ProviderPlannerNumbers): string {
-  return `Fractional expected calls ${fmt1(n.totalExpected)} = ${n.totalCallSlots} call slots ÷ effective par ${fmt1(n.effectivePar)} × FTE ${fmtFte(n.fte)}, rounded half-up. Par is clamped to the call pool's ΣFTE (${fmt1(n.poolFte)}) when the stored par exceeds it.`;
+  return `Fractional expected calls ${fmt1(n.totalExpected)} = ${n.totalCallSlots} call slots ÷ par ${fmt1(n.parLevel)} × FTE ${fmtFte(n.fte)}, rounded half-up. The stored par is authoritative — it is NOT clamped to the call pool's ΣFTE (${fmt1(n.poolFte)}); when the pool is smaller than the par, obligations under-cover the range and the remainder is the paid-pickup layer, taken after the schedule is built.`;
 }
 
 function extrasTip(): string {
@@ -681,26 +681,16 @@ export default function PhysicianPlannerCard() {
                             onChange={e => setWhatIfInputs(v => ({ ...v, par: e.target.value }))}
                           />
                         </Field>
-                        <details>
-                          <summary className="fr-focus" style={{ ...HINT, cursor: 'pointer' }}>Advanced</summary>
-                          <div style={{ marginTop: 'var(--space-2)' }}>
-                            <Field id={`${uid}-wi-pool`} label={`Pool ΣFTE (now ${fmt1(cur.poolFte)})`}>
-                              <input
-                                id={`${uid}-wi-pool`} type="number" min={0.1} step={0.1}
-                                className="fr-focus" style={{ ...CONTROL, width: 100 }}
-                                value={whatIfInputs.pool}
-                                onChange={e => setWhatIfInputs(v => ({ ...v, pool: e.target.value }))}
-                              />
-                            </Field>
-                          </div>
-                        </details>
+                        {/* The Advanced pool-ΣFTE override is gone (par-
+                            authoritative 2026-07-24): the pool no longer
+                            feeds any denominator, so the lever was dead. */}
                       </div>
                       {hyp ? (
                         <Table
                           headers={['Metric', 'Current', 'What-if', 'Δ']}
                           rows={[
                             ['FTE', fmtFte(cur.fte), fmtFte(hyp.fte), signedFmt(numberDelta(cur.fte, hyp.fte), 2)],
-                            ['Effective par', fmt1(cur.effectivePar), fmt1(hyp.effectivePar), signedFmt(numberDelta(cur.effectivePar, hyp.effectivePar), 1)],
+                            ['Par (denominator)', fmt1(cur.parLevel), fmt1(hyp.parLevel), signedFmt(numberDelta(cur.parLevel, hyp.parLevel), 1)],
                             ['Expected calls (fractional)', fmt1(cur.totalExpected), fmt1(hyp.totalExpected), signedFmt(numberDelta(cur.totalExpected, hyp.totalExpected), 1)],
                             ['Rounded obligation', String(cur.obligation), String(hyp.obligation), signed(numberDelta(cur.obligation, hyp.obligation))],
                             ['PTO weekdays (netted)', String(cur.days.ptoWeekdays), String(hyp.days.ptoWeekdays), signed(numberDelta(cur.days.ptoWeekdays, hyp.days.ptoWeekdays))],
