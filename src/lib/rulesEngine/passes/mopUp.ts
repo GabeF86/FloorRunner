@@ -55,7 +55,11 @@ export function runMopUpPass(run: SolverRun, scheduleDates: string[]): void {
         pushUnfilled(run, slot, 'No eligible provider for call-engine day slot');
         continue;
       }
-      record(run, slot, rankByNextCall(run, available, date)[0].p, 'day-mop-up');
+      // Orphans are pure coverage inventory (their chain semantics already
+      // broke): rank deficit-first so under-required providers reach their
+      // obligation (work-to-required, 2026-07-24); clinical next-call order
+      // still decides within an equal-deficit tier.
+      record(run, slot, rankByNextCall(run, available, date, 'inventory')[0].p, 'day-mop-up');
     }
   }
 }

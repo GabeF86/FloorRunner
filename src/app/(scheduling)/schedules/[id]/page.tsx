@@ -1008,6 +1008,10 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
       fte: number; workingDays: number; ptoDays: number; required: number;
       credited: { assignments: number; postCall: number; icu: number; total: number };
       entitledOff: number; delta: number;
+      // Completeness check (work-to-required): present ONLY when credited <
+      // required — idle working days classified engine gap (an open compatible
+      // slot remained) vs staffing reality (no open compatible slot).
+      shortfall?: { days: number; engineGapDates: string[]; noSlotDates: string[] };
     }>;
     // Which fill mode produced this result — drives the staged weekend
     // banner + Continue affordance below.
@@ -1691,6 +1695,25 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
                             <b style={{ color: r.delta > 0 ? 'var(--danger, #c0392b)' : 'var(--warn, #b8860b)' }}>
                               {r.delta > 0 ? `over ${r.delta}` : `under ${-r.delta}`}
                             </b>
+                            {/* Completeness (work-to-required): idle days classified,
+                                never silent, never conflated — engine gap (an open
+                                compatible slot remained) vs staffing reality. */}
+                            {r.shortfall && (
+                              <span>
+                                {r.shortfall.engineGapDates.length > 0 && (
+                                  <>
+                                    {' '}· <b style={{ color: 'var(--danger, #c0392b)' }}>under-scheduled: engine gap</b>{' '}
+                                    on {r.shortfall.engineGapDates.join(', ')}
+                                  </>
+                                )}
+                                {r.shortfall.noSlotDates.length > 0 && (
+                                  <>
+                                    {' '}· no open compatible slots — staffing reality
+                                    on {r.shortfall.noSlotDates.join(', ')}
+                                  </>
+                                )}
+                              </span>
+                            )}
                           </li>
                         ))}
                     </ul>

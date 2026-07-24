@@ -534,21 +534,52 @@ export function buildProviderCalls(run: SolverRun) {
   for (const arr of providerCalls.values()) arr.sort((a, b) => a.date.localeCompare(b.date));
 }
 
-// "First on out-list" ranking (relief + mop-up): soonest next call (most
-// needs relief), then that call's rank tier, then most-recently-called,
-// then id.
-export function rankByNextCall(run: SolverRun, cands: CandidateProvider[], date: string) {
+// Workday DEFICIT (work-to-required, 2026-07-24): how many more working days
+// the provider must still be credited to reach `required` (round(FTE × WD) −
+// PTO). Live during the solve — every placement/credit shrinks it. 0 without a
+// budget (bare/parity fixtures) so every deficit comparison below is inert.
+export function workDayDeficit(run: SolverRun, pid: string): number {
+  const b = run.budget?.byProvider.get(pid);
+  if (!b) return 0;
+  return Math.max(0, b.required - (run.state.creditedWorkDays.get(pid)?.size ?? 0));
+}
+
+// "First on out-list" ranking (relief + mop-up), two modes (work-to-required,
+// 2026-07-24 — design decision, stated deliberately):
+//   'early-out'  — the FIRST relief position on a date (its holder leaves
+//     earliest, so next-call adjacency is the clinical point of the code):
+//     soonest next call, then that call's rank tier, then most-recently-
+//     called — the full clinical tuple PRESERVED — with the workday deficit
+//     only breaking exact clinical ties (it replaces part of the arbitrary
+//     id tiebreak, never a clinical key).
+//   'inventory'  — every later relief position and every mop-up orphan is
+//     coverage inventory whose block-level job is getting every provider to
+//     their required working days: the DEFICIT (descending) is the primary
+//     tier, and the clinical next-call tuple is preserved WITHIN a tier, so
+//     equal-deficit candidates still order clinically.
+// Without a workDayBudget every deficit is 0 and both modes reduce to the
+// pre-change clinical ordering byte for byte (golden parity / fillAll pins).
+export type ReliefRankMode = 'early-out' | 'inventory';
+export function rankByNextCall(
+  run: SolverRun, cands: CandidateProvider[], date: string,
+  mode: ReliefRankMode = 'early-out',
+) {
   return cands.map(p => {
     const nextCall = (run.providerCalls.get(p.id) || []).find(c => c.date > date);
     return {
       p,
+      deficit: workDayDeficit(run, p.id),
       distance: nextCall ? daysBetween(date, nextCall.date) : Infinity,
       tier: nextCall ? run.callRank(nextCall.code) : 99,
       recency: daysSinceLastCall(run.state, p.id, date),
     };
-  }).sort((a, b) =>
-    a.distance - b.distance || a.tier - b.tier ||
-    a.recency - b.recency || a.p.id.localeCompare(b.p.id),
+  }).sort((a, b) => (mode === 'inventory'
+    ? b.deficit - a.deficit ||
+      a.distance - b.distance || a.tier - b.tier ||
+      a.recency - b.recency || a.p.id.localeCompare(b.p.id)
+    : a.distance - b.distance || a.tier - b.tier ||
+      a.recency - b.recency || b.deficit - a.deficit ||
+      a.p.id.localeCompare(b.p.id)),
   );
 }
 

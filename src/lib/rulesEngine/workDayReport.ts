@@ -10,8 +10,35 @@
 
 import { addDays } from './shared';
 import { CLASSIC_PATTERN, postCallBlockOffsets } from './callPattern';
-import { creditsAsWorkedAvailability } from './workDays';
-import type { GenerationContext, SolutionPlan } from './genTypes';
+import { creditsAsWorkedAvailability, ptoWeekdaysCovered } from './workDays';
+import { computeSequenceOwnedSlotIds } from './sequenceOwnership';
+import { evaluateEligibility } from './eligibility';
+import { seedSolveState } from './solve';
+import { markAssigned, markBlocked, creditWorkDay, addCallDate } from './solveState';
+import type { GenerationContext, SolutionPlan, SolveState, CandidateProvider } from './genTypes';
+
+// Completeness check (work-to-required, 2026-07-24 — Gabriel: "make sure the
+// scheduler checks to make sure everyone is working the maximum number of
+// obligatory work days"): every under-required provider's idle working days,
+// classified honestly:
+//   engineGapDates — an open ENGINE-ADDRESSABLE slot the provider was eligible
+//     for remained on the date ("under-scheduled: engine gap"). Addressable =
+//     an open call slot, or an open call-engine day slot (relief/mop-up
+//     inventory) that is NOT sequence-owned (chain-owned slots belong to the
+//     chain's provider and are reported as orphans by the mop-up, never
+//     direct-fill inventory).
+//   noSlotDates — no open compatible slot existed ("no open compatible slots —
+//     staffing reality": the block simply has fewer slots than obligations, or
+//     the provider was blocked/ineligible for everything open that day).
+// Never silent, never conflated. PTO-netting days are excluded from both lists
+// (they already reduced `required` 1:1 — not idle days). Partials may list
+// more idle days than `days` (their entitledOff is idle by design); `days` is
+// the true deficit count.
+export interface WorkDayShortfall {
+  days: number;               // required − credited.total (> 0)
+  engineGapDates: string[];   // idle working days with ≥1 open compatible slot
+  noSlotDates: string[];      // idle working days with none
+}
 
 export interface WorkDayReportRow {
   provider_id: string;
@@ -28,6 +55,65 @@ export interface WorkDayReportRow {
   };
   entitledOff: number;
   delta: number;         // credited.total − required (positive = over, negative = under)
+  // Present ONLY when credited.total < required (delta < 0): the completeness
+  // classification above. Absent otherwise so at/over rows stay unchanged.
+  shortfall?: WorkDayShortfall;
+}
+
+// Reconstruct the END state of the plan (seeds + every plan assignment with
+// its post-call blocks) so shortfall classification can ask the SAME
+// eligibility gate the engine uses: "could this provider have taken that open
+// slot, given everything that was actually placed?" Buckets are not replayed —
+// call slots are checked with 'call-no-quota' (quota can never be the honest
+// reason an UNDER-required provider idled; IF-3 relaxation waives it anyway).
+function reconstructFinalState(ctx: GenerationContext, plan: SolutionPlan): SolveState {
+  const doc = ctx.callPattern ?? CLASSIC_PATTERN;
+  const state = seedSolveState(ctx, doc);
+  const isOverlay = (code: string) => ctx.shiftTypes?.get(code)?.is_overlay ?? false;
+  for (const a of plan.assignments) {
+    if (!isOverlay(a.shift_type_code)) markAssigned(state, a.slot_date, a.provider_id);
+    state.handledSlotIds.add(a.slot_id);
+    creditWorkDay(state, ctx.workDayBudget, a.provider_id, a.slot_date);
+    if (a.shift_type_category === 'call') {
+      addCallDate(state, a.provider_id, a.slot_date);
+      for (const off of postCallBlockOffsets(doc, a.shift_type_code, a.derived_day_type)) {
+        const bd = addDays(a.slot_date, off);
+        markAssigned(state, bd, a.provider_id);
+        markBlocked(state, bd, a.provider_id);
+        creditWorkDay(state, ctx.workDayBudget, a.provider_id, bd);
+      }
+    }
+  }
+  return state;
+}
+
+// Is there an open engine-addressable slot on `date` the provider could have
+// taken? Open = in slotIndex (open at generation time) and not filled by the
+// plan. Addressable: call slots always (checked 'call-no-quota'); non-call
+// slots only when their shift type is call-engine-owned ('derived' — the
+// relief/mop-up path) and not sequence-owned. Day-pool slots belong to the
+// other engine's accounting and are deliberately out of scope here.
+function hasOpenCompatibleSlot(
+  ctx: GenerationContext,
+  p: CandidateProvider,
+  date: string,
+  finalState: SolveState,
+  filledSlotIds: ReadonlySet<string>,
+  sequenceOwned: ReadonlySet<string>,
+): boolean {
+  const codeMap = ctx.slotIndex.get(date);
+  if (!codeMap) return false;
+  for (const slot of codeMap.values()) {
+    if (filledSlotIds.has(slot.slot_id)) continue;
+    if (slot.shift_type_category === 'call') {
+      if (evaluateEligibility(slot, p, finalState, ctx, 'call-no-quota').eligible) return true;
+      continue;
+    }
+    if (ctx.shiftTypes?.get(slot.shift_type_code)?.generation_engine !== 'call') continue;
+    if (sequenceOwned.has(slot.slot_id)) continue;
+    if (evaluateEligibility(slot, p, finalState, ctx, 'derived').eligible) return true;
+  }
+  return false;
 }
 
 // Empty when ctx carries no working-days budget (bare / parity fixtures).
@@ -50,6 +136,11 @@ export function computeWorkDayReport(ctx: GenerationContext, plan: SolutionPlan)
   for (const s of ctx.seedAssignments) {
     push(s.provider_id, s.slot_date, s.shift_type_code, s.shift_type_category, s.derived_day_type);
   }
+
+  // Shortfall classification inputs, built lazily (only when someone is under).
+  let finalState: SolveState | null = null;
+  let filledSlotIds: Set<string> | null = null;
+  let sequenceOwned: Set<string> | null = null;
 
   const rows: WorkDayReportRow[] = [];
   for (const p of ctx.providers) {
@@ -84,7 +175,7 @@ export function computeWorkDayReport(ctx: GenerationContext, plan: SolutionPlan)
     }
 
     const total = assignmentDays.size + postCallDays.size + icuDays.size;
-    rows.push({
+    const row: WorkDayReportRow = {
       provider_id: p.id,
       provider_name: p.short_display_name,
       fte: b.fte,
@@ -99,7 +190,27 @@ export function computeWorkDayReport(ctx: GenerationContext, plan: SolutionPlan)
       },
       entitledOff: b.entitledOff,
       delta: total - b.required,
-    });
+    };
+
+    // Completeness (work-to-required, 2026-07-24): classify every idle working
+    // day of an under-required provider — engine gap vs staffing reality.
+    if (total < b.required) {
+      finalState ??= reconstructFinalState(ctx, plan);
+      filledSlotIds ??= new Set(plan.assignments.map(a => a.slot_id));
+      sequenceOwned ??= computeSequenceOwnedSlotIds(ctx.callPattern ?? CLASSIC_PATTERN, ctx.slotIndex);
+      // Netting-PTO days are not idle: they already reduced `required` 1:1.
+      const ptoDates = ptoWeekdaysCovered(ctx.availByPid.get(p.id) ?? [], wd);
+      const engineGapDates: string[] = [];
+      const noSlotDates: string[] = [];
+      for (const date of [...wd].sort()) {
+        if (assignmentDays.has(date) || postCallDays.has(date) || icuDays.has(date)) continue;
+        if (ptoDates.has(date)) continue;
+        (hasOpenCompatibleSlot(ctx, p, date, finalState, filledSlotIds, sequenceOwned)
+          ? engineGapDates : noSlotDates).push(date);
+      }
+      row.shortfall = { days: b.required - total, engineGapDates, noSlotDates };
+    }
+    rows.push(row);
   }
   return rows;
 }

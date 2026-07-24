@@ -13,15 +13,28 @@ export function runReliefPass(run: SolverRun, scheduleDates: string[]): void {
   for (const date of scheduleDates) {
     const codeMap = ctx.slotIndex.get(date);
     if (!codeMap) continue;
-    // IF-2: sample from ANY open relief slot (not just D4/D5) so dates whose
-    // only relief slots are D6-D9 are no longer skipped.
+    // Day-type gate from ANY existing relief slot (IF-2: not just D4/D5, so
+    // dates whose only relief slots are D6-D9 are not skipped). All slots on
+    // a date share one derived day type, so any sample decides for the date.
     const sampleD = reliefCodes.map(c => codeMap.get(c)).find((s): s is SlotToFill => !!s);
     if (!sampleD) continue;
     if (!reliefDayTypes.includes(sampleD.derived_day_type)) continue;
 
-    const available = ctx.providers.filter(
-      p => evaluateEligibility(sampleD, p, state, ctx, 'derived').eligible);
-    const scored = rankByNextCall(run, available, date);
+    // Work-to-required (2026-07-24, root-cause fix): candidates were formerly
+    // PRE-FILTERED against the sample slot's eligibility, so a provider
+    // ineligible for the SAMPLE code (per-code credential exclude) was dropped
+    // for EVERY code that date — contradicting the per-code rescan below and
+    // idling under-required providers while later-code inventory sat open.
+    // Rank the whole pool instead; the per-code eligibility check in the scan
+    // is the one and only gate. (Ranking a superset picks identically when
+    // per-code eligibility matches the old prefilter — the sort is a total
+    // order, so a filtered subset preserves relative order.)
+    // The FIRST existing relief slot on the date is the "early-out" position —
+    // clinical next-call ordering stays primary there; every later position is
+    // inventory, ranked deficit-first (see rankByNextCall).
+    const earlyOutSlotId = sampleD.slot_id;
+    let earlyRanked: ReturnType<typeof rankByNextCall> | null = null;
+    let inventoryRanked: ReturnType<typeof rankByNextCall> | null = null;
 
     for (const code of reliefCodes) {
       const slot = codeMap.get(code);
@@ -32,6 +45,9 @@ export function runReliefPass(run: SolverRun, scheduleDates: string[]): void {
       // it is already handled above; if the chain broke, it must stay open
       // — the mop-up sweep reports the orphan (never fills it).
       if (run.sequenceOwnedSlotIds.has(slot.slot_id)) continue;
+      const scored = slot.slot_id === earlyOutSlotId
+        ? (earlyRanked ??= rankByNextCall(run, ctx.providers, date, 'early-out'))
+        : (inventoryRanked ??= rankByNextCall(run, ctx.providers, date, 'inventory'));
       // IF-2: rescan from rank 0 per code — skip anyone already placed this
       // date or ineligible for THIS specific slot (per-code credential lists
       // differ). A provider skipped for one code is reconsidered for later ones.
