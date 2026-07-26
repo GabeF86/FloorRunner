@@ -78,12 +78,20 @@ async function loadLiveRoster(): Promise<RosterEntry[]> {
   );
   const { data, error } = await sb
     .from('providers')
-    .select('id, short_display_name, provider_type, status')
+    .select('id, short_display_name, first_name, last_name, provider_type, status')
     .eq('status', 'active')
     .eq('provider_type', 'physician')
     .order('short_display_name');
   if (error) fail(`live roster query failed: ${error.message}`);
-  return (data ?? []).map((p) => ({ id: p.id as string, name: p.short_display_name as string }));
+  // Aliases: last name and FIRST name both participate as exact candidate
+  // keys — the 8/10-10/25 workbook lists Ganiyu by his first name "Amusa"
+  // (Gabriel 2026-07-26). Uniqueness still guards: a first name colliding
+  // with any other candidate key surfaces as an ambiguous HARD error.
+  return (data ?? []).map((p) => ({
+    id: p.id as string,
+    name: p.short_display_name as string,
+    aliases: [p.last_name, p.first_name].filter((x): x is string => !!x),
+  }));
 }
 
 function loadExpected(expect: string | undefined): ChecksumValues | null {
