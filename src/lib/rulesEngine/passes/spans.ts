@@ -4,7 +4,7 @@
 // main call loop individually. See ALGORITHM.md §15 field map.
 import { addDays } from '../shared';
 import { evaluateEligibility } from '../eligibility';
-import { record, applyDayChains, scoreCall, capRoom, callCapRoom, dayChainCallNeeds, pushUnfilled } from '../solveKernel';
+import { record, applyDayChains, scoreCall, capRoom, capAdmitsPlacements, dayChainCallNeeds, pushUnfilled } from '../solveKernel';
 import type { SolverRun } from '../solveKernel';
 import type { SlotToFill } from '../genTypes';
 
@@ -26,20 +26,17 @@ export function runSpansPass(run: SolverRun, scheduleDates: string[]): void {
       const eligibleForSpan = ctx.providers.filter(p => spanSlots.every(
         s => evaluateEligibility(s, p, state, ctx,
           s.shift_type_category === 'call' ? 'call' : 'derived').eligible));
-      // Provider call caps (2026-07-22): a span is admitted WHOLE against the
-      // stated per-code caps — count its call slots per code and require room
-      // for every one (the whole-block-admission rule, span-shaped). Inert
-      // when no caps are stated.
+      // Provider call caps (2026-07-22; generalized keys 2026-07-26): a span
+      // is admitted WHOLE against every stated cap — its call slots are
+      // simulated together (per-code, and per (bucket,code)/NEURO/either-or
+      // for scenario providers): the whole-block-admission rule, span-shaped.
+      // Inert when no caps are stated.
       let capAdmitted = eligibleForSpan;
       if (run.callCaps) {
-        const needsByCode = new Map<string, number>();
-        for (const s of spanSlots) {
-          if (s.shift_type_category === 'call') {
-            needsByCode.set(s.shift_type_code, (needsByCode.get(s.shift_type_code) || 0) + 1);
-          }
-        }
-        capAdmitted = eligibleForSpan.filter(p =>
-          [...needsByCode].every(([code, n]) => callCapRoom(run, p.id, code) >= n));
+        const callPlacements = spanSlots
+          .filter(s => s.shift_type_category === 'call')
+          .map(s => ({ date: s.slot_date, code: s.shift_type_code }));
+        capAdmitted = eligibleForSpan.filter(p => capAdmitsPlacements(run, p.id, callPlacements));
       }
       // Obligatory mode: a span is one atomic multi-call obligation — charge
       // its call slots against the cap upfront, same rule as chain blocks,

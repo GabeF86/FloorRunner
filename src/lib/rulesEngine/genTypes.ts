@@ -3,6 +3,7 @@
 import type { CallPatternDoc } from './callPattern';
 import type { WorkDayBudget } from './workDays';
 import type { ProviderLimits } from '@/lib/providerLimits';
+import type { ScenarioDoc } from './scenario';
 
 export interface SlotToFill {
   slot_id: string;
@@ -146,6 +147,16 @@ export interface GenerationContext {
   //   • workingDays/daysOff override the provider's workDayBudget.required
   //     (requiredWorkDaysWithLimit, workDays.ts — applied at genContext build).
   providerLimits?: ProviderLimits;
+  // ── Scenario manifest projection (2026-07-26, Paoli block phase 2; OPT-IN
+  //    like the budget/limits) ──
+  // Projected from schedules.scenario_manifest (patch37) by projectScenario
+  // (scenario.ts). ABSENT (no column, no manifest, invalid manifest) ⇒ zero
+  // behavior change — byte-identical plans (fill-mode golden pins). When
+  // present: per-(dow-bucket,code) targets are HARD ceilings (generalized
+  // providerCaps keys) AND the steering targets; prohibitions gate
+  // eligibility; hard linkages gate placement; scenarioFte already overrode
+  // the provider's fte_value at genContext build (master never written).
+  scenario?: ScenarioDoc;
 }
 
 // WorkDayBudget / ProviderWorkDayBudget live beside their arithmetic in
@@ -190,7 +201,20 @@ export type RejectionReason =
   // exceed their STATED per-code call maximum. Additive; only emitted when
   // ctx.providerLimits states call caps. A slot nobody can take under caps
   // stays OPEN with this reason — never silently reassigned past a stated max.
-  | 'provider-cap';
+  // Since 2026-07-26 the same reason also covers SCENARIO per-(bucket,code)
+  // ceilings — both are stated maximums flowing through one caps machinery.
+  | 'provider-cap'
+  // 2026-07-26, scenario prohibitions: the manifest states a no-call
+  // prohibition for this (provider, date, code) — date-specific per-code,
+  // date-specific all-call, or recurring weekday+code. Binds on EVERY gate
+  // set for call-category slots (chains, relaxation, optimizer pins). Only
+  // seeded/manual fixed assignments may stand against it (mandatory-retained,
+  // soft-flagged in validation).
+  | 'scenario-prohibited'
+  // 2026-07-26, scenario hard linkages: placing this slot would break a hard
+  // same-weekend/same-date linkage — another member of the linkage is already
+  // realized (plan or seed) in a DIFFERENT weekend/date.
+  | 'scenario-linkage';
 
 export interface EligibilityResult {
   readonly eligible: boolean;
@@ -376,4 +400,10 @@ export type FillMode = 'all' | 'obligatory' | 'weekend-only';
 export interface SolveOptions {
   callOverrides?: Map<string, string>;
   fillMode?: FillMode;
+  // Multi-start tie-break rotation (2026-07-26, scenario spacing): a nonzero
+  // seed permutes ONLY scoreCall's FINAL provider-id tiebreak via a
+  // deterministic hash — clinical/fairness keys untouched, no Math.random.
+  // 0 / absent = the identity order, byte-identical to the pre-seed engine
+  // (pinned). Same seed ⇒ same plan, always.
+  tieBreakSeed?: number;
 }

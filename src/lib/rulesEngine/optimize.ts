@@ -1,7 +1,7 @@
 import { solve, seedSolveState } from './solve';
 import { scoreSolution } from './metrics';
 import { evaluateEligibility } from './eligibility';
-import { buildCallCaps, planWithinCallCaps } from './providerCaps';
+import { mergedCallCapsForCtx, planWithinCallCaps } from './providerCaps';
 import { computeObligations, planWithinObligations } from './obligation';
 import { CLASSIC_PATTERN } from './callPattern';
 import type { CallPatternDoc } from './callPattern';
@@ -32,6 +32,11 @@ export interface OptimizeOptions {
   // every trial solves under the cap gates and acceptance additionally
   // requires planWithinObligations (mirror of the planWithinCallCaps gate).
   fillMode?: FillMode;
+  // Multi-start tie-break rotation (2026-07-26): threaded into the seed solve
+  // AND every trial re-solve so one optimize() run explores exactly one
+  // tie-break ordering — deterministic per seed. 0/absent = identity order,
+  // byte-identical to the pre-seed optimizer.
+  tieBreakSeed?: number;
 }
 
 // Observability counters for a single optimize() run.
@@ -97,10 +102,13 @@ export function filledSlotIds(plan: SolutionPlan): Set<string> {
 
 // Re-solve from a (perturbed) call assignment and score it. The caller's
 // fillMode rides along so an obligatory trial re-solves under the same
-// obligation-cap gates as its seed (undefined = 'all', the pre-change byte).
-function evaluate(ctx: GenerationContext, callAssign: Map<string, string>, fillMode?: FillMode):
-  { plan: SolutionPlan; metrics: SolutionMetrics } {
-  const plan = solve(ctx, { callOverrides: callAssign, fillMode });
+// obligation-cap gates as its seed (undefined = 'all', the pre-change byte);
+// tieBreakSeed likewise so every trial shares the run's tie-break ordering.
+function evaluate(
+  ctx: GenerationContext, callAssign: Map<string, string>,
+  fillMode?: FillMode, tieBreakSeed?: number,
+): { plan: SolutionPlan; metrics: SolutionMetrics } {
+  const plan = solve(ctx, { callOverrides: callAssign, fillMode, tieBreakSeed });
   return { plan, metrics: scoreSolution(plan, ctx) };
 }
 
@@ -115,6 +123,7 @@ export function optimize(ctx: GenerationContext, opts: OptimizeOptions = {}): Op
   const maxResolves = opts.maxResolves ?? DEFAULT_MAX_RESOLVES;
   const wallClockMs = opts.wallClockMs ?? DEFAULT_WALL_CLOCK_MS;
   const fillMode = opts.fillMode; // undefined = 'all', the pre-change engine byte for byte
+  const tieBreakSeed = opts.tieBreakSeed; // undefined/0 = identity tie-break order
   const doc = ctx.callPattern ?? CLASSIC_PATTERN;
   const providerIds = ctx.providers.map(p => p.id).sort();
   const providerById = ctx.providerById ?? new Map(ctx.providers.map(p => [p.id, p]));
@@ -125,7 +134,7 @@ export function optimize(ctx: GenerationContext, opts: OptimizeOptions = {}): Op
   const isCallUnfilled = (u: UnfilledSlot): boolean =>
     (u.shift_type_category ?? ctx.shiftTypes?.get(u.shift_type_code)?.category) === 'call';
 
-  let best = solve(ctx, { fillMode });
+  let best = solve(ctx, { fillMode, tieBreakSeed });
   let bestMetrics = scoreSolution(best, ctx);
   let bestAssign = extractCallAssignment(best);
   let bestFilled = filledSlotIds(best);
@@ -155,10 +164,14 @@ export function optimize(ctx: GenerationContext, opts: OptimizeOptions = {}): Op
   // ONTO a capped provider slips through the trial. The acceptance gate
   // rejects any trial plan exceeding a stated cap (seeds counted): the greedy
   // seed plan is cap-clean by construction, so acceptance stays monotone
-  // cap-clean. null caps ⇒ the check is inert (blank-fallback pin).
-  const callCaps = buildCallCaps(ctx.providerLimits);
+  // cap-clean. null caps ⇒ the check is inert (blank-fallback pin). Since
+  // 2026-07-26 the caps are the MERGED set (provider_limits + scenario
+  // per-(bucket,code)/NEURO/either-or ceilings) and the tally is
+  // scenario-aware, so no accepted trial can move a call past a scenario
+  // target ceiling either.
+  const callCaps = mergedCallCapsForCtx(ctx);
   const withinCallCaps = (trial: SolutionPlan): boolean =>
-    !callCaps || planWithinCallCaps(callCaps, trial, ctx.seedAssignments, ctx.shiftTypes);
+    !callCaps || planWithinCallCaps(callCaps, trial, ctx.seedAssignments, ctx.shiftTypes, ctx.scenario);
 
   // ── Obligation cap (2026-07-24, obligatory fill mode only) ──
   // The TOTAL-level mirror of the per-code call-caps gate above: no accepted
@@ -252,7 +265,7 @@ export function optimize(ctx: GenerationContext, opts: OptimizeOptions = {}): Op
             trial.set(uId, pid);   // P fills the gap
             trial.set(sId, qid);   // Q takes P's vacated slot
             resolvesUsed++;
-            const { plan, metrics } = evaluate(ctx, trial, fillMode);
+            const { plan, metrics } = evaluate(ctx, trial, fillMode, tieBreakSeed);
             if (keepsEveryIncumbentFill(plan) && withinCallCaps(plan)
               && withinObligations(plan)
               && compareMetrics(metrics, bestMetrics) < 0) {
@@ -284,7 +297,7 @@ export function optimize(ctx: GenerationContext, opts: OptimizeOptions = {}): Op
         const trial = new Map(bestAssign);
         trial.set(sId, pid);
         resolvesUsed++;
-        const { plan, metrics } = evaluate(ctx, trial, fillMode);
+        const { plan, metrics } = evaluate(ctx, trial, fillMode, tieBreakSeed);
         if (keepsEveryIncumbentFill(plan) && withinCallCaps(plan)
           && withinObligations(plan)
           && compareMetrics(metrics, bestMetrics) < 0) {

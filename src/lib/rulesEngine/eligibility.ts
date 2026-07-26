@@ -8,6 +8,8 @@ import {
 } from './shared';
 import { CLASSIC_PATTERN, postCallBlockOffsets } from './callPattern';
 import { exceedsWorkDayCap } from './workDays';
+import { scenarioProhibits, violatesHardLinkage } from './scenario';
+import { parentCallCodeOf } from '@/lib/callBurden';
 import type {
   GenerationContext, SlotToFill, CandidateProvider, SolveState,
   GateSet, EligibilityResult,
@@ -184,6 +186,33 @@ export function evaluateEligibility(
   // pre-change bookended any-blocking-row-covers path.
   if (isDateBlocked(ctx.availByPid.get(p.id) || [], slot.slot_date, { bookend: true })) {
     return { eligible: false, reason: 'availability-blocked' };
+  }
+
+  // ── scenario gates (2026-07-26, Paoli phase 2) ──
+  // Precedence: BELOW clinical/PTO (those already gated above), ABOVE targets
+  // (the cap/steering layers only see scenario-clean candidates). Both gates
+  // bind on EVERY gate set for CALL-category slots — 'call-no-quota'
+  // included, so chain links, quota relaxation and optimizer pins can never
+  // land a call on a prohibited (provider, date, code) or break a hard
+  // linkage. Seeded/manual fixed assignments never pass through here
+  // (mandatory-retained; validation soft-flags them). Inert without
+  // ctx.scenario — byte-identical plans.
+  if (ctx.scenario && slot.shift_type_category === 'call') {
+    const sp = ctx.scenario.providers.get(p.id);
+    if (sp) {
+      // Segments fold under their parent call code (the prohibition names
+      // whole-call codes); whole calls are their own parent.
+      const code = parentCallCodeOf(slot.shift_type_code, ctx.shiftTypes?.get(slot.shift_type_code));
+      if (scenarioProhibits(sp, slot.slot_date, code)) {
+        return { eligible: false, reason: 'scenario-prohibited' };
+      }
+      if (violatesHardLinkage(
+        sp, slot.slot_date, code,
+        state.callCodesByDate.get(p.id), ctx.scenario.neuroCode,
+      )) {
+        return { eligible: false, reason: 'scenario-linkage' };
+      }
+    }
   }
 
   // FTE working-days cap (2026-07-17). Opt-in via ctx.workDayBudget (absent on

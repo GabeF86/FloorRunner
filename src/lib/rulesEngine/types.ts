@@ -4,6 +4,7 @@
 // any violations of active rules. Each evaluator handles one rule category.
 
 import type { ProviderLimits } from '@/lib/providerLimits';
+import type { ScenarioProvider } from './scenario';
 
 export type RuleCategory =
   | 'coverage'
@@ -180,6 +181,19 @@ export interface EvaluationContext {
     // re-derived as WD − ptoWeekdays − daysOff at load time). Only providers
     // with a stated day limit appear.
     workingDaysCapByProvider: ReadonlyMap<string, number>;
+  } | null;
+
+  // Scenario-manifest validation context (2026-07-26, patch37) — resolved at
+  // LOAD time by loadScenarioValidationCtx (loadContext.ts) and threaded by
+  // BOTH the serial path and batchValidate (kept in parity). Absent/null =
+  // feature off (pre-patch37 column, no manifest, or a degraded load) — the
+  // scenarioProhibition evaluator is then inert. SOFT flags only: a
+  // seeded/manual fixed assignment standing against a manifest prohibition
+  // is the import's documented mandatory-retained resolution, flagged so the
+  // conflict stays visible, never blocked.
+  scenarioCtx?: {
+    providers: ReadonlyMap<string, ScenarioProvider>;
+    neuroCode: string;
   } | null;
 
   // Active rules for this site

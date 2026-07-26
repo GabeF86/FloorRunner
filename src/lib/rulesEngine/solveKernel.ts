@@ -6,7 +6,7 @@
 // mechanically converted to take the run object; behavior is byte-identical.
 // solve.ts builds the run and orchestrates; the pass modules (passes/) and
 // the main loop consume these functions.
-import { addDays, daysBetween, dayTypeBucket, datesOverlap } from './shared';
+import { addDays, daysBetween, dayTypeBucket, datesOverlap, dayOfWeekUTC } from './shared';
 import { evaluateEligibility } from './eligibility';
 import { dayChainsFor, blockChainsFor } from './callPattern';
 import { mayEvictPreFill, preFillCodes, shiftRank } from './preFillEviction';
@@ -15,6 +15,13 @@ import type { CallPatternDoc } from './callPattern';
 import { creditWorkDay, markAssigned, markBlocked, incBucket, addCallDate, daysSinceLastCall, hadCallWithin } from './solveState';
 import type { SolveState } from './solveState';
 import type { CallCaps } from './providerCaps';
+import { scenarioChargeKeys } from './providerCaps';
+import {
+  weekendAnchorOf, scenarioBucketOf, scenarioProhibits, memberMatches,
+  memberRealizedInWeekend, NEURO_KEY,
+} from './scenario';
+import type { ScenarioDoc } from './scenario';
+import { WEIGHT_EPSILON } from '@/lib/callBurden';
 import type {
   GenerationContext, SlotToFill, CandidateProvider, SolutionPlan,
   PlacementSource, AssignmentExplanation, SkippedDerived, WorkDayBudget,
@@ -40,12 +47,21 @@ export interface SolverRun {
   obligatory: boolean;
   obligationByPid: Map<string, number> | null;
   callCountByPid: Map<string, number>;
-  // Provider call caps (2026-07-22, patch34 provider_limits): null unless the
-  // parent schedule states per-code call caps — every cap branch is inert then
-  // (blank-fallback pin). callCodeTally (`${pid}|${code}` → count) is seeded
-  // from call seeds and maintained by record() only when callCaps is non-null.
+  // Provider call caps (2026-07-22, patch34 provider_limits; GENERALIZED
+  // 2026-07-26 for the scenario layer): null unless the parent schedule
+  // states per-code call caps OR the scenario states targets — every cap
+  // branch is inert then (blank-fallback pin). callCodeTally
+  // (`${pid}|${capKey}` → weighted usage, all key kinds — see CallCaps in
+  // providerCaps.ts) is seeded from call seeds and maintained by record()
+  // only when callCaps is non-null.
   callCaps: CallCaps | null;
   callCodeTally: Map<string, number>;
+  // Scenario projection (2026-07-26, Paoli phase 2): null = no manifest ⇒
+  // every scenario branch inert, byte-identical plans.
+  scenario: ScenarioDoc | null;
+  // Multi-start tie-break seed: 0 = identity (pre-seed byte-identical order);
+  // nonzero permutes ONLY scoreCall's final id tiebreak via tieHash below.
+  tieBreakSeed: number;
   // No-call request soft avoidance (§11 tier 0).
   noCallByPid: Map<string, Array<{ start_date: string; end_date: string }>>;
   noCallViolated: Map<string, number>;
@@ -166,46 +182,128 @@ export function dayChainCallNeeds(run: SolverRun, slot: SlotToFill): number {
   return n;
 }
 
-// ── Provider call caps (2026-07-22, patch34 provider_limits) ────────────────
-// Remaining room under the provider's stated per-code cap. Infinity when no
-// cap is stated for (pid, code) — the common case stays branch-cheap.
-export function callCapRoom(run: SolverRun, pid: string, code: string): number {
-  const cap = run.callCaps?.get(pid)?.get(code);
-  if (cap == null) return Infinity;
-  return cap - (run.callCodeTally.get(`${pid}|${code}`) || 0);
-}
-
-// WHOLE-BLOCK per-code needs at a prospective anchor: the anchor's own code
-// plus every LIVE call-category block-chain link (target slot exists,
-// unhandled, category 'call') — the per-code sibling of chainCallNeeds.
-// Links that later sever don't consume the tally (only real placements
-// increment it in record()), so reserved-but-unused room frees back up.
-export function blockCallCodeNeeds(run: SolverRun, slot: SlotToFill): Map<string, number> {
-  const needs = new Map<string, number>([[slot.shift_type_code, 1]]);
-  const links = blockChainsFor(run.doc, slot.derived_day_type).get(slot.shift_type_code);
-  if (links) {
-    for (const link of links) {
-      const t = run.ctx.slotIndex.get(addDays(slot.slot_date, link.offset))?.get(link.code);
-      if (t && !run.state.handledSlotIds.has(t.slot_id) && t.shift_type_category === 'call') {
-        needs.set(link.code, (needs.get(link.code) || 0) + 1);
+// ── Provider call caps (2026-07-22, patch34; generalized 2026-07-26) ────────
+// One placement's cap CHARGES: the per-code key (always) plus, for scenario
+// providers, the (dow-bucket,code)/either-or keys (scenarioChargeKeys,
+// providerCaps.ts) and the weekend-distinct NEURO unit. `sim` carries the
+// simulated neuro weekends within one multi-placement admission (a Sat C3
+// anchor + its Fri/Sun C3 links charge ONE unit, matching "exactly one
+// Saturday/Sunday pair" — pairs, not days, count toward the NEURO target).
+function capCharges(
+  run: SolverRun, pid: string, date: string, code: string,
+  sim?: Set<string>,
+): Array<{ key: string; amount: number }> {
+  const out: Array<{ key: string; amount: number }> = [{ key: code, amount: 1 }];
+  const scenario = run.scenario;
+  if (scenario && scenario.providers.has(pid)) {
+    for (const sk of scenarioChargeKeys(scenario, pid, date, code)) {
+      out.push({ key: sk, amount: 1 });
+    }
+    if (code === scenario.neuroCode) {
+      const wk = weekendAnchorOf(date);
+      if (wk) {
+        const already = ownNeuroInWeekend(run, pid, wk) || sim?.has(wk);
+        if (!already) out.push({ key: `S:${NEURO_KEY}`, amount: 1 });
+        sim?.add(wk);
       }
     }
   }
-  return needs;
+  return out;
+}
+
+// Does the provider already hold a realized neuro-code call (plan or seed) in
+// the weekend anchored at `weekendAnchor`? Reads the callCodesByDate ledger.
+function ownNeuroInWeekend(run: SolverRun, pid: string, weekendAnchor: string): boolean {
+  const scenario = run.scenario!;
+  const byDate = run.state.callCodesByDate.get(pid);
+  if (!byDate) return false;
+  for (const d of [addDays(weekendAnchor, -1), weekendAnchor, addDays(weekendAnchor, 1)]) {
+    if (byDate.get(d)?.has(scenario.neuroCode)) return true;
+  }
+  return false;
+}
+
+// Cap admission for a LIST of same-provider call placements (an anchor plus
+// its designed chain links, a span's call slots, a single pre-PTO slot):
+// simulate every charge, then check ONLY the provider's cap entries the
+// simulation touched — an entry a seed already overfilled must not veto an
+// unrelated placement. Always true when no caps are stated.
+export function capAdmitsPlacements(
+  run: SolverRun, pid: string,
+  placements: ReadonlyArray<{ date: string; code: string }>,
+): boolean {
+  const byKey = run.callCaps?.get(pid);
+  if (!byKey) return true;
+  const delta = new Map<string, number>();
+  const sim = new Set<string>();
+  for (const pl of placements) {
+    for (const { key, amount } of capCharges(run, pid, pl.date, pl.code, sim)) {
+      delta.set(key, (delta.get(key) || 0) + amount);
+    }
+  }
+  for (const [key, add] of delta) {
+    const cap = byKey.get(key);
+    if (cap == null) continue;
+    const usage = (run.callCodeTally.get(`${pid}|${key}`) || 0) + add;
+    if (usage > cap + WEIGHT_EPSILON) return false;
+  }
+  return true;
+}
+
+// LIVE call-category block-chain link placements a fill on `slot` would fire
+// (target slot exists, unhandled, category 'call'). Links that later sever
+// don't consume the tally (only real placements increment it in record()),
+// so reserved-but-unused room frees back up.
+export function liveBlockChainCallLinks(
+  run: SolverRun, slot: SlotToFill,
+): Array<{ date: string; code: string }> {
+  const out: Array<{ date: string; code: string }> = [];
+  const links = blockChainsFor(run.doc, slot.derived_day_type).get(slot.shift_type_code);
+  if (links) {
+    for (const link of links) {
+      const date = addDays(slot.slot_date, link.offset);
+      const t = run.ctx.slotIndex.get(date)?.get(link.code);
+      if (t && !run.state.handledSlotIds.has(t.slot_id) && t.shift_type_category === 'call') {
+        out.push({ date, code: link.code });
+      }
+    }
+  }
+  return out;
 }
 
 // Cap admission for a call placement — WHOLE-BLOCK at anchor time: the anchor
 // plus every same-provider call the designed block will place must fit under
-// that provider's caps, per code. Never sever a designed pairing halfway
-// (the 2026-07-16 severance-bug class). Non-anchor slots degenerate to a
-// single-code room check. Always true when no caps are stated.
+// that provider's caps, per key — per (bucket,code) for scenario ceilings.
+// Never sever a designed pairing halfway (the 2026-07-16 severance-bug
+// class). Non-anchor slots degenerate to a single-placement check. Always
+// true when no caps are stated.
 export function admitsUnderCallCaps(run: SolverRun, pid: string, slot: SlotToFill): boolean {
   if (!run.callCaps || slot.shift_type_category !== 'call') return true;
   if (!run.callCaps.has(pid)) return true; // no caps stated for this provider
-  for (const [code, n] of blockCallCodeNeeds(run, slot)) {
-    if (callCapRoom(run, pid, code) < n) return false;
-  }
-  return true;
+  return capAdmitsPlacements(run, pid, [
+    { date: slot.slot_date, code: slot.shift_type_code },
+    ...liveBlockChainCallLinks(run, slot),
+  ]);
+}
+
+// Scenario chain-clean preference (2026-07-26): a candidate whose designed
+// chain link would land on one of their OWN prohibited (date, code)s severs
+// the pairing by construction — when chain-clean candidates exist, restrict
+// to them so the designed pairing survives. When NOBODY is clean the full
+// set stays (a filled anchor with a recorded severed link beats an open
+// anchor). A filter, never a gate — inert without a scenario.
+export function preferScenarioChainClean(
+  run: SolverRun, cands: CandidateProvider[], slot: SlotToFill,
+): CandidateProvider[] {
+  if (!run.scenario || slot.shift_type_category !== 'call') return cands;
+  const links = liveBlockChainCallLinks(run, slot);
+  if (links.length === 0) return cands;
+  const clean = cands.filter(p => {
+    const sp = run.scenario!.providers.get(p.id);
+    if (!sp) return true;
+    return links.every(l => !scenarioProhibits(sp, l.date, l.code));
+  });
+  return clean.length > 0 ? clean : cands;
 }
 
 // Resolve a call slot's override: undefined → not overridden; null → forced
@@ -235,16 +333,21 @@ export function record(
   // one-assignment-per-day budget is exempt.
   if (slot.shift_type_category === 'call') {
     incBucket(state, p.id, slot.derived_day_type, slot.shift_type_code);
-    addCallDate(state, p.id, slot.slot_date);
+    // Provider call caps: every REAL call placement (any source — chain links
+    // and overridden pins included) maintains the tally, per KEY (per-code +
+    // scenario bucket/either-or/neuro — capCharges is the one home). Computed
+    // BEFORE addCallDate below so the neuro weekend-unit charge doesn't see
+    // this placement as its own prior.
+    if (run.callCaps) {
+      for (const { key, amount } of capCharges(run, p.id, slot.slot_date, slot.shift_type_code)) {
+        const k = `${p.id}|${key}`;
+        run.callCodeTally.set(k, (run.callCodeTally.get(k) || 0) + amount);
+      }
+    }
+    addCallDate(state, p.id, slot.slot_date, slot.shift_type_code);
     // Obligatory mode: every REAL call placement (any source — chain links
     // included) consumes the provider's cap.
     if (run.obligatory) run.callCountByPid.set(p.id, (run.callCountByPid.get(p.id) || 0) + 1);
-    // Provider call caps: every REAL call placement (any source — chain links
-    // and overridden pins included) maintains the per-code tally.
-    if (run.callCaps) {
-      const k = `${p.id}|${slot.shift_type_code}`;
-      run.callCodeTally.set(k, (run.callCodeTally.get(k) || 0) + 1);
-    }
     // Fair denial: a call landing on the provider's live no-call-request
     // date is a violated request — count it so later penalized-vs-penalized
     // choices prefer someone not yet denied. In obligatory mode the same
@@ -270,40 +373,117 @@ export function record(
   });
 }
 
+// Deterministic 32-bit FNV-1a of (seed, id) — the multi-start tie-break
+// shuffle key. Seed 0 never reaches this (identity order pinned).
+export function tieHash(seed: number, id: string): number {
+  let h = (0x811c9dc5 ^ seed) >>> 0;
+  for (let i = 0; i < id.length; i++) {
+    h ^= id.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return h >>> 0;
+}
+
+// Scenario target-progress ratio (2026-07-26): for a scenario provider with a
+// stated target covering this slot, fairness steering is placed / target —
+// the least-variance objective (the manifest's numbers ARE the block's fair
+// share, historical deficits deliberately excluded). Null = no stated target
+// (fall back to the lifetime/FTE ratio).
+function scenarioTargetRatio(run: SolverRun, pid: string, slot: SlotToFill): number | null {
+  const scenario = run.scenario;
+  if (!scenario) return null;
+  const sp = scenario.providers.get(pid);
+  if (!sp || slot.shift_type_category !== 'call') return null;
+  if (slot.shift_type_code === scenario.neuroCode) {
+    if (sp.neuroTarget == null) return null;
+    const units = run.callCodeTally.get(`${pid}|S:${NEURO_KEY}`) || 0;
+    return units / Math.max(sp.neuroTarget, 0.01);
+  }
+  const key = `${scenarioBucketOf(slot.slot_date)}|${slot.shift_type_code}`;
+  const target = sp.targets.get(key);
+  if (target == null) return null;
+  const placed = run.callCodeTally.get(`${pid}|S:${key}`) || 0;
+  return placed / Math.max(target, 0.01);
+}
+
+// Scenario soft-preference tier (2026-07-26): −1 when this slot matches a
+// stated preference for the candidate, else 0 — a SOFT tier exactly like the
+// request tiers (never a gate; caps/quotas/safety all still bind).
+//   • weekday preference (Kalawadia "prefers Tuesday for C1"): the slot's dow
+//     and code match.
+//   • same-weekend preference (Simon "ideally on the same weekend as his
+//     Friday C1"): the slot matches a preference member AND the provider has
+//     a realized call in THIS weekend matching a member of the same-source
+//     linkage (or another preference member) — the nudge that co-locates the
+//     'ideally' pieces once one of them lands.
+function scenarioPrefTier(run: SolverRun, pid: string, slot: SlotToFill): number {
+  const scenario = run.scenario;
+  if (!scenario || slot.shift_type_category !== 'call') return 0;
+  const sp = scenario.providers.get(pid);
+  if (!sp || sp.preferences.length === 0) return 0;
+  const dow = dayOfWeekUTC(slot.slot_date);
+  const code = slot.shift_type_code;
+  for (const pref of sp.preferences) {
+    if (pref.kind === 'weekday') {
+      if (pref.weekday === dow && (pref.codes.length === 0 || pref.codes.includes(code))) return -1;
+      continue;
+    }
+    if (pref.kind === 'same-weekend') {
+      const matches = (m: { dow: number | null; date: string | null; code: string }) =>
+        memberMatches(m, slot.slot_date, code, scenario.neuroCode);
+      if (!pref.members.some(matches)) continue;
+      const wk = weekendAnchorOf(slot.slot_date);
+      if (!wk) continue;
+      const led = run.state.callCodesByDate.get(pid);
+      const companions = sp.linkages
+        .filter(l => l.source === pref.source)
+        .flatMap(l => l.members)
+        .concat(pref.members.filter(m => !matches(m)));
+      if (companions.some(m => memberRealizedInWeekend(led, m, wk, scenario.neuroCode))) return -1;
+    }
+  }
+  return 0;
+}
+
 // Main-loop scoring tuple: request sort tier first (call-request PREFERRED
 // tier -1 sorts before every neutral candidate; no-call penalized tier 1
 // sorts after — soft in both directions, never a gate), then fair-grant
 // count within the preferred tier, then fair-denial count within the
-// penalized tier, then lowest lifetime bucket-ratio, then least-recently
-// called, then id. Shared by the main loop, spans, and quota relaxation.
-// `granted` is 0 outside the preferred tier and `violated` is 0 outside the
-// penalized tier by construction, so both fairness keys are inert across
-// tiers — and with no live requests at all every tier is 0 and the tuple is
-// the pre-change ratio/recency/id sort, byte for byte (a provider can never
-// be both: a date covered by both live request types is contradictory and
-// counts as neither — hasCallRequest/hasNoCallRequest, contraReqDates).
+// penalized tier, then the SCENARIO soft-preference tier (2026-07-26 — soft
+// like the request tiers, below them by design), then lowest ratio (lifetime
+// bucket-ratio, or the scenario target-progress ratio for manifest
+// providers), then least-recently called, then id — with the multi-start
+// tie-break hash permuting ONLY that final id ordering when a nonzero seed
+// is set. Shared by the main loop, spans, and quota relaxation. With no live
+// requests, no scenario and seed 0 the tuple is the pre-change
+// ratio/recency/id sort, byte for byte.
 export function scoreCall(run: SolverRun, cands: CandidateProvider[], slot: SlotToFill) {
   const { ctx, state } = run;
   const k = `${dayTypeBucket(slot.derived_day_type)}|${slot.shift_type_code}`;
+  const seed = run.tieBreakSeed;
   return cands.map(p => {
     const lifetime = (ctx.historicalAssignedByPid.get(p.id)?.get(k) || 0)
       + (state.bucketAssigned.get(`${p.id}|${k}`) || 0);
     const preferred = hasCallRequest(run, p.id, slot.slot_date);
     const penalized = !preferred && hasNoCallRequest(run, p.id, slot.slot_date);
+    const targetRatio = scenarioTargetRatio(run, p.id, slot);
     return {
       p,
       tier: preferred ? -1 : penalized ? 1 : 0,
       granted: preferred ? (run.callReqGranted.get(p.id) || 0) : 0,
       violated: penalized ? (run.noCallViolated.get(p.id) || 0) : 0,
-      ratio: lifetime / Math.max(p.fte_value, 0.01),
+      prefTier: scenarioPrefTier(run, p.id, slot),
+      ratio: targetRatio ?? (lifetime / Math.max(p.fte_value, 0.01)),
       recency: daysSinceLastCall(state, p.id, slot.slot_date),
     };
   }).sort((a, b) =>
     a.tier - b.tier ||
     a.granted - b.granted ||
     a.violated - b.violated ||
+    a.prefTier - b.prefTier ||
     a.ratio - b.ratio ||
     b.recency - a.recency ||
+    (seed ? (tieHash(seed, a.p.id) - tieHash(seed, b.p.id)) : 0) ||
     a.p.id.localeCompare(b.p.id),
   );
 }

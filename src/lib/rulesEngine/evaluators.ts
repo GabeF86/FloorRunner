@@ -19,6 +19,7 @@ import {
   isSellbackOverridden,
 } from './shared';
 import { WEIGHT_EPSILON, callBurdenWeight, parentCallCodeOf, formatCallWeight } from '@/lib/callBurden';
+import { scenarioProhibits } from './scenario';
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -940,11 +941,41 @@ const crossSite: Evaluator = ctx => {
   return violations;
 };
 
+// ── Scenario prohibition (2026-07-26, patch37) ─────────────────────────────
+//
+// SOFT flag only: a CALL assignment sitting on a scenario-manifest no-call
+// prohibition for its provider. The engine's eligibility gate makes a
+// GENERATED violation structurally impossible, so any hit here is a
+// seeded/manual fixed assignment — the import's documented
+// mandatory-retained resolution (column-M precedence). The flag keeps the
+// conflict visible in the grid; it must never block (that would fight the
+// retained mandatory). Inert without ctx.scenarioCtx (pre-patch37 DBs,
+// manifest-free schedules).
+
+const scenarioProhibition: Evaluator = ctx => {
+  const sc = ctx.scenarioCtx;
+  if (!sc || !ctx.providerId) return [];
+  if (ctx.shiftType.category !== 'call') return [];
+  const sp = sc.providers.get(ctx.providerId);
+  if (!sp) return [];
+  const code = parentCallCodeOf(ctx.shiftType.code, ctx.shiftType);
+  if (!scenarioProhibits(sp, ctx.slot.slot_date, code)) return [];
+  return [{
+    rule_id: null,
+    rule_name: 'Scenario no-call prohibition (mandatory-retained)',
+    category: 'time_off',
+    severity: 'soft',
+    message: `The scenario manifest prohibits ${code} for this provider on ${ctx.slot.slot_date}; `
+      + `the assignment stands per the mandatory-over-prohibition precedence and is flagged for review.`,
+  }];
+};
+
 // ── Registry ───────────────────────────────────────────────────────────────
 
 export const evaluators: Evaluator[] = [
   eligibility,
   timeOff,
+  scenarioProhibition,
   weekendAdjacentPto,
   sequence,
   rest,

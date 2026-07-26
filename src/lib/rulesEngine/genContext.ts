@@ -29,6 +29,7 @@ import type {
 } from './genTypes';
 
 import { CallPatternDocSchema, patternWarnings, callFillOrderWarnings, dayTypeFillOrderWarnings, type CallPatternDoc } from './callPattern';
+import { projectScenario, applyScenarioBucketTargets, type ScenarioDoc } from './scenario';
 import { fetchCommittedAssignments, filterPublishedVersions } from './committedAssignments';
 import { embedArray } from '@/lib/embed';
 import { callBurdenWeight, parentCallCodeOf } from '@/lib/callBurden';
@@ -694,24 +695,69 @@ export async function loadGenerationContext(
   //   • malformed jsonb → undefined + warning (all-or-nothing: never enforce
   //     a partially-parsed cap set).
   let providerLimits: ProviderLimits | undefined;
+  let rawScenarioManifest: unknown = null;
   if (parentScheduleId) {
     countQ();
-    const limitsRes = await sb
+    // patch37 widens this select with scenario_manifest; a pre-patch37 DB
+    // errors on the column and retries with the patch34 shape SILENTLY — an
+    // absent column can hold no manifest, so "no scenario" is exact (the
+    // patch35 narrow-retry posture). A pre-patch34 DB then errors again and
+    // keeps the original provider_limits degradation semantics verbatim.
+    let limitsRes = await sb
       .from('schedules')
-      .select('provider_limits')
+      .select('provider_limits, scenario_manifest')
       .eq('id', parentScheduleId)
       .maybeSingle();
+    if (limitsRes.error && /column|scenario_manifest/i.test((limitsRes.error as { message?: string }).message || '')) {
+      countQ();
+      limitsRes = await sb
+        .from('schedules')
+        .select('provider_limits')
+        .eq('id', parentScheduleId)
+        .maybeSingle();
+    }
     if (limitsRes.error) {
       const limitsErrMsg = (limitsRes.error as { message?: string }).message || '';
       if (!/column|provider_limits/i.test(limitsErrMsg)) {
         warnings.push(`schedules.provider_limits load failed — generating WITHOUT provider limits: ${limitsErrMsg || 'unknown error'}`);
       }
     } else {
-      const rawLimits = (limitsRes.data as { provider_limits?: unknown } | null)?.provider_limits;
+      const row = limitsRes.data as { provider_limits?: unknown; scenario_manifest?: unknown } | null;
+      const rawLimits = row?.provider_limits;
       if (rawLimits != null) {
         const parsedLimits = parseProviderLimits(rawLimits);
         if (parsedLimits.ok) providerLimits = parsedLimits.value ?? undefined;
         else warnings.push(`schedules.provider_limits is malformed — limits IGNORED: ${parsedLimits.error}`);
+      }
+      rawScenarioManifest = row?.scenario_manifest ?? null;
+    }
+  }
+
+  // ── 6c. Scenario manifest projection (2026-07-26, patch37) ────────────────
+  // schedules.scenario_manifest holds the FULL phase-1 import manifest
+  // (patch37 storage decision — see scenario.ts); the engine-facing
+  // projection is computed here. Invalid manifests degrade LOUDLY to
+  // scenario-free generation (never a crash, never silent). The scenario FTE
+  // override applies to THIS generation's provider projection only — the
+  // master employment profile is NEVER written (this loader has no write
+  // path by construction); every mismatch is recorded for the audit.
+  let scenario: ScenarioDoc | undefined;
+  if (rawScenarioManifest != null) {
+    const projected = projectScenario(rawScenarioManifest, {
+      knownProviderIds: new Set(providers.map(p => p.id)),
+      knownShiftCodes,
+    });
+    warnings.push(...projected.warnings);
+    if (projected.scenario && projected.scenario.providers.size > 0) {
+      scenario = projected.scenario;
+      for (const p of providers) {
+        const spv = scenario.providers.get(p.id);
+        if (!spv) continue;
+        if (Math.abs(spv.scenarioFte - p.fte_value) > 1e-9) {
+          warnings.push(
+            `Scenario FTE override: ${p.short_display_name} ${p.fte_value} (master) → ${spv.scenarioFte} (scenario) — master record NOT modified`);
+        }
+        p.fte_value = spv.scenarioFte;
       }
     }
   }
@@ -880,7 +926,15 @@ export async function loadGenerationContext(
     providers,
     parLevel,
   );
-  const bucketTarget = floorBucketTargets(rawTargets, providers);
+  // Scenario steering override (2026-07-26): manifest providers' quota
+  // targets are the STATED numbers — exact, unfloored, deficit-free (the
+  // manifest IS the block's fair share). Non-manifest keys keep the
+  // FTE-derived floored targets. Applied AFTER the floor so a stated 0 or
+  // 0.5 survives.
+  const flooredTargets = floorBucketTargets(rawTargets, providers);
+  const bucketTarget = scenario
+    ? applyScenarioBucketTargets(flooredTargets, scenario)
+    : flooredTargets;
 
   // Coverage advisory: when the stored-par FTE-weighted targets across the
   // whole pool can't sum to a bucket's slot count (par above pool ΣFTE), the
@@ -992,6 +1046,7 @@ export async function loadGenerationContext(
       scheduleDates: allSlotDates,
       workDayBudget,
       providerLimits,
+      scenario,
     },
     dbQueries,
     totalSlots: rawSlots.length,
