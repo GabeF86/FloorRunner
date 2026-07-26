@@ -32,6 +32,7 @@ import {
   mapNeighborRow,
   mapCrossSiteRow,
   loadProviderLimitsValidationCtx,
+  loadScenarioValidationCtx,
 } from './loadContext';
 import type { SiteValidationContext, JoinedAssignmentRow } from './loadContext';
 import { evaluateContext } from './evaluate';
@@ -250,6 +251,12 @@ export async function batchValidateVersion(
   dbQueries += limitsLoad.dbQueries;
   const providerLimitsCtx = limitsLoad.ctx;
 
+  // Scenario soft-flag context (2026-07-26, patch37) — same posture: loaded
+  // once, threaded onto every context, null = feature off, never bails.
+  const scenarioLoad = await loadScenarioValidationCtx(sb, scheduleVersionId);
+  dbQueries += scenarioLoad.dbQueries;
+  const scenarioCtx = scenarioLoad.ctx;
+
   // ── sameDay index (from the step-1 rows, mirrors serial query 5) ───────────
   const slotsByDate = new Map<string, RawSlotRow[]>();
   for (const s of slots) {
@@ -355,6 +362,7 @@ export async function batchValidateVersion(
       crossSiteAssignments,
       scheduleVersionId,
       providerLimitsCtx,
+      scenarioCtx,
       rules: siteCtx.rules,
       shiftTypesByCode: siteCtx.shiftTypesByCode,
       shiftTypesById: siteCtx.shiftTypesById,

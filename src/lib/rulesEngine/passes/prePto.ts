@@ -5,7 +5,7 @@
 // so fall back to the shared builder (identical predicate). See ALGORITHM.md §7.
 import { buildPrePtoByThursday } from '../shared';
 import { evaluateEligibility } from '../eligibility';
-import { record, applyDayChains, capRoom, callCapRoom, dayChainCallNeeds } from '../solveKernel';
+import { record, applyDayChains, capRoom, capAdmitsPlacements, dayChainCallNeeds } from '../solveKernel';
 import type { SolverRun } from '../solveKernel';
 import type { SlotToFill, CandidateProvider } from '../genTypes';
 
@@ -24,11 +24,13 @@ export function runPrePtoPass(run: SolverRun): void {
     // whole charge). A provider without room is skipped — the slot falls to
     // the main loop / other candidates, never placed past the cap.
     if (run.obligatory && capRoom(run, p.id) < 1 + dayChainCallNeeds(run, slot)) return false;
-    // Provider call caps (2026-07-22): same single-slot rule — a pre-PTO
-    // placement is best-effort and silently skipped when the provider has no
-    // room left under their stated per-code cap (the slot falls through to
-    // the main loop / other candidates).
-    if (run.callCaps && callCapRoom(run, p.id, slot.shift_type_code) < 1) return false;
+    // Provider call caps (2026-07-22; generalized keys 2026-07-26): same
+    // single-slot rule — a pre-PTO placement is best-effort and silently
+    // skipped when the provider has no room left under any stated cap
+    // (per-code or scenario) the placement would charge (the slot falls
+    // through to the main loop / other candidates).
+    if (run.callCaps && !capAdmitsPlacements(run, p.id,
+      [{ date: slot.slot_date, code: slot.shift_type_code }])) return false;
     if (!evaluateEligibility(slot, p, state, ctx, 'call').eligible) return false;
     record(run, slot, p, 'pre-pto-thursday');
     applyDayChains(run, slot, p);

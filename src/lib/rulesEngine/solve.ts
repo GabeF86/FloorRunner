@@ -13,9 +13,9 @@ import type { CallPatternDoc } from './callPattern';
 import {
   record, overrideFor, scoreCall, applyDayChains, applyBlockChains,
   capRoom, chainCallNeeds, noteViolation, noteGrant, buildProviderCalls, pushUnfilled,
-  admitsUnderCallCaps,
+  admitsUnderCallCaps, preferScenarioChainClean,
 } from './solveKernel';
-import { buildCallCaps } from './providerCaps';
+import { mergedCallCapsForCtx, tallyCallsByPidCode } from './providerCaps';
 import type { SolverRun } from './solveKernel';
 import { runPrePtoPass } from './passes/prePto';
 import { runSpansPass } from './passes/spans';
@@ -223,7 +223,6 @@ export function solve(ctx: GenerationContext, opts: SolveOptions = {}): Solution
   // per-code call caps at their fractional weight, under the PARENT code —
   // whole-call seeds keep weight 1 / their own code, byte-identical.
   const seedWeight = (code: string) => callBurdenWeight(shiftInfo(code));
-  const seedCapCode = (code: string) => parentCallCodeOf(code, shiftInfo(code));
   const callCountByPid = new Map<string, number>();
   if (obligatory) {
     for (const seed of ctx.seedAssignments) {
@@ -234,22 +233,19 @@ export function solve(ctx: GenerationContext, opts: SolveOptions = {}): Solution
     }
   }
 
-  // ── provider call caps (2026-07-22, patch34 provider_limits) ──
-  // Per-code HARD CEILINGS for auto-generation, in EVERY fill mode. null when
-  // the schedule states no call caps — every cap branch below and in the
-  // kernel/passes is then inert, byte-identical to the pre-limits engine
-  // (blank-fallback pin). Seeds consume the caps up front; record() maintains
-  // the tally for every real call placement.
-  const callCaps = buildCallCaps(ctx.providerLimits);
-  const callCodeTally = new Map<string, number>();
-  if (callCaps) {
-    for (const seed of ctx.seedAssignments) {
-      if (seed.shift_type_category === 'call') {
-        const k = `${seed.provider_id}|${seedCapCode(seed.shift_type_code)}`;
-        callCodeTally.set(k, (callCodeTally.get(k) || 0) + seedWeight(seed.shift_type_code));
-      }
-    }
-  }
+  // ── provider call caps (2026-07-22, patch34 provider_limits; generalized
+  //    2026-07-26 with the scenario per-(bucket,code)/NEURO/either-or keys) ──
+  // HARD CEILINGS for auto-generation, in EVERY fill mode. null when neither
+  // the schedule nor the scenario states any cap — every cap branch below and
+  // in the kernel/passes is then inert, byte-identical to the pre-limits
+  // engine (blank-fallback pin). Seeds consume the caps up front (weighted,
+  // parent-mapped, all key kinds — tallyCallsByPidCode is the one tally
+  // home); record() maintains the tally for every real call placement.
+  const scenario = ctx.scenario ?? null;
+  const callCaps = mergedCallCapsForCtx(ctx);
+  const callCodeTally = callCaps
+    ? tallyCallsByPidCode([], ctx.seedAssignments, ctx.shiftTypes, scenario)
+    : new Map<string, number>();
 
   // The bundled run context every kernel function and pass consumes.
   // waivedLinkKeys: (date|code) keys of chain links WAIVED by
@@ -263,6 +259,7 @@ export function solve(ctx: GenerationContext, opts: SolveOptions = {}): Solution
     isOverlay, callRank, reliefCodes,
     obligatory, obligationByPid, callCountByPid,
     callCaps, callCodeTally,
+    scenario, tieBreakSeed: opts.tieBreakSeed ?? 0,
     noCallByPid, noCallViolated: new Map<string, number>(),
     callReqByPid, callReqGranted: new Map<string, number>(), contraReqDates,
     waivedLinkKeys: new Set<string>(),
@@ -340,13 +337,17 @@ export function solve(ctx: GenerationContext, opts: SolveOptions = {}): Solution
     const eligible = sweep.filter(x => x.r.eligible).map(x => x.p);
 
     // Provider call caps: WHOLE-BLOCK admission (anchor + every live
-    // call-category chain link, per code — admitsUnderCallCaps). Applied
-    // BEFORE the obligatory filter so a cap-blocked candidate reports
-    // 'provider-cap', an obligation-blocked one 'obligation-cap'. Inert
-    // (capAdmitted === eligible) when no caps are stated.
-    const capAdmitted = callCaps
-      ? eligible.filter(p => admitsUnderCallCaps(run, p.id, slot))
-      : eligible;
+    // call-category chain link, per KEY — per (bucket,code) for scenario
+    // ceilings; admitsUnderCallCaps). Applied BEFORE the obligatory filter so
+    // a cap-blocked candidate reports 'provider-cap', an obligation-blocked
+    // one 'obligation-cap'. Inert (capAdmitted === eligible) when no caps are
+    // stated. preferScenarioChainClean then steers the anchor toward
+    // candidates whose designed chain links don't land on their OWN scenario
+    // prohibitions (a filter, never a gate — when nobody is clean the full
+    // set stays and a severed link is recorded downstream).
+    const capAdmitted = preferScenarioChainClean(run,
+      callCaps ? eligible.filter(p => admitsUnderCallCaps(run, p.id, slot)) : eligible,
+      slot);
     // Obligatory mode: charge the whole prospective block against the cap
     // upfront (1 for this slot + its live call-category chain links — block
     // AND dayChain). When nobody has room, the slot is DELIBERATELY left
@@ -392,11 +393,13 @@ export function solve(ctx: GenerationContext, opts: SolveOptions = {}): Solution
       }));
       const relaxable = relaxSweep.filter(x => x.r.eligible).map(x => x.p);
       // Provider call caps bind under relaxation too: relaxation may waive the
-      // QUOTA, never a stated maximum — a slot only cap-holders could take
-      // stays open ('provider-cap'), never silently reassigned past the cap.
-      const relaxAdmitted = callCaps
-        ? relaxable.filter(p => admitsUnderCallCaps(run, p.id, slot))
-        : relaxable;
+      // QUOTA, never a stated maximum (scenario ceilings included) — a slot
+      // only cap-holders could take stays open ('provider-cap'), never
+      // silently reassigned past the cap. Chain-clean steering applies here
+      // exactly as in the main sweep.
+      const relaxAdmitted = preferScenarioChainClean(run,
+        callCaps ? relaxable.filter(p => admitsUnderCallCaps(run, p.id, slot)) : relaxable,
+        slot);
       // Re-apply the workdays cap here: eligibility waives it under
       // 'call-no-quota' (so optimizer pins never self-reject), but quota
       // relaxation must still honor it — a slot left open by the cap is
@@ -489,9 +492,13 @@ export function seedSolveState(ctx: GenerationContext, doc: CallPatternDoc): Sol
       // Call splits (2026-07-22): a SEGMENT seed counts under its PARENT code
       // at its fractional weight (a C1N12 seed = 0.5 of C1 toward buckets and
       // fairness). Whole calls: parent = own code, weight 1 — byte-identical.
+      // The parent code also rides into the realized-call ledger (2026-07-26,
+      // scenario linkage/NEURO decisions read it — a seeded Sun C2 segment
+      // realizes SUN:C2).
       incBucketBy(state, seed.provider_id, seed.derived_day_type,
         parentCallCodeOf(seed.shift_type_code, info), callBurdenWeight(info));
-      addCallDate(state, seed.provider_id, seed.slot_date);
+      addCallDate(state, seed.provider_id, seed.slot_date,
+        parentCallCodeOf(seed.shift_type_code, info));
     }
     // Working-days credit: a seeded/manual assignment on a working day is a
     // worked day (any category — a seeded day shift counts too).

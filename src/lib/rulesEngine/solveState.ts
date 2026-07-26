@@ -24,6 +24,12 @@ export interface SolveState {
   // on weekdays, ICU-week weekdays). Single home for the credited counter the
   // workdays cap consults; only populated when ctx carries a workDayBudget.
   creditedWorkDays: Map<string, Set<string>>;
+  // Per-provider realized CALL codes by date (2026-07-26, scenario layer):
+  // pid -> date -> codes. Written by addCallDate alongside the date list —
+  // pure bookkeeping (no behavior keys off it outside the scenario gates), so
+  // scenario-free plans stay byte-identical. Segment codes are recorded under
+  // their PARENT code by the callers (linkage members are whole-call codes).
+  callCodesByDate: Map<string, Map<string, Set<string>>>;
 }
 
 export function emptySolveState(): SolveState {
@@ -34,6 +40,7 @@ export function emptySolveState(): SolveState {
     callDatesByProvider: new Map(),
     blockedOnDate: new Map(),
     creditedWorkDays: new Map(),
+    callCodesByDate: new Map(),
   };
 }
 
@@ -71,7 +78,18 @@ export function incBucketBy(s: SolveState, pid: string, dt: string, code: string
 // reverse scan to the closest prior call, and a range test with early exit.
 // Each is decision-for-decision identical to the naive scan it replaced
 // (ISO YYYY-MM-DD strings compare lexicographically = chronologically).
-export function addCallDate(s: SolveState, pid: string, date: string) {
+export function addCallDate(s: SolveState, pid: string, date: string, code?: string) {
+  // Scenario bookkeeping (2026-07-26): record the realized call CODE per date
+  // (parent-mapped by callers for segments). Recorded even for duplicate
+  // dates — a date can legitimately hold two codes (overlay C3 + a call is
+  // refused elsewhere, but seeds may carry both shapes).
+  if (code) {
+    let byDate = s.callCodesByDate.get(pid);
+    if (!byDate) { byDate = new Map(); s.callCodesByDate.set(pid, byDate); }
+    let codes = byDate.get(date);
+    if (!codes) { codes = new Set(); byDate.set(date, codes); }
+    codes.add(code);
+  }
   const list = s.callDatesByProvider.get(pid) || [];
   // Binary search for the insertion point; skip the duplicate instead of the
   // old includes()+push()+sort() per insert.

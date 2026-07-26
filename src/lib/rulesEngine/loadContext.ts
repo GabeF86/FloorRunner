@@ -6,6 +6,7 @@ import { addDays, NEIGHBOR_WINDOW_DAYS, AVAIL_WINDOW_DAYS } from './shared';
 import { fetchCommittedAssignments } from './committedAssignments';
 import { isWorkingDay, ptoWeekdaysCovered, statedWorkingDaysCap, loadMajorHolidayDates } from './workDays';
 import { parseProviderLimits } from '@/lib/providerLimits';
+import { projectScenario } from './scenario';
 import { embedArray } from '@/lib/embed';
 import type {
   EvaluationContext,
@@ -314,6 +315,65 @@ export async function loadProviderLimitsValidationCtx(
   }
 }
 
+// ── Scenario-manifest validation context (2026-07-26, patch37) ──────────────
+// schedules.scenario_manifest → the projected prohibition/linkage data the
+// scenarioProhibition evaluator consumes. Mirrors the provider-limits loader:
+// DEGRADATION → null (feature off) on a missing column (pre-patch37), no
+// parent/row/manifest, an invalid manifest, or any load failure — SOFT flags
+// only, so quietly-absent is safe (console.warn'd for real failures).
+// No pool/shift-code filtering here: validation flags any assignment matching
+// any manifest provider, whether or not they were in the generation pool.
+
+export type ScenarioValidationCtx = NonNullable<EvaluationContext['scenarioCtx']>;
+
+export async function loadScenarioValidationCtx(
+  sb: SupabaseClient,
+  scheduleVersionId: string | null,
+): Promise<{ ctx: ScenarioValidationCtx | null; dbQueries: number }> {
+  let dbQueries = 0;
+  if (!scheduleVersionId) return { ctx: null, dbQueries };
+  try {
+    dbQueries++;
+    const { data: ver } = await sb
+      .from('schedule_versions')
+      .select('schedule_id')
+      .eq('id', scheduleVersionId)
+      .maybeSingle();
+    const scheduleId = (ver as { schedule_id?: string } | null)?.schedule_id;
+    if (!scheduleId) return { ctx: null, dbQueries };
+
+    dbQueries++;
+    const { data: sched, error: schedErr } = await sb
+      .from('schedules')
+      .select('scenario_manifest')
+      .eq('id', scheduleId)
+      .maybeSingle();
+    if (schedErr) {
+      if (!/column|scenario_manifest/i.test((schedErr as { message?: string }).message || '')) {
+        console.warn(`[rulesEngine] scenario_manifest validation context load failed: ${(schedErr as { message?: string }).message}`);
+      }
+      return { ctx: null, dbQueries };
+    }
+    const raw = (sched as { scenario_manifest?: unknown } | null)?.scenario_manifest;
+    if (raw == null) return { ctx: null, dbQueries };
+    const projected = projectScenario(raw, {});
+    if (!projected.scenario || projected.scenario.providers.size === 0) {
+      for (const w of projected.warnings) console.warn(`[rulesEngine] ${w}`);
+      return { ctx: null, dbQueries };
+    }
+    return {
+      ctx: {
+        providers: projected.scenario.providers,
+        neuroCode: projected.scenario.neuroCode,
+      },
+      dbQueries,
+    };
+  } catch (e) {
+    console.warn(`[rulesEngine] scenario_manifest validation context load threw: ${e instanceof Error ? e.message : String(e)}`);
+    return { ctx: null, dbQueries };
+  }
+}
+
 /**
  * Load everything an evaluator might need to validate a single (slot, provider).
  * One round-trip per logical entity — we accept the chattiness for clarity.
@@ -355,6 +415,7 @@ export async function loadContext(
   let neighborAssignments: EvaluationContext['neighborAssignments'] = [];
   let availability: AvailabilityRow[] = [];
   let providerLimitsCtx: EvaluationContext['providerLimitsCtx'] = null;
+  let scenarioCtx: EvaluationContext['scenarioCtx'] = null;
 
   // FAIL CLOSED on every context query below: a transient failure that
   // silently emptied availability/neighbors/cross-site/same-day data would let
@@ -433,6 +494,8 @@ export async function loadContext(
     // loader batchValidate uses (parity). Degrades to null (feature off);
     // only loaded when a provider is assigned (the evaluator no-ops otherwise).
     providerLimitsCtx = (await loadProviderLimitsValidationCtx(sb, scheduleVersionId)).ctx;
+    // Scenario soft-flag context (2026-07-26, patch37) — same posture.
+    scenarioCtx = (await loadScenarioValidationCtx(sb, scheduleVersionId)).ctx;
   }
 
   // 5. All assignments on the same date in the same schedule version
@@ -500,6 +563,7 @@ export async function loadContext(
     crossSiteAssignments,
     scheduleVersionId,
     providerLimitsCtx,
+    scenarioCtx,
     rules,
     shiftTypesByCode,
     shiftTypesById,

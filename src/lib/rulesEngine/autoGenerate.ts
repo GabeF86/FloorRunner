@@ -4,6 +4,10 @@
 import { loadGenerationContext } from './genContext';
 import { solve } from './solve';
 import { optimize } from './optimize';
+import { solveMultiStart } from './multiStart';
+import { computeScenarioReport } from './scenarioReport';
+import type { ScenarioReport } from './scenarioReport';
+import type { MultiStartResult } from './multiStart';
 import { commitPlan, commitValidation, commitMetadata, hasGenerationMetadataColumn } from './commit';
 import { scoreSolution } from './metrics';
 import { computeRequestGrants, computeCallRequestGrants } from './requestGrants';
@@ -43,6 +47,13 @@ export interface AutoGenerateOptions {
   // Continue generation ('all') — where the committed weekend placements are
   // SEEDS, hence immovable: reviewed weekends stay locked, by design.
   fillMode?: FillMode;
+  // Multi-start width for SCENARIO generations (2026-07-26): the number of
+  // seeded tie-break rotations (seeds 0..K-1) the fill-all path explores
+  // before keeping the lexicographically best spacing score. Ignored without
+  // a scenario manifest (single-run engine, byte-identical) and outside
+  // fill-all. Default DEFAULT_MULTI_START_K (8). NOTE: wallClockMs is the
+  // PER-START optimizer budget, so worst-case wall is K × wallClockMs.
+  multiStartK?: number;
 }
 
 // Pure: optimization is on by default; an explicit boolean overrides.
@@ -120,6 +131,12 @@ export interface GenerationResult {
   // open under caps ('provider-cap'). ABSENT unless the schedule states call
   // caps — additive, so pre-limits consumers see no new key.
   providerCapSummary?: ProviderCapSummary;
+  // Scenario audit (2026-07-26, patch37): per-provider target-vs-placed
+  // (exact fractions), prohibition violations (mandatory-retained seeds),
+  // linkage satisfaction, spacing stats, and the multi-start scoreboard
+  // (chosen seed + every start's score). ABSENT unless the schedule stores a
+  // scenario manifest — additive.
+  scenarioReport?: ScenarioReport;
   // Distinguishes a hard failure (no slots / empty pool / DB error) from a
   // legitimate partial fill. The route maps this to an HTTP status.
   ok: boolean;
@@ -174,21 +191,41 @@ export async function autoGenerate(
   let plan;
   let commit;
   let seedMetrics;
+  let multiStart: MultiStartResult | null = null;
   try {
     const fillMode = resolveFillMode(options.fillMode);
-    const seedPlan = solve(ctx, { fillMode });
-    seedMetrics = scoreSolution(seedPlan, ctx);
-    // Only 'all' optimizes. Obligatory and weekend-only both return the
-    // deterministic greedy plan — see the AutoGenerateOptions.fillMode note
-    // for why the optimizer must not run in either.
-    if (fillMode === 'all' && resolveOptimizeEnabled(options.optimize)) {
-      const optimized = optimize(ctx, {
+    if (ctx.scenario && fillMode === 'all') {
+      // ── scenario multi-start (2026-07-26) ──
+      // K seeded tie-break rotations of greedy+optimizer; keep the
+      // lexicographically best spacing score (multiStart.ts). Seed 0 is
+      // today's ordering, so K=1 degenerates to the single-run path.
+      // Non-'all' scenario fills keep the single deterministic greedy below
+      // (the optimizer never runs there anyway, and a partial/capped plan
+      // must not be spacing-raced).
+      multiStart = solveMultiStart(ctx, {
+        k: options.multiStartK,
+        fillMode,
+        optimizeEnabled: resolveOptimizeEnabled(options.optimize),
         wallClockMs: resolveWallClockMs(options.wallClockMs, process.env.SCHEDULING_OPTIMIZE_WALL_MS),
       });
-      plan = optimized.plan;
-      result.optimizeStats = optimized.stats;
+      plan = multiStart.plan;
+      seedMetrics = multiStart.seedMetrics;
+      if (multiStart.optimizeStats) result.optimizeStats = multiStart.optimizeStats;
     } else {
-      plan = seedPlan;
+      const seedPlan = solve(ctx, { fillMode });
+      seedMetrics = scoreSolution(seedPlan, ctx);
+      // Only 'all' optimizes. Obligatory and weekend-only both return the
+      // deterministic greedy plan — see the AutoGenerateOptions.fillMode note
+      // for why the optimizer must not run in either.
+      if (fillMode === 'all' && resolveOptimizeEnabled(options.optimize)) {
+        const optimized = optimize(ctx, {
+          wallClockMs: resolveWallClockMs(options.wallClockMs, process.env.SCHEDULING_OPTIMIZE_WALL_MS),
+        });
+        plan = optimized.plan;
+        result.optimizeStats = optimized.stats;
+      } else {
+        plan = seedPlan;
+      }
     }
     commit = await commitPlan(sb, plan);
   } catch (e: unknown) {
@@ -267,6 +304,9 @@ export async function autoGenerate(
   // the schedule states no call caps — the key stays absent).
   const capSummary = computeProviderCapSummary(ctx, plan);
   if (capSummary) result.providerCapSummary = capSummary;
+  // Scenario audit from the FINAL plan (null without a manifest — absent key).
+  const scenarioReport = computeScenarioReport(ctx, plan, multiStart);
+  if (scenarioReport) result.scenarioReport = scenarioReport;
   result.metrics = scoreSolution(plan, ctx);
   result.seedMetrics = seedMetrics;
   // Working-days report from the FINAL (post-optimize) plan + seeds — describes
