@@ -118,6 +118,14 @@ describe('dates and weekday derivation', () => {
     expect(r.prohibitions).toEqual([]);
     expect(r.warnings.some((w) => /unparsed/i.test(w))).toBe(true);
   });
+
+  it('an implausibly long range is dropped WITH a warning and leaves no stray end-date rule', () => {
+    const r = parse('No call 8/10-10/25', null);
+    // The 77-day range is refused (likely input error) — but its end date
+    // must not leak through as a bogus standalone one-day prohibition.
+    expect(r.prohibitions).toEqual([]);
+    expect(r.warnings.some((w) => /exceeds/i.test(w))).toBe(true);
+  });
 });
 
 describe('column M — mandatory semantics', () => {
@@ -186,6 +194,16 @@ describe('column M — mandatory semantics', () => {
     expect(link).toBeDefined();
     expect(link!.members).toEqual(['SAT:NEURO', 'SUN:NEURO']);
     expect(link!.details).toMatch(/exactly-one/);
+  });
+
+  it('a "prefers" clause inside a hard sentence becomes a preference while the hard part still binds', () => {
+    const r = parse(null, 'Must be C1 on 9/4, prefers Friday');
+    expect(r.fixedAssignments).toEqual([
+      expect.objectContaining({ date: '2026-09-04', code: 'C1' }),
+    ]);
+    expect(r.preferences).toEqual([
+      expect.objectContaining({ kind: 'weekday', weekday: 'FRI' }),
+    ]);
   });
 
   it('an "ideally" clause inside a hard sentence becomes a preference while the hard part still binds (Simon Neuro pair)', () => {

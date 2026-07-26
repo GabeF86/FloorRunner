@@ -167,6 +167,10 @@ function scanDates(text: string, defaultYear: number, warnings: string[]): DateI
           const span = isoRange(lo, hi);
           if (span.length > MAX_RANGE_DAYS) {
             warnings.push(`range ${lo}..${hi} exceeds ${MAX_RANGE_DAYS} days; ignored as a likely input error`);
+            // Consume the whole range text so its end date is not re-scanned
+            // as a bogus standalone date.
+            end += connector[0].length + e[0].length;
+            re.lastIndex = end;
             continue;
           }
           dates = span;
@@ -309,14 +313,17 @@ function validateWeekdayWords(
 // ---------------------------------------------------------------------------
 
 function splitSoft(segment: string): { hard: string; soft: string | null } {
-  const m = /\bideally\b/i.exec(segment);
+  // Both soft markers split the segment: everything before the marker stays
+  // hard, everything after is the soft preference. A hard clause sharing a
+  // segment with "prefers"/"ideally" ("Must be C1 on 9/4, prefers Friday")
+  // must still bind — never silently demote it to a preference.
+  const m = /\bideally\b|\bprefer(?:s|red)?\b/i.exec(segment);
   if (m) {
     return {
       hard: segment.slice(0, m.index).replace(/[\s,;]+$/, ''),
       soft: segment.slice(m.index + m[0].length).trim(),
     };
   }
-  if (/\bprefer(?:s|red)?\b/i.test(segment)) return { hard: '', soft: segment };
   return { hard: segment, soft: null };
 }
 
