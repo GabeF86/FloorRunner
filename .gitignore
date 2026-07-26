@@ -12,3 +12,6 @@ tsconfig.tsbuildinfo
 
 # Superpowers brainstorming scratch (mockups, visual companion sessions)
 .superpowers/
+
+# Generated import/schedule artifacts (scripts/importPaoliBlock.ts etc.)
+artifacts/

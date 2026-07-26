@@ -1,0 +1,12 @@
+[
+  { "id": "sample-amusa", "name": "Amusa" },
+  { "id": "sample-farkas", "name": "Farkas" },
+  { "id": "sample-kalawadia", "name": "Kalawadia" },
+  { "id": "sample-mojica", "name": "Mojica" },
+  { "id": "sample-lin", "name": "Lin" },
+  { "id": "sample-havildar", "name": "Havildar" },
+  { "id": "sample-horan", "name": "Horan" },
+  { "id": "sample-simon", "name": "Simon" },
+  { "id": "sample-hussain", "name": "Hussain" },
+  { "id": "sample-jones", "name": "Jones" }
+]
