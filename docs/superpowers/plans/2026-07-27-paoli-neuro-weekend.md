@@ -550,13 +550,21 @@ describe('neuro pair FTE gate', () => {
     expect(filledBy(plan, 'sun-c3')).toBe('three4');
   });
 
-  it('a 0.5 anchor takes Saturday ONLY, and the skip is recorded', () => {
+  // CORRECTED 2026-07-27 (caught during execution): the first draft of this
+  // test asserted `filledBy(plan, 'sun-c3') === null`, which CANNOT hold at
+  // this task. The FTE gate suppresses the chain LINK; the main construction
+  // loop then reaches the orphaned Sunday as an ordinary open call slot and
+  // fills it. Only Task 5's eligibility gate produces an empty Sunday — and
+  // Task 5's own tests below pin exactly that. What this task guarantees is
+  // that the Sunday is no longer part of the DESIGNED PAIR, so assert that.
+  it('a 0.5 anchor takes Saturday alone — the Sunday is no longer chained to them', () => {
     const ctx = buildCtx(slots(), [prov('half', 0.5)], { callPattern: NEURO_DOC });
     const plan = solve(ctx);
     expect(filledBy(plan, 'sat-c3')).toBe('half');
-    expect(filledBy(plan, 'sun-c3')).toBe(null);
     expect(plan.skippedDerived).toContainEqual(
       { date: SUN, code: 'C3', provider_id: 'half', reason: 'fte-gated' });
+    // Un-gated, this slot is placed by the chain with source 'weekend-chain'.
+    expect(plan.assignments.find(a => a.slot_id === 'sun-c3')?.source).not.toBe('weekend-chain');
   });
 });
 ```
@@ -564,7 +572,7 @@ describe('neuro pair FTE gate', () => {
 - [ ] **Step 2: Run the test to verify it fails**
 
 Run: `npx vitest run src/lib/rulesEngine/neuroWeekendPattern.test.ts`
-Expected: the first two PASS; the third FAILS — the 0.5 doc currently takes Sunday too, so `filledBy(plan, 'sun-c3')` is `'half'`, not `null`.
+Expected: the first two PASS; the third FAILS — with no gate, nothing is recorded in `skippedDerived` (`Received: Array []`) and the Sunday is placed by the chain with source `weekend-chain`.
 
 - [ ] **Step 3: Write the implementation**
 
