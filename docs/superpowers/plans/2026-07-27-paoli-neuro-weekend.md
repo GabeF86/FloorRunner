@@ -781,9 +781,23 @@ Append to `src/lib/rulesEngine/neuroWeekendPattern.test.ts`:
 
 ```ts
 describe('neuro requirement steering', () => {
-  // Two neuro weekends, one 1.0 doc and one 0.75 doc. The 0.75 doc owes a
-  // full weekend and the 1.0 doc owes nothing, so the 0.75 doc must get one
-  // of the two weekends rather than losing both to fairness.
+  // CORRECTED 2026-07-27 (caught during execution — the THIRD fixture defect
+  // in this plan). As first drafted this fixture PASSED before the steering
+  // existed: with one doc per weekend, per-FTE fairness already alternates
+  // them (the 1.0 doc takes weekend 1, its bucket ratio rises, the 0.75 doc
+  // wins weekend 2 unaided), so the tier was never exercised. Adding a second
+  // full-timer is NOT enough either — the 0.75 doc then loses only on the
+  // final id.localeCompare tiebreak, which is incidental rather than the
+  // fairness term the steering exists to overcome. The fixture must:
+  //   • give the full-timers enough weekends that fairness never reaches the
+  //     0.75 doc (two full-timers for two weekends),
+  //   • give the 0.75 doc PRIOR weekend C3 history so its per-FTE ratio
+  //     (2/0.75 = 2.67) is strictly worse than either full-timer's 0, and
+  //   • name the full-timers so the id tiebreak FAVOURS the 0.75 doc
+  //     (e.g. 'zfull1'/'zfull2'), leaving the neuro tier as the only thing
+  //     that can win them a weekend.
+  // Verify the pre-implementation run shows the 0.75 doc holding ZERO of the
+  // four slots before writing any implementation.
   const SAT2 = '2026-08-22';
   const SUN2 = '2026-08-23';
   const twoWeekends = () => [
@@ -798,8 +812,18 @@ describe('neuro requirement steering', () => {
       { callPattern: NEURO_DOC });
     const plan = solve(ctx);
     const held = plan.assignments.filter(a => a.provider_id === 'three4');
-    expect(held.length).toBeGreaterThanOrEqual(2); // a full Sat+Sun pair
+    // STRENGTHENED 2026-07-27: `>= 2` accepts two stray SATURDAYS — two half
+    // credits that discharge nothing. Pin the designed pair by slot id.
+    expect(held.map(a => a.slot_id)).toEqual(['sat1', 'sun1']);
   });
+
+  // Two further cases the plan did not have, both required:
+  //   • 'steering does not gate' — the OTHER weekend still fills, with
+  //     `unfilled` and `skippedDerived` both empty. Without this, a steering
+  //     term that hardened into eligibility would still pass the test above.
+  //   • 'inert without a neuroWeekend config' — the identical fixture minus
+  //     the config reproduces the pre-steering result exactly. Direct proof
+  //     of inertness rather than inferring it from golden parity.
 });
 ```
 
