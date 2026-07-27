@@ -10,7 +10,10 @@ import {
 // Day-math for the Call Counts modal (bucket day counts, Days Off, Working
 // Days) — pure helpers assembling the single-homed workDays/plannerMath
 // contracts; the modal only aggregates and renders.
-import { bucketDayCounts, daysOffFor, creditedWorkingDayTotals } from '@/lib/callCountDays';
+import {
+  bucketDayCounts, daysOffFor, creditedWorkingDayTotals,
+  weekendUnitTotal, weekendsWorkedTotals, requiredWeekendsFor,
+} from '@/lib/callCountDays';
 // rangeComposition = the planner card's single-homed block composition
 // (weekdays minus major holidays → the working-day set).
 import { rangeComposition } from '@/lib/plannerMath';
@@ -47,7 +50,7 @@ import { GRID_ZOOM_LEVELS, loadGridZoom, saveGridZoom, type GridZoomLevel } from
 // row cell (parent_call_code lookup — no new grid rows); weights fold under
 // the parent for the Call Counts modal via the single-homed callBurden math.
 import { isSegmentType, segmentKey, groupSegmentSlots, segmentTag } from './gridSegments';
-import { callBurdenWeight, parentCallCodeOf, formatCallWeight } from '@/lib/callBurden';
+import { WEIGHT_EPSILON, callBurdenWeight, parentCallCodeOf, formatCallWeight } from '@/lib/callBurden';
 
 /* ── Interfaces ──────────────────────────────────────────────────────────── */
 
@@ -3337,6 +3340,8 @@ function CallCountsModal({ grid, onClose }: { grid: GridData; onClose: () => voi
   // the TOTAL-level obligation below is rounded. The WORKDAY columns
   // (Days Off / Working Days required) deliberately stay on census.fteFor —
   // the working-days contract applies to everyone, day docs included.
+  // 2026-07-27: the per-cell "(1.2)" parenthetical is gone at Gabriel's
+  // request — expectedFor now feeds ONLY the Expected footer row.
   const expectedFor = (pid: string, bucket: string, code: string) =>
     fteWeightedTarget(blockTotals[`${bucket}|${code}`] || 0, census.effectivePar, census.poolFteFor(pid));
   // TOTAL-level fractional expected — straight from the shared census (all
@@ -3348,6 +3353,30 @@ function CallCountsModal({ grid, onClose }: { grid: GridData; onClose: () => voi
     for (const p of providers) t += expectedFor(p.id, bucket, code);
     return t;
   };
+
+  // Obligatory Weekends (Gabriel 2026-07-27) — "actual / required", same
+  // shape as Working Days but on HALF-weekend granularity: a 12h Saturday or
+  // Sunday shift is half a weekend, so a 0.5 FTE owes 1.5 weekends and takes
+  // the 0.5 as one 12h weekend shift rather than being rounded up to 2.
+  // A weekend = the Fri/Sat/Sun group; the block's weekend UNITS come from
+  // the slots (widest weekend day = people that weekend needs), and the
+  // requirement is the calls' par-authoritative contract resolved to the
+  // nearest half: 11 weekends × 3 tiers = 33 units at par 11 → 1.0 FTE owes
+  // 3, 0.75 owes 2.5, 0.5 owes 1.5. Actual = weekend call weight capped at
+  // one per weekend, straight off the shared census's call records (so it
+  // sees exactly what the call columns see — split segments and
+  // holiday-dated weekend calls alike).
+  const weekendUnits = weekendUnitTotal(grid.slots);
+  const weekendsByPid = weekendsWorkedTotals(census.callRecords);
+  const weekendsForPid = (pid: string) => weekendsByPid[pid] || 0;
+  const requiredWeekendsForPid = (pid: string) =>
+    requiredWeekendsFor(weekendUnits, census.effectivePar, census.poolFteFor(pid));
+  const expectedWeekendsForPid = (pid: string) =>
+    fteWeightedTarget(weekendUnits, census.effectivePar, census.poolFteFor(pid));
+  // Over the obligation = the paid-pickup layer. EPSILON so a half-weekend
+  // sum that lands a hair past its requirement isn't painted red.
+  const weekendsOver = (pid: string) =>
+    weekendsForPid(pid) > requiredWeekendsForPid(pid) + WEIGHT_EPSILON;
 
   // Whole-number obligations, TOTAL level (2026-07-17): a provider's
   // obligation = round(total expected) — round-half-up. Extra Calls = only
@@ -3440,7 +3469,7 @@ function CallCountsModal({ grid, onClose }: { grid: GridData; onClose: () => voi
           <div>
             <div style={{ fontSize: 16, fontWeight: 800, color: 'var(--text)' }}>Call Counts</div>
             <div style={{ fontSize: 12, color: 'var(--text-dim)', marginTop: 2 }}>
-              {grid.schedule.schedule_name} — per provider, per day bucket, per call tier. PTO days (M–F only), FTE days off, and credited working days shown separately.
+              {grid.schedule.schedule_name} — per provider, per day bucket, per call tier. Obligatory weekends, PTO days (M–F only), FTE days off, and credited working days shown separately.
             </div>
             <div
               style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 4, fontWeight: 600 }}
@@ -3501,6 +3530,13 @@ function CallCountsModal({ grid, onClose }: { grid: GridData; onClose: () => voi
               <th rowSpan={2} style={{
                 padding: '6px 10px', textAlign: 'center', fontWeight: 700,
                 borderBottom: '1px solid var(--border)', borderLeft: '1px solid var(--border)',
+                cursor: 'help',
+              }} title={`actual / required, in HALF weekends — a 12h Saturday or Sunday shift is 0.5, a whole weekend call or a full Fri/Sat/Sun chain is 1 (holding all three tiers of one weekend is still one weekend). Actual = weekend call held on this draft. Required = weekend units ÷ par × FTE, resolved to the nearest half — this block holds ${formatCallWeight(weekendUnits)} weekend units (each weekend counts the people it needs: its widest day's call tiers), at par ${fmtFte(census.effectivePar)}. An 11-week block of 3-tier weekends = 33 units, so a 1.0 FTE owes 3 weekends, a 0.75 FTE 2.5, a 0.5 FTE 1.5 — the halves are taken as 12h weekend shifts, never rounded up to a whole weekend. Red = past the obligation; with the pool below par those extra weekends are the paid-pickup layer, same as extra calls.`}>
+                Obligatory Weekends<br/><span style={{ fontSize: 10, fontWeight: 500, opacity: 0.7 }}>actual / required</span>
+              </th>
+              <th rowSpan={2} style={{
+                padding: '6px 10px', textAlign: 'center', fontWeight: 700,
+                borderBottom: '1px solid var(--border)', borderLeft: '1px solid var(--border)',
                 color: '#fbbf24',
               }}>PTO Days<br/><span style={{ fontSize: 10, fontWeight: 500, opacity: 0.7 }}>(M–F only)</span></th>
               <th rowSpan={2} style={{
@@ -3550,7 +3586,6 @@ function CallCountsModal({ grid, onClose }: { grid: GridData; onClose: () => voi
                 </td>
                 {BUCKETS.map(b => CODES.map(c => {
                   const n = getCount(p.id, b.key, c);
-                  const exp = expectedFor(p.id, b.key, c);
                   return (
                     <td key={`${b.key}|${c}`} style={{
                       padding: '6px 8px', textAlign: 'center', whiteSpace: 'nowrap',
@@ -3559,11 +3594,6 @@ function CallCountsModal({ grid, onClose }: { grid: GridData; onClose: () => voi
                       fontWeight: n > 0 ? 600 : 400,
                     }}>
                       {n ? formatCallWeight(n) : '—'}
-                      {exp >= EXPECTED_DISPLAY_MIN && (
-                        <span style={{ fontSize: 10, opacity: 0.7, marginLeft: 3, fontWeight: 400 }}>
-                          ({exp.toFixed(1)})
-                        </span>
-                      )}
                     </td>
                   );
                 }))}
@@ -3590,6 +3620,19 @@ function CallCountsModal({ grid, onClose }: { grid: GridData; onClose: () => voi
                   padding: '6px 10px', textAlign: 'center',
                   borderLeft: '1px solid var(--border)', fontWeight: 700, color: 'var(--text)',
                 }}>{formatCallWeight(rowTotal(p.id))}</td>
+                <td
+                  title={`Worked ${formatCallWeight(weekendsForPid(p.id))} of ${formatCallWeight(requiredWeekendsForPid(p.id))} obligatory weekends (unrounded ${expectedWeekendsForPid(p.id).toFixed(2)}). A 12h Saturday or Sunday shift is half a weekend.`}
+                  style={{
+                    padding: '6px 10px', textAlign: 'center', whiteSpace: 'nowrap',
+                    borderLeft: '1px solid var(--border)', fontWeight: 600, cursor: 'help',
+                    color: weekendsOver(p.id) ? '#ef4444'
+                      : weekendsForPid(p.id) > 0 || requiredWeekendsForPid(p.id) > 0 ? 'var(--text)' : 'var(--text-dim)',
+                  }}
+                >
+                  {weekendsForPid(p.id) || requiredWeekendsForPid(p.id)
+                    ? `${formatCallWeight(weekendsForPid(p.id))} / ${formatCallWeight(requiredWeekendsForPid(p.id))}`
+                    : '—'}
+                </td>
                 <td style={{
                   padding: '6px 10px', textAlign: 'center',
                   borderLeft: '1px solid var(--border)', fontWeight: 600,
@@ -3648,6 +3691,14 @@ function CallCountsModal({ grid, onClose }: { grid: GridData; onClose: () => voi
                 borderLeft: '1px solid var(--border)', borderTop: '2px solid var(--border)',
               }}>{formatCallWeight(providers.reduce((s, p) => s + rowTotal(p.id), 0))}</td>
               <td style={{
+                padding: '8px 10px', textAlign: 'center', whiteSpace: 'nowrap',
+                borderLeft: '1px solid var(--border)', borderTop: '2px solid var(--border)',
+              }}>{(() => {
+                const a = providers.reduce((s, p) => s + weekendsForPid(p.id), 0);
+                const r = providers.reduce((s, p) => s + requiredWeekendsForPid(p.id), 0);
+                return a || r ? `${formatCallWeight(a)} / ${formatCallWeight(r)}` : '—';
+              })()}</td>
+              <td style={{
                 padding: '8px 10px', textAlign: 'center',
                 borderLeft: '1px solid var(--border)', borderTop: '2px solid var(--border)',
                 color: '#fbbf24',
@@ -3695,6 +3746,12 @@ function CallCountsModal({ grid, onClose }: { grid: GridData; onClose: () => voi
               </td>
               <td style={{ padding: '6px 10px', textAlign: 'center', borderLeft: '1px solid var(--border)' }}>
                 {providers.reduce((s, p) => s + rowExpected(p.id), 0).toFixed(1)}
+              </td>
+              <td
+                title={`Sum of the fractional weekend obligations before rounding, out of ${formatCallWeight(weekendUnits)} weekend units in the block — a gap is the paid-pickup layer (pool ΣFTE below the par).`}
+                style={{ padding: '6px 10px', textAlign: 'center', borderLeft: '1px solid var(--border)', cursor: 'help' }}
+              >
+                {providers.reduce((s, p) => s + expectedWeekendsForPid(p.id), 0).toFixed(1)}
               </td>
               <td style={{ padding: '6px 10px', textAlign: 'center', borderLeft: '1px solid var(--border)' }}>—</td>
               <td style={{ padding: '6px 10px', textAlign: 'center', borderLeft: '1px solid var(--border)' }}>—</td>
