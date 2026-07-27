@@ -550,13 +550,21 @@ describe('neuro pair FTE gate', () => {
     expect(filledBy(plan, 'sun-c3')).toBe('three4');
   });
 
-  it('a 0.5 anchor takes Saturday ONLY, and the skip is recorded', () => {
+  // CORRECTED 2026-07-27 (caught during execution): the first draft of this
+  // test asserted `filledBy(plan, 'sun-c3') === null`, which CANNOT hold at
+  // this task. The FTE gate suppresses the chain LINK; the main construction
+  // loop then reaches the orphaned Sunday as an ordinary open call slot and
+  // fills it. Only Task 5's eligibility gate produces an empty Sunday — and
+  // Task 5's own tests below pin exactly that. What this task guarantees is
+  // that the Sunday is no longer part of the DESIGNED PAIR, so assert that.
+  it('a 0.5 anchor takes Saturday alone — the Sunday is no longer chained to them', () => {
     const ctx = buildCtx(slots(), [prov('half', 0.5)], { callPattern: NEURO_DOC });
     const plan = solve(ctx);
     expect(filledBy(plan, 'sat-c3')).toBe('half');
-    expect(filledBy(plan, 'sun-c3')).toBe(null);
     expect(plan.skippedDerived).toContainEqual(
       { date: SUN, code: 'C3', provider_id: 'half', reason: 'fte-gated' });
+    // Un-gated, this slot is placed by the chain with source 'weekend-chain'.
+    expect(plan.assignments.find(a => a.slot_id === 'sun-c3')?.source).not.toBe('weekend-chain');
   });
 });
 ```
@@ -564,7 +572,7 @@ describe('neuro pair FTE gate', () => {
 - [ ] **Step 2: Run the test to verify it fails**
 
 Run: `npx vitest run src/lib/rulesEngine/neuroWeekendPattern.test.ts`
-Expected: the first two PASS; the third FAILS — the 0.5 doc currently takes Sunday too, so `filledBy(plan, 'sun-c3')` is `'half'`, not `null`.
+Expected: the first two PASS; the third FAILS — with no gate, nothing is recorded in `skippedDerived` (`Received: Array []`) and the Sunday is placed by the chain with source `weekend-chain`.
 
 - [ ] **Step 3: Write the implementation**
 
@@ -649,11 +657,12 @@ git commit -m "solver: FTE-gated block-chain links leave a neuro remainder slot"
 
 **Files:**
 - Modify: `src/lib/rulesEngine/eligibility.ts` (add gate after the scenario gates, ~line 216)
-- Modify: `src/lib/rulesEngine/types.ts` (`EligibilityResult.reason` union)
-- Modify: `src/lib/rulesEngine/genTypes.ts` (`GenerationContext` — expose the neuro config; see step 3)
+- Modify: `src/lib/rulesEngine/genTypes.ts` — `EligibilityResult.reason` is the `RejectionReason` union, which lives HERE, not in `types.ts` (corrected 2026-07-27 during execution; `types.ts` exists but is unrelated). `GenerationContext` already carries `callPattern?`, so no new context field is needed.
 - Test: `src/lib/rulesEngine/neuroWeekendPattern.test.ts` (extend)
 
 - [ ] **Step 1: Write the failing test**
+
+CORRECTED 2026-07-27 (caught during execution, the second fixture defect in this plan): the fixtures below MUST close Saturday availability for every doc who should not anchor. Without that shaping the 1.0 doc wins the Saturday anchor, the pair FIRES for them (1.0 clears the 0.75 floor), `neuroRemainderSlotIds` stays empty, and the gate under test is never exercised — all three tests fail on the Saturday assertion rather than the behavior they claim to check. Build the fixtures with `prov('full', 1, { available_weekdays: NO_SATURDAY })` (index 6 false), which forces the sub-floor doc onto the anchor while leaving the excluded docs fully eligible for the leftover Sunday — exactly the candidate the gate must refuse. Do NOT rely on Task 6's steering to produce this; test 3 has no `neuroWeekend` config and therefore no steering term by construction.
 
 Append to `src/lib/rulesEngine/neuroWeekendPattern.test.ts`:
 
@@ -675,8 +684,12 @@ describe('neuro remainder gate', () => {
       [prov('half', 0.5), prov('three4', 0.75), prov('full', 1)], { callPattern: NEURO_DOC });
     const plan = solve(ctx);
     const sun = filledBy(plan, 'sun-c3');
+    // STRENGTHENED 2026-07-27: `not.toBe('full')` plus the disjunction below
+    // both pass VACUOUSLY on an empty Sunday, so as first drafted this test
+    // would have passed even if the gate wrongly refused everyone. Test 1
+    // pins refusal; this one must pin ADMISSION.
+    expect(sun).toBe('three4');
     expect(sun).not.toBe('full');
-    expect(sun === null || sun === 'three4' || sun === 'half').toBe(true);
   });
 
   it('the gate is inert without a neuroWeekend config', () => {
@@ -768,9 +781,23 @@ Append to `src/lib/rulesEngine/neuroWeekendPattern.test.ts`:
 
 ```ts
 describe('neuro requirement steering', () => {
-  // Two neuro weekends, one 1.0 doc and one 0.75 doc. The 0.75 doc owes a
-  // full weekend and the 1.0 doc owes nothing, so the 0.75 doc must get one
-  // of the two weekends rather than losing both to fairness.
+  // CORRECTED 2026-07-27 (caught during execution — the THIRD fixture defect
+  // in this plan). As first drafted this fixture PASSED before the steering
+  // existed: with one doc per weekend, per-FTE fairness already alternates
+  // them (the 1.0 doc takes weekend 1, its bucket ratio rises, the 0.75 doc
+  // wins weekend 2 unaided), so the tier was never exercised. Adding a second
+  // full-timer is NOT enough either — the 0.75 doc then loses only on the
+  // final id.localeCompare tiebreak, which is incidental rather than the
+  // fairness term the steering exists to overcome. The fixture must:
+  //   • give the full-timers enough weekends that fairness never reaches the
+  //     0.75 doc (two full-timers for two weekends),
+  //   • give the 0.75 doc PRIOR weekend C3 history so its per-FTE ratio
+  //     (2/0.75 = 2.67) is strictly worse than either full-timer's 0, and
+  //   • name the full-timers so the id tiebreak FAVOURS the 0.75 doc
+  //     (e.g. 'zfull1'/'zfull2'), leaving the neuro tier as the only thing
+  //     that can win them a weekend.
+  // Verify the pre-implementation run shows the 0.75 doc holding ZERO of the
+  // four slots before writing any implementation.
   const SAT2 = '2026-08-22';
   const SUN2 = '2026-08-23';
   const twoWeekends = () => [
@@ -785,8 +812,18 @@ describe('neuro requirement steering', () => {
       { callPattern: NEURO_DOC });
     const plan = solve(ctx);
     const held = plan.assignments.filter(a => a.provider_id === 'three4');
-    expect(held.length).toBeGreaterThanOrEqual(2); // a full Sat+Sun pair
+    // STRENGTHENED 2026-07-27: `>= 2` accepts two stray SATURDAYS — two half
+    // credits that discharge nothing. Pin the designed pair by slot id.
+    expect(held.map(a => a.slot_id)).toEqual(['sat1', 'sun1']);
   });
+
+  // Two further cases the plan did not have, both required:
+  //   • 'steering does not gate' — the OTHER weekend still fills, with
+  //     `unfilled` and `skippedDerived` both empty. Without this, a steering
+  //     term that hardened into eligibility would still pass the test above.
+  //   • 'inert without a neuroWeekend config' — the identical fixture minus
+  //     the config reproduces the pre-steering result exactly. Direct proof
+  //     of inertness rather than inferring it from golden parity.
 });
 ```
 
@@ -931,7 +968,19 @@ After the block that appends `plan.requestWarnings` to `result.warnings` (~line 
   // NEW array (result.warnings may alias ctx.warnings, so never push).
   const neuroCfg = ctx.callPattern?.neuroWeekend;
   if (neuroCfg) {
-    const placements = plan.assignments.map(a => ({
+    // CORRECTED 2026-07-27 (caught during execution): credit BOTH the plan's
+    // assignments AND ctx.seedAssignments. Plan-only is wrong on Paoli's
+    // primary path — a Continue ('all') run re-solves only the OPEN slots, so
+    // weekends committed by the earlier weekend-only run return as SEEDS
+    // (genContext ~:960) and never appear in plan.assignments. Plan-only
+    // would report every 0.75 doc short their entire weekend on the very run
+    // that finalizes the block. It also breaks this module's stated
+    // invariant: the eligibility gate and the scoring tier both judge credit
+    // from state.callCodesByDate, which seedSolveState populates FROM SEEDS,
+    // so the gate would refuse a remainder as "already satisfied" while the
+    // banner called the same doc short. Double-counting is structurally
+    // impossible — creditedUnitsByProvider folds dates into a Set.
+    const placements = [...plan.assignments, ...ctx.seedAssignments].map(a => ({
       provider_id: a.provider_id,
       slot_date: a.slot_date,
       code: a.shift_type_code,

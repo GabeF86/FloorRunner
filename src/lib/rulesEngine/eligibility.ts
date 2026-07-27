@@ -9,6 +9,7 @@ import {
 import { CLASSIC_PATTERN, postCallBlockOffsets } from './callPattern';
 import { exceedsWorkDayCap } from './workDays';
 import { scenarioProhibits, violatesHardLinkage } from './scenario';
+import { isShortByHalfUnit, creditedUnitsFromLedger } from './neuroWeekend';
 import { parentCallCodeOf } from '@/lib/callBurden';
 import type {
   GenerationContext, SlotToFill, CandidateProvider, SolveState,
@@ -212,6 +213,49 @@ export function evaluateEligibility(
       )) {
         return { eligible: false, reason: 'scenario-linkage' };
       }
+    }
+  }
+
+  // Neuro remainder gate (2026-07-27): a slot the FTE gate left unpaired is
+  // open ONLY to a provider still short of their neuro requirement by at
+  // least half a unit. 1.0 docs owe 0, so a full-FTE doc can never be pulled
+  // into a half neuro weekend; with nobody short the slot stays unfilled for
+  // the admin, which is the stated behavior. Inert unless the pattern states
+  // a neuroWeekend config AND the FTE gate actually fired.
+  //
+  // SCOPED TO THE NEURO CODE. applyBlockChains mints a remainder for ANY
+  // minFte link whatever its code, but the credit this gate judges by is
+  // neuro-only (creditedUnitsByProvider filters on config.code). Unscoped, a
+  // minFte link on some other code would be judged by C3 credit: the sub-floor
+  // anchor reads as "short" (their C5 Saturday earns no C3 credit) and is
+  // re-admitted to the very day the FTE gate just denied them, while the 1.0
+  // doc is refused for owing no NEURO units. Off its own code the gate stays
+  // out of the way and the remainder is an ordinary open slot — a second gated
+  // pair wanting a requirement of its own must bring its own config.
+  //
+  // BINDS ON EVERY GateSet, deliberately unlike the workdays cap below (which
+  // waives 'call-no-quota' to avoid self-rejecting an incumbent). That hazard
+  // cannot arise here: the ONLY writer of neuroRemainderSlotIds is
+  // applyBlockChains, which runs solely inside solve()'s construction loop.
+  // The optimizer gates against seedSolveState (optimize.ts), which starts from
+  // emptySolveState and never populates the set, so this gate is structurally
+  // inert on every pin re-validation. That inertness is HARMLESS only because
+  // `optimizerMovableDayTypes` is ['weekday','friday'] in every shipped pattern
+  // (CLASSIC_PATTERN and WEEKEND_V2_PATTERN both), which keeps Sat/Sun neuro C3
+  // out of the optimizer's move set entirely — adding 'saturday'/'sunday' there
+  // would let a hill-climb move hand a neuro remainder to a full-FTE doc with
+  // this gate silently open and no test failing. Whoever widens that list owes
+  // the optimizer a remainder-set seed (or this gate a state-independent form).
+  // The two live-state 'call-no-quota' users
+  // — block-chain call links and quota relaxation — are exactly the paths that
+  // MUST keep honoring it: waiving it there would let relaxation hand a neuro
+  // remainder to a full-FTE doc, defeating the feature.
+  const neuroCfg = ctx.callPattern?.neuroWeekend;
+  if (neuroCfg && slot.shift_type_code === neuroCfg.code
+    && state.neuroRemainderSlotIds.has(slot.slot_id)) {
+    const credited = creditedUnitsFromLedger(state.callCodesByDate.get(p.id), p.id, neuroCfg);
+    if (!isShortByHalfUnit(p.fte_value, credited, neuroCfg)) {
+      return { eligible: false, reason: 'neuro-remainder' };
     }
   }
 

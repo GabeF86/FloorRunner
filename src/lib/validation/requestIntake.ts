@@ -101,27 +101,12 @@ export function windowRequestDates(
 // weekend call". CALL-shift requests stay one request per DATE.
 // The engine is untouched: its soft-avoid / fair-denial logic reads DATES.
 
-function addDays(date: string, days: number): string {
-  const d = new Date(date + 'T00:00:00Z');
-  d.setUTCDate(d.getUTCDate() + days);
-  return d.toISOString().slice(0, 10);
-}
-
-/** Saturday (YYYY-MM-DD) of the Fri/Sat/Sun weekend containing `date`;
- * null for Mon–Thu. */
-export function weekendGroupKey(date: string): string | null {
-  const dow = new Date(date + 'T00:00:00Z').getUTCDay();
-  if (dow === 5) return addDays(date, 1);   // Fri → its Saturday
-  if (dow === 6) return date;               // Sat → itself
-  if (dow === 0) return addDays(date, -1);  // Sun → its Saturday
-  return null;
-}
-
-/** The [Fri, Sat, Sun] dates of `date`'s weekend group; [] for Mon–Thu. */
-export function weekendGroupDates(date: string): string[] {
-  const sat = weekendGroupKey(date);
-  return sat ? [addDays(sat, -1), sat, addDays(sat, 1)] : [];
-}
+// The Fri/Sat/Sun grouping itself now lives in lib/weekendGroup.ts (pure,
+// zod-free) so non-request surfaces — the Call Counts modal's Obligatory
+// Weekends column — share this exact definition. Re-exported here because
+// this module was its original home and callers import it from here.
+export { weekendGroupKey, weekendGroupDates } from '../weekendGroup';
+import { weekendGroupKey } from '../weekendGroup';
 
 /** Cap unit for one no-call date: weekday → the date itself; Fri/Sat/Sun →
  * the weekend's Saturday key (so the three collapse into one unit). */

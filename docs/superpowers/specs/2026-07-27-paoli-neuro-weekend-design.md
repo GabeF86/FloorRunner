@@ -2,6 +2,19 @@
 
 **Date:** 2026-07-27 · **Status:** approved (Gabriel, this session) · **Scope:** Paoli only — Friday C3 slot removal, weekendV2 pattern edit, one new `CallPatternDoc` config block, one new pure module, three engine touchpoints, one generation-report addition, one DB patch.
 
+> **PARTIALLY SUPERSEDED — 2026-07-27, same day, after this spec was built.**
+> The FTE→requirement mapping below is out of date. Gabriel, verbatim:
+> *"Every call taker should be given a neuro weekend call, except for horan it
+> should only be one weekend day of neuro."* The requirement is now UNIVERSAL:
+> the `{ minFte: 1, units: 0 }` band that exempted full-timers is GONE, so every
+> 0.75+ doc owes one full neuro weekend per block and Horan (0.5) owes a single
+> weekend day. Live bands are in `src/lib/rulesEngine/patterns/weekendV2.ts`.
+> Everything else in this spec still holds — the Sat+Sun shape, the removal of
+> the Friday neuro line, the half-weekend unit, the 0.75 link gate, the
+> remainder mechanism and every module boundary are unchanged; only WHO owes
+> changed. Read the statements about "1.0 docs have no requirement" (Intent
+> bullets 3–5, and the remainder-gate paragraph in step 5) as history.
+
 ## Intent
 
 Gabriel, verbatim: *"I want the Friday C2 doc to cross cover Neuro call on fridays and the designated neuro call doc is assigned saturday and sunday neuro. In terms of the partial FTE docs, the 0.75 docs should be assigned a neuro weekend but the 0.5 FTE doc should get either a saturday or a sunday not both."*
@@ -98,6 +111,7 @@ A 0.75 doc who takes a leftover single day banks 0.5 and still owes 0.5 — two 
 
 ## Rollout
 
-- Apply the patch via the project-scoped `supabase-floorrunner` MCP (ref `qhwdbtixhzdsgwwtcfrm` — verify before applying), then push `main` promptly so deployed code matches the live schema. Template row and pattern doc must change together: the deactivated Friday C3 with an unedited pattern logs phantom skips; the edited pattern with a live Friday C3 leaves a Friday neuro slot nobody chains.
+- **ORDER: push `main` FIRST, then apply the patch.** CORRECTED 2026-07-27 — this file originally said the opposite, and that order actively misgenerates. `CallPatternDocSchema` is `.strict()`, so the PRE-change deployed code REJECTS the new doc (`Unrecognized key: "minFte"`, `Unrecognized key: "neuroWeekend"`). `genContext` turns a parse failure into `callPattern = undefined` plus a warning, and `solve()` then falls back to `CLASSIC_PATTERN` — so in a DB-first window every Paoli generation produces a classic-pattern schedule (no weekend chains, no `dayTypeFillOrder`, no relief pass, no C2→D1 post-call chain) and still commits, with only a warning to show for it. Code-first is completely safe in the other direction: both new fields are optional, so new code reading the OLD doc is byte-identical to today.
+- Apply the patch via the project-scoped `supabase-floorrunner` MCP (ref `qhwdbtixhzdsgwwtcfrm` — verify before applying). Template row and pattern doc still must change together WITHIN the patch (they are one transaction): the deactivated Friday C3 with an unedited pattern logs phantom skips; the edited pattern with a live Friday C3 leaves a Friday neuro slot nobody chains.
 - Gabriel regenerates a draft when ready and reviews the weekend: Friday shows C1/C2 only, the neuro doc holds Sat+Sun (+ Fri D4), and the 0.5 doc's weekend shows one neuro day with its partner day either partial-filled or open.
 - The Obligatory Weekends column needs no change: weekend units are the widest weekend day's call tiers, and Sat/Sun still carry three each.

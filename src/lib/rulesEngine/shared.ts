@@ -37,6 +37,30 @@ export function isMissingRelationError(error: unknown): boolean {
   return /does not exist|could not find the table|schema cache/i.test(e.message || '');
 }
 
+// A Supabase/PostgREST error indicating the called FUNCTION doesn't exist yet
+// (a live DB that predates the patch creating it). Deliberately NOT folded
+// into isMissingColumnError: a missing function raises 42883
+// undefined_function, NOT 42703 undefined_column, and its message says
+// "function", never "column" — so isMissingColumnError returns FALSE for one
+// and would mislabel the degradation as a genuine read failure.
+//
+// PostgREST usually never gets as far as Postgres: an unknown RPC name (or a
+// known name with unknown argument names) is answered from its own schema
+// cache as PGRST202, "Could not find the function scheduling.foo(bar) in the
+// schema cache", with no Postgres code at all.
+//
+// genContext keeps a NAME-SPECIFIC copy of this test inline (it matches
+// historical_call_counts by name, so an unrelated missing function can't be
+// misreported as "apply patch18"); this is the generic form for callers that
+// don't need that distinction.
+export function isMissingFunctionError(error: unknown): boolean {
+  const e = error as { message?: string; code?: string } | null;
+  if (!e) return false;
+  if (e.code === '42883') return true;    // undefined_function
+  if (e.code === 'PGRST202') return true; // PostgREST: RPC not in schema cache
+  return /could not find the function|function .* does not exist/i.test(e.message || '');
+}
+
 // Availability types that block an assignment entirely. A provider with
 // any entry of one of these types covering the slot date is not eligible.
 export const BLOCKING_AVAIL: ReadonlySet<string> = new Set([

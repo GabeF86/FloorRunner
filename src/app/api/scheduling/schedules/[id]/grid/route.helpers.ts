@@ -21,15 +21,20 @@ export const GRID_ASSIGNMENT_COLUMNS =
 // requires_post_call_rule rides on the shift_types join for the Call Counts
 // modal's Working Days credit (post-call rest days credit as worked —
 // plannerMath.computeScheduleActuals via lib/callCountDays.ts).
+// call_rank (patch18) identifies the PRIMARY call code (rank 0 = first call)
+// for the modal's Obligatory Weekends column — the column counts primary-call
+// weekend days, and must never key that off a code-name literal. It rides on
+// BOTH selects: it is a patch18 column, so the patch35 narrow retry can still
+// serve it.
 // parent_call_code + call_burden_weight (2026-07-22, patch35) drive the
 // split-call stacked cell and the weighted obligation census; the route
 // retries with GRID_SLOT_COLUMNS_PRE35 on a pre-patch35 DB (missing-column
 // error) — an absent column can hold no segments, so the fallback is exact.
 export const GRID_SLOT_COLUMNS =
-  `id, slot_date, shift_type_id, slot_index, locked, derived_day_type, shift_types(id, code, name, color_hex, category, call_type, display_order, provider_group, requires_post_call_rule, parent_call_code, call_burden_weight), assignments(${GRID_ASSIGNMENT_COLUMNS})` as const;
+  `id, slot_date, shift_type_id, slot_index, locked, derived_day_type, shift_types(id, code, name, color_hex, category, call_type, display_order, provider_group, requires_post_call_rule, call_rank, parent_call_code, call_burden_weight), assignments(${GRID_ASSIGNMENT_COLUMNS})` as const;
 
 export const GRID_SLOT_COLUMNS_PRE35 =
-  `id, slot_date, shift_type_id, slot_index, locked, derived_day_type, shift_types(id, code, name, color_hex, category, call_type, display_order, provider_group, requires_post_call_rule), assignments(${GRID_ASSIGNMENT_COLUMNS})` as const;
+  `id, slot_date, shift_type_id, slot_index, locked, derived_day_type, shift_types(id, code, name, color_hex, category, call_type, display_order, provider_group, requires_post_call_rule, call_rank), assignments(${GRID_ASSIGNMENT_COLUMNS})` as const;
 
 // Missing-column detection for the pre-patch35 retry (42703 or a message
 // naming a column) — mirrors the engine's posture.

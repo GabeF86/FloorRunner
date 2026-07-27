@@ -321,7 +321,7 @@ export function solve(ctx: GenerationContext, opts: SolveOptions = {}): Solution
       // as the un-forced path below: the pin is refused unless the anchor
       // AND its live call-category chain links all fit. The slot stays open,
       // reported 'obligation-cap' (the pickup layer the banner counts).
-      if (obligatory && capRoom(run, forced.id) < 1 + chainCallNeeds(run, slot)) {
+      if (obligatory && capRoom(run, forced.id) < 1 + chainCallNeeds(run, slot, forced)) {
         pushUnfilled(run, slot, 'obligation-cap');
         continue;
       }
@@ -361,7 +361,7 @@ export function solve(ctx: GenerationContext, opts: SolveOptions = {}): Solution
     // obligatoryMode.test.ts). Open capped slots are the paid-pickup layer,
     // not failures.
     const candidates = obligatory
-      ? capAdmitted.filter(p => capRoom(run, p.id) >= 1 + chainCallNeeds(run, slot))
+      ? capAdmitted.filter(p => capRoom(run, p.id) >= 1 + chainCallNeeds(run, slot, p))
       : capAdmitted;
     if (obligatory && candidates.length === 0) {
       pushUnfilled(run, slot,

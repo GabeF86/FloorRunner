@@ -4,6 +4,7 @@
 // Validation constraints stay in rule_definitions; structure lives here.
 // Spec: docs/superpowers/specs/2026-07-07-scheduling-v2-design.md §5.
 import { z } from 'zod';
+import { WEIGHT_EPSILON } from '@/lib/callBurden';
 
 export const DAY_TYPES = [
   'weekday', 'friday', 'saturday', 'sunday', 'federal_holiday', 'major_holiday',
@@ -26,9 +27,22 @@ const DayChainSchema = z.object({
   blocks: z.array(BlockEffectSchema).optional(),
 }).strict();
 
+// minFte (2026-07-27): the link fires only when the ANCHOR provider's FTE
+// clears this floor — Paoli's Sat C3 → Sun C3 pair is for 0.75+ docs; a
+// sub-0.75 doc takes a single neuro day and the partner slot becomes a
+// remainder (see neuroWeekend.ts). Absent = always fires, so every existing
+// doc, CLASSIC_PATTERN included, is byte-identical. Note: `minFte: 0` here is
+// behaviorally identical to omitting it (FTE is always coerced positive, so
+// `>= 0` always holds) — unlike requirementBands below, where `minFte: 0` IS
+// a meaningful catch-all bottom band. Same field name, different schema,
+// different meaning.
 const BlockChainSchema = z.object({
   trigger: z.string().min(1),
-  links: z.array(z.object({ offset: z.number().int().min(-7).max(7), code: z.string().min(1) }).strict()).min(1),
+  links: z.array(z.object({
+    offset: z.number().int().min(-7).max(7),
+    code: z.string().min(1),
+    minFte: z.number().min(0).max(1).optional(),
+  }).strict()).min(1),
 }).strict();
 
 const SpanSchema = z.object({
@@ -44,6 +58,45 @@ const PlacementPassSchema = z.object({
   maxProviders: z.number().int().min(1).max(10),
   enabled: z.boolean(),
 }).strict();
+
+// Neuro weekend requirement bands (2026-07-27). Ordered by nothing in
+// particular — owedUnitsFor picks the HIGHEST band the FTE clears. `units` is
+// in weekend units (a Sat+Sun pair = 1, a single weekend day = 0.5); 0 means
+// no requirement — a band that puts its FTE range on pure fairness rotation.
+// Still a legal value, but as of the 2026-07-27 revision NO shipped pattern
+// uses it: Paoli's requirement is universal across call takers (weekendV2.ts).
+// requirementBands is `.min(1)`: an empty array accomplishes nothing — a
+// pattern that wants "no requirement" omits the whole `neuroWeekend` key
+// instead, so an empty array is almost certainly a forgotten fill-in.
+// superRefine below rejects two bands sharing a minFte: owedUnitsFor resolves
+// duplicates silently by array order, so a duplicated-then-half-edited band
+// row would silently change a real physician's clinical obligation with no
+// warning anywhere. These docs are authored by hand AND by an LLM assistant
+// tool (scheduleAssistant/tools.ts has a replace-pattern tool), so the schema
+// is the right place to catch it — a hard reject, unlike dayTypeFillOrder's
+// deliberately non-fatal unknown-day-type handling, because a duplicate band
+// is never an intentional shape.
+const NeuroWeekendSchema = z.object({
+  code: z.string().min(1),
+  requirementBands: z.array(z.object({
+    minFte: z.number().min(0).max(1),
+    units: z.number().min(0).max(10),
+  }).strict()).min(1),
+}).strict().superRefine((doc, ctx) => {
+  const seenAt = new Map<number, number>();
+  doc.requirementBands.forEach((band, i) => {
+    const dupeAt = seenAt.get(band.minFte);
+    if (dupeAt !== undefined) {
+      ctx.addIssue({
+        code: 'custom',
+        message: `requirementBands has duplicate minFte ${band.minFte} (bands ${dupeAt} and ${i})`,
+        path: ['requirementBands', i, 'minFte'],
+      });
+    } else {
+      seenAt.set(band.minFte, i);
+    }
+  });
+});
 
 export const CallPatternDocSchema = z.object({
   version: z.literal(1),
@@ -73,11 +126,12 @@ export const CallPatternDocSchema = z.object({
   // classic. Composes with callFillOrder: dayTypeFillOrder orders DATES (by
   // day type); callFillOrder orders call codes WITHIN a date.
   dayTypeFillOrder: z.array(z.string().min(1)).optional(),
+  neuroWeekend: NeuroWeekendSchema.optional(),
 }).strict();
 
 export type CallPatternDoc = z.infer<typeof CallPatternDocSchema>;
 export type PatternDayChain = z.infer<typeof DayChainSchema>;
-export type PatternBlockLink = { offset: number; code: string };
+export type PatternBlockLink = { offset: number; code: string; minFte?: number };
 
 // The engine's historical hard-coded behavior, expressed as data. The patch18
 // seed and the golden-parity tests both mirror this constant — keep in sync.
@@ -158,6 +212,14 @@ export function referencedCodes(doc: CallPatternDoc): string[] {
   }
   for (const s of doc.spans) codes.add(s.code);
   for (const p of doc.placementPasses) for (const code of p.codes) codes.add(code);
+  // neuroWeekend.code (2026-07-27): every consumer of the neuro feature — the
+  // FTE gate, the remainder eligibility gate, the steering tier, the shortfall
+  // report — matches on this ONE string, and each does so by equality against
+  // a code that simply never appears. So a typo here does not half-work: the
+  // whole feature goes silently inert with nothing anywhere to notice. It is a
+  // shift-code reference like any other in the doc and belongs in the same
+  // unknown-code warning.
+  if (doc.neuroWeekend) codes.add(doc.neuroWeekend.code);
   return Array.from(codes).sort();
 }
 
@@ -197,4 +259,42 @@ export function dayTypeFillOrderWarnings(doc: CallPatternDoc): string[] {
   return doc.dayTypeFillOrder
     .filter(dt => !(DAY_TYPES as readonly string[]).includes(dt))
     .map(dt => `dayTypeFillOrder lists unknown day type '${dt}' — it will never match a slot (valid: ${DAY_TYPES.join(', ')})`);
+}
+
+// Load-time coherence between the two `minFte` fields (2026-07-27). The name
+// is the same in both places and the MEANING is not: a block-chain link's
+// minFte is the GATE (which docs take the designed pair), a requirementBand's
+// minFte is a BAND BOUNDARY (how many units a doc owes). Nothing forces them
+// to line up, and a mismatch is silent and clinical: gate the Sat→Sun pair at
+// 0.5 while the bands step at 0.75, and a 0.5 doc takes the whole pair —
+// 1.0 unit of credit against a 0.5-unit obligation — so the remainder this
+// feature exists to mint is never minted and nobody is ever reported short.
+// Both fields are reachable from the assistant's update_call_pattern tool, so
+// a plausible-looking edit produces exactly this.
+//
+// WARN, never reject — dayTypeFillOrderWarnings' stated rationale applies: a
+// site may legitimately gate BETWEEN bands (bands that only separate 1.0 from
+// everyone else, with the pair still reserved for 0.75+), and a hard reject
+// would knock the whole pattern back to classic over an authoring choice that
+// parses fine. Compared with WEIGHT_EPSILON, the same tolerance owedUnitsFor
+// uses, so a floor that behaves identically to a boundary never warns.
+export function neuroWeekendWarnings(doc: CallPatternDoc): string[] {
+  const cfg = doc.neuroWeekend;
+  if (!cfg) return [];
+  const boundaries = cfg.requirementBands.map(b => b.minFte);
+  const listed = [...boundaries].sort((a, b) => a - b).join(', ');
+  const out: string[] = [];
+  for (const block of doc.blocks) for (const chain of block.chains) for (const link of chain.links) {
+    const floor = link.minFte;
+    if (floor == null) continue;
+    if (boundaries.some(b => Math.abs(b - floor) <= WEIGHT_EPSILON)) continue;
+    const msg = `Block chain ${chain.trigger} → ${link.code} (offset ${link.offset}, `
+      + `${block.anchorDayType} anchor) gates on minFte ${floor}, which is not a `
+      + `neuroWeekend requirementBands boundary (${listed}) — a provider at that FTE `
+      + `takes the whole designed pair but owes the units of a different band, so no `
+      + `remainder is ever minted. Move the link floor onto a band boundary, or add a `
+      + `requirementBand at minFte ${floor}.`;
+    if (!out.includes(msg)) out.push(msg);
+  }
+  return out;
 }

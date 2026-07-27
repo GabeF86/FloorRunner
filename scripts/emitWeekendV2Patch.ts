@@ -1,5 +1,21 @@
 // scripts/emitWeekendV2Patch.ts — run: npx tsx scripts/emitWeekendV2Patch.ts
 // Prints the patch19 SQL with the zod-validated WEEKEND_V2_PATTERN inlined.
+//
+// HISTORICAL EMITTER — the doc it inlines has moved on three times since
+// patch19 (patch25 neuro overlay, patch27 pre-call waiver removal, patch38
+// neuro weekend), so this no longer reproduces the patch19 that was actually
+// applied. The applied text is the committed
+// supabase_scheduling_patch19_weekend_v2_pattern.sql; THAT file is the
+// historical record, not this script.
+//
+// STEP 3 DELETED 2026-07-27. It INSERTed a friday/C3 shift_templates row —
+// the row that materializes Friday neuro slots. patch38 deactivates exactly
+// that row (Friday neuro is now cross-covered by the Friday C2 doc), so
+// running the old step 3 afterwards would silently restore Friday neuro; a
+// second run would leave two rows and abort patch38's "exactly 1 friday/C3
+// row" pre-flight. Deleted rather than merely warned about because it
+// reverses a clinical structure change. Steps 1-2 are untouched and still
+// emit a coherent pattern-only rollout.
 import { WEEKEND_V2_PATTERN } from '../src/lib/rulesEngine/patterns/weekendV2';
 
 const SITE = '2ddd2427-22fb-4290-9c4c-03a957e5af4e'; // Paoli
@@ -26,26 +42,13 @@ UPDATE scheduling.call_patterns
 INSERT INTO scheduling.call_patterns (site_id, name, status, source, definition)
 VALUES ('${SITE}', 'Weekend v2 (2026-07-12)', 'active', 'manual', '${doc}'::jsonb);
 
--- 3. Friday C3 (Neuro) template so future schedules materialize the slot.
---    Copies every column from the existing saturday C3 template.
-INSERT INTO scheduling.shift_templates
-  (site_id, schedule_layer, day_type, weekday_number, applies_on_holiday,
-   shift_type_id, required_count, required_skills, generation_priority, is_active)
-SELECT site_id, schedule_layer, 'friday', weekday_number, applies_on_holiday,
-       shift_type_id, required_count, required_skills, generation_priority, true
-  FROM scheduling.shift_templates t
- WHERE t.site_id = '${SITE}' AND t.day_type = 'saturday' AND t.is_active
-   AND t.shift_type_id = (SELECT id FROM scheduling.shift_types
-                           WHERE site_id = '${SITE}' AND code = 'C3')
- LIMIT 1;
+-- 3. (REMOVED 2026-07-27 — see the script header.) This step used to INSERT a
+--    friday/C3 shift_templates row. Friday neuro no longer exists; patch38
+--    deactivates that row, so re-creating it here would reverse patch38.
 
 COMMIT;
 
 -- Verification (run after):
 --   SELECT name, status FROM scheduling.call_patterns WHERE site_id = '${SITE}' ORDER BY created_at;
 --   -- expect: Classic … archived, Weekend v2 (2026-07-12) active
---   SELECT day_type, st.code FROM scheduling.shift_templates tt
---     JOIN scheduling.shift_types st ON st.id = tt.shift_type_id
---    WHERE tt.site_id = '${SITE}' AND st.code = 'C3' AND tt.is_active ORDER BY day_type;
---   -- expect: friday, saturday, sunday
 `);

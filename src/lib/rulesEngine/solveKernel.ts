@@ -11,7 +11,7 @@ import { evaluateEligibility } from './eligibility';
 import { dayChainsFor, blockChainsFor } from './callPattern';
 import { mayEvictPreFill, preFillCodes, shiftRank } from './preFillEviction';
 import type { RankableShiftType } from './preFillEviction';
-import type { CallPatternDoc } from './callPattern';
+import type { CallPatternDoc, PatternBlockLink } from './callPattern';
 import { creditWorkDay, markAssigned, markBlocked, incBucket, addCallDate, daysSinceLastCall, hadCallWithin } from './solveState';
 import type { SolveState } from './solveState';
 import type { CallCaps } from './providerCaps';
@@ -21,7 +21,8 @@ import {
   memberRealizedInWeekend, NEURO_KEY,
 } from './scenario';
 import type { ScenarioDoc } from './scenario';
-import { WEIGHT_EPSILON } from '@/lib/callBurden';
+import { creditedUnitsByProvider, ledgerPlacements, owedUnitsFor, shortfall } from './neuroWeekend';
+import { WEIGHT_EPSILON, parentCallCodeOf } from '@/lib/callBurden';
 import type {
   GenerationContext, SlotToFill, CandidateProvider, SolutionPlan,
   PlacementSource, AssignmentExplanation, SkippedDerived, WorkDayBudget,
@@ -142,6 +143,13 @@ export function capRoom(run: SolverRun, pid: string): number {
   return (run.obligationByPid!.get(pid) ?? 0) - (run.callCountByPid.get(pid) || 0);
 }
 
+// A minFte link fires only for an anchor provider clearing the floor
+// (2026-07-27). Absent minFte = always fires, so every pre-existing pattern
+// behaves byte-identically.
+function linkFiresFor(link: PatternBlockLink, fte: number): boolean {
+  return link.minFte == null || fte + WEIGHT_EPSILON >= link.minFte;
+}
+
 // Chain-block atomicity: the WHOLE block counts against the cap upfront —
 // an anchor is only eligible when cap-room >= 1 + its LIVE call-category
 // links: block-chain links AND dayChain links (2026-07-24 — a call-category
@@ -152,11 +160,16 @@ export function capRoom(run: SolverRun, pid: string): number {
 // frees back up for later slots. Waivable links (unlessCallWithinDays) are
 // counted even when they would waive — a per-slot over-reservation the same
 // free-back-up rule absorbs (keeps this per-slot, not per-provider).
-export function chainCallNeeds(run: SolverRun, slot: SlotToFill): number {
+// `p` (2026-07-27) is the prospective anchor: passing it skips links the FTE
+// gate will suppress, so a sub-floor anchor is never charged for a partner
+// shift it will not take. Omitting it counts every link (pre-gate behavior).
+export function chainCallNeeds(run: SolverRun, slot: SlotToFill, p?: CandidateProvider): number {
   let n = dayChainCallNeeds(run, slot);
   const links = blockChainsFor(run.doc, slot.derived_day_type).get(slot.shift_type_code);
   if (links) {
     for (const link of links) {
+      // A link the FTE gate will suppress must not reserve obligation room.
+      if (p && !linkFiresFor(link, p.fte_value)) continue;
       const t = run.ctx.slotIndex.get(addDays(slot.slot_date, link.offset))?.get(link.code);
       if (t && !run.state.handledSlotIds.has(t.slot_id) && t.shift_type_category === 'call') n++;
     }
@@ -254,13 +267,19 @@ export function capAdmitsPlacements(
 // (target slot exists, unhandled, category 'call'). Links that later sever
 // don't consume the tally (only real placements increment it in record()),
 // so reserved-but-unused room frees back up.
+// `p` (2026-07-27) is the prospective anchor — the SAME gate chainCallNeeds
+// applies: a link the FTE gate will suppress is never fired for this
+// provider, so reserving cap room for it would blank the ANCHOR day and
+// leave the orphan filled (exactly backwards). Omitting `p` counts every
+// link (pre-gate behavior).
 export function liveBlockChainCallLinks(
-  run: SolverRun, slot: SlotToFill,
+  run: SolverRun, slot: SlotToFill, p?: CandidateProvider,
 ): Array<{ date: string; code: string }> {
   const out: Array<{ date: string; code: string }> = [];
   const links = blockChainsFor(run.doc, slot.derived_day_type).get(slot.shift_type_code);
   if (links) {
     for (const link of links) {
+      if (p && !linkFiresFor(link, p.fte_value)) continue;
       const date = addDays(slot.slot_date, link.offset);
       const t = run.ctx.slotIndex.get(date)?.get(link.code);
       if (t && !run.state.handledSlotIds.has(t.slot_id) && t.shift_type_category === 'call') {
@@ -280,9 +299,12 @@ export function liveBlockChainCallLinks(
 export function admitsUnderCallCaps(run: SolverRun, pid: string, slot: SlotToFill): boolean {
   if (!run.callCaps || slot.shift_type_category !== 'call') return true;
   if (!run.callCaps.has(pid)) return true; // no caps stated for this provider
+  // The prospective anchor drives the FTE gate (providerById is built from
+  // ctx.providers, so every candidate resolves) — an FTE-suppressed link must
+  // reserve no cap room for THIS provider.
   return capAdmitsPlacements(run, pid, [
     { date: slot.slot_date, code: slot.shift_type_code },
-    ...liveBlockChainCallLinks(run, slot),
+    ...liveBlockChainCallLinks(run, slot, run.providerById.get(pid)),
   ]);
 }
 
@@ -292,15 +314,29 @@ export function admitsUnderCallCaps(run: SolverRun, pid: string, slot: SlotToFil
 // to them so the designed pairing survives. When NOBODY is clean the full
 // set stays (a filled anchor with a recorded severed link beats an open
 // anchor). A filter, never a gate — inert without a scenario.
+//
+// PER-CANDIDATE link resolution (2026-07-27) is load-bearing, not a tidy-up:
+// with a minFte link the live link set DIFFERS BY PROVIDER, so resolving it
+// once for the whole pool asks the wrong question of every sub-floor doc. It
+// also NARROWS, never merely permits — where all candidates are prohibited on
+// the chained day, the pool-wide read finds nobody clean and falls back to
+// everyone, while the per-candidate read correctly keeps ONLY the sub-floor
+// docs (whose gated link cannot fire, so they sever nothing). That changes
+// who wins the anchor, and it is live at Paoli, where every neuro pattern
+// carries minFte. Pinned by 'a gated link cannot make its anchor
+// scenario-unclean' in neuroWeekendPattern.test.ts.
 export function preferScenarioChainClean(
   run: SolverRun, cands: CandidateProvider[], slot: SlotToFill,
 ): CandidateProvider[] {
   if (!run.scenario || slot.shift_type_category !== 'call') return cands;
-  const links = liveBlockChainCallLinks(run, slot);
-  if (links.length === 0) return cands;
   const clean = cands.filter(p => {
     const sp = run.scenario!.providers.get(p.id);
     if (!sp) return true;
+    // Links are resolved PER CANDIDATE (2026-07-27): an FTE-suppressed link
+    // never fires for this provider, so it cannot sever their pairing and
+    // must not disqualify them. With no live links everyone is clean, which
+    // reproduces the old `links.length === 0 → return cands` early-out.
+    const links = liveBlockChainCallLinks(run, slot, p);
     return links.every(l => !scenarioProhibits(sp, l.date, l.code));
   });
   return clean.length > 0 ? clean : cands;
@@ -450,17 +486,66 @@ function scenarioPrefTier(run: SolverRun, pid: string, slot: SlotToFill): number
 // sorts after — soft in both directions, never a gate), then fair-grant
 // count within the preferred tier, then fair-denial count within the
 // penalized tier, then the SCENARIO soft-preference tier (2026-07-26 — soft
-// like the request tiers, below them by design), then lowest ratio (lifetime
-// bucket-ratio, or the scenario target-progress ratio for manifest
-// providers), then least-recently called, then id — with the multi-start
-// tie-break hash permuting ONLY that final id ordering when a nonzero seed
-// is set. Shared by the main loop, spans, and quota relaxation. With no live
-// requests, no scenario and seed 0 the tuple is the pre-change
-// ratio/recency/id sort, byte for byte.
+// like the request tiers, below them by design), then the NEURO FTE-band
+// shortfall (2026-07-27 — most-short first; only on neuro-code call slots, and
+// only for providers the scenario manifest states no neuro target for), then
+// lowest ratio (lifetime bucket-ratio, or the scenario target-progress ratio
+// for manifest providers), then least-recently called, then id — with the
+// multi-start tie-break hash permuting ONLY that final id ordering when a
+// nonzero seed is set. Shared by the main loop, spans, and quota relaxation.
+// With no live requests, no scenario, no neuroWeekend config and seed 0 the
+// tuple is the pre-change ratio/recency/id sort, byte for byte.
 export function scoreCall(run: SolverRun, cands: CandidateProvider[], slot: SlotToFill) {
   const { ctx, state } = run;
   const k = `${dayTypeBucket(slot.derived_day_type)}|${slot.shift_type_code}`;
   const seed = run.tieBreakSeed;
+  // Neuro requirement steering (2026-07-27): for neuro-code slots, a provider
+  // still short of their band requirement sorts ahead of one who is not.
+  // A TIER, never a gate — a block that cannot satisfy everyone still fills,
+  // and computeNeuroReport reports the shortfall afterwards.
+  //
+  // MANIFEST NEURO TARGETS OUTRANK THE FTE BAND. A provider whose scenario
+  // manifest states a neuro target is skipped by this tier entirely; the band
+  // is the FALLBACK for providers the manifest does not cover. Three reasons:
+  //   • The codebase already made this exact ruling one layer down —
+  //     applyScenarioBucketTargets (scenario.ts) replaces the FTE-derived
+  //     fairness quota targets with the STATED scenario numbers for manifest
+  //     providers and leaves non-manifest keys FTE-derived. Letting the band
+  //     outrank the manifest here would invert that rule inside the same
+  //     solve().
+  //   • For a manifest provider `ratio` below ALREADY carries
+  //     scenarioTargetRatio, which is itself a neuro shortfall measure
+  //     (realized units / stated neuroTarget). The band would be a second,
+  //     competing answer to a question the manifest already answered.
+  //   • The failure modes are asymmetric. Band-over-manifest misroutes
+  //     SILENTLY under scarcity; manifest-over-band surfaces as an explicit
+  //     short row in computeNeuroReport — visible on the generation banner,
+  //     and fixable in the workbook where the number belongs.
+  // `!= null` is deliberate: a manifest provider whose neuro cell is BLANK has
+  // no stated number, so they keep the band.
+  //
+  // Keyed on the PARENT call code like every neighbouring consumer
+  // (eligibility's scenario gate, providerCaps, scenarioReport). The ledger
+  // this reads stores parent codes, so a split neuro Saturday would otherwise
+  // earn credit the tier could not see itself steering. Inert today — split
+  // segments are manual_only — but the asymmetry would be silent.
+  const neuroCfg = ctx.callPattern?.neuroWeekend;
+  const neuroSlot = neuroCfg != null && slot.shift_type_category === 'call'
+    && parentCallCodeOf(
+      slot.shift_type_code, ctx.shiftTypes?.get(slot.shift_type_code)) === neuroCfg.code;
+  // ONE batched credit pass for the whole candidate list. creditedUnitsByProvider
+  // is a BATCH function; calling it per candidate with a one-element array cost
+  // ~2.6% of a solve, which compounds across optimize()/multiStart. Skipped
+  // wholesale off neuro slots, so every other slot in the block pays nothing.
+  const neuroCredited = neuroSlot && neuroCfg
+    ? creditedUnitsByProvider(
+      cands.flatMap(p => ledgerPlacements(state.callCodesByDate.get(p.id), p.id)), neuroCfg)
+    : null;
+  const neuroShortOf = (pid: string, fte: number): number => {
+    if (!neuroCfg || !neuroCredited) return 0;
+    if (run.scenario?.providers.get(pid)?.neuroTarget != null) return 0;
+    return shortfall(owedUnitsFor(fte, neuroCfg), neuroCredited.get(pid) || 0);
+  };
   return cands.map(p => {
     const lifetime = (ctx.historicalAssignedByPid.get(p.id)?.get(k) || 0)
       + (state.bucketAssigned.get(`${p.id}|${k}`) || 0);
@@ -473,6 +558,7 @@ export function scoreCall(run: SolverRun, cands: CandidateProvider[], slot: Slot
       granted: preferred ? (run.callReqGranted.get(p.id) || 0) : 0,
       violated: penalized ? (run.noCallViolated.get(p.id) || 0) : 0,
       prefTier: scenarioPrefTier(run, p.id, slot),
+      neuroShort: neuroShortOf(p.id, p.fte_value),
       ratio: targetRatio ?? (lifetime / Math.max(p.fte_value, 0.01)),
       recency: daysSinceLastCall(state, p.id, slot.slot_date),
     };
@@ -481,6 +567,7 @@ export function scoreCall(run: SolverRun, cands: CandidateProvider[], slot: Slot
     a.granted - b.granted ||
     a.violated - b.violated ||
     a.prefTier - b.prefTier ||
+    b.neuroShort - a.neuroShort ||   // most-short first; 0 for everyone off-neuro
     a.ratio - b.ratio ||
     b.recency - a.recency ||
     (seed ? (tieHash(seed, a.p.id) - tieHash(seed, b.p.id)) : 0) ||
@@ -651,6 +738,22 @@ export function applyBlockChains(run: SolverRun, slot: SlotToFill, chosen: Candi
   run.chainAnchorSlotIds.push(slot.slot_id);
   for (const link of links) {
     const date = addDays(slot.slot_date, link.offset);
+    // FTE gate (2026-07-27): the designed pair is intentionally half-placed
+    // for a sub-floor anchor. Record it (invariant 4) and mark the target a
+    // neuro REMAINDER so only a provider short of their requirement can take
+    // it (eligibility 'neuro-remainder'); otherwise it stays open for the
+    // admin, which is the stated behavior.
+    // ORDERING IS DELIBERATE: this fires BEFORE the !target check, so a
+    // minFte link whose target slot doesn't exist records 'fte-gated' rather
+    // than 'no-slot'. The gate is the more specific truth (that link was
+    // never going to fire for this provider), and invariant 4 is satisfied
+    // either way — the severance is recorded, never silently dropped.
+    if (!linkFiresFor(link, chosen.fte_value)) {
+      skippedDerived.push({ date, code: link.code, provider_id: chosen.id, reason: 'fte-gated' });
+      const gatedTarget = ctx.slotIndex.get(date)?.get(link.code);
+      if (gatedTarget) state.neuroRemainderSlotIds.add(gatedTarget.slot_id);
+      continue;
+    }
     const target = ctx.slotIndex.get(date)?.get(link.code);
     // Invariant #4: a link whose target slot doesn't exist is recorded for
     // BOTH call and non-call codes — with no slot there is no main loop to

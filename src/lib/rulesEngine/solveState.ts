@@ -30,6 +30,11 @@ export interface SolveState {
   // scenario-free plans stay byte-identical. Segment codes are recorded under
   // their PARENT code by the callers (linkage members are whole-call codes).
   callCodesByDate: Map<string, Map<string, Set<string>>>;
+  // Slot ids the neuro FTE gate left unpaired (2026-07-27): a sub-0.75 anchor
+  // suppressed its Sat→Sun partner link, so this slot is a REMAINDER — open
+  // only to a provider still short of their neuro requirement (eligibility.ts
+  // 'neuro-remainder'), otherwise deliberately left unfilled for the admin.
+  neuroRemainderSlotIds: Set<string>;
 }
 
 export function emptySolveState(): SolveState {
@@ -41,6 +46,7 @@ export function emptySolveState(): SolveState {
     blockedOnDate: new Map(),
     creditedWorkDays: new Map(),
     callCodesByDate: new Map(),
+    neuroRemainderSlotIds: new Set(),
   };
 }
 

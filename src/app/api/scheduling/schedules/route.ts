@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { sbSchedulingServer } from '@/lib/supabaseScheduling';
 import { derivedDayTypeFor, slateForDayType, templateSlotCount } from '@/lib/templateSlots';
 import { defaultScheduleName, parseScheduleName } from '@/lib/scheduleName';
+import { loadLastActivity, withLastActivity, type ScheduleActivityRow } from '@/lib/scheduleActivity';
 
 // Never prerender — this route hits Supabase per request.
 export const dynamic = 'force-dynamic';
@@ -32,7 +33,19 @@ export async function GET(req: NextRequest) {
 
   const { data, error } = await query;
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-  return NextResponse.json(data);
+
+  // `last_activity_at` — the last time this schedule's CONTENT changed, which
+  // is emphatically not `schedules.updated_at` (that column only moves when
+  // the row itself does; generation and grid edits write assignments). ONE
+  // extra round trip for the whole list — the patch39 RPC folds all four
+  // sources in Postgres, because this project has PostgREST aggregates
+  // disabled. Degrades to the schedule row (with a warning) if the function
+  // isn't there or the call fails; the list always renders. See
+  // lib/scheduleActivity.ts for the derivation and the write-path evidence.
+  const rows = (data as ScheduleActivityRow[]) || [];
+  const { lastActivityById, warnings } = await loadLastActivity(sb, rows);
+  for (const w of warnings) console.warn(`[schedules] ${w}`);
+  return NextResponse.json(withLastActivity(rows, lastActivityById));
 }
 
 export async function POST(req: NextRequest) {

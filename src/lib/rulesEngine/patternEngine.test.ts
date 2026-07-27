@@ -301,8 +301,15 @@ describe('patternEngine — overlay shift type', () => {
 // pieces regardless of order: an overlay placement never marks the date
 // (solve.record), and the REGULAR↔OVERLAY-CALL pair is exactly what the narrow
 // overlay exemption permits (a same-date CALL pair would collide) — so
-// C3-then-D4 and D4-then-C3 both succeed. This is the production Sat-C3 chain
-// shape (weekendV2.ts).
+// C3-then-D4 and D4-then-C3 both succeed.
+//
+// NO LONGER THE PRODUCTION SHAPE (2026-07-27): weekendV2.ts dropped its −1 Fri
+// C3 link — Friday neuro is cross-covered by the Friday C2 doc and has no slot
+// — so the live Sat-C3 chain now has TWO links (−1 D4, +1 C3 gated at
+// minFte 0.75), not three, and mints no same-date regular+overlay-call pair.
+// The doc below is therefore SYNTHETIC and deliberately kept: it is the
+// engine-level coverage of two-links-at-the-same-offset order-independence and
+// of the narrow overlay exemption, both of which are still supported features.
 describe('patternEngine — overlay block chain (Doc C neuro, both link orders)', () => {
   const orders = [
     { name: 'C3-then-D4', links: [{ offset: -1, code: 'C3' }, { offset: -1, code: 'D4' }, { offset: 1, code: 'C3' }] },

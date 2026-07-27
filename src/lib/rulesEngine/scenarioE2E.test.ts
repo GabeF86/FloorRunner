@@ -64,7 +64,12 @@ function buildPaoliCtx(scenario: ScenarioDoc, seeds: SeedAssignment[]): Generati
     const dt = dayTypeFromDow(dayOfWeekUTC(d));
     mk(d, 'C1', 'call');
     mk(d, 'C2', 'call');
-    if (dt === 'friday' || dt === 'saturday' || dt === 'sunday') mk(d, 'C3', 'call');
+    // Neuro (C3) is a SAT + SUN slot only (2026-07-27): Friday neuro is
+    // cross-covered by the Friday C2 doc and patch38 deactivates the
+    // friday/C3 template row. Minting a Friday C3 here would overstate neuro
+    // credit — weekendGroupKey folds Fri/Sat/Sun into ONE weekend group, so a
+    // Friday C3 date counts toward a provider's neuro weekend units.
+    if (dt === 'saturday' || dt === 'sunday') mk(d, 'C3', 'call');
     mk(d, 'D1', 'regular'); mk(d, 'D2', 'regular'); mk(d, 'D3', 'regular');
     if (dt === 'friday') mk(d, 'D4', 'regular');
   }

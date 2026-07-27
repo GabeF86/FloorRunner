@@ -15,6 +15,9 @@ import { computeProviderCapSummary } from './providerCaps';
 import type { ProviderCapSummary } from './providerCaps';
 import { computeWorkDayReport } from './workDayReport';
 import type { WorkDayReportRow } from './workDayReport';
+import { computeNeuroReport, neuroShortfallWarnings } from './neuroWeekend';
+import type { NeuroReportRow } from './neuroWeekend';
+import { parentCallCodeOf } from '@/lib/callBurden';
 import type { RequestGrant, CallRequestGrant } from './requestGrants';
 import type { OptimizeStats } from './optimize';
 import type { SupabaseClient } from './shared';
@@ -121,6 +124,10 @@ export interface GenerationResult {
   // credited breakdown / entitledOff / delta). Empty when ctx carries no
   // budget. Surfaced in the UI near the fairness/grant banner.
   workDayReport: WorkDayReportRow[];
+  // Neuro weekend requirement audit (2026-07-27): per-provider owed vs
+  // credited weekend units. ABSENT unless the site's pattern states a
+  // neuroWeekend config — additive, so pre-change consumers see no new key.
+  neuroReport?: NeuroReportRow[];
   // Weekend-only mode ONLY (absent otherwise): call slots the staged run
   // deliberately did not attempt, with a day-type breakdown. NOT failures and
   // NOT counted in `skipped` — the UI banner renders "N placed · M slots
@@ -255,6 +262,55 @@ export async function autoGenerate(
   // ctx.warnings and pushing would mutate the context.
   if (plan.requestWarnings?.length) {
     result.warnings = [...result.warnings, ...plan.requestWarnings];
+  }
+
+  // Neuro requirement audit — same surfacing contract as requestWarnings: a
+  // NEW array (result.warnings may alias ctx.warnings, so never push).
+  //
+  // CREDIT IS PLAN + SEEDS, like every sibling report (providerCaps'
+  // tallyCallsByPidCode, workDayReport) — and, decisively, like the two
+  // solver readers of this same vocabulary: the eligibility remainder gate
+  // and the scoring tier both judge credit from state.callCodesByDate, which
+  // seedSolveState populates from ctx.seedAssignments. Plan-only would break
+  // the module's stated invariant that placement rules and the report never
+  // drift, and would misfire on the live Paoli path: a Continue ('all') run
+  // after a weekend-only run re-solves ONLY the open slots, so every already-
+  // committed C3 is a seed and absent from plan.assignments — every 0.75 doc
+  // would be reported short their whole weekend on the run that finalizes the
+  // block. Double-counting is structurally impossible: creditedUnitsByProvider
+  // folds a provider's weekend DATES into a Set before scoring units.
+  const neuroCfg = ctx.callPattern?.neuroWeekend;
+  if (neuroCfg) {
+    const placements = [
+      ...plan.assignments.map(a => ({
+        provider_id: a.provider_id,
+        slot_date: a.slot_date,
+        code: a.shift_type_code,
+      })),
+      // Seeds parent-map, matching BOTH the sibling report
+      // (providerCaps' tallyCallsByPidCode) and — decisively — solve.ts's own
+      // seed ledger write, which records the PARENT code. Raw here would
+      // credit 0 for a `C3D12` seed the gate and steering tier credit as C3.
+      // The plan branch above deliberately stays RAW to match the OTHER
+      // ledger writer, solveKernel.ts's record(), which passes
+      // slot.shift_type_code unmapped — the ledger is asymmetric, so agreeing
+      // with it means being asymmetric too. Moot today either way: manual_only
+      // segments never enter slotsToFill (genContext), so a live placement
+      // cannot carry a segment code.
+      ...ctx.seedAssignments.map(s => ({
+        provider_id: s.provider_id,
+        slot_date: s.slot_date,
+        code: parentCallCodeOf(s.shift_type_code, ctx.shiftTypes?.get(s.shift_type_code)),
+      })),
+    ];
+    const rows = computeNeuroReport(
+      ctx.providers.map(p => ({ id: p.id, fte_value: p.fte_value })), placements, neuroCfg);
+    result.neuroReport = rows;
+    const nameById = new Map(ctx.providers.map(p => [p.id, p.short_display_name]));
+    result.warnings = [
+      ...result.warnings,
+      ...neuroShortfallWarnings(rows, id => nameById.get(id) ?? id),
+    ];
   }
 
   // Validation is best-effort: the assignments are ALREADY committed at this
