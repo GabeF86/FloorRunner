@@ -15,6 +15,8 @@ import {
   isActiveSellback,
   isSellbackOverridden,
   isDateBlocked,
+  isMissingColumnError,
+  isMissingFunctionError,
 } from './shared';
 
 // Characterization tests pinning the hard-won date / PTO / bucket logic.
@@ -240,5 +242,37 @@ describe('daysBetween (UTC whole days)', () => {
   });
   it('crosses month/year boundaries', () => {
     expect(daysBetween('2025-12-31', '2026-01-01')).toBe(1);
+  });
+});
+
+// The degraded-mode error classifiers. A MISSING FUNCTION is the case the
+// schedules list depends on (patch39's RPC): it must not read as a missing
+// column, or a DB that predates the patch gets logged as a genuine failure.
+describe('isMissingFunctionError vs isMissingColumnError', () => {
+  const PGRST202 = {
+    code: 'PGRST202',
+    message: 'Could not find the function scheduling.schedule_last_activity(p_schedule_ids) in the schema cache',
+  };
+  const UNDEFINED_FN = {
+    code: '42883',
+    message: 'function scheduling.schedule_last_activity(uuid[]) does not exist',
+  };
+
+  it('catches PostgREST schema-cache misses and raw 42883', () => {
+    expect(isMissingFunctionError(PGRST202)).toBe(true);
+    expect(isMissingFunctionError(UNDEFINED_FN)).toBe(true);
+    expect(isMissingFunctionError({ message: 'Could not find the function foo' })).toBe(true);
+  });
+
+  it('is NOT covered by isMissingColumnError — the whole reason it exists', () => {
+    expect(isMissingColumnError(PGRST202)).toBe(false);
+    expect(isMissingColumnError(UNDEFINED_FN)).toBe(false);
+  });
+
+  it('leaves a genuine read failure alone', () => {
+    expect(isMissingFunctionError({ code: '57014', message: 'canceling statement due to statement timeout' })).toBe(false);
+    expect(isMissingFunctionError({ code: '42703', message: 'column x does not exist' })).toBe(false);
+    expect(isMissingFunctionError(null)).toBe(false);
+    expect(isMissingFunctionError(undefined)).toBe(false);
   });
 });

@@ -278,9 +278,11 @@ describe('POST /api/scheduling/schedules — custom schedule_name', () => {
 // ── GET: derived last-activity stamp ─────────────────────────────────────────
 // The list's "edited" line must reflect the last CONTENT change, not
 // `schedules.updated_at` (which only moves when the schedule row does). The
-// derivation and its degradation ladder are tested in lib/scheduleActivity;
-// these pin the ROUTE wiring — the field is emitted, the list still renders
-// when the derivation fails, and the aggregates are not fired per schedule.
+// four-source MAX itself lives in Postgres — `scheduling.schedule_last_activity`
+// (patch39), because this project rejects PostgREST aggregates with HTTP 400
+// PGRST123 — so these pin the ROUTE wiring: the field is emitted, ONE RPC
+// serves the whole list, and the list still renders (200, degraded to the row
+// stamp) whether the function is absent or the call fails.
 describe('GET /api/scheduling/schedules — last_activity_at', () => {
   const ROW_STAMP = '2026-07-26T21:38:00+00:00';
   const ASSIGN_STAMP = '2026-07-27T04:16:00+00:00';
@@ -290,21 +292,15 @@ describe('GET /api/scheduling/schedules — last_activity_at', () => {
     { id: 'sched-2', schedule_name: 'Paoli 8/10-10/25 V4', updated_at: ROW_STAMP, created_at: ROW_STAMP },
   ];
 
-  function setupGet(over: Record<string, unknown> = {}) {
+  // sched-1 was worked in after creation; sched-2 has no row (never generated).
+  const RPC_OK = { data: [{ schedule_id: 'sched-1', last_activity_at: ASSIGN_STAMP }], error: null };
+
+  function setupGet(
+    { list, rpc }: { list?: unknown; rpc?: { data?: unknown; error?: unknown } } = {},
+  ) {
     const { sb, calls } = makeFakeSupabase({
-      tables: {
-        schedules: { data: LIST, error: null },
-        schedule_versions: {
-          data: [
-            { id: 'ver-1', schedule_id: 'sched-1', created_at: ROW_STAMP, published_at: null },
-            { id: 'ver-2', schedule_id: 'sched-2', created_at: ROW_STAMP, published_at: null },
-          ],
-          error: null,
-        },
-        assignments: { data: [{ schedule_version_id: 'ver-1', max: ASSIGN_STAMP }], error: null },
-        schedule_slots: { data: [], error: null },
-        ...over,
-      },
+      tables: { schedules: (list as { data: unknown; error: unknown }) ?? { data: LIST, error: null } },
+      rpc: { schedule_last_activity: rpc ?? RPC_OK },
     });
     holder.sb = sb;
     return { calls };
@@ -312,6 +308,9 @@ describe('GET /api/scheduling/schedules — last_activity_at', () => {
 
   const getReq = () =>
     ({ url: 'http://localhost/api/scheduling/schedules?org_id=org-1' }) as unknown as NextRequest;
+
+  const rpcCalls = (calls: ReturnType<typeof setupGet>['calls']) =>
+    calls.filter(c => c.method === 'rpc' && c.fn === 'schedule_last_activity');
 
   it('emits the derived stamp, and it beats the schedule row stamp', async () => {
     setupGet();
@@ -322,27 +321,61 @@ describe('GET /api/scheduling/schedules — last_activity_at', () => {
     expect(body[1].last_activity_at).toBe(ROW_STAMP);    // never generated
   });
 
-  it('still returns the list when the derivation fails, falling back to updated_at', async () => {
-    setupGet({ schedule_versions: { data: null, error: { message: 'boom' } } });
+  it('still returns the list when the RPC fails, falling back to updated_at', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    setupGet({ rpc: { data: null, error: { message: 'boom' } } });
     const res = await GET(getReq());
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.map((r: { last_activity_at: string }) => r.last_activity_at)).toEqual([ROW_STAMP, ROW_STAMP]);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(String(warn.mock.calls[0][0])).toContain('read failed');
+    warn.mockRestore();
   });
 
-  it('adds a fixed number of queries, not one per schedule', async () => {
+  it('still returns the list on a DB that predates patch39 (function missing)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    setupGet({
+      rpc: {
+        data: null,
+        error: {
+          code: 'PGRST202',
+          message: 'Could not find the function scheduling.schedule_last_activity(p_schedule_ids) in the schema cache',
+        },
+      },
+    });
+    const res = await GET(getReq());
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.map((r: { last_activity_at: string }) => r.last_activity_at)).toEqual([ROW_STAMP, ROW_STAMP]);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(String(warn.mock.calls[0][0])).toContain('patch39');
+    warn.mockRestore();
+  });
+
+  it('is ONE rpc for the whole list, not one per schedule, whatever the length', async () => {
     const { calls } = setupGet();
     await GET(getReq());
     expect(fromCount(calls, 'schedules')).toBe(1);
-    expect(fromCount(calls, 'schedule_versions')).toBe(1);
-    expect(fromCount(calls, 'assignments')).toBe(1);
-    expect(fromCount(calls, 'schedule_slots')).toBe(1);
+    expect(rpcCalls(calls)).toHaveLength(1);
+    expect(rpcCalls(calls)[0].args[0]).toEqual({ p_schedule_ids: ['sched-1', 'sched-2'] });
+
+    const many = Array.from({ length: 60 }, (_, i) => ({ id: `s-${i}`, updated_at: ROW_STAMP }));
+    const { calls: manyCalls } = setupGet({
+      list: { data: many, error: null },
+      rpc: { data: many.map(s => ({ schedule_id: s.id, last_activity_at: ASSIGN_STAMP })), error: null },
+    });
+    const body = await (await GET(getReq())).json();
+    expect(body).toHaveLength(60);
+    expect(rpcCalls(manyCalls)).toHaveLength(1);
+    expect(fromCount(manyCalls)).toBe(1); // the list query, and nothing else
   });
 
-  it('surfaces a 500 from the list query itself unchanged', async () => {
-    setupGet({ schedules: { data: null, error: { message: 'list blew up' } } });
+  it('surfaces a 500 from the list query itself unchanged, and never calls the RPC', async () => {
+    const { calls } = setupGet({ list: { data: null, error: { message: 'list blew up' } } });
     const res = await GET(getReq());
     expect(res.status).toBe(500);
     expect((await res.json()).error).toBe('list blew up');
+    expect(rpcCalls(calls)).toHaveLength(0);
   });
 });

@@ -2,95 +2,93 @@
 //
 // The feature shipped reading `schedules.updated_at`, which only moves when
 // the schedule ROW changes — so on the two drafts worked in most recently the
-// `edited` line was suppressed, the opposite of useful. These tests pin the
-// replacement: a MAX across the row stamp, the version stamps, and the two
-// per-version aggregates, with every source degrading on its own.
+// `edited` line was suppressed, the opposite of useful.
+//
+// WHAT THESE TESTS COVER, AND WHAT THEY CAN'T. The four-source MAX now runs in
+// Postgres (`scheduling.schedule_last_activity`, patch39) because this project
+// answers PostgREST aggregates with HTTP 400 PGRST123. So the "which of the
+// four sources wins" cases that used to live here are SQL properties, and SQL
+// is not reachable from vitest (no DB in this suite, by convention). They are
+// pinned instead by VERIFICATION query 2 in the patch file, which re-derives
+// the same answer with a UNION ALL and diffs it row for row against the
+// function — run that when applying.
+//
+// What IS still client-side, and is what's tested below:
+//   * the degradation floor — every schedule keeps `schedules.updated_at` no
+//     matter what the RPC does, so the list can never render emptier than it
+//     did before this feature existed;
+//   * the missing-function / failed-call split in the warnings;
+//   * one round trip for the whole list, never one per schedule;
+//   * the response shaping in withLastActivity.
 //
 // Injected fake supabase client throughout (repo convention) — no DB.
 import { describe, it, expect } from 'vitest';
-import { makeFakeSupabase, fromCount, callsFor, type Filter, type TableCfg } from './rulesEngine/__fixtures__/fakeSupabase';
-import { ACTIVITY_ID_CHUNK, loadLastActivity, withLastActivity, type ScheduleActivityRow } from './scheduleActivity';
+import { makeFakeSupabase, fromCount, type Canned } from './rulesEngine/__fixtures__/fakeSupabase';
+import { LAST_ACTIVITY_RPC, loadLastActivity, withLastActivity, type ScheduleActivityRow } from './scheduleActivity';
 
 // Real numbers from the 2026-07-27 live-DB probe: the schedule row's stamp is
 // identical to its created_at while the newest assignment is 6.5h later.
 const ROW = '2026-07-26T21:38:00+00:00';
 const ASSIGN = '2026-07-27T04:16:00+00:00';
-const SLOT = '2026-07-27T02:00:00+00:00';
-const VER_CREATED = '2026-07-26T21:38:00+00:00';
 
 const S1 = { id: 'sched-1', updated_at: ROW };
 
-const VERSIONS = [{ id: 'ver-1', schedule_id: 'sched-1', created_at: VER_CREATED, published_at: null }];
+/** Default: the RPC answers with the real (later) content stamp for sched-1. */
+const OK: Canned = { data: [{ schedule_id: 'sched-1', last_activity_at: ASSIGN }], error: null };
 
-function tables(over: Record<string, TableCfg> = {}): Record<string, TableCfg> {
-  return {
-    schedule_versions: { data: VERSIONS, error: null },
-    assignments: { data: [{ schedule_version_id: 'ver-1', max: ASSIGN }], error: null },
-    schedule_slots: { data: [{ schedule_version_id: 'ver-1', max: SLOT }], error: null },
-    ...over,
-  };
-}
-
-const run = (over: Record<string, TableCfg> = {}, schedules: ScheduleActivityRow[] = [S1]) => {
-  const { sb, calls } = makeFakeSupabase({ tables: tables(over) });
+const run = (rpc: Canned = OK, schedules: ScheduleActivityRow[] = [S1]) => {
+  const { sb, calls } = makeFakeSupabase({ rpc: { [LAST_ACTIVITY_RPC]: rpc } });
   return loadLastActivity(sb, schedules).then(res => ({ ...res, calls }));
 };
 
-// ── source selection ────────────────────────────────────────────────────────
+const rpcCalls = (calls: { method: string; fn?: string; args: unknown[] }[]) =>
+  calls.filter(c => c.method === 'rpc' && c.fn === LAST_ACTIVITY_RPC);
 
-describe('loadLastActivity — which source wins', () => {
-  it('THE FIX: the assignment max beats the schedule row stamp', async () => {
+// ── the RPC answer, and the floor under it ──────────────────────────────────
+
+describe('loadLastActivity — the derived stamp', () => {
+  it('THE FIX: the derived stamp beats the schedule row stamp', async () => {
     const { lastActivityById, warnings } = await run();
     expect(lastActivityById.get('sched-1')).toBe(ASSIGN);
     expect(warnings).toEqual([]);
   });
 
-  it('the slot max wins when it is the newest (slot lock/label writes no assignment)', async () => {
+  it('sends the whole id list to the patch39 RPC, under its parameter name', async () => {
+    const { calls } = await run(OK, [S1, { id: 'sched-2', updated_at: ROW }]);
+    const rpcs = rpcCalls(calls);
+    expect(rpcs).toHaveLength(1);
+    expect(rpcs[0].args[0]).toEqual({ p_schedule_ids: ['sched-1', 'sched-2'] });
+  });
+
+  it('keeps the stamp VERBATIM (Postgres microsecond precision survives)', async () => {
+    const micros = '2026-07-27T04:16:00.123456+00:00';
     const { lastActivityById } = await run({
-      assignments: { data: [{ schedule_version_id: 'ver-1', max: '2026-07-27T01:00:00+00:00' }], error: null },
-      schedule_slots: { data: [{ schedule_version_id: 'ver-1', max: '2026-07-27T09:30:00+00:00' }], error: null },
+      data: [{ schedule_id: 'sched-1', last_activity_at: micros }], error: null,
     });
-    expect(lastActivityById.get('sched-1')).toBe('2026-07-27T09:30:00+00:00');
+    expect(lastActivityById.get('sched-1')).toBe(micros);
   });
 
-  it('the schedule row wins when it is the newest (renamed after the last edit)', async () => {
-    const renamed = '2026-07-28T15:00:00+00:00';
-    const { lastActivityById } = await run({}, [{ id: 'sched-1', updated_at: renamed }]);
-    expect(lastActivityById.get('sched-1')).toBe(renamed);
-  });
-
-  it('a version stamp counts: published_at moves the line even with no newer assignment', async () => {
-    const published = '2026-07-30T12:00:00+00:00';
+  it('the schedule row is a FLOOR: an older RPC answer never drags it back', async () => {
+    // The function's max includes schedules.updated_at, so this shouldn't
+    // happen — the guard is what makes "never emptier than before" true
+    // regardless of what the DB returns.
     const { lastActivityById } = await run({
-      schedule_versions: { data: [{ id: 'ver-1', schedule_id: 'sched-1', created_at: VER_CREATED, published_at: published }], error: null },
-      assignments: { data: [{ schedule_version_id: 'ver-1', max: ASSIGN }], error: null },
-      schedule_slots: { data: [], error: null },
+      data: [{ schedule_id: 'sched-1', last_activity_at: '2026-01-01T00:00:00+00:00' }], error: null,
     });
-    expect(lastActivityById.get('sched-1')).toBe(published);
+    expect(lastActivityById.get('sched-1')).toBe(ROW);
   });
 
-  it('rolls up ALL versions of one schedule, and never leaks across schedules', async () => {
+  it('resolves each schedule independently and ignores ids it never asked for', async () => {
     const { lastActivityById } = await run({
-      schedule_versions: {
-        data: [
-          { id: 'ver-1', schedule_id: 'sched-1', created_at: VER_CREATED, published_at: null },
-          { id: 'ver-2', schedule_id: 'sched-1', created_at: VER_CREATED, published_at: null },
-          { id: 'ver-9', schedule_id: 'sched-2', created_at: VER_CREATED, published_at: null },
-        ],
-        error: null,
-      },
-      assignments: {
-        data: [
-          { schedule_version_id: 'ver-1', max: '2026-07-27T01:00:00+00:00' },
-          { schedule_version_id: 'ver-2', max: ASSIGN },              // newer sibling version
-          { schedule_version_id: 'ver-9', max: '2026-08-30T00:00:00+00:00' }, // other schedule
-          { schedule_version_id: 'ver-unknown', max: '2027-01-01T00:00:00+00:00' },
-        ],
-        error: null,
-      },
-      schedule_slots: { data: [], error: null },
+      data: [
+        { schedule_id: 'sched-1', last_activity_at: ASSIGN },
+        { schedule_id: 'sched-2', last_activity_at: '2026-08-30T00:00:00+00:00' },
+        { schedule_id: 'sched-unknown', last_activity_at: '2027-01-01T00:00:00+00:00' },
+      ],
+      error: null,
     }, [S1, { id: 'sched-2', updated_at: ROW }]);
 
+    expect([...lastActivityById.keys()]).toEqual(['sched-1', 'sched-2']);
     expect(lastActivityById.get('sched-1')).toBe(ASSIGN);
     expect(lastActivityById.get('sched-2')).toBe('2026-08-30T00:00:00+00:00');
   });
@@ -99,162 +97,111 @@ describe('loadLastActivity — which source wins', () => {
 // ── nothing to aggregate ────────────────────────────────────────────────────
 
 describe('loadLastActivity — schedules with no content yet', () => {
-  it('a schedule with no assignments falls back to the row/version stamps', async () => {
-    const { lastActivityById, warnings } = await run({
-      assignments: { data: [], error: null },
-      schedule_slots: { data: [], error: null },
-    });
+  it('a schedule the RPC returns no row for falls back to its row stamp', async () => {
+    const { lastActivityById, warnings } = await run({ data: [], error: null });
     expect(lastActivityById.get('sched-1')).toBe(ROW);
     expect(warnings).toEqual([]); // empty is a legitimate answer, not a degradation
   });
 
-  it('a schedule with no versions at all keeps its row stamp and skips the aggregates', async () => {
-    const { lastActivityById, calls } = await run({ schedule_versions: { data: [], error: null } });
+  it('a null stamp for a KNOWN id is legitimate, not an unrecognised shape', async () => {
+    const { lastActivityById, warnings } = await run({
+      data: [{ schedule_id: 'sched-1', last_activity_at: null }], error: null,
+    });
     expect(lastActivityById.get('sched-1')).toBe(ROW);
-    expect(fromCount(calls, 'assignments')).toBe(0);
-    expect(fromCount(calls, 'schedule_slots')).toBe(0);
+    expect(warnings).toEqual([]);
   });
 
   it('a null row stamp with nothing else stays null (never "Invalid Date" downstream)', async () => {
-    const { lastActivityById } = await run({
-      schedule_versions: { data: [{ id: 'ver-1', schedule_id: 'sched-1', created_at: null, published_at: null }], error: null },
-      assignments: { data: [], error: null },
-      schedule_slots: { data: [], error: null },
-    }, [{ id: 'sched-1', updated_at: null }]);
+    const { lastActivityById } = await run(
+      { data: [{ schedule_id: 'sched-1', last_activity_at: null }], error: null },
+      [{ id: 'sched-1', updated_at: null }],
+    );
     expect(lastActivityById.get('sched-1')).toBeNull();
   });
 
-  it('an empty list issues no queries at all', async () => {
-    const { lastActivityById, calls } = await run({}, []);
+  it('an empty list issues no query at all', async () => {
+    const { lastActivityById, calls } = await run(OK, []);
     expect(lastActivityById.size).toBe(0);
-    expect(calls.filter(c => c.method === 'from')).toHaveLength(0);
+    expect(rpcCalls(calls)).toHaveLength(0);
+    expect(fromCount(calls)).toBe(0);
   });
 });
 
 // ── degradation ─────────────────────────────────────────────────────────────
 
 describe('loadLastActivity — graceful degradation', () => {
-  it('a failed version lookup degrades to schedules.updated_at and fires no aggregates', async () => {
-    const { lastActivityById, warnings, calls } = await run({
-      schedule_versions: { data: null, error: { message: 'connection reset' } },
+  it('a MISSING function (DB predates patch39) degrades to updated_at and names the patch', async () => {
+    const { lastActivityById, warnings } = await run({
+      data: null,
+      error: {
+        code: 'PGRST202',
+        message: 'Could not find the function scheduling.schedule_last_activity(p_schedule_ids) in the schema cache',
+      },
     });
     expect(lastActivityById.get('sched-1')).toBe(ROW); // the pre-fix value, not a blank row
     expect(warnings).toHaveLength(1);
-    expect(warnings[0]).toContain('schedule_versions lookup failed');
-    expect(fromCount(calls, 'assignments')).toBe(0);
-    expect(fromCount(calls, 'schedule_slots')).toBe(0);
+    expect(warnings[0]).toContain(LAST_ACTIVITY_RPC);
+    expect(warnings[0]).toContain('not present on this DB');
+    expect(warnings[0]).toContain('patch39');
   });
 
-  it('a failed assignments aggregate still lets the slot max through', async () => {
-    const { lastActivityById, warnings } = await run({
-      assignments: { data: null, error: { code: '42703', message: 'column assignments.max does not exist' } },
-    });
-    expect(lastActivityById.get('sched-1')).toBe(SLOT);
-    expect(warnings).toHaveLength(1);
-    expect(warnings[0]).toContain('assignments max(updated_at)');
-    // isMissingColumnError split (the genContext idiom): an older DB reads
-    // differently in the log from a genuine failure.
-    expect(warnings[0]).toContain('not available on this DB');
-  });
-
-  it('a non-column failure is labelled a read failure, not a missing column', async () => {
+  it('the raw Postgres undefined_function code reads the same way', async () => {
     const { warnings } = await run({
-      assignments: { data: null, error: { code: '57014', message: 'canceling statement due to statement timeout' } },
+      data: null,
+      error: { code: '42883', message: 'function scheduling.schedule_last_activity(uuid[]) does not exist' },
     });
-    expect(warnings[0]).toContain('read failed');
+    expect(warnings[0]).toContain('not present on this DB');
   });
 
-  it('both aggregates failing lands exactly on the old behaviour, with both warnings', async () => {
+  it('a genuine failure is labelled a read failure, NOT a missing function', async () => {
     const { lastActivityById, warnings } = await run({
-      assignments: { data: null, error: { message: 'aggregate functions are not enabled' } },
-      schedule_slots: { data: null, error: { message: 'aggregate functions are not enabled' } },
+      data: null,
+      error: { code: '57014', message: 'canceling statement due to statement timeout' },
     });
     expect(lastActivityById.get('sched-1')).toBe(ROW);
-    expect(warnings).toHaveLength(2);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain('read failed');
+    expect(warnings[0]).toContain('statement timeout'); // the real error still surfaces
   });
 
-  it('an unrecognised aggregate shape warns instead of silently reading clean', async () => {
+  it('a THROW from the client layer degrades like an error result, never propagates', async () => {
+    const sb = { rpc: () => { throw new Error('fetch failed'); } };
+    const { lastActivityById, warnings } = await loadLastActivity(sb, [S1]);
+    expect(lastActivityById.get('sched-1')).toBe(ROW);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain('fetch failed');
+  });
+
+  it('an unrecognised row shape warns instead of silently reading clean', async () => {
     const { lastActivityById, warnings } = await run({
-      assignments: { data: [{ some_other_key: 1 }, { another: 2 }], error: null },
-      schedule_slots: { data: [], error: null },
+      data: [{ some_other_key: 1 }, { another: 2 }], error: null,
     });
     expect(lastActivityById.get('sched-1')).toBe(ROW);
     expect(warnings).toHaveLength(1);
     expect(warnings[0]).toContain('unrecognised shape');
-  });
-
-  it('accepts a NON-flattened embed shape, in case a server ignores the spread', async () => {
-    const { lastActivityById, warnings } = await run({
-      assignments: { data: [{ schedule_slots: { schedule_version_id: 'ver-1' }, max: ASSIGN }], error: null },
-      schedule_slots: { data: [], error: null },
-    });
-    expect(lastActivityById.get('sched-1')).toBe(ASSIGN);
-    expect(warnings).toEqual([]);
-  });
-
-  it('accepts the array form of that embed too', async () => {
-    const { lastActivityById } = await run({
-      assignments: { data: [{ schedule_slots: [{ schedule_version_id: 'ver-1' }], max: ASSIGN }], error: null },
-      schedule_slots: { data: [], error: null },
-    });
-    expect(lastActivityById.get('sched-1')).toBe(ASSIGN);
   });
 });
 
 // ── query shape / no N+1 ────────────────────────────────────────────────────
 
 describe('loadLastActivity — query shape', () => {
-  it('is 3 queries for the whole list, whatever the list length', async () => {
-    const many = Array.from({ length: 25 }, (_, i) => ({ id: `sched-${i}`, updated_at: ROW }));
-    const one = await run({}, [S1]);
-    const twentyFive = await run({
-      schedule_versions: {
-        data: many.map((s, i) => ({ id: `ver-${i}`, schedule_id: s.id, created_at: VER_CREATED, published_at: null })),
-        error: null,
-      },
-      assignments: { data: many.map((_, i) => ({ schedule_version_id: `ver-${i}`, max: ASSIGN })), error: null },
-    }, many);
+  it('is ONE round trip for the whole list, whatever the list length', async () => {
+    const many = Array.from({ length: 250 }, (_, i) => ({ id: `sched-${i}`, updated_at: ROW }));
+    const one = await run();
+    const lots = await run(
+      { data: many.map(s => ({ schedule_id: s.id, last_activity_at: ASSIGN })), error: null },
+      many,
+    );
 
-    expect(fromCount(one.calls)).toBe(3);
-    expect(fromCount(twentyFive.calls)).toBe(3);          // NOT 25, and not 25×3
-    expect(twentyFive.lastActivityById.size).toBe(25);
-    expect([...twentyFive.lastActivityById.values()].every(v => v === ASSIGN)).toBe(true);
+    expect(rpcCalls(one.calls)).toHaveLength(1);
+    expect(rpcCalls(lots.calls)).toHaveLength(1);   // NOT 250, and not chunked
+    expect(lots.lastActivityById.size).toBe(250);
+    expect([...lots.lastActivityById.values()].every(v => v === ASSIGN)).toBe(true);
   });
 
-  it('groups the assignment max by version through the slot embed, filtered to this list', async () => {
+  it('reads no table directly — the whole derivation is the one function', async () => {
     const { calls } = await run();
-    const select = String(callsFor(calls, 'assignments', 'select')[0].args[0]);
-    expect(select).toContain('updated_at.max()');
-    expect(select).toContain('schedule_slots!inner(schedule_version_id)'); // the group-by key
-    const filter = callsFor(calls, 'assignments', 'in')[0];
-    expect(filter.args[0]).toBe('schedule_slots.schedule_version_id');
-    expect(filter.args[1]).toEqual(['ver-1']);
-  });
-
-  it('groups the slot max by its own version column, no embed needed', async () => {
-    const { calls } = await run();
-    expect(String(callsFor(calls, 'schedule_slots', 'select')[0].args[0])).toBe('schedule_version_id, updated_at.max()');
-    expect(callsFor(calls, 'schedule_slots', 'in')[0].args[0]).toBe('schedule_version_id');
-  });
-
-  it('chunks the id filter so a long list cannot blow the URL length', async () => {
-    const n = ACTIVITY_ID_CHUNK + 10;
-    const many = Array.from({ length: n }, (_, i) => ({ id: `sched-${i}`, updated_at: ROW }));
-    const versionRows = many.map((s, i) => ({ id: `ver-${i}`, schedule_id: s.id, created_at: VER_CREATED, published_at: null }));
-    // The fake replays its canned rows per chunk; only the chunking is asserted.
-    const { calls } = await run({
-      schedule_versions: (filters: Filter[]) => {
-        const ids = (filters.find(f => f.method === 'in')?.args[1] as string[]) ?? [];
-        return { data: versionRows.filter(v => ids.includes(v.schedule_id)), error: null };
-      },
-      assignments: { data: [], error: null },
-      schedule_slots: { data: [], error: null },
-    }, many);
-
-    const chunks = callsFor(calls, 'schedule_versions', 'in').map(c => (c.args[1] as string[]).length);
-    expect(chunks).toEqual([ACTIVITY_ID_CHUNK, 10]);
-    expect(callsFor(calls, 'assignments', 'in').map(c => (c.args[1] as string[]).length))
-      .toEqual([ACTIVITY_ID_CHUNK, 10]);
+    expect(fromCount(calls)).toBe(0);
   });
 });
 

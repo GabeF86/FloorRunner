@@ -2,7 +2,7 @@
 //
 // WHY THIS EXISTS: the list's `edited` line first shipped reading
 // `schedules.updated_at`, and that column does NOT track scheduling work. The
-// BEFORE UPDATE trigger (supabase_scheduling_schema.sql:776-803) only fires
+// BEFORE UPDATE trigger (supabase_scheduling_schema.sql:775-802) only fires
 // when the schedule ROW changes, and the row is written by exactly one route —
 // PATCH /api/scheduling/schedules/[id] (rename, included_provider_ids /
 // provider_limits, publish, archive) — plus creation and version creation.
@@ -38,25 +38,38 @@
 //   4. schedule_versions.created_at / published_at — belt and braces. Both
 //      writers already bump the schedule row too (versions/route.ts:107 sets
 //      current_version_number, [id]/route.ts:82+126 on publish), so this rung
-//      is redundant in practice; it is free (the version rows are fetched
-//      anyway for the version→schedule map) and it keeps a version that
-//      somehow carries no slots from reading as "never touched".
+//      is redundant in practice; it keeps a version that somehow carries no
+//      slots from reading as "never touched".
 // schedule_versions contributes no updated_at because it HAS none — it is
 // absent from the trigger array and from the DDL (schema:314-325).
+//
+// WHERE THE MAX IS COMPUTED, and why it moved (2026-07-27, same day):
+// all four rungs are folded IN POSTGRES by
+// `scheduling.schedule_last_activity(uuid[])` — one RPC for the whole list,
+// see supabase_scheduling_patch39_schedule_last_activity.sql. The first
+// implementation did rungs 2 and 3 client-side with PostgREST's aggregate
+// syntax (`updated_at.max()`), which this project REJECTS outright:
+//   HTTP 400 {"code":"PGRST123","message":"Use of aggregate functions is not
+//   allowed"}  (`db-aggregates-enabled` is off; tested live 2026-07-27).
+// That code wasn't broken — it degraded, exactly as designed — but degrading
+// on every single request means the feature silently did nothing. PostgREST's
+// per-embed order+limit CAN serve rung 3, but not rung 2: assignments are a
+// GRANDCHILD (version → slots → assignments) and PostgREST cannot order a
+// grandchild across all its parents. Hence a function.
 //
 // Known blind spot, deliberate: a pure DELETE leaves no timestamp anywhere.
 // Clearing a grid cell is fine (the route re-inserts an open row), but if a
 // future path only removed slots the stamp would not move. Fixing that needs a
 // trigger/audit column, which this read-time derivation is explicitly not.
 //
-// COST: three extra queries for the WHOLE list, never one per schedule. Two of
-// them are PostgREST aggregates, so each returns one row per version, not one
-// row per assignment (a 12-week combined draft is ~2-3k assignment rows; the
-// list holds dozens of drafts). Each source degrades independently — a failure
-// drops that rung and leaves the rest, so the worst case is the pre-fix
-// behaviour (schedules.updated_at) rather than a broken list.
+// COST: ONE round trip for the WHOLE list, never one per schedule, and it
+// returns one small row per schedule rather than any raw slot/assignment rows
+// (a 12-week combined draft is ~2-3k assignment rows; the list holds dozens of
+// drafts). The whole derivation degrades as one unit now — if the RPC is
+// missing or fails, every row falls back to `schedules.updated_at`, which is
+// the pre-fix behaviour rather than a broken list.
 
-import { isMissingColumnError, type SupabaseClient } from './rulesEngine/shared';
+import { isMissingFunctionError, type SupabaseClient } from './rulesEngine/shared';
 import { maxStamp } from './scheduleStamps';
 
 /** The only fields this resolver needs from a `scheduling.schedules` row. */
@@ -68,36 +81,26 @@ export interface ScheduleActivityRow {
 export interface LastActivityResult {
   /** schedule id → latest content-change stamp (verbatim from the DB). */
   lastActivityById: Map<string, string | null>;
-  /** Non-fatal degradations, for the server log. Empty = every source read cleanly. */
+  /** Non-fatal degradations, for the server log. Empty = the read was clean. */
   warnings: string[];
 }
 
 /**
- * `in.(…)` rides in the URL, so a few hundred uuids is ~11 KB and proxies
- * start answering 414. Chunked, which keeps the query count a function of
- * ids/CHUNK (1 for any realistic list) instead of of the list length.
+ * patch39. Takes `uuid[]`, returns `(schedule_id, last_activity_at)` — one row
+ * per EXISTING schedule, unknown ids simply absent.
  */
-export const ACTIVITY_ID_CHUNK = 150;
+export const LAST_ACTIVITY_RPC = 'schedule_last_activity';
 
-const VERSION_SELECT = 'id, schedule_id, created_at, published_at';
-
-// `assignments` carries no schedule or version column — schedule_slot_id is
-// its only FK up the chain (schema:348-363) — so the group-by key has to come
-// from the to-one slot embed, spread into the parent row. Non-aggregate
-// columns in a PostgREST select are the GROUP BY, so this reads
-// "max(updated_at) per schedule_version_id".
-const ASSIGNMENT_MAX_SELECT = '...schedule_slots!inner(schedule_version_id), updated_at.max()';
-const ASSIGNMENT_VERSION_FILTER = 'schedule_slots.schedule_version_id';
-
-// schedule_slots owns schedule_version_id outright, so this one needs no embed.
-const SLOT_MAX_SELECT = 'schedule_version_id, updated_at.max()';
-const SLOT_VERSION_FILTER = 'schedule_version_id';
+// NO CHUNKING, deliberately: the ids ride in the RPC's POST BODY, not the URL,
+// so the 414 cliff that forced the superseded aggregate implementation to
+// split its `in.(…)` filters into 150-id URLs does not exist here. A list of
+// any realistic length is one request.
 
 type Row = Record<string, unknown>;
 
 /**
- * Resolve each schedule's last content change. Never throws: any query that fails
- * is recorded in `warnings` and its rung is skipped, so the returned map
+ * Resolve each schedule's last content change. Never throws: a failed or
+ * missing RPC is recorded in `warnings` and skipped, so the returned map
  * always holds at least `schedules.updated_at` for every id passed in.
  */
 export async function loadLastActivity(
@@ -107,47 +110,45 @@ export async function loadLastActivity(
   const warnings: string[] = [];
   const lastActivityById = new Map<string, string | null>();
 
-  // Rung 1 — the schedule row itself. Seeded first so every id is present in
-  // the map even if every query below fails.
+  // Rung 1 — the schedule row itself. Seeded FIRST so every id is present in
+  // the map even if the RPC never answers. This is the degradation floor.
   for (const s of schedules) {
     if (!s?.id) continue;
     lastActivityById.set(s.id, s.updated_at ?? null);
   }
-  const bump = (scheduleId: string, stamp: string | null | undefined) => {
-    if (!lastActivityById.has(scheduleId)) return;
-    lastActivityById.set(scheduleId, maxStamp(lastActivityById.get(scheduleId), stamp));
-  };
-
   const scheduleIds = [...lastActivityById.keys()];
   if (scheduleIds.length === 0) return { lastActivityById, warnings };
 
-  // Rung 4 (+ the version→schedule map the aggregates need). Plain select, no
-  // aggregate: if PostgREST can't serve this one there is nothing to join to,
-  // so we stop here rather than firing two aggregates we couldn't use.
-  const versions = await selectIn(sb, 'schedule_versions', VERSION_SELECT, 'schedule_id', scheduleIds);
-  if (versions.error) {
-    warnings.push(`schedule_versions lookup failed — last-activity degraded to the schedule row: ${errText(versions.error)}`);
+  const res = await callRpc(sb, scheduleIds);
+  if (res.error) {
+    // Same split genContext/sequenceAutoFill draw: "this DB doesn't have it
+    // yet" reads differently in the log from a genuine read failure. Both
+    // degrade — the list must render either way — but only one of them is
+    // worth investigating, and only one has a one-line fix.
+    const why = isMissingFunctionError(res.error)
+      ? 'not present on this DB (apply supabase_scheduling_patch39_schedule_last_activity.sql)'
+      : 'read failed';
+    warnings.push(`${LAST_ACTIVITY_RPC} RPC ${why} — last-activity degraded to the schedule row: ${errText(res.error)}`);
     return { lastActivityById, warnings };
   }
-  const versionToSchedule = new Map<string, string>();
-  for (const v of versions.rows) {
-    const versionId = str(v.id);
-    const scheduleId = str(v.schedule_id);
-    if (!versionId || !scheduleId) continue;
-    versionToSchedule.set(versionId, scheduleId);
-    bump(scheduleId, str(v.created_at));
-    bump(scheduleId, str(v.published_at));
-  }
-  const versionIds = [...versionToSchedule.keys()];
-  if (versionIds.length === 0) return { lastActivityById, warnings };
 
-  // Rungs 2 and 3 are independent — fire them together, fold them separately.
-  const [assignmentMax, slotMax] = await Promise.all([
-    selectIn(sb, 'assignments', ASSIGNMENT_MAX_SELECT, ASSIGNMENT_VERSION_FILTER, versionIds),
-    selectIn(sb, 'schedule_slots', SLOT_MAX_SELECT, SLOT_VERSION_FILTER, versionIds),
-  ]);
-  foldAggregate('assignments', assignmentMax, versionToSchedule, bump, warnings);
-  foldAggregate('schedule_slots', slotMax, versionToSchedule, bump, warnings);
+  // The function already folds all four rungs, so this max is belt-and-braces:
+  // it guarantees the answer can never come back OLDER than the row stamp the
+  // list showed before this feature existed, whatever the DB returns.
+  let recognised = 0;
+  for (const row of res.rows) {
+    const id = str(row.schedule_id);
+    if (!id || !lastActivityById.has(id)) continue;
+    recognised++;
+    const stamp = str(row.last_activity_at);
+    if (stamp) lastActivityById.set(id, maxStamp(lastActivityById.get(id), stamp));
+  }
+  // Rows came back but none were addressable: the server answered in a shape
+  // this code doesn't understand (renamed output columns, a changed
+  // signature), which is a silent-wrong-answer risk, not a no-op.
+  if (recognised === 0 && res.rows.length > 0) {
+    warnings.push(`${LAST_ACTIVITY_RPC} returned ${res.rows.length} row(s) in an unrecognised shape — last-activity degraded to the schedule row`);
+  }
 
   return { lastActivityById, warnings };
 }
@@ -169,78 +170,21 @@ export function withLastActivity<T extends ScheduleActivityRow>(
 
 // ── internals ───────────────────────────────────────────────────────────────
 
-interface ChunkedResult { rows: Row[]; error: unknown }
-
-/** One `.in()` select, split into ACTIVITY_ID_CHUNK-sized URLs. First error wins. */
-async function selectIn(
-  sb: SupabaseClient, table: string, select: string, column: string, ids: string[],
-): Promise<ChunkedResult> {
-  const rows: Row[] = [];
-  for (let i = 0; i < ids.length; i += ACTIVITY_ID_CHUNK) {
-    const res = await sb.from(table).select(select).in(column, ids.slice(i, i + ACTIVITY_ID_CHUNK));
+/**
+ * The one round trip. Wrapped so a throw from the client layer (DNS, socket,
+ * an sb with no `.rpc`) degrades the same way an error RESULT does — this runs
+ * inside a list endpoint that must render regardless.
+ */
+async function callRpc(
+  sb: SupabaseClient, scheduleIds: string[],
+): Promise<{ rows: Row[]; error: unknown }> {
+  try {
+    const res = await sb.rpc(LAST_ACTIVITY_RPC, { p_schedule_ids: scheduleIds });
     if (res?.error) return { rows: [], error: res.error };
-    rows.push(...(((res?.data as Row[]) || [])));
+    return { rows: ((res?.data as Row[]) || []), error: null };
+  } catch (e) {
+    return { rows: [], error: e };
   }
-  return { rows, error: null };
-}
-
-/**
- * Fold one aggregate result into the map. A failed query, an unsupported
- * aggregate/spread syntax (older PostgREST, `db-aggregates-enabled` off), or a
- * row shape we don't recognise all warn and skip — never throw, never poison
- * the other rungs.
- */
-function foldAggregate(
-  table: string,
-  result: ChunkedResult,
-  versionToSchedule: Map<string, string>,
-  bump: (scheduleId: string, stamp: string | null | undefined) => void,
-  warnings: string[],
-): void {
-  if (result.error) {
-    // Same split genContext/sequenceAutoFill draw with isMissingColumnError:
-    // "this DB doesn't have what we asked for" reads differently in the log
-    // from a genuine read failure. Both degrade — the list must render either
-    // way — but only one of them is worth investigating.
-    const why = isMissingColumnError(result.error as { code?: string; message?: string })
-      ? 'column/aggregate not available on this DB'
-      : 'read failed';
-    warnings.push(`${table} max(updated_at) aggregate ${why} — that source is excluded from last-activity: ${errText(result.error)}`);
-    return;
-  }
-  let used = 0;
-  for (const row of result.rows) {
-    const versionId = aggVersionId(row);
-    const stamp = aggStamp(row);
-    if (!versionId || !stamp) continue;
-    const scheduleId = versionToSchedule.get(versionId);
-    if (!scheduleId) continue;
-    bump(scheduleId, stamp);
-    used++;
-  }
-  // Rows came back but none were usable: the server answered in a shape this
-  // code doesn't understand, which is a silent-wrong-answer risk, not a no-op.
-  if (used === 0 && result.rows.length > 0) {
-    warnings.push(`${table} max(updated_at) returned ${result.rows.length} row(s) in an unrecognised shape — that source is excluded from last-activity`);
-  }
-}
-
-/**
- * `updated_at.max()` comes back under the `max` key. The spread form is read
- * defensively too: if a server ignores `...` the version id arrives nested
- * under the embed instead of flattened, and either is fine to consume.
- */
-function aggVersionId(row: Row): string | null {
-  const flat = str(row.schedule_version_id);
-  if (flat) return flat;
-  const embed = row.schedule_slots;
-  const nested = Array.isArray(embed) ? embed[0] : embed;
-  if (nested && typeof nested === 'object') return str((nested as Row).schedule_version_id);
-  return null;
-}
-
-function aggStamp(row: Row): string | null {
-  return str(row.max) ?? str(row.updated_at);
 }
 
 function str(value: unknown): string | null {

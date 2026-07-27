@@ -1,0 +1,290 @@
+-- supabase_scheduling_patch39_schedule_last_activity.sql
+-- One read-only function that answers "when did this schedule last CHANGE?"
+-- for a batch of schedule ids, because PostgREST aggregates are DISABLED on
+-- this project and the feature that needs the answer is currently a no-op.
+--
+-- PROJECT: apply ONLY to Supabase ref qhwdbtixhzdsgwwtcfrm ("Floor Runner" —
+-- the ref in .env.local). Two OTHER Supabase projects are connected to this
+-- machine for DIFFERENT apps (atlas-staging, ChiefOS); running FloorRunner DDL
+-- through those is a known foot-gun. VERIFY THE REF BEFORE APPLYING.
+--
+-- STATUS: NOT YET APPLIED.
+--   Applied ____-__-__ to project qhwdbtixhzdsgwwtcfrm via ______________.
+--   Post-apply spot checks (see VERIFICATION at the bottom): ______________
+--
+-- ── ORDER: EITHER ORDER IS SAFE ─────────────────────────────────────────────
+-- Unlike patch38 this one has no ordering hazard in either direction, so it
+-- can go patch-then-push or push-then-patch:
+--   * Patch first, code later: nothing calls the function, so it just sits
+--     there. Zero behavior change.
+--   * Code first, patch later: the deployed route calls an RPC that does not
+--     exist yet, gets PostgREST's PGRST202 schema-cache miss, classifies it as
+--     "this DB predates patch39" (isMissingFunctionError,
+--     src/lib/rulesEngine/shared.ts), warns once per list request, and falls
+--     back to schedules.updated_at — i.e. exactly the behavior that is live
+--     today. Degraded, never broken.
+--
+-- ── WHY (the bug this fixes) ────────────────────────────────────────────────
+-- The schedules list shows a per-row "edited" stamp. It cannot come from
+-- `schedules.updated_at`: the BEFORE UPDATE trigger (schema:775-802) fires
+-- only when the schedule ROW changes, and the row is written by exactly one
+-- route (PATCH /api/scheduling/schedules/[id] — rename, settings, publish,
+-- archive) plus creation. Everything a scheduler actually DOES lands
+-- elsewhere: generation and manual/assistant grid edits write ASSIGNMENTS,
+-- slot lock/label and call split/unsplit write SCHEDULE_SLOTS. The full
+-- write-path census is in src/lib/scheduleActivity.ts's header and is not
+-- repeated here.
+--
+-- So the stamp is a MAX over four sources:
+--   1. schedules.updated_at                        (schema:311)
+--   2. max(schedule_versions.created_at/published_at) over the schedule's
+--      versions                                    (schema:320-321)
+--   3. max(schedule_slots.updated_at) over those versions' slots (schema:345)
+--   4. max(assignments.updated_at) over those slots' assignments (schema:362)
+--
+-- NOTE on source 2: schedule_versions has NO updated_at column. It is absent
+-- from the DDL (schema:314-325) and from the trigger array (schema:787-790 —
+-- the array lists schedules, schedule_slots and assignments, not versions),
+-- which is why that rung reads created_at/published_at instead. Do not
+-- "fix" this by adding sv.updated_at to the GREATEST — it will not compile.
+--
+-- ── WHY A FUNCTION, AND NOT THE OBVIOUS POSTGREST QUERY ─────────────────────
+-- The first implementation computed sources 3 and 4 client-side with
+-- PostgREST's aggregate syntax (`select=schedule_version_id,updated_at.max()`).
+-- That syntax is REJECTED by this project:
+--
+--   GET /rest/v1/schedule_slots?select=schedule_version_id,updated_at.max()
+--   → HTTP 400 {"code":"PGRST123",
+--               "message":"Use of aggregate functions is not allowed"}
+--
+-- (`db-aggregates-enabled` is off. Tested against the live project 2026-07-27.)
+-- The client took its degradation path and silently fell back to
+-- schedules.updated_at, so the feature shipped doing nothing at all.
+--
+-- Two non-solutions, ruled out before writing this:
+--   * PostgREST per-embed order+limit. This DOES work here (verified: 200 OK,
+--     newest slot per version). It solves source 3 and NOT source 4:
+--     assignments are a GRANDCHILD (version → slots → assignments) and
+--     PostgREST cannot order a grandchild across all its parents. Ordering the
+--     SLOTS and then reading that slot's assignment answers a different
+--     question and would be wrong.
+--   * Pulling raw assignment rows and reducing in the app. Measured on the
+--     live project 2026-07-27: 6 schedules, 6 versions, 3987 slots, 3987
+--     assignments, 665 slots per version. Small TODAY — and it grows with
+--     every block across seven sites, so shipping an unbounded row pull into
+--     a list endpoint is a deferred outage, not an answer.
+--
+-- ── WHAT (one statement) ────────────────────────────────────────────────────
+-- scheduling.schedule_last_activity(uuid[]) → (schedule_id, last_activity_at),
+-- one row per EXISTING schedule whose id is in the array. Ids that match no
+-- schedule simply produce no row (the caller already holds the list rows and
+-- seeds its own fallback from them, so a missing row is not an error). A NULL
+-- or empty array returns zero rows; the route skips the call entirely for an
+-- empty list.
+--
+-- GREATEST is the whole trick, and its NULL semantics are the reason the four
+-- rungs can be written as one expression: in PostgreSQL "NULL values in the
+-- list are ignored. The result will be NULL only if all the expressions
+-- evaluate to NULL." So an unpublished version (published_at NULL), a version
+-- with no slots, and a slot with no assignments (max() over an empty set is
+-- NULL) each drop out of the max instead of poisoning it. This is NOT
+-- portable behavior — several other engines return NULL if ANY argument is
+-- NULL — but it is Postgres's documented behavior and this function is
+-- Postgres-only. schedules.updated_at is NOT NULL (schema:311), so an existing
+-- schedule can never come back with a NULL stamp.
+--
+-- Output column names deliberately collide with real column names
+-- (schedule_id exists on schedule_versions). That is safe because every
+-- column reference in the body is table-qualified — the same construction
+-- scheduling.historical_call_counts already uses in production, where the
+-- output columns provider_id/code shadow a.provider_id/st.code (patch24:40-63).
+--
+-- ── QUERY PLAN: this must never seq-scan assignments ────────────────────────
+-- Three CORRELATED scalar subqueries, not a join + GROUP BY. That is a
+-- deliberate choice: with a handful of bound schedule ids, correlated
+-- subqueries force a per-schedule nested-loop keyed on an equality, which is
+-- the plan we want. A flat join with GROUP BY invites the planner to hash-join
+-- a full assignments scan once the table is big enough — the exact failure
+-- mode this function exists to prevent.
+--
+-- Index chain each subquery rides (all PRE-EXISTING — this patch creates NO
+-- index and no other object):
+--   schedules.id                     → PRIMARY KEY                schema:298
+--   schedule_versions.schedule_id    → UNIQUE (schedule_id,
+--                                      version_number), leading
+--                                      column prefix              schema:324
+--   schedule_slots.schedule_version_id
+--                                    → idx_slots_version_date
+--                                      (schedule_version_id,
+--                                       slot_date), leading prefix schema:592
+--   assignments.schedule_slot_id     → idx_assignments_slot        schema:596
+--
+-- MISSING INDEX, PROPOSED NOT CREATED. There is no index on
+-- assignments.updated_at, and none is needed: the max is taken over a set
+-- already narrowed to one schedule's slots, so it is a bounded heap read via
+-- idx_assignments_slot, not a scan. The one index that WOULD help is a
+-- covering one:
+--
+--   -- CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_assignments_slot_updated
+--   --   ON scheduling.assignments (schedule_slot_id, updated_at DESC);
+--
+-- It turns the per-slot max into an index-only lookup and would supersede
+-- idx_assignments_slot (same leading column) — so adopting it means dropping
+-- that one, or carrying a redundant index. NOT created here on purpose:
+-- assignments is a live, actively-written table, index creation on it is the
+-- owner's call, and at the measured 3987 rows it buys nothing. Revisit if
+-- VERIFICATION query 3 below ever shows this function above a few hundred ms.
+--
+-- No `SET search_path` clause, matching historical_call_counts (patch18/21/24).
+-- It is safe here: SECURITY INVOKER means there is no privilege boundary to
+-- escalate across, and every identifier in the body is schema-qualified.
+--
+-- ── IDEMPOTENT ──────────────────────────────────────────────────────────────
+-- CREATE OR REPLACE FUNCTION + a re-issued GRANT. Safe to re-run any number of
+-- times. Reads only — no table is written, no row is touched, no object other
+-- than this function is created or altered. There is nothing to migrate and
+-- nothing to back up before applying.
+
+CREATE OR REPLACE FUNCTION scheduling.schedule_last_activity(p_schedule_ids uuid[])
+RETURNS TABLE (schedule_id uuid, last_activity_at timestamptz)
+LANGUAGE sql
+STABLE
+SECURITY INVOKER
+AS $$
+  SELECT s.id AS schedule_id,
+         GREATEST(
+           -- 1. the schedule row itself (rename / settings / publish / archive)
+           s.updated_at,
+           -- 2. its versions (no updated_at on that table — see the header)
+           (SELECT max(GREATEST(sv.created_at, sv.published_at))
+              FROM scheduling.schedule_versions sv
+             WHERE sv.schedule_id = s.id),
+           -- 3. its slots (slot lock/label, call split/unsplit)
+           (SELECT max(ss.updated_at)
+              FROM scheduling.schedule_slots ss
+              JOIN scheduling.schedule_versions sv ON sv.id = ss.schedule_version_id
+             WHERE sv.schedule_id = s.id),
+           -- 4. its assignments (generation, manual grid edits, assistant edits
+           --    — the dominant signal, and the grandchild PostgREST can't reach)
+           (SELECT max(a.updated_at)
+              FROM scheduling.assignments a
+              JOIN scheduling.schedule_slots ss ON ss.id = a.schedule_slot_id
+              JOIN scheduling.schedule_versions sv ON sv.id = ss.schedule_version_id
+             WHERE sv.schedule_id = s.id)
+         ) AS last_activity_at
+    FROM scheduling.schedules s
+   WHERE s.id = ANY (p_schedule_ids)
+$$;
+
+-- Same grantee set as every other object in this schema (schema:811-815) and
+-- as historical_call_counts (patch18:88, patch21:58, patch24:64). The app runs
+-- on the service-role key; anon/authenticated are granted for parity with the
+-- rest of the schema, and the function is read-only and SECURITY INVOKER, so
+-- RLS (when it is finally turned on) still applies to the caller.
+GRANT EXECUTE ON FUNCTION scheduling.schedule_last_activity(uuid[]) TO anon, authenticated, service_role;
+
+-- PostgREST serves RPCs from a cached schema, and a function it has never seen
+-- is answered PGRST202 ("could not find the function … in the schema cache") —
+-- which the app classifies as "this DB predates patch39" and degrades on.
+-- Supabase's built-in DDL event trigger normally reloads the cache by itself;
+-- this is belt-and-braces so a stale cache can't masquerade as a failed apply.
+-- If the app still logs PGRST202 a minute after applying, run this again (or
+-- restart the API from the dashboard) BEFORE suspecting the function.
+NOTIFY pgrst, 'reload schema';
+
+-- ╔══════════════════════════════════════════════════════════════════════════╗
+-- ║ VERIFICATION — run these AFTER applying. Query 2 is the one that matters:║
+-- ║ it re-derives the same answer a completely different way and diffs.      ║
+-- ╚══════════════════════════════════════════════════════════════════════════╝
+--
+-- ── (1) smoke: it returns one row per id, and beats the row stamp ───────────
+--   SELECT s.schedule_name, s.updated_at AS row_stamp, la.last_activity_at
+--     FROM scheduling.schedules s
+--     JOIN scheduling.schedule_last_activity(
+--            (SELECT array_agg(id) FROM scheduling.schedules)) la
+--       ON la.schedule_id = s.id
+--    ORDER BY la.last_activity_at DESC NULLS LAST;
+--   -- expect: one row per schedule; last_activity_at >= row_stamp ALWAYS
+--   -- (it is a max that includes row_stamp); never NULL; and on the drafts
+--   -- worked in recently it is strictly LATER than row_stamp — that gap is
+--   -- the bug being fixed. On the 2026-07-27 probe the two most recent drafts
+--   -- showed 21:38 (row) vs 04:16 next day (real), and 13:12 vs 22:45.
+--
+-- ── (2) THE PROOF: independent re-derivation, must match row for row ────────
+-- Same four sources, computed with a UNION ALL instead of correlated
+-- subqueries. If the function and this disagree on any schedule, the function
+-- is wrong — do not hand-wave a diff.
+--   WITH expected AS (
+--     SELECT s.id AS schedule_id, max(t.stamp) AS last_activity_at
+--       FROM scheduling.schedules s
+--       CROSS JOIN LATERAL (
+--         SELECT s.updated_at AS stamp
+--         UNION ALL SELECT sv.created_at
+--                     FROM scheduling.schedule_versions sv
+--                    WHERE sv.schedule_id = s.id
+--         UNION ALL SELECT sv.published_at
+--                     FROM scheduling.schedule_versions sv
+--                    WHERE sv.schedule_id = s.id
+--         UNION ALL SELECT ss.updated_at
+--                     FROM scheduling.schedule_slots ss
+--                     JOIN scheduling.schedule_versions sv
+--                       ON sv.id = ss.schedule_version_id
+--                    WHERE sv.schedule_id = s.id
+--         UNION ALL SELECT a.updated_at
+--                     FROM scheduling.assignments a
+--                     JOIN scheduling.schedule_slots ss
+--                       ON ss.id = a.schedule_slot_id
+--                     JOIN scheduling.schedule_versions sv
+--                       ON sv.id = ss.schedule_version_id
+--                    WHERE sv.schedule_id = s.id
+--       ) t
+--      GROUP BY s.id
+--   )
+--   SELECT e.schedule_id, e.last_activity_at AS expected, f.last_activity_at AS got
+--     FROM expected e
+--     FULL JOIN scheduling.schedule_last_activity(
+--                 (SELECT array_agg(id) FROM scheduling.schedules)) f
+--       ON f.schedule_id = e.schedule_id
+--    WHERE e.last_activity_at IS DISTINCT FROM f.last_activity_at;
+--   -- expect: ZERO ROWS. Any row is a defect in the function.
+--
+-- ── (3) plan: no sequential scan on assignments ─────────────────────────────
+--   EXPLAIN (ANALYZE, BUFFERS)
+--   SELECT * FROM scheduling.schedule_last_activity(
+--     (SELECT array_agg(id) FROM scheduling.schedules));
+--   -- expect: Index Scan / Index Only Scan using idx_assignments_slot inside
+--   -- the subplans; NO "Seq Scan on assignments"; total time in single-digit
+--   -- ms at the measured 3987-row scale. If a Seq Scan on assignments ever
+--   -- appears here, that is the signal to revisit the proposed covering index
+--   -- in the header (and to check that ANALYZE has run on these tables).
+--
+-- ── (4) edge cases ──────────────────────────────────────────────────────────
+--   SELECT * FROM scheduling.schedule_last_activity(ARRAY[]::uuid[]);
+--   -- expect: 0 rows.
+--   SELECT * FROM scheduling.schedule_last_activity(NULL);
+--   -- expect: 0 rows (= ANY (NULL) is NULL, never true) — NOT an error, and
+--   -- NOT every schedule. The route never sends either, but a list endpoint
+--   -- must not be one typo away from a full-table derivation.
+--   SELECT * FROM scheduling.schedule_last_activity(
+--     ARRAY['00000000-0000-0000-0000-000000000000'::uuid]);
+--   -- expect: 0 rows (unknown id ≠ a row of NULLs).
+--
+-- ── (5) a brand-new schedule reads as "created, never edited" ───────────────
+--   -- After creating a draft in the UI and NOT touching it, its
+--   -- last_activity_at must sit within a second or two of created_at, so the
+--   -- list's suppression rule (SAME_STAMP_TOLERANCE_MS, src/lib/
+--   -- scheduleStamps.ts) hides the "edited" line. Creation writes slots and
+--   -- assignments in the same request, so rungs 3 and 4 are non-null
+--   -- immediately — they are just not LATER. Then assign one cell on the grid
+--   -- and reload the list: "edited" must appear.
+--
+-- ╔══════════════════════════════════════════════════════════════════════════╗
+-- ║ ROLLBACK                                                                 ║
+-- ╚══════════════════════════════════════════════════════════════════════════╝
+--
+--   DROP FUNCTION IF EXISTS scheduling.schedule_last_activity(uuid[]);
+--
+-- Nothing else to undo — the patch writes no data. Dropping it puts the app
+-- back on its documented fallback (schedules.updated_at + a console warning
+-- per list request), which is where it is today. Deployed code keeps working;
+-- it just stops showing real edit times.
