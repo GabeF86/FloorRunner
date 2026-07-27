@@ -7,7 +7,24 @@ import { CallPatternDocSchema } from './callPattern';
 import { buildCtx, prov, callSlot } from './__fixtures__/buildContext';
 import { sp, scen } from './__fixtures__/scenarioFixtures';
 
-// Minimal pattern: the Paoli neuro block, nothing else.
+// Minimal pattern: the Paoli neuro block's SHAPE, nothing else.
+//
+// The bands are deliberately NOT production's since 2026-07-27, when the live
+// doc dropped its { minFte: 1, units: 0 } band ("every call taker should be
+// given a neuro weekend call" — weekendV2.ts). This fixture KEEPS that band,
+// because a provider who owes ZERO is what several cases below are built on
+// and `units: 0` is still a supported configuration (callPattern.ts):
+//   • 'a full-FTE doc may NOT take the leftover day' — the remainder gate's
+//     refusal side. With production's two bands the 1.0 doc owes a full
+//     weekend, is short, and the gate correctly ADMITS them, so the case would
+//     invert and stop testing a refusal at all.
+//   • 'a 0.75 doc still short of a full weekend MAY take the leftover day' —
+//     `expect(sun).not.toBe('full')` needs 'full' to be excluded BY THE BAND.
+//   • the steering cases — the two full-timers owe nothing, which is what makes
+//     'steering does not gate' meaningful (a tier that had hardened into
+//     eligibility would strand their weekend).
+// Rewriting these to production's bands would not "sync a fixture"; it would
+// delete the zero-owed branch's only coverage.
 const NEURO_DOC = CallPatternDocSchema.parse({
   version: 1,
   blocks: [{ anchorDayType: 'saturday', chains: [

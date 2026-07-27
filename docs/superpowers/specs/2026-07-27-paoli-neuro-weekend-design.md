@@ -2,6 +2,19 @@
 
 **Date:** 2026-07-27 · **Status:** approved (Gabriel, this session) · **Scope:** Paoli only — Friday C3 slot removal, weekendV2 pattern edit, one new `CallPatternDoc` config block, one new pure module, three engine touchpoints, one generation-report addition, one DB patch.
 
+> **PARTIALLY SUPERSEDED — 2026-07-27, same day, after this spec was built.**
+> The FTE→requirement mapping below is out of date. Gabriel, verbatim:
+> *"Every call taker should be given a neuro weekend call, except for horan it
+> should only be one weekend day of neuro."* The requirement is now UNIVERSAL:
+> the `{ minFte: 1, units: 0 }` band that exempted full-timers is GONE, so every
+> 0.75+ doc owes one full neuro weekend per block and Horan (0.5) owes a single
+> weekend day. Live bands are in `src/lib/rulesEngine/patterns/weekendV2.ts`.
+> Everything else in this spec still holds — the Sat+Sun shape, the removal of
+> the Friday neuro line, the half-weekend unit, the 0.75 link gate, the
+> remainder mechanism and every module boundary are unchanged; only WHO owes
+> changed. Read the statements about "1.0 docs have no requirement" (Intent
+> bullets 3–5, and the remainder-gate paragraph in step 5) as history.
+
 ## Intent
 
 Gabriel, verbatim: *"I want the Friday C2 doc to cross cover Neuro call on fridays and the designated neuro call doc is assigned saturday and sunday neuro. In terms of the partial FTE docs, the 0.75 docs should be assigned a neuro weekend but the 0.5 FTE doc should get either a saturday or a sunday not both."*

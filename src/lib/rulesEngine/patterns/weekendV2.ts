@@ -113,13 +113,43 @@ export const WEEKEND_V2_PATTERN: CallPatternDoc = CallPatternDocSchema.parse({
     { kind: 'pre_pto', relativeDay: 'thursday_prior_week', codes: ['C1', 'C2'], maxProviders: 2, enabled: true },
   ],
   optimizerMovableDayTypes: ['weekday', 'friday'],
-  // Neuro requirement (Gabriel 2026-07-27): a 0.75 doc owes one full neuro
-  // weekend per block; a sub-0.75 doc owes a single weekend day; 1.0 docs owe
-  // nothing and rotate through neuro on fairness alone.
+  // Neuro requirement (Gabriel 2026-07-27, REVISED same day): "Every call taker
+  // should be given a neuro weekend call, except for horan it should only be
+  // one weekend day of neuro." So the requirement is now UNIVERSAL — 0.75+ docs
+  // (which is every call taker bar Horan, the site's 0.5) owe one full neuro
+  // weekend per block, and a sub-0.75 doc owes a single weekend day. The
+  // earlier shape carried a third band, { minFte: 1, units: 0 }, exempting
+  // full-timers so they rotated through neuro on fairness alone; that exemption
+  // is exactly what the revision removes and it is gone here. The bottom band's
+  // 0.5 pairs with the Sat C3 → Sun C3 link's minFte 0.75 gate above: Horan
+  // anchors Saturday, the Sunday is minted as a remainder, and only a doc still
+  // short of their band may take it. `units: 0` remains a legal band value
+  // (callPattern.ts) — no shipped pattern uses it any more.
+  //
+  // FEASIBILITY, measured 2026-07-27 against a real 11-weekend board rather
+  // than argued: supply is one unit per weekend (11.0), demand is (N−1) × 1.0
+  // + 0.5 for N call takers. It FITS at N ≤ 11 (10 docs = 9.5 owed, 11 = 10.5)
+  // and cannot at N ≥ 12 (12 docs = 11.5 owed, 13 = 12.5). Paoli sits right on
+  // that line, so a short block is expected, not a misconfiguration.
+  //
+  // A shortfall is REPORTED, never enforced. This is a STEERING TIER in
+  // scoreCall (solveKernel.ts) — most-short-first on neuro slots — and the gap
+  // surfaces as a generation-banner warning (neuroShortfallWarnings). Probed at
+  // N = 12 and 13: all 22 neuro slots still filled, 0 unfilled, with the gap
+  // reported (0.5 and 1.5 units). The one HARD gate that reads these bands is
+  // eligibility's neuro remainder gate, and it only refuses providers who are
+  // NOT short — dropping the exempt band makes MORE docs short, so it is
+  // strictly more permissive than the three-band shape and cannot strand a slot
+  // that used to fill.
+  //
+  // KNOWN CONSEQUENCE, owner's call if it ever matters: because the tier sorts
+  // by units short, a full-timer (owes 1.0) always outranks Horan (owes 0.5),
+  // so under scarcity Horan is the one who ends up with no neuro at all. Total
+  // shortfall is identical either way — 0.5 units at N = 12 — so this is purely
+  // about who absorbs it, and it is visible on the banner when it happens.
   neuroWeekend: {
     code: 'C3',
     requirementBands: [
-      { minFte: 1, units: 0 },
       { minFte: 0.75, units: 1 },
       { minFte: 0, units: 0.5 },
     ],

@@ -67,8 +67,14 @@ vi.mock('./commit', async (importOriginal) => ({
   hasGenerationMetadataColumn: async () => false,
 }));
 
-// Paoli's neuro block: 1.0 owes nothing, 0.75 owes a full weekend, below owes
-// a single day. No chains — these cases are about the REPORT, not placement.
+// A three-band neuro config: 1.0 owes nothing, 0.75 owes a full weekend, below
+// owes a single day. No chains — these cases are about the REPORT WIRING, not
+// placement. NOT Paoli's live shape: the 2026-07-27 revision dropped the
+// 1.0-exempt band, because every call taker now owes a neuro weekend
+// (weekendV2.ts). Left three-band on purpose — every provider in this file is
+// 0.75, so only the middle band is ever read and the shape is arbitrary
+// fixture data here; `units: 0` remains a legal band and this file should not
+// be read as a mirror of production either way.
 const NEURO_DOC = CallPatternDocSchema.parse({
   version: 1,
   blocks: [], dayChains: [], spans: [], placementPasses: [],

@@ -70,9 +70,16 @@
 --     sub-0.75 doc takes Saturday alone and the Sunday falls through to the
 --     neuro remainder set.
 --   * NEW top-level `neuroWeekend` config:
---       { code: 'C3', requirementBands: [ 1.0 -> 0 units,
---                                        0.75 -> 1 unit,
---                                         0   -> 0.5 units ] }
+--       { code: 'C3', requirementBands: [ 0.75 -> 1 unit,
+--                                          0   -> 0.5 units ] }
+--     TWO bands, not three — REVISED 2026-07-27 after the first draft of this
+--     patch was written. Gabriel: "Every call taker should be given a neuro
+--     weekend call, except for horan it should only be one weekend day of
+--     neuro." The earlier draft carried a third band, { 1.0 -> 0 units },
+--     exempting full-timers; the requirement is now universal, so that band is
+--     gone and every 0.75+ doc owes a full neuro weekend per block. Horan
+--     (0.5) falls to the bottom band and owes a single weekend day, which is
+--     what the +1 Sun C3 link's minFte 0.75 gate above physically produces.
 --   Everything else is byte-identical to what is live: dayChains (including
 --   patch35's C2N12/C2N8 segment chains), spans, placementPasses, reliefPass,
 --   optimizerMovableDayTypes, callFillOrder, dayTypeFillOrder.
@@ -191,7 +198,7 @@ END $$;
 -- Expect: UPDATE 1   (the call_patterns_one_active partial unique index from
 --                     patch18 guarantees at most one active row per site)
 UPDATE scheduling.call_patterns
-   SET definition = '{"version":1,"blocks":[{"anchorDayType":"saturday","chains":[{"trigger":"C3","links":[{"offset":-1,"code":"D4"},{"offset":1,"code":"C3","minFte":0.75}]},{"trigger":"C1","links":[{"offset":-1,"code":"D2"}]},{"trigger":"C2","links":[{"offset":-1,"code":"C2"},{"offset":1,"code":"C1"}]}]},{"anchorDayType":"friday","chains":[{"trigger":"C1","links":[{"offset":2,"code":"C2"}]}]}],"dayChains":[{"trigger":"C1","dayTypes":["weekday","friday","federal_holiday","major_holiday"],"links":[{"offset":-1,"code":"D2"}],"blocks":[{"offset":1}]},{"trigger":"C1","dayTypes":["saturday"],"blocks":[{"offset":1}]},{"trigger":"C1","dayTypes":["sunday"],"blocks":[{"offset":1}]},{"trigger":"C2","dayTypes":["weekday","friday","federal_holiday","major_holiday"],"links":[{"offset":-1,"code":"D3"},{"offset":1,"code":"D1"}]},{"trigger":"C2","dayTypes":["sunday"],"links":[{"offset":1,"code":"D1"}]},{"trigger":"C2N12","dayTypes":["weekday","friday","federal_holiday","major_holiday"],"links":[{"offset":1,"code":"D1"}]},{"trigger":"C2N12","dayTypes":["sunday"],"links":[{"offset":1,"code":"D1"}]},{"trigger":"C2N8","dayTypes":["weekday","friday","federal_holiday","major_holiday"],"links":[{"offset":1,"code":"D1"}]},{"trigger":"C2N8","dayTypes":["sunday"],"links":[{"offset":1,"code":"D1"}]}],"spans":[],"placementPasses":[{"kind":"pre_pto","relativeDay":"thursday_prior_week","codes":["C1","C2"],"maxProviders":2,"enabled":true}],"reliefPass":{"enabled":true,"dayTypes":["weekday","friday"]},"optimizerMovableDayTypes":["weekday","friday"],"callFillOrder":"call_rank","dayTypeFillOrder":["saturday","friday","sunday","weekday","federal_holiday","major_holiday"],"neuroWeekend":{"code":"C3","requirementBands":[{"minFte":1,"units":0},{"minFte":0.75,"units":1},{"minFte":0,"units":0.5}]}}'::jsonb,
+   SET definition = '{"version":1,"blocks":[{"anchorDayType":"saturday","chains":[{"trigger":"C3","links":[{"offset":-1,"code":"D4"},{"offset":1,"code":"C3","minFte":0.75}]},{"trigger":"C1","links":[{"offset":-1,"code":"D2"}]},{"trigger":"C2","links":[{"offset":-1,"code":"C2"},{"offset":1,"code":"C1"}]}]},{"anchorDayType":"friday","chains":[{"trigger":"C1","links":[{"offset":2,"code":"C2"}]}]}],"dayChains":[{"trigger":"C1","dayTypes":["weekday","friday","federal_holiday","major_holiday"],"links":[{"offset":-1,"code":"D2"}],"blocks":[{"offset":1}]},{"trigger":"C1","dayTypes":["saturday"],"blocks":[{"offset":1}]},{"trigger":"C1","dayTypes":["sunday"],"blocks":[{"offset":1}]},{"trigger":"C2","dayTypes":["weekday","friday","federal_holiday","major_holiday"],"links":[{"offset":-1,"code":"D3"},{"offset":1,"code":"D1"}]},{"trigger":"C2","dayTypes":["sunday"],"links":[{"offset":1,"code":"D1"}]},{"trigger":"C2N12","dayTypes":["weekday","friday","federal_holiday","major_holiday"],"links":[{"offset":1,"code":"D1"}]},{"trigger":"C2N12","dayTypes":["sunday"],"links":[{"offset":1,"code":"D1"}]},{"trigger":"C2N8","dayTypes":["weekday","friday","federal_holiday","major_holiday"],"links":[{"offset":1,"code":"D1"}]},{"trigger":"C2N8","dayTypes":["sunday"],"links":[{"offset":1,"code":"D1"}]}],"spans":[],"placementPasses":[{"kind":"pre_pto","relativeDay":"thursday_prior_week","codes":["C1","C2"],"maxProviders":2,"enabled":true}],"reliefPass":{"enabled":true,"dayTypes":["weekday","friday"]},"optimizerMovableDayTypes":["weekday","friday"],"callFillOrder":"call_rank","dayTypeFillOrder":["saturday","friday","sunday","weekday","federal_holiday","major_holiday"],"neuroWeekend":{"code":"C3","requirementBands":[{"minFte":0.75,"units":1},{"minFte":0,"units":0.5}]}}'::jsonb,
        updated_at = now()
  WHERE site_id = '2ddd2427-22fb-4290-9c4c-03a957e5af4e'
    AND status = 'active';
@@ -200,6 +207,16 @@ UPDATE scheduling.call_patterns
 -- neuroWeekend config, must contain the new two-link saturday C3 chain, and
 -- must NOT contain a -1 C3 link anywhere in blocks. Containment (@>) is
 -- order-independent, so this does not depend on array positions.
+--
+-- The last clause was ADDED with the 2026-07-27 band revision. `IS NOT NULL`
+-- alone cannot tell the two-band doc from the superseded three-band one, and
+-- both now exist in the project's history — an earlier emit pasted here by
+-- mistake would install a doc that exempts every full-timer from neuro and
+-- the assertion would wave it through. A positive `@>` on the two bands would
+-- NOT catch it either: array containment means "contains all of these", so a
+-- three-band doc satisfies it. Only the ABSENCE of the exempting band is
+-- decisive, which is the same NOT-@> idiom used for the removed -1 C3 link
+-- one line up.
 DO $$ DECLARE n int; BEGIN
   SELECT count(*) INTO n
     FROM scheduling.call_patterns
@@ -207,7 +224,8 @@ DO $$ DECLARE n int; BEGIN
      AND status = 'active'
      AND definition->'neuroWeekend' IS NOT NULL
      AND definition->'blocks' @> '[{"anchorDayType":"saturday","chains":[{"trigger":"C3","links":[{"offset":-1,"code":"D4"},{"offset":1,"code":"C3","minFte":0.75}]}]}]'::jsonb
-     AND NOT definition->'blocks' @> '[{"anchorDayType":"saturday","chains":[{"trigger":"C3","links":[{"offset":-1,"code":"C3"}]}]}]'::jsonb;
+     AND NOT definition->'blocks' @> '[{"anchorDayType":"saturday","chains":[{"trigger":"C3","links":[{"offset":-1,"code":"C3"}]}]}]'::jsonb
+     AND NOT definition->'neuroWeekend' @> '{"requirementBands":[{"minFte":1,"units":0}]}'::jsonb;
   IF n <> 1 THEN
     RAISE EXCEPTION 'patch38: active call_patterns doc did not take the Sat+Sun neuro shape (matched % rows) — aborting', n;
   END IF;
@@ -314,9 +332,10 @@ COMMIT;
 --   --   sat_c3_links  = [{"offset":-1,"code":"D4"},
 --   --                    {"offset":1,"code":"C3","minFte":0.75}]
 --   --   neuro_weekend = {"code":"C3","requirementBands":[
---   --                      {"minFte":1,"units":0},
 --   --                      {"minFte":0.75,"units":1},
 --   --                      {"minFte":0,"units":0.5}]}
+--   -- TWO bands (2026-07-27 revision — see the DOC DELTA note above). A third
+--   -- {"minFte":1,"units":0} band here means a stale doc was applied.
 --
 --   -- Same thing as two hard booleans (position-independent):
 --   SELECT definition->'blocks' @> '[{"anchorDayType":"saturday","chains":[{"trigger":"C3","links":[{"offset":-1,"code":"C3"}]}]}]'::jsonb

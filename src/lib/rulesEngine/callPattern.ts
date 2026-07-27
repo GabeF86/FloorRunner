@@ -62,7 +62,9 @@ const PlacementPassSchema = z.object({
 // Neuro weekend requirement bands (2026-07-27). Ordered by nothing in
 // particular — owedUnitsFor picks the HIGHEST band the FTE clears. `units` is
 // in weekend units (a Sat+Sun pair = 1, a single weekend day = 0.5); 0 means
-// no requirement, which is how 1.0 docs stay on pure fairness rotation.
+// no requirement — a band that puts its FTE range on pure fairness rotation.
+// Still a legal value, but as of the 2026-07-27 revision NO shipped pattern
+// uses it: Paoli's requirement is universal across call takers (weekendV2.ts).
 // requirementBands is `.min(1)`: an empty array accomplishes nothing — a
 // pattern that wants "no requirement" omits the whole `neuroWeekend` key
 // instead, so an empty array is almost certainly a forgotten fill-in.
