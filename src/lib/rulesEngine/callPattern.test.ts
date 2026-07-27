@@ -86,6 +86,10 @@ describe('block-chain link minFte', () => {
   it('rejects an out-of-range minFte', () => {
     expect(() => CallPatternDocSchema.parse(doc([{ offset: 1, code: 'C3', minFte: 2 }]))).toThrow();
   });
+
+  it('rejects a negative minFte', () => {
+    expect(() => CallPatternDocSchema.parse(doc([{ offset: 1, code: 'C3', minFte: -0.1 }]))).toThrow();
+  });
 });
 
 describe('neuroWeekend config', () => {
@@ -107,6 +111,34 @@ describe('neuroWeekend config', () => {
 
   it('is optional — docs without it parse unchanged', () => {
     expect(CallPatternDocSchema.parse(base).neuroWeekend).toBeUndefined();
+  });
+
+  it('rejects duplicate minFte bands', () => {
+    expect(() => CallPatternDocSchema.parse({
+      ...base,
+      neuroWeekend: {
+        code: 'C3',
+        requirementBands: [{ minFte: 0.75, units: 1 }, { minFte: 0.75, units: 0.5 }],
+      },
+    })).toThrow(/duplicate minFte 0.75/);
+  });
+
+  it('rejects an empty requirementBands array', () => {
+    expect(() => CallPatternDocSchema.parse({
+      ...base,
+      neuroWeekend: { code: 'C3', requirementBands: [] },
+    })).toThrow();
+  });
+
+  it('accepts units at the floor (0) and rejects above the ceiling (10)', () => {
+    expect(() => CallPatternDocSchema.parse({
+      ...base,
+      neuroWeekend: { code: 'C3', requirementBands: [{ minFte: 1, units: 0 }] },
+    })).not.toThrow();
+    expect(() => CallPatternDocSchema.parse({
+      ...base,
+      neuroWeekend: { code: 'C3', requirementBands: [{ minFte: 1, units: 10.5 }] },
+    })).toThrow();
   });
 
   it('CLASSIC_PATTERN and WEEKEND_V2_PATTERN still parse', () => {

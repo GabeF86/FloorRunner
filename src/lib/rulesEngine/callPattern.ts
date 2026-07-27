@@ -30,7 +30,11 @@ const DayChainSchema = z.object({
 // clears this floor — Paoli's Sat C3 → Sun C3 pair is for 0.75+ docs; a
 // sub-0.75 doc takes a single neuro day and the partner slot becomes a
 // remainder (see neuroWeekend.ts). Absent = always fires, so every existing
-// doc, CLASSIC_PATTERN included, is byte-identical.
+// doc, CLASSIC_PATTERN included, is byte-identical. Note: `minFte: 0` here is
+// behaviorally identical to omitting it (FTE is always coerced positive, so
+// `>= 0` always holds) — unlike requirementBands below, where `minFte: 0` IS
+// a meaningful catch-all bottom band. Same field name, different schema,
+// different meaning.
 const BlockChainSchema = z.object({
   trigger: z.string().min(1),
   links: z.array(z.object({
@@ -58,13 +62,38 @@ const PlacementPassSchema = z.object({
 // particular — owedUnitsFor picks the HIGHEST band the FTE clears. `units` is
 // in weekend units (a Sat+Sun pair = 1, a single weekend day = 0.5); 0 means
 // no requirement, which is how 1.0 docs stay on pure fairness rotation.
+// requirementBands is `.min(1)`: an empty array accomplishes nothing — a
+// pattern that wants "no requirement" omits the whole `neuroWeekend` key
+// instead, so an empty array is almost certainly a forgotten fill-in.
+// superRefine below rejects two bands sharing a minFte: owedUnitsFor resolves
+// duplicates silently by array order, so a duplicated-then-half-edited band
+// row would silently change a real physician's clinical obligation with no
+// warning anywhere. These docs are authored by hand AND by an LLM assistant
+// tool (scheduleAssistant/tools.ts has a replace-pattern tool), so the schema
+// is the right place to catch it — a hard reject, unlike dayTypeFillOrder's
+// deliberately non-fatal unknown-day-type handling, because a duplicate band
+// is never an intentional shape.
 const NeuroWeekendSchema = z.object({
   code: z.string().min(1),
   requirementBands: z.array(z.object({
     minFte: z.number().min(0).max(1),
     units: z.number().min(0).max(10),
-  }).strict()),
-}).strict();
+  }).strict()).min(1),
+}).strict().superRefine((doc, ctx) => {
+  const seenAt = new Map<number, number>();
+  doc.requirementBands.forEach((band, i) => {
+    const dupeAt = seenAt.get(band.minFte);
+    if (dupeAt !== undefined) {
+      ctx.addIssue({
+        code: 'custom',
+        message: `requirementBands has duplicate minFte ${band.minFte} (bands ${dupeAt} and ${i})`,
+        path: ['requirementBands', i, 'minFte'],
+      });
+    } else {
+      seenAt.set(band.minFte, i);
+    }
+  });
+});
 
 export const CallPatternDocSchema = z.object({
   version: z.literal(1),
