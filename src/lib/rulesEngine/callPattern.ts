@@ -26,9 +26,18 @@ const DayChainSchema = z.object({
   blocks: z.array(BlockEffectSchema).optional(),
 }).strict();
 
+// minFte (2026-07-27): the link fires only when the ANCHOR provider's FTE
+// clears this floor — Paoli's Sat C3 → Sun C3 pair is for 0.75+ docs; a
+// sub-0.75 doc takes a single neuro day and the partner slot becomes a
+// remainder (see neuroWeekend.ts). Absent = always fires, so every existing
+// doc, CLASSIC_PATTERN included, is byte-identical.
 const BlockChainSchema = z.object({
   trigger: z.string().min(1),
-  links: z.array(z.object({ offset: z.number().int().min(-7).max(7), code: z.string().min(1) }).strict()).min(1),
+  links: z.array(z.object({
+    offset: z.number().int().min(-7).max(7),
+    code: z.string().min(1),
+    minFte: z.number().min(0).max(1).optional(),
+  }).strict()).min(1),
 }).strict();
 
 const SpanSchema = z.object({
@@ -43,6 +52,18 @@ const PlacementPassSchema = z.object({
   codes: z.array(z.string().min(1)).min(1),
   maxProviders: z.number().int().min(1).max(10),
   enabled: z.boolean(),
+}).strict();
+
+// Neuro weekend requirement bands (2026-07-27). Ordered by nothing in
+// particular — owedUnitsFor picks the HIGHEST band the FTE clears. `units` is
+// in weekend units (a Sat+Sun pair = 1, a single weekend day = 0.5); 0 means
+// no requirement, which is how 1.0 docs stay on pure fairness rotation.
+const NeuroWeekendSchema = z.object({
+  code: z.string().min(1),
+  requirementBands: z.array(z.object({
+    minFte: z.number().min(0).max(1),
+    units: z.number().min(0).max(10),
+  }).strict()),
 }).strict();
 
 export const CallPatternDocSchema = z.object({
@@ -73,11 +94,12 @@ export const CallPatternDocSchema = z.object({
   // classic. Composes with callFillOrder: dayTypeFillOrder orders DATES (by
   // day type); callFillOrder orders call codes WITHIN a date.
   dayTypeFillOrder: z.array(z.string().min(1)).optional(),
+  neuroWeekend: NeuroWeekendSchema.optional(),
 }).strict();
 
 export type CallPatternDoc = z.infer<typeof CallPatternDocSchema>;
 export type PatternDayChain = z.infer<typeof DayChainSchema>;
-export type PatternBlockLink = { offset: number; code: string };
+export type PatternBlockLink = { offset: number; code: string; minFte?: number };
 
 // The engine's historical hard-coded behavior, expressed as data. The patch18
 // seed and the golden-parity tests both mirror this constant — keep in sync.

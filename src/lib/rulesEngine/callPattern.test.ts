@@ -3,6 +3,7 @@ import {
   CallPatternDocSchema, CLASSIC_PATTERN, dayChainsFor, postCallBlockOffsets,
   blockChainsFor, referencedCodes, patternWarnings,
 } from './callPattern';
+import { WEEKEND_V2_PATTERN } from './patterns/weekendV2';
 
 describe('CallPatternDocSchema', () => {
   it('accepts the classic pattern', () => {
@@ -59,5 +60,57 @@ describe('helpers', () => {
     const warnings = patternWarnings(CLASSIC_PATTERN, known);
     expect(warnings.some(w => w.includes('D3'))).toBe(true);
     expect(patternWarnings(CLASSIC_PATTERN, new Set([...known, 'D3']))).toEqual([]);
+  });
+});
+
+/* ── minFte links + neuroWeekend config (2026-07-27) ─────────────────────── */
+
+describe('block-chain link minFte', () => {
+  const doc = (links: unknown[]) => ({
+    version: 1,
+    blocks: [{ anchorDayType: 'saturday', chains: [{ trigger: 'C3', links }] }],
+    dayChains: [], spans: [], placementPasses: [],
+    reliefPass: null, optimizerMovableDayTypes: [],
+  });
+
+  it('accepts a link carrying minFte', () => {
+    const parsed = CallPatternDocSchema.parse(doc([{ offset: 1, code: 'C3', minFte: 0.75 }]));
+    expect(parsed.blocks[0].chains[0].links[0].minFte).toBe(0.75);
+  });
+
+  it('leaves minFte undefined when absent (every existing doc)', () => {
+    const parsed = CallPatternDocSchema.parse(doc([{ offset: 1, code: 'C3' }]));
+    expect(parsed.blocks[0].chains[0].links[0].minFte).toBeUndefined();
+  });
+
+  it('rejects an out-of-range minFte', () => {
+    expect(() => CallPatternDocSchema.parse(doc([{ offset: 1, code: 'C3', minFte: 2 }]))).toThrow();
+  });
+});
+
+describe('neuroWeekend config', () => {
+  const base = {
+    version: 1, blocks: [], dayChains: [], spans: [], placementPasses: [],
+    reliefPass: null, optimizerMovableDayTypes: [],
+  };
+
+  it('parses a band list', () => {
+    const parsed = CallPatternDocSchema.parse({
+      ...base,
+      neuroWeekend: {
+        code: 'C3',
+        requirementBands: [{ minFte: 1, units: 0 }, { minFte: 0.75, units: 1 }, { minFte: 0, units: 0.5 }],
+      },
+    });
+    expect(parsed.neuroWeekend?.requirementBands).toHaveLength(3);
+  });
+
+  it('is optional — docs without it parse unchanged', () => {
+    expect(CallPatternDocSchema.parse(base).neuroWeekend).toBeUndefined();
+  });
+
+  it('CLASSIC_PATTERN and WEEKEND_V2_PATTERN still parse', () => {
+    expect(() => CallPatternDocSchema.parse(CLASSIC_PATTERN)).not.toThrow();
+    expect(() => CallPatternDocSchema.parse(WEEKEND_V2_PATTERN)).not.toThrow();
   });
 });
