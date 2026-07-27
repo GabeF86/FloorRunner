@@ -1,6 +1,6 @@
 # Paoli Neuro Weekend Restructure — Design
 
-**Date:** 2026-07-27 · **Status:** approved (Gabriel, this session) · **Scope:** Paoli only — Friday C3 slot removal, weekendV2 pattern edit, one new `CallPatternDoc` config block, three engine touchpoints, one validation evaluator, one DB patch.
+**Date:** 2026-07-27 · **Status:** approved (Gabriel, this session) · **Scope:** Paoli only — Friday C3 slot removal, weekendV2 pattern edit, one new `CallPatternDoc` config block, one new pure module, three engine touchpoints, one generation-report addition, one DB patch.
 
 ## Intent
 
@@ -72,7 +72,13 @@ A 0.75 doc who takes a leftover single day banks 0.5 and still owes 0.5 — two 
 
 6. **`solveKernel.scoreCall`** — providers short of their neuro requirement sort ahead for `C3` anchors, most-short first. Implemented as a tier term beside the existing `prefTier`, never as a hard gate: a block that cannot satisfy every requirement still fills, and the shortfall is reported by change 7 rather than blanking slots.
 
-7. **`evaluators.ts` — new rule.** `neuro_weekend_requirement`: for each provider with a non-zero band requirement, credit neuro-code placements in weekend units (pair = 1.0, single day = 0.5, grouped by `weekendGroupKey`) and warn when the block ends below the owed units, naming the provider and the shortfall. Providers in a zero-requirement band are never flagged. Seeded as a `rule_definitions` row for Paoli in the same patch.
+7. **`neuroWeekend.ts` (new) + generation report.** The shortfall is reported through the GENERATION report, not `evaluators.ts`. Evaluators are per-assignment (`EvaluationContext` = one slot + that provider's neighbors), so a provider who received **no** neuro at all — the case most worth catching — has no assignment to anchor a flag on and would never be evaluated. Instead:
+
+   - `rulesEngine/neuroWeekend.ts` — pure module owning the whole vocabulary: band lookup (`owedUnitsFor(fte, config)`), unit crediting (`creditedUnits(placements)` — pair 1.0, single day 0.5, grouped by `weekendGroupKey`), and `computeNeuroReport(...)` returning per-provider `{ provider_id, fte, owed, credited, short }`.
+   - The solver's gate and steering (changes 5–6) consume the same module, so the report can never disagree with the placement rules.
+   - `autoGenerate` surfaces short providers into `GenerationResult.warnings`, exactly as `plan.requestWarnings` is surfaced today, and carries the full rows as `GenerationResult.neuroReport` alongside `workDayReport`. Absent when the pattern states no `neuroWeekend` config — additive, so existing consumers see no new key.
+
+   No `rule_definitions` row and no new evaluator.
 
 ## Non-goals
 
@@ -86,7 +92,7 @@ A 0.75 doc who takes a leftover single day banks 0.5 and still owes 0.5 — two 
 - **Chain gate (fixture `GenerationContext`, no DB):** a 1.0 anchor takes Sat+Sun; a 0.75 anchor takes Sat+Sun; a 0.5 anchor takes Saturday only, records one `fte-gated` skip, and tags the Sunday slot as a remainder.
 - **Remainder pool:** with the Sunday tagged, a 1.0 doc is rejected `neuro-remainder` (owes 0, never short); a 0.75 doc still short by ≥ 0.5 is admitted and banks 0.5; a 0.75 doc already at 1.0 units is rejected; with nobody short the slot is left unfilled (and appears in unfilled-call warnings) rather than falling to a full doc.
 - **Requirement steering:** in a block with two neuro weekends and two 0.75 docs, each gets one — asserted on placements, not on scores.
-- **Evaluator:** a 0.75 doc with a Sat-only neuro weekend flags (0.5 of 1.0); with Sat+Sun does not; with two separate single days does not (0.5 + 0.5); a 1.0 doc with no neuro weekend never flags; a 0.5 doc with no neuro day flags (0 of 0.5).
+- **Report (`neuroWeekend.ts`):** a 0.75 doc with a Sat-only neuro weekend is short (0.5 of 1.0); with Sat+Sun is not; with two separate single days is not (0.5 + 0.5); a 1.0 doc with no neuro weekend is never short; a 0.5 doc with no neuro day is short (0 of 0.5); a provider with no neuro placements at all still appears in the report (the case an evaluator would have missed entirely).
 - **Friday:** no Friday C3 slot is generated; no `no-slot` skipped-derived entries appear for C3; the neuro doc still receives Fri D4 when available and the link is skipped cleanly when not.
 - **Regression:** golden parity 8/8 unchanged (classic pattern untouched); existing `weekendV2Pattern.test.ts` expectations updated for the dropped Friday link — every changed expectation reviewed as intentional, never re-baselined wholesale; full `npm test`; `tsc --noEmit`.
 
