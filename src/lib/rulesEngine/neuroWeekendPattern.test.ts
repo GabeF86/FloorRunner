@@ -5,6 +5,7 @@ import { describe, it, expect } from 'vitest';
 import { solve } from './solve';
 import { CallPatternDocSchema } from './callPattern';
 import { buildCtx, prov, callSlot } from './__fixtures__/buildContext';
+import { sp, scen } from './__fixtures__/scenarioFixtures';
 
 // Minimal pattern: the Paoli neuro block, nothing else.
 const NEURO_DOC = CallPatternDocSchema.parse({
@@ -135,6 +136,38 @@ describe('neuro pair FTE gate — reservation', () => {
       slot_id: 'sun-c3',
       candidates: [expect.objectContaining({ provider_id: 'half', reason: 'neuro-remainder' })],
     }));
+  });
+
+  // Path 3: preferScenarioChainClean, the scenario chain-clean STEERING that
+  // shares liveBlockChainCallLinks. Unlike the two cap paths this one does not
+  // gate the anchor — it narrows the candidate pool — so its regression is
+  // silent: the Saturday still fills, just with the wrong doc and a severed
+  // pairing. Requires an active scenario AND a minFte link, which is exactly
+  // the live Paoli neuro configuration.
+  it('a gated link cannot make its anchor scenario-unclean', () => {
+    // Every candidate is prohibited on the chained SUNDAY, so for the 0.75 and
+    // 1.0 docs the designed pair is unsatisfiable — placing them on Saturday
+    // severs it. The 0.5 doc's link is FTE-gated and never fires, so they
+    // sever nothing and are the only chain-clean anchor.
+    const sunBan = () => new Map([['C3', new Set([SUN])]]);
+    const ctx = buildCtx(slots(),
+      [prov('half', 0.5), prov('three4', 0.75), prov('full', 1)],
+      { callPattern: NEURO_DOC, scenario: scen([
+        sp('half', { prohibitedDatesByCode: sunBan() }),
+        sp('three4', { prohibitedDatesByCode: sunBan() }),
+        sp('full', { prohibitedDatesByCode: sunBan() }),
+      ]) });
+    const plan = solve(ctx);
+    // Ungated, the link is live for EVERYONE, nobody is clean, and the
+    // filter falls back to the whole pool — 'full' wins the anchor on score
+    // and its designed Sunday is then severed by the prohibition.
+    expect(filledBy(plan, 'sat-c3')).toBe('half');
+    // Second axis: the only record is the FTE gate declining to fire, NOT a
+    // severed pairing. Ungated this reads { provider_id: 'full',
+    // reason: 'ineligible' } — a real severance the steering exists to avoid.
+    expect(plan.skippedDerived).toEqual([
+      { date: SUN, code: 'C3', provider_id: 'half', reason: 'fte-gated' },
+    ]);
   });
 });
 

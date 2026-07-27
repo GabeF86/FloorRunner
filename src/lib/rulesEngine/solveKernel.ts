@@ -313,6 +313,17 @@ export function admitsUnderCallCaps(run: SolverRun, pid: string, slot: SlotToFil
 // to them so the designed pairing survives. When NOBODY is clean the full
 // set stays (a filled anchor with a recorded severed link beats an open
 // anchor). A filter, never a gate — inert without a scenario.
+//
+// PER-CANDIDATE link resolution (2026-07-27) is load-bearing, not a tidy-up:
+// with a minFte link the live link set DIFFERS BY PROVIDER, so resolving it
+// once for the whole pool asks the wrong question of every sub-floor doc. It
+// also NARROWS, never merely permits — where all candidates are prohibited on
+// the chained day, the pool-wide read finds nobody clean and falls back to
+// everyone, while the per-candidate read correctly keeps ONLY the sub-floor
+// docs (whose gated link cannot fire, so they sever nothing). That changes
+// who wins the anchor, and it is live at Paoli, where every neuro pattern
+// carries minFte. Pinned by 'a gated link cannot make its anchor
+// scenario-unclean' in neuroWeekendPattern.test.ts.
 export function preferScenarioChainClean(
   run: SolverRun, cands: CandidateProvider[], slot: SlotToFill,
 ): CandidateProvider[] {
