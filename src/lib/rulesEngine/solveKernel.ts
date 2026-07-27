@@ -21,8 +21,8 @@ import {
   memberRealizedInWeekend, NEURO_KEY,
 } from './scenario';
 import type { ScenarioDoc } from './scenario';
-import { creditedUnitsByProvider, owedUnitsFor } from './neuroWeekend';
-import { WEIGHT_EPSILON } from '@/lib/callBurden';
+import { creditedUnitsByProvider, ledgerPlacements, owedUnitsFor, shortfall } from './neuroWeekend';
+import { WEIGHT_EPSILON, parentCallCodeOf } from '@/lib/callBurden';
 import type {
   GenerationContext, SlotToFill, CandidateProvider, SolutionPlan,
   PlacementSource, AssignmentExplanation, SkippedDerived, WorkDayBudget,
@@ -486,10 +486,11 @@ function scenarioPrefTier(run: SolverRun, pid: string, slot: SlotToFill): number
 // sorts after — soft in both directions, never a gate), then fair-grant
 // count within the preferred tier, then fair-denial count within the
 // penalized tier, then the SCENARIO soft-preference tier (2026-07-26 — soft
-// like the request tiers, below them by design), then the NEURO shortfall
-// (2026-07-27 — most-short first, and only on neuro-code slots), then lowest
-// ratio (lifetime bucket-ratio, or the scenario target-progress ratio for
-// manifest providers), then least-recently called, then id — with the
+// like the request tiers, below them by design), then the NEURO FTE-band
+// shortfall (2026-07-27 — most-short first; only on neuro-code call slots, and
+// only for providers the scenario manifest states no neuro target for), then
+// lowest ratio (lifetime bucket-ratio, or the scenario target-progress ratio
+// for manifest providers), then least-recently called, then id — with the
 // multi-start tie-break hash permuting ONLY that final id ordering when a
 // nonzero seed is set. Shared by the main loop, spans, and quota relaxation.
 // With no live requests, no scenario, no neuroWeekend config and seed 0 the
@@ -502,16 +503,48 @@ export function scoreCall(run: SolverRun, cands: CandidateProvider[], slot: Slot
   // still short of their band requirement sorts ahead of one who is not.
   // A TIER, never a gate — a block that cannot satisfy everyone still fills,
   // and computeNeuroReport reports the shortfall afterwards.
+  //
+  // MANIFEST NEURO TARGETS OUTRANK THE FTE BAND. A provider whose scenario
+  // manifest states a neuro target is skipped by this tier entirely; the band
+  // is the FALLBACK for providers the manifest does not cover. Three reasons:
+  //   • The codebase already made this exact ruling one layer down —
+  //     applyScenarioBucketTargets (scenario.ts) replaces the FTE-derived
+  //     fairness quota targets with the STATED scenario numbers for manifest
+  //     providers and leaves non-manifest keys FTE-derived. Letting the band
+  //     outrank the manifest here would invert that rule inside the same
+  //     solve().
+  //   • For a manifest provider `ratio` below ALREADY carries
+  //     scenarioTargetRatio, which is itself a neuro shortfall measure
+  //     (realized units / stated neuroTarget). The band would be a second,
+  //     competing answer to a question the manifest already answered.
+  //   • The failure modes are asymmetric. Band-over-manifest misroutes
+  //     SILENTLY under scarcity; manifest-over-band surfaces as an explicit
+  //     short row in computeNeuroReport — visible on the generation banner,
+  //     and fixable in the workbook where the number belongs.
+  // `!= null` is deliberate: a manifest provider whose neuro cell is BLANK has
+  // no stated number, so they keep the band.
+  //
+  // Keyed on the PARENT call code like every neighbouring consumer
+  // (eligibility's scenario gate, providerCaps, scenarioReport). The ledger
+  // this reads stores parent codes, so a split neuro Saturday would otherwise
+  // earn credit the tier could not see itself steering. Inert today — split
+  // segments are manual_only — but the asymmetry would be silent.
   const neuroCfg = ctx.callPattern?.neuroWeekend;
-  const neuroSlot = neuroCfg != null && slot.shift_type_code === neuroCfg.code;
+  const neuroSlot = neuroCfg != null && slot.shift_type_category === 'call'
+    && parentCallCodeOf(
+      slot.shift_type_code, ctx.shiftTypes?.get(slot.shift_type_code)) === neuroCfg.code;
+  // ONE batched credit pass for the whole candidate list. creditedUnitsByProvider
+  // is a BATCH function; calling it per candidate with a one-element array cost
+  // ~2.6% of a solve, which compounds across optimize()/multiStart. Skipped
+  // wholesale off neuro slots, so every other slot in the block pays nothing.
+  const neuroCredited = neuroSlot && neuroCfg
+    ? creditedUnitsByProvider(
+      cands.flatMap(p => ledgerPlacements(state.callCodesByDate.get(p.id), p.id)), neuroCfg)
+    : null;
   const neuroShortOf = (pid: string, fte: number): number => {
-    if (!neuroSlot || !neuroCfg) return 0;
-    const held: Array<{ provider_id: string; slot_date: string; code: string }> = [];
-    for (const [date, codes] of state.callCodesByDate.get(pid) ?? []) {
-      for (const c of codes) held.push({ provider_id: pid, slot_date: date, code: c });
-    }
-    const credited = creditedUnitsByProvider(held, neuroCfg).get(pid) || 0;
-    return Math.max(0, owedUnitsFor(fte, neuroCfg) - credited);
+    if (!neuroCfg || !neuroCredited) return 0;
+    if (run.scenario?.providers.get(pid)?.neuroTarget != null) return 0;
+    return shortfall(owedUnitsFor(fte, neuroCfg), neuroCredited.get(pid) || 0);
   };
   return cands.map(p => {
     const lifetime = (ctx.historicalAssignedByPid.get(p.id)?.get(k) || 0)

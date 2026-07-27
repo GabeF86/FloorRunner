@@ -9,7 +9,7 @@ import {
 import { CLASSIC_PATTERN, postCallBlockOffsets } from './callPattern';
 import { exceedsWorkDayCap } from './workDays';
 import { scenarioProhibits, violatesHardLinkage } from './scenario';
-import { isShortByHalfUnit, creditedUnitsByProvider } from './neuroWeekend';
+import { isShortByHalfUnit, creditedUnitsFromLedger } from './neuroWeekend';
 import { parentCallCodeOf } from '@/lib/callBurden';
 import type {
   GenerationContext, SlotToFill, CandidateProvider, SolveState,
@@ -246,11 +246,7 @@ export function evaluateEligibility(
   const neuroCfg = ctx.callPattern?.neuroWeekend;
   if (neuroCfg && slot.shift_type_code === neuroCfg.code
     && state.neuroRemainderSlotIds.has(slot.slot_id)) {
-    const held: Array<{ provider_id: string; slot_date: string; code: string }> = [];
-    for (const [date, codes] of state.callCodesByDate.get(p.id) ?? []) {
-      for (const c of codes) held.push({ provider_id: p.id, slot_date: date, code: c });
-    }
-    const credited = creditedUnitsByProvider(held, neuroCfg).get(p.id) || 0;
+    const credited = creditedUnitsFromLedger(state.callCodesByDate.get(p.id), p.id, neuroCfg);
     if (!isShortByHalfUnit(p.fte_value, credited, neuroCfg)) {
       return { eligible: false, reason: 'neuro-remainder' };
     }

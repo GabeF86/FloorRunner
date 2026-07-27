@@ -83,11 +83,44 @@ export function creditedUnitsByProvider(
 
 /** Shortfall in weekend units, epsilon-clamped so float noise never reports a
  * provider as owing a sliver they cannot possibly take. ONE definition, shared
- * by the report and the remainder gate — the two must never disagree about
- * whether a provider is short. */
-function shortfall(owed: number, credited: number): number {
+ * by the report, the remainder gate and scoreCall's steering tier — the three
+ * must never disagree about whether a provider is short. EXPORTED 2026-07-27:
+ * the steering tier briefly carried its own `Math.max(0, owed - credited)`,
+ * which is this function minus the epsilon clamp. */
+export function shortfall(owed: number, credited: number): number {
   const gap = owed - credited;
   return gap <= WEIGHT_EPSILON ? 0 : gap;
+}
+
+/** The solver's per-provider call ledger — one `SolveState.callCodesByDate`
+ * value, `date -> parent call codes realized so far` (seeds included) —
+ * flattened into the placement shape this module consumes. Lives here because
+ * the remainder gate and the steering tier both need it and MUST agree; the
+ * adapter was briefly copied verbatim into both call sites (2026-07-27). */
+export function ledgerPlacements(
+  ledger: ReadonlyMap<string, ReadonlySet<string>> | undefined,
+  providerId: string,
+): NeuroPlacement[] {
+  const out: NeuroPlacement[] = [];
+  for (const [slot_date, codes] of ledger ?? []) {
+    for (const code of codes) out.push({ provider_id: providerId, slot_date, code });
+  }
+  return out;
+}
+
+/** Credited units for ONE provider straight off their ledger. Callers scoring
+ * a whole candidate list should instead build placements with
+ * `ledgerPlacements` and make a single batched `creditedUnitsByProvider` call —
+ * `creditedUnitsByProvider` is a batch function, and calling it once per
+ * candidate with a one-element array is measurable inside the solver's hot
+ * path. This is the convenience form for a gate judging one candidate. */
+export function creditedUnitsFromLedger(
+  ledger: ReadonlyMap<string, ReadonlySet<string>> | undefined,
+  providerId: string,
+  config: NeuroWeekendConfig,
+): number {
+  return creditedUnitsByProvider(ledgerPlacements(ledger, providerId), config)
+    .get(providerId) || 0;
 }
 
 /** Per-provider owed/credited/short, for providers who owe anything at all.

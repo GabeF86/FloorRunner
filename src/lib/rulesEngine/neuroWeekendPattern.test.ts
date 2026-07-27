@@ -39,10 +39,13 @@ const filledBy = (plan: { assignments: Array<{ slot_id: string; provider_id: str
 // 'weekend-chain' — plus an empty skippedDerived (a fired pair records no
 // severance). Together these kill the "suppress for every provider" and the
 // "wrong epsilon direction" mutants.
+// `sunSlotId` defaults to this file's single-weekend fixture; the steering
+// cases below run a two-weekend board and pass their own Sunday.
 const expectPairFired = (
   plan: { assignments: Array<{ slot_id: string; source: string }>; skippedDerived?: unknown[] },
+  sunSlotId = 'sun-c3',
 ) => {
-  expect(plan.assignments.find(a => a.slot_id === 'sun-c3')?.source).toBe('weekend-chain');
+  expect(plan.assignments.find(a => a.slot_id === sunSlotId)?.source).toBe('weekend-chain');
   expect(plan.skippedDerived).toEqual([]);
 };
 
@@ -356,9 +359,13 @@ describe('neuro remainder gate — credit already earned', () => {
 //     the realistic shape: a part-timer who has already carried weekend call
 //     sorts BEHIND full-timers forever, which is exactly why the requirement
 //     needs a tier of its own.
-//   • The full-timers are named `zfull*` so the final id tiebreak FAVOURS
-//     `three4`. Nothing but the neuro tier can win them a weekend, so the case
-//     cannot pass for an accidental reason.
+// The PRIOR HISTORY is the load-bearing piece: review confirmed alphabetical
+// names alone already give a red test, because with two full-timers for two
+// weekends fairness never reaches a third doc. The `zfull*` naming is not
+// required and does NOT harden the case — putting the final id tiebreak on
+// `three4`'s side can only make an accidental pass more likely, not less. It is
+// kept because it makes the ratio the sole thing standing between `three4` and
+// the anchor, so a reader can see the tier is what moved them.
 // Verified against the pre-steering engine: `three4` held ZERO of the four
 // slots (zfull1 took weekend 1, zfull2 weekend 2).
 describe('neuro requirement steering', () => {
@@ -383,11 +390,15 @@ describe('neuro requirement steering', () => {
   it('gives the doc who owes a neuro weekend one of them', () => {
     const plan = solve(steeringCtx());
     // The plan drafted `held.length >= 2`, which two stray SATURDAYS would
-    // satisfy. Asserting the slot ids pins a designed Sat+Sun PAIR — the only
-    // thing that credits a full unit and actually discharges the requirement.
+    // satisfy; the slot ids rule that out. They do NOT by themselves prove a
+    // DESIGNED pair, though — with the chain suppressed the main loop backfills
+    // sun1 onto the same doc (the remainder gate admits them, they are short)
+    // and this assertion still holds. expectPairFired is the discriminator:
+    // only the block chain stamps source 'weekend-chain'.
     const held = plan.assignments
       .filter(a => a.provider_id === 'three4').map(a => a.slot_id).sort();
     expect(held).toEqual(['sat1', 'sun1']);
+    expectPairFired(plan, 'sun1');
   });
 
   // A TIER, never a gate. The full-timers owe nothing, so a steering term that
@@ -421,5 +432,68 @@ describe('neuro requirement steering', () => {
     expect(plan.assignments.filter(a => a.provider_id === 'three4')).toEqual([]);
     expect(filledBy(plan, 'sat1')).toBe('zfull1');
     expect(filledBy(plan, 'sat2')).toBe('zfull2');
+  });
+});
+
+// MANIFEST NEURO TARGETS OUTRANK THE FTE BAND (decided 2026-07-27). The band is
+// the FALLBACK for providers the workbook does not give a neuro number to; a
+// provider the manifest DOES speak for is steered by their stated target
+// (scenarioTargetRatio, already carried in `ratio`) and is skipped by the band
+// tier entirely. Rationale in scoreCall; the short version is that
+// applyScenarioBucketTargets already made this ruling for the fairness quota
+// one layer down, so band-over-manifest would invert an established rule
+// inside the same solve().
+//
+// This is the first case in the repo to exercise a band and a scenario neuro
+// target TOGETHER — the live Paoli configuration, where both are stated.
+describe('neuro requirement steering — manifest targets outrank the band', () => {
+  // Both docs are 0.75, so the BAND says both owe a full weekend and the band
+  // tier alone cannot separate them. The only asymmetry is the manifest:
+  // 'mani' has a stated neuro number, 'blank' does not.
+  const oneWeekend = () => [
+    callSlot('sat1', SAT, 'C3', 'saturday'),
+    callSlot('sun1', SUN, 'C3', 'sunday'),
+  ];
+  // Adverse weekend history on the band-only doc, so that if the band tier ties
+  // (which is what happens when the manifest doc is NOT skipped) `ratio` breaks
+  // it in the manifest doc's favour — 0/1 target progress beats 2/0.75 = 2.67.
+  // That is the pre-fix outcome this case exists to exclude.
+  const BLANK_PRIOR = () =>
+    new Map([['blank', new Map([['saturday|C3', 2], ['sunday|C3', 2]])]]);
+
+  // 'blank' is a manifest provider whose neuro cell is EMPTY. That pins the
+  // `!= null` guard specifically: being named in the workbook is not what
+  // exempts a doc from the band — having a stated neuro NUMBER is.
+  const manifest = () => scen([
+    sp('mani', { neuroTarget: 1 }),
+    sp('blank', { neuroTarget: null }),
+  ]);
+
+  it('a doc with a stated neuro target does not compete on the band', () => {
+    const ctx = buildCtx(oneWeekend(), [prov('mani', 0.75), prov('blank', 0.75)],
+      { callPattern: NEURO_DOC, scenario: manifest(),
+        historicalAssignedByPid: BLANK_PRIOR() });
+    const plan = solve(ctx);
+    // 'mani' is steered by their target ratio, not the band, so the band tier
+    // is left deciding between one short doc ('blank') and one exempt doc —
+    // and the weekend goes to the doc the band is the only guide for.
+    expect(filledBy(plan, 'sat1')).toBe('blank');
+    expect(filledBy(plan, 'sun1')).toBe('blank');
+    expectPairFired(plan, 'sun1');
+  });
+
+  // The same board with the manifest's neuro cell BLANK for both docs: now
+  // nothing is exempt, the band ties them, and `ratio` decides — 'mani' wins on
+  // 0 lifetime against 'blank''s adverse history. This is exactly the outcome
+  // the case above must NOT produce, so the pair is an A/B on the stated
+  // target alone, with every other input held fixed.
+  it('control: with no stated target the band ties and fairness decides', () => {
+    const ctx = buildCtx(oneWeekend(), [prov('mani', 0.75), prov('blank', 0.75)],
+      { callPattern: NEURO_DOC,
+        scenario: scen([sp('mani', { neuroTarget: null }), sp('blank', { neuroTarget: null })]),
+        historicalAssignedByPid: BLANK_PRIOR() });
+    const plan = solve(ctx);
+    expect(filledBy(plan, 'sat1')).toBe('mani');
+    expect(filledBy(plan, 'sun1')).toBe('mani');
   });
 });
