@@ -204,13 +204,26 @@ COMMIT;
 --   -- single friday/C3 row, whose is_active flips true -> false and whose
 --   -- updated_at becomes the apply timestamp. No other row may differ in
 --   -- either column — in particular no other updated_at may move.
---   -- Expected census (15 rows; only friday/C3 inactive afterwards):
+--   -- Expected census — CORRECTED 2026-07-27 against the live project. An
+--   -- earlier draft of this comment claimed 15 rows including friday C1/C2.
+--   -- That is wrong: Paoli has NO friday C1/C2 template rows. The real
+--   -- census is 13 rows:
 --   --   weekday          C1, C2
---   --   friday           C1, C2          (C3 now inactive)
+--   --   friday           C3              (the only friday call row; now inactive)
 --   --   saturday         C1, C2, C3
 --   --   sunday           C1, C2, C3
 --   --   federal_holiday  C1, C2
 --   --   major_holiday    C1, C2
+--   --
+--   -- Friday still gets C1 and C2 after this patch, and that is NOT a bug:
+--   -- templateSlots.ts (buildTemplateSlotsForDate) fills a friday date from
+--   -- the friday-specific rows PLUS every weekday row whose shift type has no
+--   -- friday-specific override. So friday C1/C2 have always come from the
+--   -- WEEKDAY templates, and the friday/C3 row was the Friday-only addition.
+--   -- Deactivating it leaves the pure weekday slate — C1 + C2, no neuro —
+--   -- which is exactly the intended Friday shape. That file's own comment
+--   -- records the inverse hazard from patch25: a friday row for a shift type
+--   -- that ALSO has a weekday row would suppress the weekday fill.
 --   -- If the BEFORE census shows any OTHER inactive C1/C2/C3 row, that is a
 --   -- pre-existing condition this patch did not cause — note it and carry on,
 --   -- but do not let it mask a real diff.
