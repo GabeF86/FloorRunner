@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback } from 'react';
 import Link from 'next/link';
 import { PageHeader, Card, Badge, Button, Table, EmptyState, Banner, Modal, scheduleStatusTone, scheduleStatusLabel, SCHEDULE_STATUSES } from '@/components/ui';
 import { defaultScheduleName, SCHEDULE_NAME_MAX } from '@/lib/scheduleName';
+import { scheduleStamps } from '@/lib/scheduleStamps';
 import AssistantPanel from './[id]/AssistantPanel';
 import RequestWindowCard from './RequestWindowCard';
 
@@ -18,6 +19,12 @@ interface Schedule {
   date_end: string;
   status: string;
   current_version_number: number;
+  // Row provenance (Gabriel 2026-07-27) — several drafts can share a date
+  // range, so the list shows which one is freshest. Already returned by the
+  // list route (it selects `*`); nullable here defensively since the columns
+  // are only ever read, never written, by the UI.
+  created_at: string | null;
+  updated_at: string | null;
   sites: { name: string; short_name: string | null } | null;
 }
 
@@ -182,10 +189,22 @@ export default function SchedulesPage() {
           rows={schedules.map((s) => {
             const tc = TYPE_COLORS[s.schedule_type] || TYPE_COLORS.shifts;
             const groupLabel = GROUP_OPTIONS.find(g => g.value === s.provider_group)?.label || s.provider_group;
+            // "edited" is dropped when the draft hasn't been touched since it
+            // was created, and either line is dropped when its column is
+            // missing/unparseable — see lib/scheduleStamps.ts.
+            const stamps = scheduleStamps(s.created_at, s.updated_at);
             return [
-              <Link key="name" href={`/schedules/${s.id}`} style={{ textDecoration: 'none', color: 'var(--text-strong)', fontWeight: 700 }}>
-                {s.schedule_name}
-              </Link>,
+              <div key="name">
+                <Link href={`/schedules/${s.id}`} style={{ textDecoration: 'none', color: 'var(--text-strong)', fontWeight: 700 }}>
+                  {s.schedule_name}
+                </Link>
+                {(stamps.created || stamps.edited) && (
+                  <div style={stampGridStyle}>
+                    {stamps.created && <><span>created</span><span>{stamps.created}</span></>}
+                    {stamps.edited && <><span>edited</span><span>{stamps.edited}</span></>}
+                  </div>
+                )}
+              </div>,
               s.sites?.short_name || s.sites?.name || '—',
               <span key="type" style={{
                 fontSize: 11, fontWeight: 700, padding: '3px 8px', borderRadius: 6,
@@ -239,6 +258,20 @@ export default function SchedulesPage() {
     </div>
   );
 }
+
+// Created / edited stamps under the schedule name. Same secondary-text
+// treatment the page already uses for small captions (--fs-xs on --text-muted);
+// the two-column grid keeps the times aligned under each other.
+const stampGridStyle: React.CSSProperties = {
+  display: 'grid',
+  gridTemplateColumns: 'max-content max-content',
+  columnGap: 'var(--space-2)',
+  rowGap: 1,
+  marginTop: 'var(--space-1)',
+  fontSize: 'var(--fs-xs)',
+  color: 'var(--text-muted)',
+  whiteSpace: 'nowrap',
+};
 
 const selectStyle: React.CSSProperties = {
   padding: '8px 12px', borderRadius: 8, border: '1px solid var(--border)',
