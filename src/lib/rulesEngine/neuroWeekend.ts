@@ -17,15 +17,18 @@
 // Don't "reconcile" the two by adding the exemption here — the report losing
 // the row is exactly the silence the trade was made to avoid.
 //
-// SHARED WITH, BUT NOT EQUAL TO, the Call Counts "Obligatory Weekends" column
-// (lib/callCountDays.ts). Shared: the weekend GROUPING (`weekendGroupKey` —
-// the Fri/Sat/Sun group keyed by its Saturday) and the half-unit granularity
-// (a pair is one, a lone weekend day is half). Different: the QUESTION. The
-// UI column asks "did this doc give up their weekend?" and credits by call
-// burden weight capped at one, so a 24h Saturday-only neuro call is 1.0 there.
-// This module asks "how much of the neuro duty did they cover?", so the same
-// call is 0.5 units here. Both answers are correct for their own question and
-// this divergence is expected — do not edit either to match the other.
+// CONSUMED BY the Call Counts "Obligatory Weekends" column (2026-07-27, later
+// the same day). That column's obligation is "primary-call weekend DAYS +
+// neuro weekend PAIRS", and it calls `creditedUnitsByProvider` verbatim for
+// the neuro half rather than re-deriving pair/half credit — so a lone Saturday
+// neuro call is 0.5 on the generation banner and 0.5 in the modal, always.
+// (It briefly disagreed: the column used to credit any weekend by call burden
+// weight capped at one, making that same call 1.0 there. That divergence is
+// gone; do not reintroduce a second pair/half rule.)
+// Still DIFFERENT, deliberately: the OWED side. This module owes by the
+// pattern's FTE `requirementBands`; the column owes par-weighted units ÷ par ×
+// FTE floored to a half. Two different questions — "did this doc get their
+// neuro weekend?" vs "has this doc covered their share of the weekends?".
 // WEIGHT_EPSILON absorbs float noise on comparisons.
 import { WEIGHT_EPSILON } from '@/lib/callBurden';
 import { weekendGroupKey } from '@/lib/weekendGroup';

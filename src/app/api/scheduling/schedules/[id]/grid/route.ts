@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { sbSchedulingServer } from '@/lib/supabaseScheduling';
 import { embedArray } from '@/lib/embed';
+import { CallPatternDocSchema, type CallPatternDoc } from '@/lib/rulesEngine/callPattern';
 import {
   GRID_SCHEDULE_COLUMNS,
   GRID_SLOT_COLUMNS,
@@ -129,6 +130,30 @@ export async function GET(
     : { data: [], error: null };
   if (availErr) return NextResponse.json({ error: availErr.message }, { status: 500 });
 
+  // 8. Site's ACTIVE call pattern (2026-07-27) — the Call Counts modal's
+  //    Obligatory Weekends column needs `neuroWeekend.code` to separate the
+  //    neuro weekend duty (counted per Sat+Sun pair) from the primary-call
+  //    weekend duty (counted per day). Parsed here so zod stays out of the
+  //    client bundle. Degrades to null on EVERY failure path — missing table,
+  //    read error, no active row, or a definition that fails validation —
+  //    mirroring genContext's loadCallPattern posture: a bad pattern must
+  //    never break the modal, it only drops the neuro term (the column falls
+  //    back to primary-call weekend days alone).
+  let callPattern: CallPatternDoc | null = null;
+  try {
+    const { data: patRow } = await sb
+      .from('call_patterns')
+      .select('definition')
+      .eq('site_id', schedule.site_id)
+      .eq('status', 'active')
+      .maybeSingle();
+    const definition = (patRow as { definition?: unknown } | null)?.definition;
+    if (definition != null) {
+      const parsed = CallPatternDocSchema.safeParse(definition);
+      if (parsed.success) callPattern = parsed.data;
+    }
+  } catch { /* table missing on a pre-patch18 DB — no neuro term */ }
+
   return NextResponse.json({
     schedule,
     version,
@@ -137,6 +162,7 @@ export async function GET(
     holidays: holidays || [],
     profiles: profiles || [],
     availability: availability || [],
+    callPattern,
   }, {
     headers: { 'Cache-Control': 'no-store, no-cache, must-revalidate' },
   });

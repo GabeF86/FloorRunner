@@ -6,11 +6,19 @@
 //   - working-day credit       → plannerMath.computeScheduleActuals (the
 //     generation banner's workDayReport analogue: weekday assignments +
 //     post-call rest days credited as worked + ICU weeks, disjoint sets)
+//   - neuro weekend credit     → rulesEngine/neuroWeekend.ts
+//     (creditedUnitsByProvider — pair 1.0 / single day 0.5, the SAME function
+//     the solver's gates and the generation banner use)
 // The modal (CallCountsModal in schedules/[id]/page.tsx) only aggregates and
 // renders; every domain rule routes through here → the shared helpers.
 
 import { requiredWorkDays } from './rulesEngine/workDays';
-import { WEIGHT_EPSILON, callBurdenWeight } from './callBurden';
+import {
+  creditedUnitsByProvider,
+  type NeuroPlacement,
+  type NeuroWeekendConfig,
+} from './rulesEngine/neuroWeekend';
+import { WEIGHT_EPSILON, callBurdenWeight, parentCallCodeOf } from './callBurden';
 import { fteWeightedTarget } from './fteTarget';
 import { weekendGroupKey } from './weekendGroup';
 import {
@@ -88,87 +96,190 @@ export function creditedWorkingDayTotals(
   return out;
 }
 
-/* ── Obligatory weekends (Gabriel 2026-07-27) ────────────────────────────── */
+/* ── Obligatory weekends (Gabriel 2026-07-27, REVISED same day) ──────────── */
 
-// A WEEKEND is the Fri/Sat/Sun group (weekendGroup.ts — the same definition
-// his no-call rule uses), and a weekend UNIT is one provider covering one
-// weekend. How many units a weekend consumes = its WIDEST single day: the
-// largest call weight standing on any ONE of its three dates. Max, not sum,
-// is what makes the weekend one duty instead of three: the tier rotation
-// inside a weekend (Fri C1 → Sat C2 → Sun C3) is one person's weekend.
+// A weekend DUTY is one of exactly two kinds, and the two are counted
+// DIFFERENTLY. Gabriel's model, verbatim: "In an 11 week block with 11 par
+// call takers, there should be 4 Weekday C1 and 4 C2's, 1 Friday C1, Saturday
+// C1 and Sunday C1. So 3 weekend obligations. For 0.75 FTE the obligation is 2
+// weekends ... Always imagine there are 11 call takers and use that to
+// calculate the obligatory numbers" — plus "Every call taker should be given a
+// neuro weekend call, except for horan it should only be one weekend day."
 //
-// Paoli: Saturday and Sunday carry 3 call tiers (C1 + C2 + C3), but FRIDAY
-// carries only 2 as of 2026-07-27 — Friday neuro lost its slot and the Friday
-// C2 doc cross-covers it. The weekend is still 3 units, and the MAX is exactly
-// why: since the measure is the widest single date and never the sum, Friday's
-// tier count does not enter the answer at all unless Friday were the widest
-// day. So 3 units per weekend → an 11-week block is 33 units, and at par 11 a
-// 1.0 FTE owes 3 weekends (his stated number, pinned in the tests). Derived
-// from the SLOTS, so a weekend with reduced coverage owes proportionally less
-// and no structure is hardcoded.
+//   • PRIMARY-CALL duty — counted PER WEEKEND DAY. The primary call code is
+//     the one with shift_types.call_rank 0 (first call); NEVER a code-name
+//     literal. An 11-week block stands 11 Friday C1 + 11 Saturday C1 + 11
+//     Sunday C1 = 33 such slots, so at par 11 a 1.0 FTE owes 3 — his "3
+//     weekend obligations". The weekend C2s/C3s are NOT separately owed: they
+//     ride along on the block chain (the Saturday C2 doc also holds Friday C2
+//     and Sunday C1, and it is the Sunday C1 that is their duty).
+//   • NEURO duty — counted PER WEEKEND PAIR. A Sat+Sun neuro pair is 1.0, a
+//     lone neuro weekend day is 0.5 (Horan, 0.5 FTE, takes exactly one day).
+//     11 pairs in the block = 11 units, so 1 per 1.0 FTE at par 11.
 //
-// Split calls (patch35) count their burden weight, so a 0.5 + 0.5 Saturday
-// C1 is one tier, not two.
-export function weekendUnitTotal(
-  slots: ReadonlyArray<{
-    slot_date: string;
-    shift_types: { category: string; call_burden_weight?: number | null } | null;
-  }>,
-): number {
-  const byWeekend = new Map<string, Map<string, number>>();
-  for (const s of slots) {
-    if (s.shift_types?.category !== 'call') continue;
-    const key = weekendGroupKey(s.slot_date);
-    if (!key) continue;
-    let days = byWeekend.get(key);
-    if (!days) { days = new Map<string, number>(); byWeekend.set(key, days); }
-    days.set(s.slot_date, (days.get(s.slot_date) || 0) + callBurdenWeight(s.shift_types));
-  }
-  let total = 0;
-  for (const days of byWeekend.values()) total += Math.max(...days.values());
-  return total;
+// Per weekend that is 3 primary days + 1 neuro pair = 4 units, and a weekend
+// genuinely needs 4 docs — which is what makes the two sides of the column
+// reconcile. THAT was the bug this replaces: the old denominator counted the
+// weekend's widest DAY (3 tiers → 33 units) while the numerator credited every
+// distinct doc who touched a weekend (~3.3 per weekend on live data), so every
+// provider rendered red. 33 + 11 = 44 at par 11 → 4 per 1.0 FTE.
+//
+// The neuro half of the arithmetic is NOT re-implemented here — it is
+// rulesEngine/neuroWeekend.ts's `creditedUnitsByProvider` (pair 1.0 / single
+// day 0.5), the same function the solver's gates and the generation banner
+// use, so placement and reporting cannot drift on what a neuro weekend is
+// worth. The import direction (lib/ → lib/rulesEngine/) is the one this file
+// already uses for rulesEngine/workDays.
+//
+// The neuro CODE comes from the site's active CallPatternDoc
+// (`neuroWeekend.code`) — a site that states none simply has no neuro term
+// and its column falls back to primary-call weekend days alone.
+//
+// Split calls (patch35) count their burden weight, so a Sunday C1 served as
+// C1D12 + C1N12 is one primary day, not two, and a lone 12h half is 0.5.
+
+const PRIMARY_CALL_RANK = 0;
+
+export interface WeekendDutyShiftType {
+  category: string;
+  code: string;
+  // patch18. Absent/null on a segment row falls back to the PARENT code's rank
+  // (patch35 copies call_rank onto segments, so this is belt-and-braces).
+  call_rank?: number | null;
+  call_burden_weight?: number | null;
+  parent_call_code?: string | null;
 }
 
-// Weekends WORKED per provider — FRACTIONAL (Gabriel 2026-07-27: "A 0.5
-// weekend would be a 12 hour shift on a sunday or saturday"). Credit for one
-// weekend = the provider's total call BURDEN WEIGHT that weekend, capped at
-// one weekend: a whole 24h weekend call or a full Fri/Sat/Sun chain is 1.0,
-// a single 12h split segment (the live C1D12 / C1N12 Sunday halves, weight
-// 0.5) is 0.5, and a 12h Saturday plus a 12h Sunday adds back up to a whole
-// weekend. The cap is what keeps the weekend the unit — holding all three
-// tiers of one weekend is still ONE weekend, never three.
-//
-// WEIGHT_EPSILON absorbs stored-fraction noise, so three 8h thirds (3 ×
-// 0.3333) credit a full weekend rather than 0.9999. Weekday calls are
-// ignored; providers with no weekend call are simply absent (callers render
-// 0/—).
-export function weekendsWorkedTotals(
-  callRecords: ReadonlyArray<{ provider_id: string; slot_date: string; weight?: number | null }>,
-): Record<string, number> {
-  const byPid = new Map<string, Map<string, number>>();
-  for (const rec of callRecords) {
-    const key = weekendGroupKey(rec.slot_date);
-    if (!key) continue;
-    let weekends = byPid.get(rec.provider_id);
-    if (!weekends) { weekends = new Map<string, number>(); byPid.set(rec.provider_id, weekends); }
-    weekends.set(key, (weekends.get(key) || 0) + callBurdenWeight({ call_burden_weight: rec.weight }));
+export interface WeekendDutySlot {
+  slot_date: string;
+  shift_types: WeekendDutyShiftType | null;
+  assignments?: ReadonlyArray<{ provider_id?: string | null }> | null;
+}
+
+// creditedUnitsByProvider is a BATCH function keyed by provider; the block
+// total is the same per-weekend pair arithmetic with the whole block standing
+// in for one "provider". This key can never collide with a provider UUID.
+const BLOCK_KEY = ' block';
+
+const neuroConfigFor = (code: string): NeuroWeekendConfig =>
+  // requirementBands is irrelevant here — this module only ever calls the
+  // CREDIT half of neuroWeekend.ts. The owed half is the engine's FTE-band
+  // question ("did this doc get their neuro weekend?"); the column's question
+  // is the par-weighted one below.
+  ({ code, requirementBands: [] });
+
+// Resolve a call code's rank, falling back through parent_call_code so a
+// segment row that never got a rank still classifies with its parent.
+function callRankResolver(slots: ReadonlyArray<WeekendDutySlot>) {
+  const rankByCode = new Map<string, number>();
+  for (const s of slots) {
+    const st = s.shift_types;
+    if (!st || typeof st.call_rank !== 'number') continue;
+    if (!rankByCode.has(st.code)) rankByCode.set(st.code, st.call_rank);
   }
+  return (st: WeekendDutyShiftType): number | null => {
+    if (typeof st.call_rank === 'number') return st.call_rank;
+    const r = rankByCode.get(parentCallCodeOf(st.code, st));
+    return typeof r === 'number' ? r : null;
+  };
+}
+
+// One classification pass shared by the block total and the per-provider
+// tally, so numerator and denominator can never disagree about which slots
+// are duties. The two terms are DISJOINT by construction: a neuro-code slot
+// is never also counted as primary, even at a site whose neuro code is its
+// first-call code.
+function classifyWeekendDuties(
+  slots: ReadonlyArray<WeekendDutySlot>,
+  neuroCode: string | undefined,
+  onPrimary: (slot: WeekendDutySlot, weight: number) => void,
+  onNeuro: (slot: WeekendDutySlot, parentCode: string) => void,
+): void {
+  const rankOf = callRankResolver(slots);
+  for (const s of slots) {
+    const st = s.shift_types;
+    if (st?.category !== 'call') continue;
+    if (!weekendGroupKey(s.slot_date)) continue;   // Mon–Thu call is not a weekend duty
+    const parent = parentCallCodeOf(st.code, st);
+    if (neuroCode && parent === neuroCode) onNeuro(s, parent);
+    else if (rankOf(st) === PRIMARY_CALL_RANK) onPrimary(s, callBurdenWeight(st));
+  }
+}
+
+/** The block's total weekend duty units — the column's DENOMINATOR input.
+ * Weighted primary-call weekend slots (counted per day) + neuro weekend units
+ * (counted per pair, via neuroWeekend.ts). Derived entirely from the slots, so
+ * a block with reduced weekend coverage owes proportionally less and no
+ * structure is hardcoded. `neuroCode` absent → the neuro term is absent. */
+export function weekendObligationUnits(
+  slots: ReadonlyArray<WeekendDutySlot>,
+  neuroCode?: string,
+): number {
+  let primary = 0;
+  const neuroPlacements: NeuroPlacement[] = [];
+  classifyWeekendDuties(
+    slots, neuroCode,
+    (_s, weight) => { primary += weight; },
+    (s, code) => { neuroPlacements.push({ provider_id: BLOCK_KEY, slot_date: s.slot_date, code }); },
+  );
+  const neuro = neuroCode
+    ? creditedUnitsByProvider(neuroPlacements, neuroConfigFor(neuroCode)).get(BLOCK_KEY) || 0
+    : 0;
+  return primary + neuro;
+}
+
+/** Weekend duties HELD per provider — the column's ACTUAL. Same two terms,
+ * same classification, added together:
+ *   primary-call weekend days held (weighted — a 12h Sunday C1 half is 0.5)
+ *   + neuro units held (a Sat+Sun pair 1.0, a lone neuro day 0.5).
+ * Horan's stated block — one Saturday C1, one 12h Sunday C1, one single neuro
+ * weekend day — is 1 + 0.5 + 0.5 = 2.0, landing her exactly on her 2.
+ *
+ * Assignment rows count exactly as the shared obligation census counts them
+ * (fteTarget.computeCallObligationCensus): any row carrying a provider_id, no
+ * status filter, so the weekend column and the call columns always see the
+ * same set. Providers with no weekend duty are simply absent (callers render
+ * 0/—). */
+export function weekendDutiesByProvider(
+  slots: ReadonlyArray<WeekendDutySlot>,
+  neuroCode?: string,
+): Record<string, number> {
   const out: Record<string, number> = {};
-  for (const [pid, weekends] of byPid) {
-    let total = 0;
-    for (const held of weekends.values()) total += held >= 1 - WEIGHT_EPSILON ? 1 : held;
-    out[pid] = total;
+  const neuroPlacements: NeuroPlacement[] = [];
+  classifyWeekendDuties(
+    slots, neuroCode,
+    (s, weight) => {
+      for (const a of s.assignments || []) {
+        if (a.provider_id) out[a.provider_id] = (out[a.provider_id] || 0) + weight;
+      }
+    },
+    (s, code) => {
+      for (const a of s.assignments || []) {
+        if (a.provider_id) neuroPlacements.push({ provider_id: a.provider_id, slot_date: s.slot_date, code });
+      }
+    },
+  );
+  if (neuroCode) {
+    for (const [pid, units] of creditedUnitsByProvider(neuroPlacements, neuroConfigFor(neuroCode))) {
+      out[pid] = (out[pid] || 0) + units;
+    }
   }
   return out;
 }
 
-// Weekends OWED: the par-authoritative obligation the call columns use
-// (fteTarget.ts) applied to weekend units — weekend units ÷ par × FTE — but
-// resolved to the nearest HALF weekend instead of a whole one (Gabriel
-// 2026-07-27). Half is the finest weekend duty that actually exists: a 12h
-// Saturday or Sunday shift. So an 11-week block at par 11 (33 units) owes a
-// 1.0 FTE 3 weekends, a 0.75 FTE 2.5, and a 0.5 FTE 1.5 — the 0.5 taken as
-// one 12h weekend shift, never rounded away to a whole weekend.
+// Weekend duties OWED: the par-authoritative obligation the call columns use
+// (fteTarget.ts) applied to weekend duty units — units ÷ par × FTE — resolved
+// DOWN to the nearest half (Gabriel 2026-07-27, SUPERSEDING the nearest-half
+// decision he made earlier the same day; his per-doc numbers require it —
+// 0.75 × 3 must land on 2, not 2.5). Half is the finest weekend duty that
+// actually exists: a 12h Saturday/Sunday shift, or a single neuro day.
+//
+// Paoli, 11-week block, par 11: (33 primary + 11 neuro) ÷ 11 = 4 per 1.0 FTE →
+// 1.0 owes 4, 0.75 owes 3, 0.5 owes 2. His preview, exactly.
+//
+// WEIGHT_EPSILON is the same stored-fraction slack used everywhere else here:
+// a raw value a hair under a half-step (3 × 0.3333 arithmetic) must land ON
+// the step rather than being floored a whole half below it.
 //
 // `fte` is the CALL-POOL weight (census.poolFteFor): a provider outside the
 // call pool owes none. Par-authoritative means a pool below the par
@@ -181,5 +292,5 @@ export function requiredWeekendsFor(
 ): number {
   const raw = fteWeightedTarget(weekendUnits, parLevel, fte);
   if (!Number.isFinite(raw) || raw <= 0) return 0;
-  return Math.round(raw * 2) / 2; // nearest half weekend, ties up
+  return Math.floor((raw + WEIGHT_EPSILON) * 2) / 2; // DOWN to the nearest half
 }

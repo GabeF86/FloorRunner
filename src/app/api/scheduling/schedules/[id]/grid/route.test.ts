@@ -3,9 +3,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { NextRequest } from 'next/server';
 import { makeFakeSupabase, callsFor } from '@/lib/rulesEngine/__fixtures__/fakeSupabase';
+import { CLASSIC_PATTERN } from '@/lib/rulesEngine/callPattern';
 import {
   GRID_SCHEDULE_COLUMNS,
   GRID_SLOT_COLUMNS,
+  GRID_SLOT_COLUMNS_PRE35,
   GRID_ASSIGNMENT_COLUMNS,
   validationSummaryFor,
 } from './route.helpers';
@@ -41,8 +43,18 @@ describe('grid column lists', () => {
     for (const col of ['id', 'slot_date', 'shift_type_id', 'slot_index', 'locked', 'derived_day_type']) {
       expect(GRID_SLOT_COLUMNS).toContain(col);
     }
-    expect(GRID_SLOT_COLUMNS).toContain('shift_types(id, code, name, color_hex, category, call_type, display_order, provider_group, requires_post_call_rule, parent_call_code, call_burden_weight)');
+    // call_rank added 2026-07-27: the Call Counts Obligatory Weekends column
+    // identifies the PRIMARY call code by rank 0, never by a code-name literal.
+    expect(GRID_SLOT_COLUMNS).toContain('shift_types(id, code, name, color_hex, category, call_type, display_order, provider_group, requires_post_call_rule, call_rank, parent_call_code, call_burden_weight)');
     expect(GRID_SLOT_COLUMNS).toContain(`assignments(${GRID_ASSIGNMENT_COLUMNS})`);
+  });
+
+  // call_rank is a patch18 column, so it survives the patch35 narrow retry —
+  // a pre-patch35 DB must still be able to tell first call from second.
+  it('the pre-patch35 retry keeps call_rank (patch18) while dropping only the call-split columns', () => {
+    expect(GRID_SLOT_COLUMNS_PRE35).toContain('call_rank');
+    expect(GRID_SLOT_COLUMNS_PRE35).not.toContain('call_burden_weight');
+    expect(GRID_SLOT_COLUMNS_PRE35).not.toContain('parent_call_code');
   });
 
   it('assignment columns keep validation_flags (tooltips) and the providers join, and carry schedule_slot_id for client-side patching', () => {
@@ -188,5 +200,61 @@ describe('GET /api/scheduling/schedules/:id/grid', () => {
     const { res, json } = await get();
     expect(res.status).toBe(200);
     expect(json.slots[0].assignments).toEqual([]);
+  });
+});
+
+// ── Active call pattern (2026-07-27) ─────────────────────────────────────────
+// The Call Counts modal's Obligatory Weekends column needs neuroWeekend.code
+// to separate the neuro duty (per Sat+Sun pair) from the primary-call duty
+// (per day). Parsed server-side so zod stays out of the client bundle, and
+// degrading to null on EVERY failure path — a bad pattern must never break the
+// modal, it only drops the neuro term.
+describe('grid payload: site active call pattern', () => {
+  function setupWithPattern(definition: unknown) {
+    const { sb, calls } = makeFakeSupabase({
+      tables: {
+        schedules: {
+          data: { id: 'sched-1', organization_id: 'org-1', site_id: 'site-1', sites: null },
+          error: null,
+        },
+        schedule_versions: { data: { id: 'ver-1', version_number: 1, version_status: 'draft' }, error: null },
+        schedule_slots: { data: [], error: null },
+        providers: { data: [], error: null },
+        holiday_calendars: { data: [], error: null },
+        call_patterns: { data: { definition }, error: null },
+      },
+    });
+    holder.sb = sb;
+    return { calls };
+  }
+
+  const NEURO_PATTERN = {
+    ...CLASSIC_PATTERN,
+    neuroWeekend: { code: 'C3', requirementBands: [{ minFte: 0.75, units: 1 }, { minFte: 0, units: 0.5 }] },
+  };
+
+  it('ships the parsed pattern so the modal can read neuroWeekend.code', async () => {
+    const { calls } = setupWithPattern(NEURO_PATTERN);
+    const { res, json } = await get();
+    expect(res.status).toBe(200);
+    expect(json.callPattern.neuroWeekend.code).toBe('C3');
+    // Scoped to the schedule's site and the ACTIVE row.
+    const eqs = callsFor(calls, 'call_patterns', 'eq').map(c => c.args);
+    expect(eqs).toContainEqual(['site_id', 'site-1']);
+    expect(eqs).toContainEqual(['status', 'active']);
+  });
+
+  it('a definition that fails CallPatternDocSchema degrades to null — never a 500', async () => {
+    setupWithPattern({ version: 2, blocks: 'nonsense' });
+    const { res, json } = await get();
+    expect(res.status).toBe(200);
+    expect(json.callPattern).toBeNull();
+  });
+
+  it('no active pattern row → null (sites with no stated neuro weekend keep working)', async () => {
+    setup(); // no call_patterns table configured on the fake
+    const { res, json } = await get();
+    expect(res.status).toBe(200);
+    expect(json.callPattern).toBeNull();
   });
 });

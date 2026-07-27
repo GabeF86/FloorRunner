@@ -12,8 +12,11 @@ import {
 // contracts; the modal only aggregates and renders.
 import {
   bucketDayCounts, daysOffFor, creditedWorkingDayTotals,
-  weekendUnitTotal, weekendsWorkedTotals, requiredWeekendsFor,
+  weekendObligationUnits, weekendDutiesByProvider, requiredWeekendsFor,
 } from '@/lib/callCountDays';
+// Type-only: the grid route parses the site's active pattern server-side and
+// ships the validated doc, so zod stays out of this client bundle.
+import type { CallPatternDoc } from '@/lib/rulesEngine/callPattern';
 // rangeComposition = the planner card's single-homed block composition
 // (weekdays minus major holidays → the working-day set).
 import { rangeComposition } from '@/lib/plannerMath';
@@ -127,6 +130,10 @@ interface ShiftTypeInfo {
   // rest days credit as worked). Older cached payloads may omit it; the
   // credit math treats absent as false.
   requires_post_call_rule?: boolean | null;
+  // patch18. 0 = first (primary) call — THE identifier for the Obligatory
+  // Weekends column's primary-call weekend days. Absent on a pre-patch18
+  // payload; the column then simply finds no primary duties.
+  call_rank?: number | null;
   // Call splits (2026-07-22, patch35): segment → parent grouping key +
   // fractional call credit. Absent (pre-patch payloads) = whole call.
   parent_call_code?: string | null;
@@ -207,6 +214,11 @@ interface GridData {
   holidays: Holiday[];
   profiles: EmploymentProfile[];
   availability: AvailabilityEntry[];
+  // Site's active CallPatternDoc, parsed server-side (grid route step 8) —
+  // null when the site has none or its definition failed validation. The Call
+  // Counts modal reads `neuroWeekend.code` from it; nothing else on this page
+  // consumes the pattern. Type-only import, so zod never enters this bundle.
+  callPattern?: CallPatternDoc | null;
 }
 
 interface ActiveCell {
@@ -3354,20 +3366,24 @@ function CallCountsModal({ grid, onClose }: { grid: GridData; onClose: () => voi
     return t;
   };
 
-  // Obligatory Weekends (Gabriel 2026-07-27) — "actual / required", same
-  // shape as Working Days but on HALF-weekend granularity: a 12h Saturday or
-  // Sunday shift is half a weekend, so a 0.5 FTE owes 1.5 weekends and takes
-  // the 0.5 as one 12h weekend shift rather than being rounded up to 2.
-  // A weekend = the Fri/Sat/Sun group; the block's weekend UNITS come from
-  // the slots (widest weekend day = people that weekend needs), and the
-  // requirement is the calls' par-authoritative contract resolved to the
-  // nearest half: 11 weekends × 3 tiers = 33 units at par 11 → 1.0 FTE owes
-  // 3, 0.75 owes 2.5, 0.5 owes 1.5. Actual = weekend call weight capped at
-  // one per weekend, straight off the shared census's call records (so it
-  // sees exactly what the call columns see — split segments and
-  // holiday-dated weekend calls alike).
-  const weekendUnits = weekendUnitTotal(grid.slots);
-  const weekendsByPid = weekendsWorkedTotals(census.callRecords);
+  // Obligatory Weekends (Gabriel 2026-07-27, REVISED same day) — "actual /
+  // required" over WEEKEND DUTIES, of which there are exactly two kinds
+  // counted two different ways (lib/callCountDays.ts owns the arithmetic and
+  // the full rationale):
+  //   • primary call (shift_types.call_rank 0) — counted PER WEEKEND DAY, so
+  //     an 11-week block stands 11 Fri C1 + 11 Sat C1 + 11 Sun C1 = 33;
+  //   • neuro (the active pattern's neuroWeekend.code) — counted PER PAIR, so
+  //     11 Sat+Sun pairs = 11, a lone neuro day being half.
+  // 33 + 11 = 44 at par 11 → a 1.0 FTE owes 4, a 0.75 FTE 3, a 0.5 FTE 2
+  // (units ÷ par × FTE, DOWN to the nearest half). Both sides come from
+  // grid.slots through one classifier, so numerator and denominator cannot
+  // disagree about which slots are duties — the previous column's actual bug
+  // (a widest-day denominator against an every-doc-who-worked numerator, which
+  // painted everyone red).
+  // A site with no stated neuroWeekend simply has no neuro term.
+  const neuroCode = grid.callPattern?.neuroWeekend?.code;
+  const weekendUnits = weekendObligationUnits(grid.slots, neuroCode);
+  const weekendsByPid = weekendDutiesByProvider(grid.slots, neuroCode);
   const weekendsForPid = (pid: string) => weekendsByPid[pid] || 0;
   const requiredWeekendsForPid = (pid: string) =>
     requiredWeekendsFor(weekendUnits, census.effectivePar, census.poolFteFor(pid));
@@ -3531,7 +3547,7 @@ function CallCountsModal({ grid, onClose }: { grid: GridData; onClose: () => voi
                 padding: '6px 10px', textAlign: 'center', fontWeight: 700,
                 borderBottom: '1px solid var(--border)', borderLeft: '1px solid var(--border)',
                 cursor: 'help',
-              }} title={`actual / required, in HALF weekends — a 12h Saturday or Sunday shift is 0.5, a whole weekend call or a full Fri/Sat/Sun chain is 1 (holding all three tiers of one weekend is still one weekend). Actual = weekend call held on this draft. Required = weekend units ÷ par × FTE, resolved to the nearest half — this block holds ${formatCallWeight(weekendUnits)} weekend units (each weekend counts the people it needs: its widest day's call tiers), at par ${fmtFte(census.effectivePar)}. An 11-week block of 3-tier weekends = 33 units, so a 1.0 FTE owes 3 weekends, a 0.75 FTE 2.5, a 0.5 FTE 1.5 — the halves are taken as 12h weekend shifts, never rounded up to a whole weekend. Red = past the obligation; with the pool below par those extra weekends are the paid-pickup layer, same as extra calls.`}>
+              }} title={`actual / required weekend DUTIES. A duty is one of two things, counted two ways: (1) one PRIMARY-call weekend day — first call (call_rank 0) on a Friday, Saturday or Sunday, counted per DAY, so an 11-week block stands 11 Fri + 11 Sat + 11 Sun = 33; a 12h split half of one counts 0.5. The weekend C2/C3 tiers are not separately owed — they ride along on the block chain. (2) one NEURO weekend${neuroCode ? ` (${neuroCode})` : ''}, counted per Sat+Sun PAIR — 11 pairs in an 11-week block = 11 units, and a single neuro weekend day is 0.5.${neuroCode ? '' : ' This site states no neuro weekend, so the column is primary-call days only.'} Required = duty units ÷ par × FTE, rounded DOWN to the nearest half: this block holds ${formatCallWeight(weekendUnits)} units at par ${fmtFte(census.effectivePar)}. At Paoli (33 + 11 = 44 ÷ 11 = 4 per full FTE) a 1.0 FTE owes 4, a 0.75 FTE 3, a 0.5 FTE 2. Red = past the obligation; with the pool below par those extra weekends are the paid-pickup layer, same as extra calls.`}>
                 Obligatory Weekends<br/><span style={{ fontSize: 10, fontWeight: 500, opacity: 0.7 }}>actual / required</span>
               </th>
               <th rowSpan={2} style={{
@@ -3621,7 +3637,7 @@ function CallCountsModal({ grid, onClose }: { grid: GridData; onClose: () => voi
                   borderLeft: '1px solid var(--border)', fontWeight: 700, color: 'var(--text)',
                 }}>{formatCallWeight(rowTotal(p.id))}</td>
                 <td
-                  title={`Worked ${formatCallWeight(weekendsForPid(p.id))} of ${formatCallWeight(requiredWeekendsForPid(p.id))} obligatory weekends (unrounded ${expectedWeekendsForPid(p.id).toFixed(2)}). A 12h Saturday or Sunday shift is half a weekend.`}
+                  title={`Held ${formatCallWeight(weekendsForPid(p.id))} of ${formatCallWeight(requiredWeekendsForPid(p.id))} obligatory weekend duties (unrounded requirement ${expectedWeekendsForPid(p.id).toFixed(2)}, taken DOWN to the nearest half). Actual = primary-call weekend days held (a 12h half counts 0.5) + neuro weekend units held (a Sat+Sun pair 1, a single neuro day 0.5).`}
                   style={{
                     padding: '6px 10px', textAlign: 'center', whiteSpace: 'nowrap',
                     borderLeft: '1px solid var(--border)', fontWeight: 600, cursor: 'help',
