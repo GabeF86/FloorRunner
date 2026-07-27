@@ -197,7 +197,6 @@ describe("fillMode 'weekend-only' — weekend-v2 four-person shape still forms",
       callSlot('satC3', '2026-01-10', 'C3', 'saturday'),
       callSlot('friC1', '2026-01-09', 'C1', 'friday'),
       callSlot('friC2', '2026-01-09', 'C2', 'friday'),
-      callSlot('friC3', '2026-01-09', 'C3', 'friday'),
       dSlot('friD2', '2026-01-09', 'D2', 'friday'),
       dSlot('friD4', '2026-01-09', 'D4', 'friday'),
       callSlot('sunC1', '2026-01-11', 'C1', 'sunday'),
@@ -221,10 +220,11 @@ describe("fillMode 'weekend-only' — weekend-v2 four-person shape still forms",
     // Doc A: Fri C1 carries Sun C2 and Monday D1 (chain into the weekday).
     expect(ids.get('sunC2')).toBe(ids.get('friC1'));
     expect(ids.get('monD1')).toBe(ids.get('friC1'));
-    // Doc B / C / E links.
+    // Doc B / C / E links. Doc C's neuro is Sat + Sun plus the Friday D4 day
+    // shift (2026-07-27): there is no Friday C3 slot to chain any more — the
+    // Friday C2 doc cross-covers neuro that day — so this fixture mints none.
     expect(ids.get('friC2')).toBe(ids.get('satC2'));
     expect(ids.get('sunC1')).toBe(ids.get('satC2'));
-    expect(ids.get('friC3')).toBe(ids.get('satC3'));
     expect(ids.get('friD4')).toBe(ids.get('satC3'));
     expect(ids.get('sunC3')).toBe(ids.get('satC3'));
     expect(ids.get('friD2')).toBe(ids.get('satC1'));

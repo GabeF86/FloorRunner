@@ -2,6 +2,15 @@
 // Prints the patch25 SQL (neuro overlay) with the zod-validated
 // WEEKEND_V2_PATTERN inlined — same emit convention as emitWeekendV2Patch.ts,
 // so the live call_patterns definition stays in sync with the constant.
+//
+// STALE HEADER as of 2026-07-27 — do not run this to roll out the current doc.
+// It still inlines the LIVE WEEKEND_V2_PATTERN, which no longer matches the
+// patch25 prose below: neuro is now Sat + Sun (no Friday C3 slot at all, the
+// Friday C2 doc cross-covers it), the Sat-C3 chain is two links not three, its
+// +1 Sun C3 is FTE-gated at 0.75, and the doc carries a neuroWeekend config.
+// Running this would emit the new doc under a patch25 title describing the old
+// one. patch38 SUPERSEDES it for the neuro-weekend doc; whether to generalize
+// or retire this script is patch38's call, so it is left untouched here.
 import { WEEKEND_V2_PATTERN } from '../src/lib/rulesEngine/patterns/weekendV2';
 
 const SITE = '2ddd2427-22fb-4290-9c4c-03a957e5af4e'; // Paoli
