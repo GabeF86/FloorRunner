@@ -3,13 +3,30 @@
 //   - how many has a provider actually earned? (pair 1.0 / single day 0.5)
 //   - who is short?  (the report the generation banner shows)
 // The solver's FTE gate, its remainder eligibility gate, its scoring tier and
-// the generation report ALL consume this module, so placement rules and the
-// report can never drift apart.
+// the generation report all consume this module, so they share ONE definition
+// of owed/credited/short and cannot drift on the ARITHMETIC.
 //
-// The half-weekend arithmetic deliberately matches the Call Counts
-// "Obligatory Weekends" column (lib/callCountDays.ts): a weekend is the
-// Fri/Sat/Sun group keyed by its Saturday, a pair is one unit, a lone
-// weekend day is half. WEIGHT_EPSILON absorbs float noise on comparisons.
+// They CAN disagree on WHO it applies to, deliberately (2026-07-27). scoreCall
+// (solveKernel.ts) exempts any provider whose scenario manifest states a
+// `neuroTarget` from the steering tier — there the manifest outranks the FTE
+// band — while computeNeuroReport carries no such exemption. So a manifest
+// provider with a stated target of 0 is intentionally not steered onto neuro
+// and is then flagged short by the report. That is the accepted trade, not a
+// bug: a visible false-positive on the generation banner, fixable in the
+// workbook where the number lives, beats a silent misroute under scarcity.
+// Don't "reconcile" the two by adding the exemption here — the report losing
+// the row is exactly the silence the trade was made to avoid.
+//
+// SHARED WITH, BUT NOT EQUAL TO, the Call Counts "Obligatory Weekends" column
+// (lib/callCountDays.ts). Shared: the weekend GROUPING (`weekendGroupKey` —
+// the Fri/Sat/Sun group keyed by its Saturday) and the half-unit granularity
+// (a pair is one, a lone weekend day is half). Different: the QUESTION. The
+// UI column asks "did this doc give up their weekend?" and credits by call
+// burden weight capped at one, so a 24h Saturday-only neuro call is 1.0 there.
+// This module asks "how much of the neuro duty did they cover?", so the same
+// call is 0.5 units here. Both answers are correct for their own question and
+// this divergence is expected — do not edit either to match the other.
+// WEIGHT_EPSILON absorbs float noise on comparisons.
 import { WEIGHT_EPSILON } from '@/lib/callBurden';
 import { weekendGroupKey } from '@/lib/weekendGroup';
 

@@ -4,6 +4,7 @@
 // Validation constraints stay in rule_definitions; structure lives here.
 // Spec: docs/superpowers/specs/2026-07-07-scheduling-v2-design.md §5.
 import { z } from 'zod';
+import { WEIGHT_EPSILON } from '@/lib/callBurden';
 
 export const DAY_TYPES = [
   'weekday', 'friday', 'saturday', 'sunday', 'federal_holiday', 'major_holiday',
@@ -209,6 +210,14 @@ export function referencedCodes(doc: CallPatternDoc): string[] {
   }
   for (const s of doc.spans) codes.add(s.code);
   for (const p of doc.placementPasses) for (const code of p.codes) codes.add(code);
+  // neuroWeekend.code (2026-07-27): every consumer of the neuro feature — the
+  // FTE gate, the remainder eligibility gate, the steering tier, the shortfall
+  // report — matches on this ONE string, and each does so by equality against
+  // a code that simply never appears. So a typo here does not half-work: the
+  // whole feature goes silently inert with nothing anywhere to notice. It is a
+  // shift-code reference like any other in the doc and belongs in the same
+  // unknown-code warning.
+  if (doc.neuroWeekend) codes.add(doc.neuroWeekend.code);
   return Array.from(codes).sort();
 }
 
@@ -248,4 +257,42 @@ export function dayTypeFillOrderWarnings(doc: CallPatternDoc): string[] {
   return doc.dayTypeFillOrder
     .filter(dt => !(DAY_TYPES as readonly string[]).includes(dt))
     .map(dt => `dayTypeFillOrder lists unknown day type '${dt}' — it will never match a slot (valid: ${DAY_TYPES.join(', ')})`);
+}
+
+// Load-time coherence between the two `minFte` fields (2026-07-27). The name
+// is the same in both places and the MEANING is not: a block-chain link's
+// minFte is the GATE (which docs take the designed pair), a requirementBand's
+// minFte is a BAND BOUNDARY (how many units a doc owes). Nothing forces them
+// to line up, and a mismatch is silent and clinical: gate the Sat→Sun pair at
+// 0.5 while the bands step at 0.75, and a 0.5 doc takes the whole pair —
+// 1.0 unit of credit against a 0.5-unit obligation — so the remainder this
+// feature exists to mint is never minted and nobody is ever reported short.
+// Both fields are reachable from the assistant's update_call_pattern tool, so
+// a plausible-looking edit produces exactly this.
+//
+// WARN, never reject — dayTypeFillOrderWarnings' stated rationale applies: a
+// site may legitimately gate BETWEEN bands (bands that only separate 1.0 from
+// everyone else, with the pair still reserved for 0.75+), and a hard reject
+// would knock the whole pattern back to classic over an authoring choice that
+// parses fine. Compared with WEIGHT_EPSILON, the same tolerance owedUnitsFor
+// uses, so a floor that behaves identically to a boundary never warns.
+export function neuroWeekendWarnings(doc: CallPatternDoc): string[] {
+  const cfg = doc.neuroWeekend;
+  if (!cfg) return [];
+  const boundaries = cfg.requirementBands.map(b => b.minFte);
+  const listed = [...boundaries].sort((a, b) => a - b).join(', ');
+  const out: string[] = [];
+  for (const block of doc.blocks) for (const chain of block.chains) for (const link of chain.links) {
+    const floor = link.minFte;
+    if (floor == null) continue;
+    if (boundaries.some(b => Math.abs(b - floor) <= WEIGHT_EPSILON)) continue;
+    const msg = `Block chain ${chain.trigger} → ${link.code} (offset ${link.offset}, `
+      + `${block.anchorDayType} anchor) gates on minFte ${floor}, which is not a `
+      + `neuroWeekend requirementBands boundary (${listed}) — a provider at that FTE `
+      + `takes the whole designed pair but owes the units of a different band, so no `
+      + `remainder is ever minted. Move the link floor onto a band boundary, or add a `
+      + `requirementBand at minFte ${floor}.`;
+    if (!out.includes(msg)) out.push(msg);
+  }
+  return out;
 }

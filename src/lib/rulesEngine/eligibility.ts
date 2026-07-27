@@ -239,7 +239,14 @@ export function evaluateEligibility(
   // applyBlockChains, which runs solely inside solve()'s construction loop.
   // The optimizer gates against seedSolveState (optimize.ts), which starts from
   // emptySolveState and never populates the set, so this gate is structurally
-  // inert on every pin re-validation. The two live-state 'call-no-quota' users
+  // inert on every pin re-validation. That inertness is HARMLESS only because
+  // `optimizerMovableDayTypes` is ['weekday','friday'] in every shipped pattern
+  // (CLASSIC_PATTERN and WEEKEND_V2_PATTERN both), which keeps Sat/Sun neuro C3
+  // out of the optimizer's move set entirely — adding 'saturday'/'sunday' there
+  // would let a hill-climb move hand a neuro remainder to a full-FTE doc with
+  // this gate silently open and no test failing. Whoever widens that list owes
+  // the optimizer a remainder-set seed (or this gate a state-independent form).
+  // The two live-state 'call-no-quota' users
   // — block-chain call links and quota relaxation — are exactly the paths that
   // MUST keep honoring it: waiving it there would let relaxation hand a neuro
   // remainder to a full-FTE doc, defeating the feature.

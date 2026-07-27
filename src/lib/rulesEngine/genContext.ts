@@ -28,7 +28,7 @@ import type {
   ProviderWorkDayBudget,
 } from './genTypes';
 
-import { CallPatternDocSchema, patternWarnings, callFillOrderWarnings, dayTypeFillOrderWarnings, type CallPatternDoc } from './callPattern';
+import { CallPatternDocSchema, patternWarnings, callFillOrderWarnings, dayTypeFillOrderWarnings, neuroWeekendWarnings, type CallPatternDoc } from './callPattern';
 import { projectScenario, applyScenarioBucketTargets, type ScenarioDoc } from './scenario';
 import { fetchCommittedAssignments, filterPublishedVersions } from './committedAssignments';
 import { embedArray } from '@/lib/embed';
@@ -322,6 +322,12 @@ export async function loadGenerationContext(
   // name never matches a slot (its position silently does nothing).
   if (callPattern) {
     warnings.push(...dayTypeFillOrderWarnings(callPattern));
+  }
+  // A neuroWeekend link floor that sits BETWEEN requirement bands silently
+  // credits a whole pair against a different band's obligation and mints no
+  // remainder (callPattern.ts states the case).
+  if (callPattern) {
+    warnings.push(...neuroWeekendWarnings(callPattern));
   }
 
   // ── 2. Build slot index ───────────────────────────────────────────────────
