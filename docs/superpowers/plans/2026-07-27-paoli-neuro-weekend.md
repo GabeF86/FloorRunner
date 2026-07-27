@@ -968,7 +968,19 @@ After the block that appends `plan.requestWarnings` to `result.warnings` (~line 
   // NEW array (result.warnings may alias ctx.warnings, so never push).
   const neuroCfg = ctx.callPattern?.neuroWeekend;
   if (neuroCfg) {
-    const placements = plan.assignments.map(a => ({
+    // CORRECTED 2026-07-27 (caught during execution): credit BOTH the plan's
+    // assignments AND ctx.seedAssignments. Plan-only is wrong on Paoli's
+    // primary path — a Continue ('all') run re-solves only the OPEN slots, so
+    // weekends committed by the earlier weekend-only run return as SEEDS
+    // (genContext ~:960) and never appear in plan.assignments. Plan-only
+    // would report every 0.75 doc short their entire weekend on the very run
+    // that finalizes the block. It also breaks this module's stated
+    // invariant: the eligibility gate and the scoring tier both judge credit
+    // from state.callCodesByDate, which seedSolveState populates FROM SEEDS,
+    // so the gate would refuse a remainder as "already satisfied" while the
+    // banner called the same doc short. Double-counting is structurally
+    // impossible — creditedUnitsByProvider folds dates into a Set.
+    const placements = [...plan.assignments, ...ctx.seedAssignments].map(a => ({
       provider_id: a.provider_id,
       slot_date: a.slot_date,
       code: a.shift_type_code,
