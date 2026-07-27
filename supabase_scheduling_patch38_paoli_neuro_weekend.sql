@@ -12,6 +12,20 @@
 --   Applied ____-__-__ to project qhwdbtixhzdsgwwtcfrm via ______________.
 --   Post-apply spot checks (see VERIFICATION at the bottom): ______________
 --
+-- ── ORDER: DEPLOY THE CODE FIRST, THEN APPLY THIS PATCH ─────────────────────
+-- NOT the usual patch-then-push. CallPatternDocSchema is .strict(), so the
+-- PRE-change deployed code REJECTS the doc in statement 2 — `minFte` and
+-- `neuroWeekend` are unrecognized keys. genContext turns a parse failure into
+-- callPattern = undefined + a warning, and solve() then falls back to
+-- CLASSIC_PATTERN. So if this patch lands before the code, every Paoli
+-- generation in that window silently produces a CLASSIC-pattern schedule — no
+-- weekend chains, no dayTypeFillOrder, no relief pass, no C2→D1 post-call
+-- chain — and commits it, with only a warning to show for it.
+--
+-- Code-first is safe in the other direction: both new fields are OPTIONAL, so
+-- new code reading the OLD doc behaves byte-identically to today. The window
+-- between deploy and apply is therefore a no-op, not a degradation.
+--
 -- ── WHAT (two statements, ONE transaction) ──────────────────────────────────
 --   1. Deactivate the friday/C3 shift_templates row. That row is the ONLY
 --      thing that generates Friday neuro slots: new-schedule creation fetches
