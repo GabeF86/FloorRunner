@@ -17,6 +17,7 @@ import { computeWorkDayReport } from './workDayReport';
 import type { WorkDayReportRow } from './workDayReport';
 import { computeNeuroReport, neuroShortfallWarnings } from './neuroWeekend';
 import type { NeuroReportRow } from './neuroWeekend';
+import { parentCallCodeOf } from '@/lib/callBurden';
 import type { RequestGrant, CallRequestGrant } from './requestGrants';
 import type { OptimizeStats } from './optimize';
 import type { SupabaseClient } from './shared';
@@ -286,10 +287,20 @@ export async function autoGenerate(
         slot_date: a.slot_date,
         code: a.shift_type_code,
       })),
+      // Seeds parent-map, matching BOTH the sibling report
+      // (providerCaps' tallyCallsByPidCode) and — decisively — solve.ts's own
+      // seed ledger write, which records the PARENT code. Raw here would
+      // credit 0 for a `C3D12` seed the gate and steering tier credit as C3.
+      // The plan branch above deliberately stays RAW to match the OTHER
+      // ledger writer, solveKernel.ts's record(), which passes
+      // slot.shift_type_code unmapped — the ledger is asymmetric, so agreeing
+      // with it means being asymmetric too. Moot today either way: manual_only
+      // segments never enter slotsToFill (genContext), so a live placement
+      // cannot carry a segment code.
       ...ctx.seedAssignments.map(s => ({
         provider_id: s.provider_id,
         slot_date: s.slot_date,
-        code: s.shift_type_code,
+        code: parentCallCodeOf(s.shift_type_code, ctx.shiftTypes?.get(s.shift_type_code)),
       })),
     ];
     const rows = computeNeuroReport(

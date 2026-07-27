@@ -144,4 +144,16 @@ describe('neuroShortfallWarnings', () => {
     expect(neuroShortfallWarnings(
       [{ provider_id: 'three4', fte: 0.75, owed: 1, credited: 1, short: 0 }], nameOf)).toEqual([]);
   });
+
+  // The HALF band's exact physician-facing copy. Pinned because both cases
+  // above use owed:1, so nothing else pins the plural arm. "0.5 neuro
+  // weekends" is deliberate — plural on a fraction is correct English — and
+  // this case exists so a future pluralisation "fix" cannot silently change
+  // what a scheduler reads on the banner.
+  it('renders the sub-0.75 half-weekend band (plural on a fraction)', () => {
+    expect(neuroShortfallWarnings(
+      [{ provider_id: 'half', fte: 0.5, owed: 0.5, credited: 0, short: 0.5 }], nameOf)).toEqual([
+      'K.Horan is short 0.5 of 0.5 neuro weekends this block (has 0).',
+    ]);
+  });
 });

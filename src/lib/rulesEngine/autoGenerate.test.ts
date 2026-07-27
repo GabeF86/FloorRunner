@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { autoGenerate, toResultAssignment, resolveOptimizeEnabled, resolveWallClockMs } from './autoGenerate';
 import { CallPatternDocSchema } from './callPattern';
-import { buildCtx, prov, callSlot } from './__fixtures__/buildContext';
+import { buildCtx, prov, callSlot, shiftInfo } from './__fixtures__/buildContext';
 import type { GenerationContext, PlannedAssignment } from './genTypes';
 
 describe('resolveOptimizeEnabled', () => {
@@ -142,6 +142,32 @@ describe('autoGenerate — neuro report wiring', () => {
     const result = await autoGenerate({} as never, 'ver-1', { optimize: false });
     expect(result.ok).toBe(true);
     expect(result.assignments).toEqual([]); // nothing re-solved: credit is seed-only
+    expect(result.neuroReport).toEqual([
+      { provider_id: 'three4', fte: 0.75, owed: 1, credited: 1, short: 0 },
+    ]);
+    expect(result.warnings.some(w => w.includes('neuro weekend'))).toBe(false);
+  });
+
+  // Seeded SEGMENT codes (patch35 call splits) must credit under their PARENT.
+  // solve.ts's seed ledger write parent-maps, so a raw-code report would credit
+  // 0 for a C3D12 seed the remainder gate and steering tier credit as a full
+  // C3 — the same gate-vs-report drift, in the opposite direction.
+  it('parent-maps a seeded segment code — a C3D12 pair credits as a whole C3 weekend', async () => {
+    const seed = (slot_date: string) => ({
+      slot_date, provider_id: 'three4', shift_type_code: 'C3D12',
+      shift_type_category: 'call', derived_day_type: slot_date === SAT ? 'saturday' : 'sunday',
+      slot_id: `slot-${slot_date}`, assignment_id: `a-${slot_date}`,
+      source_type: 'manual', schedule_version_id: 'v1',
+    });
+    holder.ctx = buildCtx([], [prov('three4', 0.75)], {
+      callPattern: NEURO_DOC, warnings: [],
+      shiftTypes: new Map([['C3D12', shiftInfo('C3D12', {
+        category: 'call', manual_only: true, call_burden_weight: 0.5, parent_call_code: 'C3',
+      })]]),
+      seedAssignments: [seed(SAT), seed(SUN)],
+    });
+    const result = await autoGenerate({} as never, 'ver-1', { optimize: false });
+    expect(result.ok).toBe(true);
     expect(result.neuroReport).toEqual([
       { provider_id: 'three4', fte: 0.75, owed: 1, credited: 1, short: 0 },
     ]);
