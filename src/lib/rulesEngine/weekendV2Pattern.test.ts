@@ -104,7 +104,7 @@ describe('WEEKEND_V2_PATTERN — golden weekend shape (Doc A/B/C/E)', () => {
   // pattern's dayTypeFillOrder (saturday, friday, sunday, …), which production
   // genContext applies to slotsToFill; the bare `buildCtx` fixture keeps input
   // order verbatim, so we mirror it here. The four-person shape depends on it:
-  // the Saturday anchors fire first (claiming Fri C2, Fri C3 + Fri D4, Fri D2,
+  // the Saturday anchors fire first (claiming Fri C2, Fri D4, Fri D2,
   // Sun C1, Sun C3 as links), THEN the friday pass places the in-house Fri C1
   // whose anchor chains Sun C2 forward (friday-first Doc A, spec 2026-07-15),
   // and the sunday pass has nothing left but leftovers. Feeding sunday before
@@ -118,7 +118,6 @@ describe('WEEKEND_V2_PATTERN — golden weekend shape (Doc A/B/C/E)', () => {
     callSlot('satC3', '2026-01-10', 'C3', 'saturday'),
     callSlot('friC1', '2026-01-09', 'C1', 'friday'),
     callSlot('friC2', '2026-01-09', 'C2', 'friday'),
-    callSlot('friC3', '2026-01-09', 'C3', 'friday'),
     dSlot('friD2', '2026-01-09', 'D2', 'friday'),
     dSlot('friD4', '2026-01-09', 'D4', 'friday'),
     callSlot('sunC1', '2026-01-11', 'C1', 'sunday'),
@@ -151,11 +150,14 @@ describe('WEEKEND_V2_PATTERN — golden weekend shape (Doc A/B/C/E)', () => {
     expect(byId['sunC1']).toBe(byId['satC2']);
     expect(plan.assignments.some(a => a.provider_id === byId['satC2'] && a.slot_date === '2026-01-12')).toBe(false);
 
-    // Doc C: one person covers Neuro Fri→Sun INCLUDING the Friday D4 day shift
-    // (overlay coexistence), works Monday (no post-call).
-    expect(byId['friC3']).toBe(byId['satC3']);
+    // Doc C (2026-07-27): neuro is Sat + Sun, and the neuro doc still works
+    // the Friday D4 day shift. Friday NEURO CALL has no slot at all — the
+    // Friday C2 doc cross-covers it.
     expect(byId['friD4']).toBe(byId['satC3']);
     expect(byId['sunC3']).toBe(byId['satC3']);
+    expect(byId['friC3']).toBeUndefined();
+    expect(plan.skippedDerived ?? []).not.toContainEqual(
+      expect.objectContaining({ code: 'C3', reason: 'no-slot' }));
 
     // Doc E: Sat C1 person has Fri D2 and is OFF Sunday.
     expect(byId['friD2']).toBe(byId['satC1']);
@@ -243,10 +245,14 @@ describe('WEEKEND_V2_PATTERN — broken chains still fill (in-house first)', () 
       }));
   });
 
-  it('June-draft: Sat C3 with no Fri C3 slot — Sat fills, the missing Friday is recorded', () => {
+  it('June-draft: Sat C3 with no Fri D4 slot — Sat fills, the missing Friday is recorded', () => {
     // Block starts on a weekend, so the saturday C3 anchor's −1 back-link has
     // no Friday slot to claim. The Sun C3 slot IS included so the +1 link fills
     // normally — the test isolates exactly one dead link (the missing Friday).
+    // RE-POINTED 2026-07-27: that −1 back-link is now Fri D4 (the day shift).
+    // The old Fri C3 evening-call link is GONE — Friday neuro is cross-covered
+    // by the Friday C2 doc — so a missing Friday C3 slot is no longer an
+    // obligation at all and must mint no record; the D4 one still must.
     const slots = [
       callSlot('satC3', '2026-01-10', 'C3', 'saturday'),
       callSlot('sunC3', '2026-01-11', 'C3', 'sunday'),
@@ -261,8 +267,10 @@ describe('WEEKEND_V2_PATTERN — broken chains still fill (in-house first)', () 
     expect(plan.assignments.find(a => a.slot_id === 'sunC3')?.provider_id).toBe(satC3!.provider_id);
     expect(plan.skippedDerived).toContainEqual(
       expect.objectContaining({
-        date: '2026-01-09', code: 'C3', provider_id: satC3!.provider_id, reason: 'no-slot',
+        date: '2026-01-09', code: 'D4', provider_id: satC3!.provider_id, reason: 'no-slot',
       }));
+    expect(plan.skippedDerived ?? []).not.toContainEqual(
+      expect.objectContaining({ date: '2026-01-09', code: 'C3' }));
   });
 });
 
