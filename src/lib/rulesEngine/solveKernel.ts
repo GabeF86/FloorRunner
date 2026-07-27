@@ -266,13 +266,19 @@ export function capAdmitsPlacements(
 // (target slot exists, unhandled, category 'call'). Links that later sever
 // don't consume the tally (only real placements increment it in record()),
 // so reserved-but-unused room frees back up.
+// `p` (2026-07-27) is the prospective anchor — the SAME gate chainCallNeeds
+// applies: a link the FTE gate will suppress is never fired for this
+// provider, so reserving cap room for it would blank the ANCHOR day and
+// leave the orphan filled (exactly backwards). Omitting `p` counts every
+// link (pre-gate behavior).
 export function liveBlockChainCallLinks(
-  run: SolverRun, slot: SlotToFill,
+  run: SolverRun, slot: SlotToFill, p?: CandidateProvider,
 ): Array<{ date: string; code: string }> {
   const out: Array<{ date: string; code: string }> = [];
   const links = blockChainsFor(run.doc, slot.derived_day_type).get(slot.shift_type_code);
   if (links) {
     for (const link of links) {
+      if (p && !linkFiresFor(link, p.fte_value)) continue;
       const date = addDays(slot.slot_date, link.offset);
       const t = run.ctx.slotIndex.get(date)?.get(link.code);
       if (t && !run.state.handledSlotIds.has(t.slot_id) && t.shift_type_category === 'call') {
@@ -292,9 +298,12 @@ export function liveBlockChainCallLinks(
 export function admitsUnderCallCaps(run: SolverRun, pid: string, slot: SlotToFill): boolean {
   if (!run.callCaps || slot.shift_type_category !== 'call') return true;
   if (!run.callCaps.has(pid)) return true; // no caps stated for this provider
+  // The prospective anchor drives the FTE gate (providerById is built from
+  // ctx.providers, so every candidate resolves) — an FTE-suppressed link must
+  // reserve no cap room for THIS provider.
   return capAdmitsPlacements(run, pid, [
     { date: slot.slot_date, code: slot.shift_type_code },
-    ...liveBlockChainCallLinks(run, slot),
+    ...liveBlockChainCallLinks(run, slot, run.providerById.get(pid)),
   ]);
 }
 
@@ -308,11 +317,14 @@ export function preferScenarioChainClean(
   run: SolverRun, cands: CandidateProvider[], slot: SlotToFill,
 ): CandidateProvider[] {
   if (!run.scenario || slot.shift_type_category !== 'call') return cands;
-  const links = liveBlockChainCallLinks(run, slot);
-  if (links.length === 0) return cands;
   const clean = cands.filter(p => {
     const sp = run.scenario!.providers.get(p.id);
     if (!sp) return true;
+    // Links are resolved PER CANDIDATE (2026-07-27): an FTE-suppressed link
+    // never fires for this provider, so it cannot sever their pairing and
+    // must not disqualify them. With no live links everyone is clean, which
+    // reproduces the old `links.length === 0 → return cands` early-out.
+    const links = liveBlockChainCallLinks(run, slot, p);
     return links.every(l => !scenarioProhibits(sp, l.date, l.code));
   });
   return clean.length > 0 ? clean : cands;
@@ -668,6 +680,11 @@ export function applyBlockChains(run: SolverRun, slot: SlotToFill, chosen: Candi
     // neuro REMAINDER so only a provider short of their requirement can take
     // it (eligibility 'neuro-remainder'); otherwise it stays open for the
     // admin, which is the stated behavior.
+    // ORDERING IS DELIBERATE: this fires BEFORE the !target check, so a
+    // minFte link whose target slot doesn't exist records 'fte-gated' rather
+    // than 'no-slot'. The gate is the more specific truth (that link was
+    // never going to fire for this provider), and invariant 4 is satisfied
+    // either way — the severance is recorded, never silently dropped.
     if (!linkFiresFor(link, chosen.fte_value)) {
       skippedDerived.push({ date, code: link.code, provider_id: chosen.id, reason: 'fte-gated' });
       const gatedTarget = ctx.slotIndex.get(date)?.get(link.code);
