@@ -5,6 +5,7 @@
 // agreement with those contracts on identical inputs.
 import { describe, it, expect } from 'vitest';
 import { requiredWorkDays } from './rulesEngine/workDays';
+import { addDays } from './rulesEngine/shared';
 import { ICU_WEEK_REASON } from './icuRotation';
 import { rangeComposition, type PlannerSlotRow } from './plannerMath';
 import {
@@ -153,31 +154,37 @@ const wkCall = (slot_date: string, weight?: number) => ({
   slot_date,
   shift_types: { category: 'call', call_burden_weight: weight ?? null },
 });
-// A full Paoli-shaped weekend day: C1 + C2 + C3 standing on one date.
-const threeTiers = (slot_date: string) => [wkCall(slot_date), wkCall(slot_date), wkCall(slot_date)];
-const PAOLI_WEEKEND = [
-  ...threeTiers('2026-08-14'), ...threeTiers('2026-08-15'), ...threeTiers('2026-08-16'),
+const tiers = (slot_date: string, n: number) => Array.from({ length: n }, () => wkCall(slot_date));
+// The LIVE Paoli weekend (2026-07-27): Saturday and Sunday stand 3 call tiers
+// (C1 + C2 + C3), but Friday stands only 2 — Friday neuro lost its slot and the
+// Friday C2 doc cross-covers it. Kept faithful to production deliberately: the
+// weekend is still 3 units precisely BECAUSE the measure is the widest single
+// date, so a narrower Friday cannot shrink the weekend. A fixture with a
+// 3-tier Friday would pass too, and would hide that.
+const paoliWeekend = (friday: string) => [
+  ...tiers(friday, 2), ...tiers(addDays(friday, 1), 3), ...tiers(addDays(friday, 2), 3),
 ];
+const PAOLI_WEEKEND = paoliWeekend('2026-08-14');
 
 describe('weekendUnitTotal', () => {
-  it('one three-tier weekend = 3 units — the weekend\'s WIDEST day, not its 9 call days', () => {
+  it('one live Paoli weekend (Fri 2 tiers, Sat/Sun 3) = 3 units — its WIDEST day, not its 8 call days', () => {
     expect(weekendUnitTotal(PAOLI_WEEKEND)).toBe(3);
   });
 
   it('units add up across weekends (11 weekends × 3 tiers = 33, Gabriel\'s block)', () => {
-    // The 11 Fridays of the 8/10–10/25 block — one per weekend, three tiers each.
+    // The 11 Fridays of the 8/10–10/25 block — one full live-shaped weekend each.
     const fridays = [
       '2026-08-14', '2026-08-21', '2026-08-28', '2026-09-04', '2026-09-11', '2026-09-18',
       '2026-09-25', '2026-10-02', '2026-10-09', '2026-10-16', '2026-10-23',
     ];
-    expect(weekendUnitTotal(fridays.flatMap(threeTiers))).toBe(33);
+    expect(weekendUnitTotal(fridays.flatMap(paoliWeekend))).toBe(33);
   });
 
   it('a split call does not inflate its day (0.5 + 0.5 = one tier)', () => {
     expect(weekendUnitTotal([
-      ...threeTiers('2026-08-14'),
+      ...tiers('2026-08-14', 2),
       wkCall('2026-08-15', 0.5), wkCall('2026-08-15', 0.5), wkCall('2026-08-15'), wkCall('2026-08-15'),
-      ...threeTiers('2026-08-16'),
+      ...tiers('2026-08-16', 3),
     ])).toBe(3);
   });
 

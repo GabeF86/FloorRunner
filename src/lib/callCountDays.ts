@@ -97,10 +97,15 @@ export function creditedWorkingDayTotals(
 // is what makes the weekend one duty instead of three: the tier rotation
 // inside a weekend (Fri C1 → Sat C2 → Sun C3) is one person's weekend.
 //
-// Paoli: 3 call tiers every weekend day → 3 units per weekend → an 11-week
-// block is 33 units, and at par 11 a 1.0 FTE owes 3 weekends (his stated
-// number, pinned in the tests). Derived from the SLOTS, so a weekend with
-// reduced coverage owes proportionally less and no structure is hardcoded.
+// Paoli: Saturday and Sunday carry 3 call tiers (C1 + C2 + C3), but FRIDAY
+// carries only 2 as of 2026-07-27 — Friday neuro lost its slot and the Friday
+// C2 doc cross-covers it. The weekend is still 3 units, and the MAX is exactly
+// why: since the measure is the widest single date and never the sum, Friday's
+// tier count does not enter the answer at all unless Friday were the widest
+// day. So 3 units per weekend → an 11-week block is 33 units, and at par 11 a
+// 1.0 FTE owes 3 weekends (his stated number, pinned in the tests). Derived
+// from the SLOTS, so a weekend with reduced coverage owes proportionally less
+// and no structure is hardcoded.
 //
 // Split calls (patch35) count their burden weight, so a 0.5 + 0.5 Saturday
 // C1 is one tier, not two.

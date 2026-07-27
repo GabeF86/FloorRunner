@@ -43,7 +43,7 @@ import { CallPatternDocSchema, type CallPatternDoc } from '../callPattern';
 export const WEEKEND_V2_PATTERN: CallPatternDoc = CallPatternDocSchema.parse({
   version: 1,
   callFillOrder: 'call_rank',
-  // Friday-first Doc A: saturday anchors fire first (claiming Fri C2, Fri C3,
+  // Friday-first Doc A: saturday anchors fire first (claiming Fri C2,
   // Fri D4, Fri D2, Sun C1, Sun C3 as links), then the friday pass places the
   // in-house Fri C1 whose anchor chains Sun C2 forward, then sunday mops up
   // leftovers. Holidays keep their default tail position.
