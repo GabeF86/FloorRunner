@@ -65,11 +65,19 @@
 --
 -- ── DELIBERATELY NOT IN SCOPE ───────────────────────────────────────────────
 --   * Friday C3 slots ALREADY materialized in EXISTING draft schedules are
---     left untouched. Deactivating a template only stops FUTURE schedule
---     creation; it does not remove slots that already exist (patch22 had to
---     DELETE those separately). Query 5 in VERIFICATION counts them — decide
---     per draft whether to regenerate it or delete those slots. Any that
---     remain will fill as standalone Friday calls.
+--     left untouched. shift_templates.is_active gates only FUTURE slot
+--     generation; it does not remove slots that already exist (patch22 had to
+--     DELETE those separately). Query 5 in VERIFICATION counts them.
+--     Any that remain WILL fill as ordinary standalone Friday calls — i.e.
+--     existing drafts keep exhibiting the exact behavior this change removes
+--     until something is done about them.
+--     THIS IS THE OWNER'S DECISION, NOT THE PATCH'S. The two options are:
+--       (a) DELETE the stale Friday C3 slots (and their assignment rows) from
+--           the affected drafts, patch22-style; or
+--       (b) REGENERATE those drafts from scratch, so slot creation re-runs
+--           against the now-deactivated template and never mints them.
+--     Deliberately not chosen here: both are destructive to in-flight drafts
+--     and the right answer depends on how far along each draft is.
 --   * C3 is NOT retired as a shift type and its templates for saturday/sunday
 --     stay active — neuro call still exists, just not on Fridays.
 --   * shift_types.is_overlay stays TRUE on C3 (set by patch25). With Friday
@@ -78,8 +86,9 @@
 --
 -- ── IDEMPOTENT ──────────────────────────────────────────────────────────────
 -- Safe to re-run. Statement 1 is guarded on is_active (matches 0 rows on a
--- re-run), statement 2 is a bare UPDATE of the active row, and all three
--- DO-block assertions are written to pass on a re-run.
+-- re-run), statement 2 is a bare UPDATE of the active row, and all four
+-- DO-block assertions are written to pass on a re-run (the weekday/C3 guard
+-- is unaffected by this patch, so it reads the same before and after).
 
 BEGIN;
 
@@ -95,6 +104,43 @@ DO $$ DECLARE n int; BEGIN
      AND st.code = 'C3';
   IF n <> 1 THEN
     RAISE EXCEPTION 'patch38: expected exactly 1 friday/C3 shift_templates row for Paoli, found % — aborting', n;
+  END IF;
+END $$;
+
+-- Pre-flight: NO active weekday/C3 template may exist. This patch depends on
+-- the ABSENCE of that row, so it says so out loud rather than failing quietly.
+--
+-- Why it matters: slateForDayType() in src/lib/templateSlots.ts builds a
+-- Friday's slate as the friday-specific rows UNION every WEEKDAY row whose
+-- shift_type_id has no friday-specific row (a per-shift-type override, not
+-- all-or-nothing). That union is why Paoli's Fridays get C1/C2 at all — there
+-- are no friday C1/C2 rows; they come from the weekday templates.
+--
+-- The consequence for statement 1: deactivating friday/C3 REMOVES it from the
+-- friday-specific set, which UN-SHADOWS any active weekday/C3 row. A weekday
+-- C3 would then materialize on Fridays through the union and silently defeat
+-- this entire patch — a Friday neuro slot would reappear.
+--
+-- Verified read-only on 2026-07-27: Paoli has no weekday/C3 row, so the hazard
+-- is not live today. The guard exists for the someone-adds-one-later case.
+--
+-- REMEDY if this ever fires: do NOT just deactivate the weekday row (other day
+-- types may legitimately need it, and weekday C3 would stop materializing on
+-- Mon-Thu too). The correct lever is to keep the friday/C3 row ACTIVE with
+-- required_count = 0 instead of deactivating it: an active friday row still
+-- shadows the weekday row in the union, while templateSlotCount() returns 0 so
+-- no Friday slot is created. templateSlots.ts documents that suppression
+-- mechanism explicitly. Statement 1 would need to change accordingly.
+DO $$ DECLARE n int; BEGIN
+  SELECT count(*) INTO n
+    FROM scheduling.shift_templates t
+    JOIN scheduling.shift_types st ON st.id = t.shift_type_id
+   WHERE t.site_id = '2ddd2427-22fb-4290-9c4c-03a957e5af4e'
+     AND t.day_type = 'weekday'
+     AND st.code = 'C3'
+     AND t.is_active;
+  IF n <> 0 THEN
+    RAISE EXCEPTION 'patch38: % active weekday/C3 shift_templates row(s) exist for Paoli — deactivating friday/C3 would un-shadow them via the friday template union (slateForDayType, src/lib/templateSlots.ts) and re-materialize a Friday neuro slot. See the REMEDY note above. Aborting', n;
   END IF;
 END $$;
 
@@ -216,14 +262,24 @@ COMMIT;
 --   --   major_holiday    C1, C2
 --   --
 --   -- Friday still gets C1 and C2 after this patch, and that is NOT a bug:
---   -- templateSlots.ts (buildTemplateSlotsForDate) fills a friday date from
+--   -- slateForDayType() in src/lib/templateSlots.ts fills a friday date from
 --   -- the friday-specific rows PLUS every weekday row whose shift type has no
 --   -- friday-specific override. So friday C1/C2 have always come from the
 --   -- WEEKDAY templates, and the friday/C3 row was the Friday-only addition.
 --   -- Deactivating it leaves the pure weekday slate — C1 + C2, no neuro —
---   -- which is exactly the intended Friday shape. That file's own comment
---   -- records the inverse hazard from patch25: a friday row for a shift type
---   -- that ALSO has a weekday row would suppress the weekday fill.
+--   -- which is exactly the intended Friday shape.
+--   --
+--   -- Two related facts that are easy to conflate, kept straight here:
+--   --   * CURRENT designed behavior: a friday row for a shift type that ALSO
+--   --     has a weekday row shadows that weekday row — a per-shift-type
+--   --     override. Intended, not a hazard. It is also the reason for the
+--   --     second pre-flight guard above: removing the friday/C3 row lifts that
+--   --     shadow, so an active weekday/C3 would leak onto Fridays.
+--   --   * HISTORICAL bug, already fixed 2026-07-16: the fallback used to be
+--   --     all-or-nothing (`matching.length === 0`), so once patch25 added ANY
+--   --     friday row every Friday silently lost its ENTIRE weekday slate.
+--   --     That is what templateSlots.ts's header comment records. It is fixed
+--   --     and does not bear on this patch.
 --   -- If the BEFORE census shows any OTHER inactive C1/C2/C3 row, that is a
 --   -- pre-existing condition this patch did not cause — note it and carry on,
 --   -- but do not let it mask a real diff.
