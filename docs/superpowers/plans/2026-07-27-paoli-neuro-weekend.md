@@ -657,11 +657,12 @@ git commit -m "solver: FTE-gated block-chain links leave a neuro remainder slot"
 
 **Files:**
 - Modify: `src/lib/rulesEngine/eligibility.ts` (add gate after the scenario gates, ~line 216)
-- Modify: `src/lib/rulesEngine/types.ts` (`EligibilityResult.reason` union)
-- Modify: `src/lib/rulesEngine/genTypes.ts` (`GenerationContext` — expose the neuro config; see step 3)
+- Modify: `src/lib/rulesEngine/genTypes.ts` — `EligibilityResult.reason` is the `RejectionReason` union, which lives HERE, not in `types.ts` (corrected 2026-07-27 during execution; `types.ts` exists but is unrelated). `GenerationContext` already carries `callPattern?`, so no new context field is needed.
 - Test: `src/lib/rulesEngine/neuroWeekendPattern.test.ts` (extend)
 
 - [ ] **Step 1: Write the failing test**
+
+CORRECTED 2026-07-27 (caught during execution, the second fixture defect in this plan): the fixtures below MUST close Saturday availability for every doc who should not anchor. Without that shaping the 1.0 doc wins the Saturday anchor, the pair FIRES for them (1.0 clears the 0.75 floor), `neuroRemainderSlotIds` stays empty, and the gate under test is never exercised — all three tests fail on the Saturday assertion rather than the behavior they claim to check. Build the fixtures with `prov('full', 1, { available_weekdays: NO_SATURDAY })` (index 6 false), which forces the sub-floor doc onto the anchor while leaving the excluded docs fully eligible for the leftover Sunday — exactly the candidate the gate must refuse. Do NOT rely on Task 6's steering to produce this; test 3 has no `neuroWeekend` config and therefore no steering term by construction.
 
 Append to `src/lib/rulesEngine/neuroWeekendPattern.test.ts`:
 
@@ -683,8 +684,12 @@ describe('neuro remainder gate', () => {
       [prov('half', 0.5), prov('three4', 0.75), prov('full', 1)], { callPattern: NEURO_DOC });
     const plan = solve(ctx);
     const sun = filledBy(plan, 'sun-c3');
+    // STRENGTHENED 2026-07-27: `not.toBe('full')` plus the disjunction below
+    // both pass VACUOUSLY on an empty Sunday, so as first drafted this test
+    // would have passed even if the gate wrongly refused everyone. Test 1
+    // pins refusal; this one must pin ADMISSION.
+    expect(sun).toBe('three4');
     expect(sun).not.toBe('full');
-    expect(sun === null || sun === 'three4' || sun === 'half').toBe(true);
   });
 
   it('the gate is inert without a neuroWeekend config', () => {
