@@ -3,7 +3,7 @@
 // solver gates on and the generation banner shows.
 import { describe, it, expect } from 'vitest';
 import {
-  owedUnitsFor, creditedUnitsByProvider, computeNeuroReport,
+  owedUnitsFor, creditedUnitsByProvider, computeNeuroReport, isShortByHalfUnit,
   type NeuroWeekendConfig,
 } from './neuroWeekend';
 
@@ -74,10 +74,12 @@ describe('computeNeuroReport', () => {
 
   it('reports every provider with a requirement, including those with NO placements', () => {
     const rows = computeNeuroReport(providers, [], CONFIG);
-    // 'full' owes 0 — excluded. The other two are short of everything.
-    expect(rows.map(r => r.provider_id).sort()).toEqual(['half', 'three4']);
+    // 'full' owes 0 — excluded. The other two are short of everything, sorted
+    // by provider_id (the function's own ordering guarantee, checked directly
+    // rather than through a re-sorted comparison).
+    expect(rows.map(r => r.provider_id)).toEqual(['half', 'three4']);
     expect(rows.find(r => r.provider_id === 'three4')).toMatchObject(
-      { owed: 1, credited: 0, short: 1 });
+      { fte: 0.75, owed: 1, credited: 0, short: 1 });
     expect(rows.find(r => r.provider_id === 'half')).toMatchObject(
       { owed: 0.5, credited: 0, short: 0.5 });
   });
@@ -93,5 +95,33 @@ describe('computeNeuroReport', () => {
     const rows = computeNeuroReport(providers, [place('three4', '2026-08-16')], CONFIG);
     expect(rows.find(r => r.provider_id === 'three4')).toMatchObject(
       { owed: 1, credited: 0.5, short: 0.5 });
+  });
+});
+
+describe('isShortByHalfUnit', () => {
+  it('a provider owing 0 (1.0 FTE) is never short, at any credited value', () => {
+    expect(isShortByHalfUnit(1, 0, CONFIG)).toBe(false);
+    expect(isShortByHalfUnit(1, 5, CONFIG)).toBe(false);
+  });
+
+  it('a 0.75 FTE (owes 1) with 0 credited is short', () => {
+    expect(isShortByHalfUnit(0.75, 0, CONFIG)).toBe(true);
+  });
+
+  it('a 0.75 FTE with 0.5 credited is still short exactly half', () => {
+    expect(isShortByHalfUnit(0.75, 0.5, CONFIG)).toBe(true);
+  });
+
+  it('a 0.75 FTE with 1 credited is not short', () => {
+    expect(isShortByHalfUnit(0.75, 1, CONFIG)).toBe(false);
+  });
+
+  it('a 0.5 FTE (owes 0.5) is short with 0 credited, satisfied with 0.5', () => {
+    expect(isShortByHalfUnit(0.5, 0, CONFIG)).toBe(true);
+    expect(isShortByHalfUnit(0.5, 0.5, CONFIG)).toBe(false);
+  });
+
+  it('over-credited is not short — a negative gap must not read as true', () => {
+    expect(isShortByHalfUnit(0.75, 1.5, CONFIG)).toBe(false);
   });
 });

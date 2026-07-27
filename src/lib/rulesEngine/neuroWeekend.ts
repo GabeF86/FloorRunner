@@ -38,7 +38,12 @@ export interface NeuroReportRow {
 }
 
 /** Units owed per block for `fte` — the highest band whose minFte it clears.
- * 0 when no band matches (a provider below every stated band owes nothing). */
+ * 0 when no band matches (a provider below every stated band owes nothing).
+ * Ties (two bands stating the same minFte) resolve to whichever is declared
+ * first in `requirementBands` — config authoring should avoid duplicates,
+ * but this module does not guard against them. `fte` is expected positive;
+ * it arrives from `CandidateProvider.fte_value`, which the context loader
+ * already coerces (null/0 → 1). */
 export function owedUnitsFor(fte: number, config: NeuroWeekendConfig): number {
   let best: NeuroRequirementBand | null = null;
   for (const band of config.requirementBands) {
@@ -76,6 +81,15 @@ export function creditedUnitsByProvider(
   return out;
 }
 
+/** Shortfall in weekend units, epsilon-clamped so float noise never reports a
+ * provider as owing a sliver they cannot possibly take. ONE definition, shared
+ * by the report and the remainder gate — the two must never disagree about
+ * whether a provider is short. */
+function shortfall(owed: number, credited: number): number {
+  const gap = owed - credited;
+  return gap <= WEIGHT_EPSILON ? 0 : gap;
+}
+
 /** Per-provider owed/credited/short, for providers who owe anything at all.
  * Providers with NO placements are still reported — that is the case worth
  * catching, and the reason this lives here instead of in a per-assignment
@@ -93,7 +107,7 @@ export function computeNeuroReport(
     const got = credited.get(p.id) || 0;
     rows.push({
       provider_id: p.id, fte: p.fte_value, owed, credited: got,
-      short: Math.max(0, owed - got),
+      short: shortfall(owed, got),
     });
   }
   return rows.sort((a, b) => a.provider_id.localeCompare(b.provider_id));
@@ -104,5 +118,5 @@ export function computeNeuroReport(
 export function isShortByHalfUnit(
   fte: number, creditedUnits: number, config: NeuroWeekendConfig,
 ): boolean {
-  return owedUnitsFor(fte, config) - creditedUnits >= 0.5 - WEIGHT_EPSILON;
+  return shortfall(owedUnitsFor(fte, config), creditedUnits) >= 0.5 - WEIGHT_EPSILON;
 }
