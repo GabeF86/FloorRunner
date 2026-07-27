@@ -222,8 +222,30 @@ export function evaluateEligibility(
   // into a half neuro weekend; with nobody short the slot stays unfilled for
   // the admin, which is the stated behavior. Inert unless the pattern states
   // a neuroWeekend config AND the FTE gate actually fired.
+  //
+  // SCOPED TO THE NEURO CODE. applyBlockChains mints a remainder for ANY
+  // minFte link whatever its code, but the credit this gate judges by is
+  // neuro-only (creditedUnitsByProvider filters on config.code). Unscoped, a
+  // minFte link on some other code would be judged by C3 credit: the sub-floor
+  // anchor reads as "short" (their C5 Saturday earns no C3 credit) and is
+  // re-admitted to the very day the FTE gate just denied them, while the 1.0
+  // doc is refused for owing no NEURO units. Off its own code the gate stays
+  // out of the way and the remainder is an ordinary open slot — a second gated
+  // pair wanting a requirement of its own must bring its own config.
+  //
+  // BINDS ON EVERY GateSet, deliberately unlike the workdays cap below (which
+  // waives 'call-no-quota' to avoid self-rejecting an incumbent). That hazard
+  // cannot arise here: the ONLY writer of neuroRemainderSlotIds is
+  // applyBlockChains, which runs solely inside solve()'s construction loop.
+  // The optimizer gates against seedSolveState (optimize.ts), which starts from
+  // emptySolveState and never populates the set, so this gate is structurally
+  // inert on every pin re-validation. The two live-state 'call-no-quota' users
+  // — block-chain call links and quota relaxation — are exactly the paths that
+  // MUST keep honoring it: waiving it there would let relaxation hand a neuro
+  // remainder to a full-FTE doc, defeating the feature.
   const neuroCfg = ctx.callPattern?.neuroWeekend;
-  if (neuroCfg && state.neuroRemainderSlotIds.has(slot.slot_id)) {
+  if (neuroCfg && slot.shift_type_code === neuroCfg.code
+    && state.neuroRemainderSlotIds.has(slot.slot_id)) {
     const held: Array<{ provider_id: string; slot_date: string; code: string }> = [];
     for (const [date, codes] of state.callCodesByDate.get(p.id) ?? []) {
       for (const c of codes) held.push({ provider_id: p.id, slot_date: date, code: c });

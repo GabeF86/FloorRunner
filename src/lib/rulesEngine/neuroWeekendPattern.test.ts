@@ -240,6 +240,103 @@ describe('neuro remainder gate', () => {
   });
 });
 
+// The remainder gate judges candidates purely by NEURO credit
+// (creditedUnitsByProvider filters on config.code), but applyBlockChains mints
+// a remainder for ANY minFte link whatever its code. Unscoped, the gate
+// therefore reasons about C3 credit on a C5 slot — which BOTH re-admits the
+// sub-floor anchor to the very day their FTE gate just denied them (their C5
+// Saturday earns no C3 credit, so they still read as "short") AND refuses the
+// 1.0 doc a C5 day for owing no NEURO units. Not reachable today (no shipped
+// pattern states minFte off the neuro code), but it silently defeats the FTE
+// gate the moment a second gated pair is added.
+//
+// The chosen behavior: the gate is INERT off its own code. A non-neuro
+// remainder is an ordinary open slot judged by ordinary rules, exactly as it
+// was before this feature. Scoping it this way is the conservative reading —
+// `neuroWeekend` states ONE code's requirement, so it has no vocabulary for
+// what a C5 pair would owe; inventing one would be worse than leaving the slot
+// to the main loop. A second gated pair needing its own requirement must bring
+// its own config.
+describe('neuro remainder gate — code scoping', () => {
+  const SAT_C5 = 'sat-c5';
+  const CROSS_CODE_DOC = CallPatternDocSchema.parse({
+    version: 1,
+    blocks: [{ anchorDayType: 'saturday', chains: [
+      { trigger: 'C5', links: [{ offset: 1, code: 'C5', minFte: 0.75 }] },
+    ] }],
+    dayChains: [], spans: [], placementPasses: [],
+    reliefPass: null, optimizerMovableDayTypes: [],
+    // The requirement is stated for C3. The gated pair below is C5.
+    neuroWeekend: {
+      code: 'C3',
+      requirementBands: [{ minFte: 1, units: 0 }, { minFte: 0.75, units: 1 }, { minFte: 0, units: 0.5 }],
+    },
+  });
+
+  it('does not apply to a minFte link on a NON-neuro code', () => {
+    const ctx = buildCtx(
+      [callSlot(SAT_C5, SAT, 'C5', 'saturday'), callSlot('sun-c5', SUN, 'C5', 'sunday')],
+      [prov('half', 0.5), prov('full', 1, NO_SATURDAY)], { callPattern: CROSS_CODE_DOC });
+    const plan = solve(ctx);
+    // The FTE gate still fires — it keys off minFte, not the neuro code.
+    expect(filledBy(plan, SAT_C5)).toBe('half');
+    expect(plan.skippedDerived).toContainEqual(
+      { date: SUN, code: 'C5', provider_id: 'half', reason: 'fte-gated' });
+    // Unscoped, 'full' is refused here for owing no C3 units and the day falls
+    // back to 'half' — the anchor whose link was just gated. Scoped, the neuro
+    // requirement has no say on a C5 day and ordinary fairness places it.
+    expect(filledBy(plan, 'sun-c5')).toBe('full');
+  });
+});
+
+// Names the spec case directly: "a 0.75 doc already at 1.0 units is rejected".
+// Prior credit arrives as SEEDS (seedSolveState -> addCallDate with
+// parentCallCodeOf), so this also pins that seeded/manual neuro weekends pay
+// down the requirement — a doc the admin already placed on a neuro pair must
+// not then be handed a remainder day.
+describe('neuro remainder gate — credit already earned', () => {
+  const SAT2 = '2026-08-22';
+  const SUN2 = '2026-08-23';
+  const wk2 = () => [
+    callSlot('sat2', SAT2, 'C3', 'saturday'),
+    callSlot('sun2', SUN2, 'C3', 'sunday'),
+  ];
+  // A full Sat+Sun C3 pair on the PRIOR weekend = 1.0 credited unit. No slots
+  // exist for those dates; they are pre-existing assignments, not open work.
+  const priorPair = (pid: string) => [
+    { slot_date: SAT, provider_id: pid, shift_type_code: 'C3',
+      shift_type_category: 'call', derived_day_type: 'saturday' },
+    { slot_date: SUN, provider_id: pid, shift_type_code: 'C3',
+      shift_type_category: 'call', derived_day_type: 'sunday' },
+  ];
+  // three4 is Saturday-closed in BOTH cases so 'half' always anchors and the
+  // remainder always exists — the seed is then the ONLY difference between
+  // the two, which is what makes the pair an A/B on credit.
+  const ctxWith = (seeds: ReturnType<typeof priorPair> | undefined) => buildCtx(
+    wk2(), [prov('half', 0.5), prov('three4', 0.75, NO_SATURDAY)],
+    { callPattern: NEURO_DOC, ...(seeds ? { seedAssignments: seeds } : {}) });
+
+  it('a 0.75 doc already holding a full pair is refused the remainder', () => {
+    const plan = solve(ctxWith(priorPair('three4')));
+    expect(filledBy(plan, 'sat2')).toBe('half');
+    expect(filledBy(plan, 'sun2')).toBe(null);
+    // Pin the REASON: without it this passes for any refusal at all.
+    expect(plan.unfilled).toContainEqual(expect.objectContaining({
+      slot_id: 'sun2',
+      candidates: expect.arrayContaining([
+        expect.objectContaining({ provider_id: 'three4', reason: 'neuro-remainder' })]),
+    }));
+  });
+
+  it('control: without the prior pair the same doc is short and TAKES it', () => {
+    const plan = solve(ctxWith(undefined));
+    expect(filledBy(plan, 'sat2')).toBe('half');
+    // Identical fixture bar the seed, so this is what the seed is worth: it is
+    // the only thing that can move 'three4' from eligible to refused.
+    expect(filledBy(plan, 'sun2')).toBe('three4');
+  });
+});
+
 // CORRECTED 2026-07-27 (third fixture defect in this feature, same class as
 // the two above). The drafted fixture was two weekends over `[prov('full', 1),
 // prov('three4', 0.75)]`, asserting `three4` holds >= 2 assignments. It PASSED
