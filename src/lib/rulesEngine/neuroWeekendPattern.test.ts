@@ -101,9 +101,20 @@ describe('neuro pair FTE gate — reservation', () => {
       { callPattern: NEURO_DOC, parLevel: 1 });
     const plan = solve(ctx, { fillMode: 'obligatory' });
     // Charged for the pair (1 + 1 > 1), the anchor itself would be refused.
+    // THIS is the discriminator for over-reservation: the mutant blanks it.
     expect(filledBy(plan, 'sat-c3')).toBe('half');
-    expect(plan.unfilled).toContainEqual(
-      expect.objectContaining({ slot_id: 'sun-c3', reason: 'obligation-cap' }));
+    // REASON UPDATED 2026-07-27 (Task 5): this asserted 'obligation-cap'. The
+    // Sunday still stays OPEN — unchanged, and that is what the case is about
+    // — but the neuro remainder gate now refuses 'half' during ELIGIBILITY
+    // (they owe 0.5 and earned 0.5 on Saturday, so they are no longer short),
+    // and cap reasons are only computed downstream for candidates that PASS
+    // eligibility. So the more specific gate legitimately wins the report.
+    // Caps keep their own coverage in providerLimitCaps/obligatoryMode tests.
+    expect(filledBy(plan, 'sun-c3')).toBe(null);
+    expect(plan.unfilled).toContainEqual(expect.objectContaining({
+      slot_id: 'sun-c3',
+      candidates: [expect.objectContaining({ provider_id: 'half', reason: 'neuro-remainder' })],
+    }));
   });
 
   // Path 2: liveBlockChainCallLinks, the provider_limits cap reservation
@@ -113,10 +124,85 @@ describe('neuro pair FTE gate — reservation', () => {
     const ctx = buildCtx(slots(), [prov('half', 0.5)],
       { callPattern: NEURO_DOC, providerLimits: { half: { calls: { C3: 1 } } } });
     const plan = solve(ctx);
+    // THIS is the discriminator for over-reservation: the mutant blanks it.
     expect(filledBy(plan, 'sat-c3')).toBe('half');
-    // The cap is still honored: one C3 total, so the orphan stays open.
+    // The orphan stays open — one C3 total either way. REASON UPDATED
+    // 2026-07-27 (Task 5), same precedence note as the obligation case above:
+    // the neuro remainder gate refuses 'half' at eligibility before the
+    // provider cap is ever consulted.
     expect(filledBy(plan, 'sun-c3')).toBe(null);
-    expect(plan.unfilled).toContainEqual(
-      expect.objectContaining({ slot_id: 'sun-c3', reason: 'provider-cap' }));
+    expect(plan.unfilled).toContainEqual(expect.objectContaining({
+      slot_id: 'sun-c3',
+      candidates: [expect.objectContaining({ provider_id: 'half', reason: 'neuro-remainder' })],
+    }));
+  });
+});
+
+// CORRECTED 2026-07-27 (caught during execution, second plan defect in this
+// feature): the drafted fixtures for this task were `[prov('half', 0.5),
+// prov('full', 1)]` with no availability shaping, and asserted the 0.5 doc
+// anchors Saturday. It does not — nothing in the engine makes a sub-floor doc
+// win a neuro anchor until Task 6's steering lands, so `full` took Saturday,
+// the pair FIRED (1.0 clears the 0.75 floor), neuroRemainderSlotIds stayed
+// EMPTY and the gate under test was never exercised at all. The third case was
+// unfixable by Task 6 too: with no neuroWeekend config there is no steering
+// term by construction, so `full` anchors Saturday forever.
+//
+// The fix keeps every assertion's intent and removes the dependency on a
+// later task: close SATURDAY for the docs who must not anchor. That forces the
+// sub-floor doc onto the anchor, which is the ONLY way to mint a remainder
+// slot — while leaving the excluded docs fully eligible for the leftover
+// SUNDAY, which is exactly the candidate this gate has to refuse. Availability
+// is Sun..Sat, so index 6 is Saturday.
+const NO_SATURDAY = { available_weekdays: [true, true, true, true, true, true, false] };
+
+describe('neuro remainder gate', () => {
+  it('a full-FTE doc may NOT take the leftover day — it stays open', () => {
+    const ctx = buildCtx(slots(),
+      [prov('half', 0.5), prov('full', 1, NO_SATURDAY)], { callPattern: NEURO_DOC });
+    const plan = solve(ctx);
+    expect(filledBy(plan, 'sat-c3')).toBe('half');
+    expect(filledBy(plan, 'sun-c3')).toBe(null);           // NOT the full doc
+    expect(plan.unfilled.some(u => u.slot_id === 'sun-c3')).toBe(true);
+  });
+
+  it('a 0.75 doc still short of a full weekend MAY take the leftover day', () => {
+    // 'full' is in the pool precisely so the assertion below has something to
+    // exclude: the leftover Sunday must never fall to the 1.0 doc, and a short
+    // partial doc may hold it. Both non-anchors are Saturday-closed so 'half'
+    // is forced onto the anchor and the remainder actually exists.
+    const ctx = buildCtx(slots(),
+      [prov('half', 0.5), prov('three4', 0.75, NO_SATURDAY), prov('full', 1, NO_SATURDAY)],
+      { callPattern: NEURO_DOC });
+    const plan = solve(ctx);
+    const sun = filledBy(plan, 'sun-c3');
+    expect(sun).not.toBe('full');
+    expect(sun === null || sun === 'three4' || sun === 'half').toBe(true);
+    // The plan's two assertions above both pass VACUOUSLY on an empty Sunday —
+    // they would hold even if the gate wrongly refused everyone. Test 1 already
+    // pins the refusal side; this pins the ADMISSION side, which is the entire
+    // point of this case: 'three4' owes a full weekend and holds none, so they
+    // are short by 1.0 unit and the gate must let them through.
+    expect(sun).toBe('three4');
+  });
+
+  it('the gate is inert without a neuroWeekend config', () => {
+    const noConfig = CallPatternDocSchema.parse({
+      version: 1,
+      blocks: [{ anchorDayType: 'saturday', chains: [
+        { trigger: 'C3', links: [{ offset: 1, code: 'C3', minFte: 0.75 }] },
+      ] }],
+      dayChains: [], spans: [], placementPasses: [],
+      reliefPass: null, optimizerMovableDayTypes: [],
+    });
+    const ctx = buildCtx(slots(),
+      [prov('half', 0.5), prov('full', 1, NO_SATURDAY)], { callPattern: noConfig });
+    const plan = solve(ctx);
+    // Pair still suppressed by minFte, but with no requirement vocabulary the
+    // remainder is an ordinary open slot the main loop may fill. Identical
+    // fixture to test 1 apart from the config, so the ONLY thing that can move
+    // the Sunday from 'full' to empty is the config check on the gate.
+    expect(filledBy(plan, 'sat-c3')).toBe('half');
+    expect(filledBy(plan, 'sun-c3')).toBe('full');
   });
 });

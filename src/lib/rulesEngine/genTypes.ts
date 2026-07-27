@@ -214,7 +214,14 @@ export type RejectionReason =
   // 2026-07-26, scenario hard linkages: placing this slot would break a hard
   // same-weekend/same-date linkage — another member of the linkage is already
   // realized (plan or seed) in a DIFFERENT weekend/date.
-  | 'scenario-linkage';
+  | 'scenario-linkage'
+  // 2026-07-27, neuro remainder: the neuro FTE gate left this weekend day
+  // unpaired (a sub-floor anchor's Sat→Sun link was suppressed), so it is open
+  // ONLY to a provider still short of their neuro band requirement by at least
+  // half a unit. A 1.0 doc owes 0 units and can therefore NEVER be pulled onto
+  // half a neuro weekend. When nobody is short the slot stays OPEN with this
+  // reason for the admin to fill — the stated behavior, not a failure.
+  | 'neuro-remainder';
 
 export interface EligibilityResult {
   readonly eligible: boolean;

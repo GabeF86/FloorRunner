@@ -9,6 +9,7 @@ import {
 import { CLASSIC_PATTERN, postCallBlockOffsets } from './callPattern';
 import { exceedsWorkDayCap } from './workDays';
 import { scenarioProhibits, violatesHardLinkage } from './scenario';
+import { isShortByHalfUnit, creditedUnitsByProvider } from './neuroWeekend';
 import { parentCallCodeOf } from '@/lib/callBurden';
 import type {
   GenerationContext, SlotToFill, CandidateProvider, SolveState,
@@ -212,6 +213,24 @@ export function evaluateEligibility(
       )) {
         return { eligible: false, reason: 'scenario-linkage' };
       }
+    }
+  }
+
+  // Neuro remainder gate (2026-07-27): a slot the FTE gate left unpaired is
+  // open ONLY to a provider still short of their neuro requirement by at
+  // least half a unit. 1.0 docs owe 0, so a full-FTE doc can never be pulled
+  // into a half neuro weekend; with nobody short the slot stays unfilled for
+  // the admin, which is the stated behavior. Inert unless the pattern states
+  // a neuroWeekend config AND the FTE gate actually fired.
+  const neuroCfg = ctx.callPattern?.neuroWeekend;
+  if (neuroCfg && state.neuroRemainderSlotIds.has(slot.slot_id)) {
+    const held: Array<{ provider_id: string; slot_date: string; code: string }> = [];
+    for (const [date, codes] of state.callCodesByDate.get(p.id) ?? []) {
+      for (const c of codes) held.push({ provider_id: p.id, slot_date: date, code: c });
+    }
+    const credited = creditedUnitsByProvider(held, neuroCfg).get(p.id) || 0;
+    if (!isShortByHalfUnit(p.fte_value, credited, neuroCfg)) {
+      return { eligible: false, reason: 'neuro-remainder' };
     }
   }
 
