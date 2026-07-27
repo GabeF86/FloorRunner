@@ -11,7 +11,7 @@ import { evaluateEligibility } from './eligibility';
 import { dayChainsFor, blockChainsFor } from './callPattern';
 import { mayEvictPreFill, preFillCodes, shiftRank } from './preFillEviction';
 import type { RankableShiftType } from './preFillEviction';
-import type { CallPatternDoc } from './callPattern';
+import type { CallPatternDoc, PatternBlockLink } from './callPattern';
 import { creditWorkDay, markAssigned, markBlocked, incBucket, addCallDate, daysSinceLastCall, hadCallWithin } from './solveState';
 import type { SolveState } from './solveState';
 import type { CallCaps } from './providerCaps';
@@ -142,6 +142,13 @@ export function capRoom(run: SolverRun, pid: string): number {
   return (run.obligationByPid!.get(pid) ?? 0) - (run.callCountByPid.get(pid) || 0);
 }
 
+// A minFte link fires only for an anchor provider clearing the floor
+// (2026-07-27). Absent minFte = always fires, so every pre-existing pattern
+// behaves byte-identically.
+function linkFiresFor(link: PatternBlockLink, fte: number): boolean {
+  return link.minFte == null || fte + WEIGHT_EPSILON >= link.minFte;
+}
+
 // Chain-block atomicity: the WHOLE block counts against the cap upfront —
 // an anchor is only eligible when cap-room >= 1 + its LIVE call-category
 // links: block-chain links AND dayChain links (2026-07-24 — a call-category
@@ -152,11 +159,16 @@ export function capRoom(run: SolverRun, pid: string): number {
 // frees back up for later slots. Waivable links (unlessCallWithinDays) are
 // counted even when they would waive — a per-slot over-reservation the same
 // free-back-up rule absorbs (keeps this per-slot, not per-provider).
-export function chainCallNeeds(run: SolverRun, slot: SlotToFill): number {
+// `p` (2026-07-27) is the prospective anchor: passing it skips links the FTE
+// gate will suppress, so a sub-floor anchor is never charged for a partner
+// shift it will not take. Omitting it counts every link (pre-gate behavior).
+export function chainCallNeeds(run: SolverRun, slot: SlotToFill, p?: CandidateProvider): number {
   let n = dayChainCallNeeds(run, slot);
   const links = blockChainsFor(run.doc, slot.derived_day_type).get(slot.shift_type_code);
   if (links) {
     for (const link of links) {
+      // A link the FTE gate will suppress must not reserve obligation room.
+      if (p && !linkFiresFor(link, p.fte_value)) continue;
       const t = run.ctx.slotIndex.get(addDays(slot.slot_date, link.offset))?.get(link.code);
       if (t && !run.state.handledSlotIds.has(t.slot_id) && t.shift_type_category === 'call') n++;
     }
@@ -651,6 +663,17 @@ export function applyBlockChains(run: SolverRun, slot: SlotToFill, chosen: Candi
   run.chainAnchorSlotIds.push(slot.slot_id);
   for (const link of links) {
     const date = addDays(slot.slot_date, link.offset);
+    // FTE gate (2026-07-27): the designed pair is intentionally half-placed
+    // for a sub-floor anchor. Record it (invariant 4) and mark the target a
+    // neuro REMAINDER so only a provider short of their requirement can take
+    // it (eligibility 'neuro-remainder'); otherwise it stays open for the
+    // admin, which is the stated behavior.
+    if (!linkFiresFor(link, chosen.fte_value)) {
+      skippedDerived.push({ date, code: link.code, provider_id: chosen.id, reason: 'fte-gated' });
+      const gatedTarget = ctx.slotIndex.get(date)?.get(link.code);
+      if (gatedTarget) state.neuroRemainderSlotIds.add(gatedTarget.slot_id);
+      continue;
+    }
     const target = ctx.slotIndex.get(date)?.get(link.code);
     // Invariant #4: a link whose target slot doesn't exist is recorded for
     // BOTH call and non-call codes — with no slot there is no main loop to
