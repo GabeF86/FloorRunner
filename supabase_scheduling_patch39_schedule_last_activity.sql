@@ -8,9 +8,30 @@
 -- machine for DIFFERENT apps (atlas-staging, ChiefOS); running FloorRunner DDL
 -- through those is a known foot-gun. VERIFY THE REF BEFORE APPLYING.
 --
--- STATUS: NOT YET APPLIED.
---   Applied ____-__-__ to project qhwdbtixhzdsgwwtcfrm via ______________.
---   Post-apply spot checks (see VERIFICATION at the bottom): ______________
+-- STATUS: APPLIED 2026-07-27 to project qhwdbtixhzdsgwwtcfrm via the
+--   project-scoped supabase-floorrunner MCP (apply_migration
+--   "patch39_schedule_last_activity"), after patch38 in the same session.
+--   Post-apply spot checks:
+--     • Called the function directly over all 6 Paoli schedules — every row
+--       returned a last_activity_at NEWER than its schedules.updated_at row
+--       stamp, which is the whole point. e.g. "v5": row stamp
+--       2026-07-26 21:38, real last activity 2026-07-27 04:16 (an assignment
+--       edit ~7h later that the row stamp never saw).
+--     • Verified end to end through the DEPLOYED app: GET
+--       /api/scheduling/schedules on floor-runner.vercel.app returns
+--       last_activity_at per schedule, distinct from created_at, matching the
+--       direct call — so the PostgREST schema cache picked the function up and
+--       the API is off its degradation path.
+--
+--   CONTEXT FOR THE NEXT READER: this function exists because PostgREST
+--   AGGREGATES ARE DISABLED on this project. The first implementation used
+--   `updated_at.max()` and got
+--     HTTP 400 {"code":"PGRST123","message":"Use of aggregate functions is not allowed"}
+--   which the API silently degraded past, showing the wrong (row-stamp) time.
+--   Per-embed limit (order + limit 1 on an embedded resource) IS supported and
+--   would give a max-per-group for a CHILD, but assignments are a GRANDCHILD
+--   (version → slots → assignments) and PostgREST cannot order a grandchild
+--   across its parents — which is why this is a function and not a query.
 --
 -- ── ORDER: EITHER ORDER IS SAFE ─────────────────────────────────────────────
 -- Unlike patch38 this one has no ordering hazard in either direction, so it

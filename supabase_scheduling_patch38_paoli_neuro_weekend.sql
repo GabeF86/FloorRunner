@@ -8,9 +8,20 @@
 -- through those is a known foot-gun. VERIFY THE REF BEFORE APPLYING.
 -- Site: 2ddd2427-22fb-4290-9c4c-03a957e5af4e (Paoli).
 --
--- STATUS: NOT YET APPLIED.
---   Applied ____-__-__ to project qhwdbtixhzdsgwwtcfrm via ______________.
---   Post-apply spot checks (see VERIFICATION at the bottom): ______________
+-- STATUS: APPLIED 2026-07-27 to project qhwdbtixhzdsgwwtcfrm via the
+--   project-scoped supabase-floorrunner MCP, AFTER deploying main (merge
+--   b0470cb, confirmed live by polling the schedules API for the
+--   last_activity_at field the new build emits — live ~60s after push).
+--   All four in-transaction assertions passed.
+--   Post-apply spot checks:
+--     • shift_templates census re-run: 13 call rows, ONLY friday/C3 flipped
+--       to is_active=false; the other 12 untouched.
+--     • active call_patterns doc: requirementBands = [{0.75→1},{0→0.5}]
+--       (two bands, universal neuro), saturday C3 chain = exactly 2 links
+--       [{-1 D4},{+1 C3 minFte 0.75}], no -1 C3 anywhere.
+--     • pre-flight state captured before applying: friday/C3 rows = 1
+--       (active), active weekday/C3 rows = 0, active patterns = 1,
+--       neuroWeekend not yet present.
 --
 -- ── ORDER: DEPLOY THE CODE FIRST, THEN APPLY THIS PATCH ─────────────────────
 -- NOT the usual patch-then-push. CallPatternDocSchema is .strict(), so the
