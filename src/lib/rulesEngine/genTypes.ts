@@ -296,8 +296,12 @@ export interface SkippedDerived {
   // link fill that would land past the provider's obligation (a nested call
   // link no admission gate could reserve, or an unreserved at-cap link pin)
   // — recorded, never silently placed past the cap.
+  // 'fte-gated' (2026-07-27): a block-chain link carrying minFte was
+  // suppressed because the anchor provider's FTE is below the floor — the
+  // designed pair is intentionally half-placed (a 0.5 doc gets ONE neuro
+  // day), recorded so the suppression stays observable (invariant 4).
   reason: 'pto' | 'cross-site' | 'occupied' | 'no-slot' | 'ineligible' | 'already-handled'
-    | 'overridden' | 'obligation-cap';
+    | 'overridden' | 'obligation-cap' | 'fte-gated';
 }
 
 // A stale auto-generated pre-fill SEED evicted in-plan by a positive-offset
