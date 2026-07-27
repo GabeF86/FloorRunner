@@ -21,6 +21,7 @@ import {
   memberRealizedInWeekend, NEURO_KEY,
 } from './scenario';
 import type { ScenarioDoc } from './scenario';
+import { creditedUnitsByProvider, owedUnitsFor } from './neuroWeekend';
 import { WEIGHT_EPSILON } from '@/lib/callBurden';
 import type {
   GenerationContext, SlotToFill, CandidateProvider, SolutionPlan,
@@ -485,17 +486,33 @@ function scenarioPrefTier(run: SolverRun, pid: string, slot: SlotToFill): number
 // sorts after — soft in both directions, never a gate), then fair-grant
 // count within the preferred tier, then fair-denial count within the
 // penalized tier, then the SCENARIO soft-preference tier (2026-07-26 — soft
-// like the request tiers, below them by design), then lowest ratio (lifetime
-// bucket-ratio, or the scenario target-progress ratio for manifest
-// providers), then least-recently called, then id — with the multi-start
-// tie-break hash permuting ONLY that final id ordering when a nonzero seed
-// is set. Shared by the main loop, spans, and quota relaxation. With no live
-// requests, no scenario and seed 0 the tuple is the pre-change
-// ratio/recency/id sort, byte for byte.
+// like the request tiers, below them by design), then the NEURO shortfall
+// (2026-07-27 — most-short first, and only on neuro-code slots), then lowest
+// ratio (lifetime bucket-ratio, or the scenario target-progress ratio for
+// manifest providers), then least-recently called, then id — with the
+// multi-start tie-break hash permuting ONLY that final id ordering when a
+// nonzero seed is set. Shared by the main loop, spans, and quota relaxation.
+// With no live requests, no scenario, no neuroWeekend config and seed 0 the
+// tuple is the pre-change ratio/recency/id sort, byte for byte.
 export function scoreCall(run: SolverRun, cands: CandidateProvider[], slot: SlotToFill) {
   const { ctx, state } = run;
   const k = `${dayTypeBucket(slot.derived_day_type)}|${slot.shift_type_code}`;
   const seed = run.tieBreakSeed;
+  // Neuro requirement steering (2026-07-27): for neuro-code slots, a provider
+  // still short of their band requirement sorts ahead of one who is not.
+  // A TIER, never a gate — a block that cannot satisfy everyone still fills,
+  // and computeNeuroReport reports the shortfall afterwards.
+  const neuroCfg = ctx.callPattern?.neuroWeekend;
+  const neuroSlot = neuroCfg != null && slot.shift_type_code === neuroCfg.code;
+  const neuroShortOf = (pid: string, fte: number): number => {
+    if (!neuroSlot || !neuroCfg) return 0;
+    const held: Array<{ provider_id: string; slot_date: string; code: string }> = [];
+    for (const [date, codes] of state.callCodesByDate.get(pid) ?? []) {
+      for (const c of codes) held.push({ provider_id: pid, slot_date: date, code: c });
+    }
+    const credited = creditedUnitsByProvider(held, neuroCfg).get(pid) || 0;
+    return Math.max(0, owedUnitsFor(fte, neuroCfg) - credited);
+  };
   return cands.map(p => {
     const lifetime = (ctx.historicalAssignedByPid.get(p.id)?.get(k) || 0)
       + (state.bucketAssigned.get(`${p.id}|${k}`) || 0);
@@ -508,6 +525,7 @@ export function scoreCall(run: SolverRun, cands: CandidateProvider[], slot: Slot
       granted: preferred ? (run.callReqGranted.get(p.id) || 0) : 0,
       violated: penalized ? (run.noCallViolated.get(p.id) || 0) : 0,
       prefTier: scenarioPrefTier(run, p.id, slot),
+      neuroShort: neuroShortOf(p.id, p.fte_value),
       ratio: targetRatio ?? (lifetime / Math.max(p.fte_value, 0.01)),
       recency: daysSinceLastCall(state, p.id, slot.slot_date),
     };
@@ -516,6 +534,7 @@ export function scoreCall(run: SolverRun, cands: CandidateProvider[], slot: Slot
     a.granted - b.granted ||
     a.violated - b.violated ||
     a.prefTier - b.prefTier ||
+    b.neuroShort - a.neuroShort ||   // most-short first; 0 for everyone off-neuro
     a.ratio - b.ratio ||
     b.recency - a.recency ||
     (seed ? (tieHash(seed, a.p.id) - tieHash(seed, b.p.id)) : 0) ||

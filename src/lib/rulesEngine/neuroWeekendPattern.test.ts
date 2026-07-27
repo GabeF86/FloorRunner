@@ -239,3 +239,90 @@ describe('neuro remainder gate', () => {
     expect(filledBy(plan, 'sun-c3')).toBe('full');
   });
 });
+
+// CORRECTED 2026-07-27 (third fixture defect in this feature, same class as
+// the two above). The drafted fixture was two weekends over `[prov('full', 1),
+// prov('three4', 0.75)]`, asserting `three4` holds >= 2 assignments. It PASSED
+// before the steering existed: with one doc per weekend the per-FTE fairness
+// ratio already alternates them — `full` takes weekend 1, its bucket ratio
+// rises, and `three4` wins weekend 2 unaided. The case never exercised the
+// tier, and `>= 2` would also have accepted two stray Saturdays rather than a
+// designed pair.
+//
+// The corrected fixture reproduces Gabriel's actual complaint — full-timers
+// take EVERY neuro weekend in the block and the 0.75 doc gets none — and pins
+// the loss to the fairness RATIO rather than an incidental id tiebreak:
+//   • TWO full-timers for TWO weekends, so fairness alone has no reason to
+//     ever reach the 0.75 doc.
+//   • The 0.75 doc carries prior weekend C3 history, so its per-FTE ratio
+//     (2 / 0.75 = 2.67) is strictly worse than either full-timer's 0. This is
+//     the realistic shape: a part-timer who has already carried weekend call
+//     sorts BEHIND full-timers forever, which is exactly why the requirement
+//     needs a tier of its own.
+//   • The full-timers are named `zfull*` so the final id tiebreak FAVOURS
+//     `three4`. Nothing but the neuro tier can win them a weekend, so the case
+//     cannot pass for an accidental reason.
+// Verified against the pre-steering engine: `three4` held ZERO of the four
+// slots (zfull1 took weekend 1, zfull2 weekend 2).
+describe('neuro requirement steering', () => {
+  const SAT2 = '2026-08-22';
+  const SUN2 = '2026-08-23';
+  const twoWeekends = () => [
+    callSlot('sat1', SAT, 'C3', 'saturday'),
+    callSlot('sun1', SUN, 'C3', 'sunday'),
+    callSlot('sat2', SAT2, 'C3', 'saturday'),
+    callSlot('sun2', SUN2, 'C3', 'sunday'),
+  ];
+  // pid -> "bucket|code" -> count, from past blocks. Deliberately NOT neuro
+  // credit: the requirement is per-block, so this history worsens the fairness
+  // ratio without paying down anything `creditedUnitsByProvider` can see.
+  const THREE4_PRIOR = () =>
+    new Map([['three4', new Map([['saturday|C3', 2], ['sunday|C3', 2]])]]);
+
+  const steeringCtx = () => buildCtx(twoWeekends(),
+    [prov('three4', 0.75), prov('zfull1', 1), prov('zfull2', 1)],
+    { callPattern: NEURO_DOC, historicalAssignedByPid: THREE4_PRIOR() });
+
+  it('gives the doc who owes a neuro weekend one of them', () => {
+    const plan = solve(steeringCtx());
+    // The plan drafted `held.length >= 2`, which two stray SATURDAYS would
+    // satisfy. Asserting the slot ids pins a designed Sat+Sun PAIR — the only
+    // thing that credits a full unit and actually discharges the requirement.
+    const held = plan.assignments
+      .filter(a => a.provider_id === 'three4').map(a => a.slot_id).sort();
+    expect(held).toEqual(['sat1', 'sun1']);
+  });
+
+  // A TIER, never a gate. The full-timers owe nothing, so a steering term that
+  // had hardened into eligibility would strand the second weekend; instead the
+  // remaining weekend still fills, on ordinary fairness.
+  it('steering does not gate — the other weekend still fills', () => {
+    const plan = solve(steeringCtx());
+    expect(filledBy(plan, 'sat2')).toBe('zfull1');
+    expect(filledBy(plan, 'sun2')).toBe('zfull1');
+    expect(plan.unfilled).toEqual([]);
+    expect(plan.skippedDerived).toEqual([]);
+  });
+
+  // The term must be dead weight for every pattern that states no neuro
+  // requirement — the guarantee behind "golden parity is unmoved".
+  it('the steering is inert without a neuroWeekend config', () => {
+    const noConfig = CallPatternDocSchema.parse({
+      version: 1,
+      blocks: [{ anchorDayType: 'saturday', chains: [
+        { trigger: 'C3', links: [{ offset: 1, code: 'C3', minFte: 0.75 }] },
+      ] }],
+      dayChains: [], spans: [], placementPasses: [],
+      reliefPass: null, optimizerMovableDayTypes: [],
+    });
+    const ctx = buildCtx(twoWeekends(),
+      [prov('three4', 0.75), prov('zfull1', 1), prov('zfull2', 1)],
+      { callPattern: noConfig, historicalAssignedByPid: THREE4_PRIOR() });
+    const plan = solve(ctx);
+    // Identical fixture to the steering case apart from the config, so this is
+    // the pre-steering result byte for byte: the 0.75 doc gets nothing.
+    expect(plan.assignments.filter(a => a.provider_id === 'three4')).toEqual([]);
+    expect(filledBy(plan, 'sat1')).toBe('zfull1');
+    expect(filledBy(plan, 'sat2')).toBe('zfull2');
+  });
+});
