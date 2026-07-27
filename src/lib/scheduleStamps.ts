@@ -2,9 +2,12 @@
 //
 // WHY: six drafts can share one date range ("v5", "…V4", "…V3", "…V2",
 // "Paoli Hospital - Schedule - August 2026", "…(Workbook Scenario)") and the
-// name alone doesn't say which is freshest. The list row carries
-// `schedules.created_at` / `schedules.updated_at` (both already returned by
-// GET /api/scheduling/schedules, which selects `*`).
+// name alone doesn't say which is freshest. `created` is the row's own
+// `schedules.created_at`; `edited` is the schedule's LAST CONTENT CHANGE,
+// which is NOT `schedules.updated_at` — that column only moves when the
+// schedule row itself changes. GET /api/scheduling/schedules derives
+// `last_activity_at` per row (see lib/scheduleActivity.ts) and the page feeds
+// that in here.
 //
 // Two rules live here rather than in the page so they're vitest-coverable
 // (the page is a client component and the suite runs in `environment: node`,
@@ -58,26 +61,51 @@ export function formatStamp(
   return text.replace(/\s*([AP])M$/i, (_m, p: string) => `${p.toLowerCase()}m`);
 }
 
-/** Both stamps for one list row, with `edited` suppressed when it's noise. */
+/**
+ * Both stamps for one list row, with `edited` suppressed when it's noise.
+ * `lastActivityAt` is the schedule's last CONTENT change (`last_activity_at`
+ * from the list route), not `schedules.updated_at` — see scheduleActivity.ts.
+ */
 export function scheduleStamps(
   createdAt: string | null | undefined,
-  updatedAt: string | null | undefined,
+  lastActivityAt: string | null | undefined,
   opts: StampOptions = {},
 ): ScheduleStamps {
   const createdMs = parseStamp(createdAt);
-  const updatedMs = parseStamp(updatedAt);
+  const updatedMs = parseStamp(lastActivityAt);
 
-  // Suppress "edited" when the row was never meaningfully touched. A negative
-  // delta (updated BEFORE created — clock skew or a hand-written row) is
-  // nonsense to surface, so it falls into the same suppression.
+  // Suppress "edited" when nothing happened after creation. A negative delta
+  // (activity BEFORE created — clock skew or a hand-written row) is nonsense
+  // to surface, so it falls into the same suppression.
   const suppressEdited =
     updatedMs === null ||
     (createdMs !== null && updatedMs - createdMs <= SAME_STAMP_TOLERANCE_MS);
 
   return {
     created: createdMs === null ? null : formatStamp(createdAt, opts),
-    edited: suppressEdited ? null : formatStamp(updatedAt, opts),
+    edited: suppressEdited ? null : formatStamp(lastActivityAt, opts),
   };
+}
+
+/**
+ * The latest of several timestamps, returned VERBATIM (the original string,
+ * not a re-serialized Date, so Postgres microsecond precision survives the
+ * round trip). Missing/blank/unparseable values are ignored; all-unusable
+ * input returns null. Ties keep the first argument, which lets callers order
+ * their sources by preference.
+ *
+ * Lives here so every stamp in this feature parses through the one parseStamp.
+ */
+export function maxStamp(...values: Array<string | null | undefined>): string | null {
+  let best: string | null = null;
+  let bestMs = -Infinity;
+  for (const value of values) {
+    const ms = parseStamp(value);
+    if (ms === null || ms <= bestMs) continue;
+    bestMs = ms;
+    best = value as string;
+  }
+  return best;
 }
 
 /** Epoch ms, or null for missing/blank/unparseable input. */

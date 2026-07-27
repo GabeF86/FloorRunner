@@ -4,14 +4,14 @@
 // assignment row (scheduling.assignments has UNIQUE(schedule_slot_id)).
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { NextRequest } from 'next/server';
-import { makeFakeSupabase, callsFor } from '@/lib/rulesEngine/__fixtures__/fakeSupabase';
+import { makeFakeSupabase, callsFor, fromCount } from '@/lib/rulesEngine/__fixtures__/fakeSupabase';
 
 const holder = vi.hoisted(() => ({ sb: null as unknown }));
 vi.mock('@/lib/supabaseScheduling', () => ({
   sbSchedulingServer: () => holder.sb,
 }));
 
-import { POST } from './route';
+import { GET, POST } from './route';
 
 // ── Fixture helpers ──────────────────────────────────────────────────────────
 
@@ -272,5 +272,77 @@ describe('POST /api/scheduling/schedules — custom schedule_name', () => {
     const dflt = rows(defaultCalls, 'schedules')[0] as Record<string, unknown>;
     expect(named.schedule_name).toBe('My Custom Draft');
     expect({ ...named, schedule_name: null }).toEqual({ ...dflt, schedule_name: null });
+  });
+});
+
+// ── GET: derived last-activity stamp ─────────────────────────────────────────
+// The list's "edited" line must reflect the last CONTENT change, not
+// `schedules.updated_at` (which only moves when the schedule row does). The
+// derivation and its degradation ladder are tested in lib/scheduleActivity;
+// these pin the ROUTE wiring — the field is emitted, the list still renders
+// when the derivation fails, and the aggregates are not fired per schedule.
+describe('GET /api/scheduling/schedules — last_activity_at', () => {
+  const ROW_STAMP = '2026-07-26T21:38:00+00:00';
+  const ASSIGN_STAMP = '2026-07-27T04:16:00+00:00';
+
+  const LIST = [
+    { id: 'sched-1', schedule_name: 'v5', updated_at: ROW_STAMP, created_at: ROW_STAMP },
+    { id: 'sched-2', schedule_name: 'Paoli 8/10-10/25 V4', updated_at: ROW_STAMP, created_at: ROW_STAMP },
+  ];
+
+  function setupGet(over: Record<string, unknown> = {}) {
+    const { sb, calls } = makeFakeSupabase({
+      tables: {
+        schedules: { data: LIST, error: null },
+        schedule_versions: {
+          data: [
+            { id: 'ver-1', schedule_id: 'sched-1', created_at: ROW_STAMP, published_at: null },
+            { id: 'ver-2', schedule_id: 'sched-2', created_at: ROW_STAMP, published_at: null },
+          ],
+          error: null,
+        },
+        assignments: { data: [{ schedule_version_id: 'ver-1', max: ASSIGN_STAMP }], error: null },
+        schedule_slots: { data: [], error: null },
+        ...over,
+      },
+    });
+    holder.sb = sb;
+    return { calls };
+  }
+
+  const getReq = () =>
+    ({ url: 'http://localhost/api/scheduling/schedules?org_id=org-1' }) as unknown as NextRequest;
+
+  it('emits the derived stamp, and it beats the schedule row stamp', async () => {
+    setupGet();
+    const body = await (await GET(getReq())).json();
+    expect(body).toHaveLength(2);
+    expect(body[0].last_activity_at).toBe(ASSIGN_STAMP); // worked in after creation
+    expect(body[0].updated_at).toBe(ROW_STAMP);          // untouched, still the row's own
+    expect(body[1].last_activity_at).toBe(ROW_STAMP);    // never generated
+  });
+
+  it('still returns the list when the derivation fails, falling back to updated_at', async () => {
+    setupGet({ schedule_versions: { data: null, error: { message: 'boom' } } });
+    const res = await GET(getReq());
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.map((r: { last_activity_at: string }) => r.last_activity_at)).toEqual([ROW_STAMP, ROW_STAMP]);
+  });
+
+  it('adds a fixed number of queries, not one per schedule', async () => {
+    const { calls } = setupGet();
+    await GET(getReq());
+    expect(fromCount(calls, 'schedules')).toBe(1);
+    expect(fromCount(calls, 'schedule_versions')).toBe(1);
+    expect(fromCount(calls, 'assignments')).toBe(1);
+    expect(fromCount(calls, 'schedule_slots')).toBe(1);
+  });
+
+  it('surfaces a 500 from the list query itself unchanged', async () => {
+    setupGet({ schedules: { data: null, error: { message: 'list blew up' } } });
+    const res = await GET(getReq());
+    expect(res.status).toBe(500);
+    expect((await res.json()).error).toBe('list blew up');
   });
 });

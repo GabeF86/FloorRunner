@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { formatStamp, scheduleStamps, SAME_STAMP_TOLERANCE_MS } from './scheduleStamps';
+import { formatStamp, maxStamp, scheduleStamps, SAME_STAMP_TOLERANCE_MS } from './scheduleStamps';
 
 // Draft timestamps on the schedules list (Gabriel 2026-07-27): "I want you to
 // create a time stamp for each draft schedule that is made" — created + last
@@ -85,5 +85,50 @@ describe('scheduleStamps', () => {
       .toEqual({ created: 'Jul 26, 4:38pm', edited: null });
     expect(scheduleStamps(undefined, undefined, TZ))
       .toEqual({ created: null, edited: null });
+  });
+});
+
+// maxStamp backs the last-activity rollup (lib/scheduleActivity.ts): the
+// schedule row's own stamp, the version stamps and the two aggregate maxes all
+// collapse through here, so the "which source wins" question has exactly one
+// implementation.
+describe('maxStamp', () => {
+  it('returns the latest stamp regardless of argument order', () => {
+    const row = '2026-07-26T21:38:00+00:00';   // schedules.updated_at
+    const assign = '2026-07-27T04:16:00+00:00'; // max(assignments.updated_at)
+    expect(maxStamp(row, assign)).toBe(assign);
+    expect(maxStamp(assign, row)).toBe(assign);
+  });
+
+  it('returns the stamp VERBATIM, so Postgres precision survives', () => {
+    // Not re-serialized through Date — .482913 would round to .482Z.
+    expect(maxStamp('2026-07-01T00:00:00+00:00', '2026-07-26T21:02:11.482913+00:00'))
+      .toBe('2026-07-26T21:02:11.482913+00:00');
+  });
+
+  it('ignores missing, blank and unparseable values', () => {
+    expect(maxStamp(null, '2026-07-26T21:38:00+00:00', undefined, '', '   ', 'not a timestamp'))
+      .toBe('2026-07-26T21:38:00+00:00');
+  });
+
+  it('is null when nothing is usable, including with no arguments at all', () => {
+    expect(maxStamp()).toBeNull();
+    expect(maxStamp(null, undefined, '')).toBeNull();
+  });
+
+  it('keeps the FIRST argument on a tie, so callers can order by preference', () => {
+    const a = '2026-07-26T21:38:00+00:00';
+    const b = '2026-07-26T17:38:00-04:00'; // same instant, different spelling
+    expect(maxStamp(a, b)).toBe(a);
+    expect(maxStamp(b, a)).toBe(b);
+  });
+
+  it('composes: a suppressed row stamp still shows "edited" once real work lands', () => {
+    // The shipped bug, end to end. created == updated_at on the row, so the
+    // row stamp alone suppresses; rolling in the assignment max un-suppresses.
+    const created = '2026-07-26T21:38:00+00:00';
+    expect(scheduleStamps(created, created, TZ).edited).toBeNull();
+    expect(scheduleStamps(created, maxStamp(created, '2026-07-27T04:16:00+00:00'), TZ).edited)
+      .toBe('Jul 27, 12:16am');
   });
 });

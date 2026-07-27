@@ -20,11 +20,15 @@ interface Schedule {
   status: string;
   current_version_number: number;
   // Row provenance (Gabriel 2026-07-27) — several drafts can share a date
-  // range, so the list shows which one is freshest. Already returned by the
-  // list route (it selects `*`); nullable here defensively since the columns
-  // are only ever read, never written, by the UI.
+  // range, so the list shows which one is freshest. All three are read-only
+  // here, hence the defensive nullability. `last_activity_at` is DERIVED by
+  // the list route (lib/scheduleActivity.ts) and is the one that tracks real
+  // scheduling work; `updated_at` is only the schedule ROW's stamp (a rename,
+  // a settings edit) and is kept solely as the fallback when the derivation
+  // degraded.
   created_at: string | null;
   updated_at: string | null;
+  last_activity_at: string | null;
   sites: { name: string; short_name: string | null } | null;
 }
 
@@ -189,10 +193,13 @@ export default function SchedulesPage() {
           rows={schedules.map((s) => {
             const tc = TYPE_COLORS[s.schedule_type] || TYPE_COLORS.shifts;
             const groupLabel = GROUP_OPTIONS.find(g => g.value === s.provider_group)?.label || s.provider_group;
-            // "edited" is dropped when the draft hasn't been touched since it
-            // was created, and either line is dropped when its column is
-            // missing/unparseable — see lib/scheduleStamps.ts.
-            const stamps = scheduleStamps(s.created_at, s.updated_at);
+            // "edited" is dropped when nothing happened to the draft after it
+            // was created, and either line is dropped when its stamp is
+            // missing/unparseable — see lib/scheduleStamps.ts. The `??` only
+            // fires against an older route/response that carries no derived
+            // stamp; it keeps the pre-derivation behaviour rather than blanking
+            // the line.
+            const stamps = scheduleStamps(s.created_at, s.last_activity_at ?? s.updated_at);
             return [
               <div key="name">
                 <Link href={`/schedules/${s.id}`} style={{ textDecoration: 'none', color: 'var(--text-strong)', fontWeight: 700 }}>
