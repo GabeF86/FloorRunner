@@ -120,3 +120,15 @@ export function isShortByHalfUnit(
 ): boolean {
   return shortfall(owedUnitsFor(fte, config), creditedUnits) >= 0.5 - WEIGHT_EPSILON;
 }
+
+/** One human-readable warning per SHORT provider, for the generation banner.
+ * Satisfied providers produce nothing. */
+export function neuroShortfallWarnings(
+  rows: ReadonlyArray<NeuroReportRow>,
+  nameOf: (providerId: string) => string,
+): string[] {
+  return rows
+    .filter(r => r.short > WEIGHT_EPSILON)
+    .map(r => `${nameOf(r.provider_id)} is short ${r.short} of ${r.owed} `
+      + `neuro weekend${r.owed === 1 ? '' : 's'} this block (has ${r.credited}).`);
+}

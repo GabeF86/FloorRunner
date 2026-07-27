@@ -4,6 +4,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   owedUnitsFor, creditedUnitsByProvider, computeNeuroReport, isShortByHalfUnit,
+  neuroShortfallWarnings,
   type NeuroWeekendConfig,
 } from './neuroWeekend';
 
@@ -123,5 +124,24 @@ describe('isShortByHalfUnit', () => {
 
   it('over-credited is not short — a negative gap must not read as true', () => {
     expect(isShortByHalfUnit(0.75, 1.5, CONFIG)).toBe(false);
+  });
+});
+
+describe('neuroShortfallWarnings', () => {
+  const nameOf = (id: string) => ({ three4: 'A.Jones', half: 'K.Horan' }[id] ?? id);
+
+  it('names each short provider and the shortfall', () => {
+    const rows = [
+      { provider_id: 'three4', fte: 0.75, owed: 1, credited: 0.5, short: 0.5 },
+      { provider_id: 'half', fte: 0.5, owed: 0.5, credited: 0.5, short: 0 },
+    ];
+    expect(neuroShortfallWarnings(rows, nameOf)).toEqual([
+      'A.Jones is short 0.5 of 1 neuro weekend this block (has 0.5).',
+    ]);
+  });
+
+  it('returns nothing when everyone is satisfied', () => {
+    expect(neuroShortfallWarnings(
+      [{ provider_id: 'three4', fte: 0.75, owed: 1, credited: 1, short: 0 }], nameOf)).toEqual([]);
   });
 });
