@@ -8,7 +8,9 @@ import {
   GRID_SCHEDULE_COLUMNS,
   GRID_SLOT_COLUMNS,
   GRID_SLOT_COLUMNS_PRE35,
+  GRID_SLOT_COLUMNS_PRE42,
   GRID_ASSIGNMENT_COLUMNS,
+  GRID_ASSIGNMENT_COLUMNS_PRE42,
   validationSummaryFor,
 } from './route.helpers';
 
@@ -65,6 +67,32 @@ describe('grid column lists', () => {
       expect(GRID_ASSIGNMENT_COLUMNS).toContain(col);
     }
     expect(GRID_ASSIGNMENT_COLUMNS).toContain('providers(id, last_name, short_display_name, initials, provider_type)');
+  });
+
+  // patch42 (2026-07-28): the scheduler's hand-set billing mark. It must reach
+  // the grid, so it rides on the assignment select — and it must be droppable,
+  // so a pre-patch42 DB has an exact narrow variant.
+  it('assignment columns carry highlight_color, and the pre-patch42 retry drops exactly that column', () => {
+    expect(GRID_ASSIGNMENT_COLUMNS).toContain('highlight_color');
+    expect(GRID_ASSIGNMENT_COLUMNS_PRE42).not.toContain('highlight_color');
+    expect(GRID_ASSIGNMENT_COLUMNS_PRE42).not.toContain('*');
+    // Nothing else differs — removing highlight_color from the wide list must
+    // reproduce the narrow list byte for byte.
+    expect(GRID_ASSIGNMENT_COLUMNS.replace('highlight_color, ', '')).toBe(GRID_ASSIGNMENT_COLUMNS_PRE42);
+  });
+
+  it('the pre-patch42 slot retry keeps the patch35 call-split columns — it must not degrade two patches at once', () => {
+    expect(GRID_SLOT_COLUMNS_PRE42).not.toContain('highlight_color');
+    expect(GRID_SLOT_COLUMNS_PRE42).toContain('call_burden_weight');
+    expect(GRID_SLOT_COLUMNS_PRE42).toContain('parent_call_code');
+    expect(GRID_SLOT_COLUMNS_PRE42).toContain(`assignments(${GRID_ASSIGNMENT_COLUMNS_PRE42})`);
+  });
+
+  // A pre-patch35 DB is necessarily pre-patch42 under the documented patch
+  // order, so the bottom rung drops both.
+  it('the pre-patch35 retry also drops highlight_color', () => {
+    expect(GRID_SLOT_COLUMNS_PRE35).not.toContain('highlight_color');
+    expect(GRID_SLOT_COLUMNS_PRE35).toContain(`assignments(${GRID_ASSIGNMENT_COLUMNS_PRE42})`);
   });
 });
 
@@ -158,15 +186,19 @@ describe('GET /api/scheduling/schedules/:id/grid', () => {
     expect(a.validation_flags).toEqual([{ severity: 'hard' }, { severity: 'warning' }]);
   });
 
-  it('retries with the pre-patch35 slot columns when the call-split columns are missing (narrow-retry, no 500)', async () => {
+  // ── The narrow-retry ladder: GRID_SLOT_COLUMNS → PRE42 → PRE35 ─────────────
+  // `missingColumns` names the columns the simulated DB does NOT have; any
+  // select mentioning one fails the way PostgREST fails (42703).
+  function setupLadder(missingColumns: string[]) {
     const { sb, calls } = makeFakeSupabase({
       tables: {
         schedules: { data: { id: 'sched-1', organization_id: 'org-1', site_id: 'site-1', sites: null }, error: null },
         schedule_versions: { data: { id: 'ver-1', version_number: 1, version_status: 'draft' }, error: null },
         schedule_slots: (filters) => {
           const sel = (filters.find(f => f.method === 'select')?.args[0] as string) ?? '';
-          if (sel.includes('call_burden_weight')) {
-            return { data: null, error: { message: 'column shift_types.call_burden_weight does not exist', code: '42703' } };
+          const missing = missingColumns.find(c => sel.includes(c));
+          if (missing) {
+            return { data: null, error: { message: `column ${missing} does not exist`, code: '42703' } };
           }
           return { data: [{ id: 'slot-1', assignments: [] }], error: null };
         },
@@ -175,12 +207,65 @@ describe('GET /api/scheduling/schedules/:id/grid', () => {
       },
     });
     holder.sb = sb;
+    return { calls };
+  }
+
+  it('retries with the pre-patch35 slot columns when the call-split columns are missing (narrow-retry, no 500)', async () => {
+    // A pre-patch35 DB is necessarily pre-patch42 under the documented order,
+    // so the ladder walks all three rungs: full → PRE42 (still names
+    // call_burden_weight) → PRE35.
+    const { calls } = setupLadder(['call_burden_weight', 'highlight_color']);
     const { res, json } = await get();
     expect(res.status).toBe(200);
     expect(json.slots).toHaveLength(1);
-    const selects = callsFor(calls, 'schedule_slots', 'select').map(c => c.args[0]);
+    const selects = callsFor(calls, 'schedule_slots', 'select').map(c => c.args[0] as string);
+    expect(selects).toHaveLength(3);
+    expect(selects[2]).not.toContain('call_burden_weight');
+    expect(selects[2]).not.toContain('highlight_color');
+  });
+
+  // patch42's read-side degradation: this is what keeps the grid rendering in
+  // the window between deploying the highlight code and applying the patch.
+  it('retries with the pre-patch42 slot columns when highlight_color is missing, keeping the patch35 split columns', async () => {
+    const { calls } = setupLadder(['highlight_color']);
+    const { res, json } = await get();
+    expect(res.status).toBe(200);
+    expect(json.slots).toHaveLength(1);
+    const selects = callsFor(calls, 'schedule_slots', 'select').map(c => c.args[0] as string);
+    // Exactly two rungs — it must NOT fall all the way through to PRE35 and
+    // silently drop the call-split columns a patch35 DB does have.
     expect(selects).toHaveLength(2);
-    expect(selects[1]).not.toContain('call_burden_weight');
+    expect(selects[0]).toContain('highlight_color');
+    expect(selects[1]).not.toContain('highlight_color');
+    expect(selects[1]).toContain('call_burden_weight');
+    expect(selects[1]).toContain('parent_call_code');
+  });
+
+  it('a fully-patched DB takes the wide select only — no needless retry round-trips', async () => {
+    const { calls } = setupLadder([]);
+    const { res } = await get();
+    expect(res.status).toBe(200);
+    const selects = callsFor(calls, 'schedule_slots', 'select').map(c => c.args[0] as string);
+    expect(selects).toEqual([GRID_SLOT_COLUMNS]);
+  });
+
+  // A genuine read failure must NOT be mistaken for a pre-patch DB and retried
+  // into a 200 — it still has to reach the caller as a 500.
+  it('a non-column read error is not retried and still 500s', async () => {
+    const { sb, calls } = makeFakeSupabase({
+      tables: {
+        schedules: { data: { id: 'sched-1', organization_id: 'org-1', site_id: 'site-1', sites: null }, error: null },
+        schedule_versions: { data: { id: 'ver-1', version_number: 1, version_status: 'draft' }, error: null },
+        schedule_slots: { data: null, error: { message: 'connection reset', code: '08006' } },
+        providers: { data: [], error: null },
+        holiday_calendars: { data: [], error: null },
+      },
+    });
+    holder.sb = sb;
+    const { res, json } = await get();
+    expect(res.status).toBe(500);
+    expect(json.error).toBe('connection reset');
+    expect(callsFor(calls, 'schedule_slots', 'select')).toHaveLength(1);
   });
 
   // Live DB: UNIQUE(schedule_slot_id) → PostgREST returns the embed as ONE

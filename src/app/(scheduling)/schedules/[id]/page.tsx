@@ -2,7 +2,10 @@
 
 import { useState, useEffect, useCallback, useRef, useMemo, Fragment } from 'react';
 import Link from 'next/link';
-import { gridTokens, cellBackground } from './gridTheme';
+import { gridTokens, cellBackground, cellOutline, manualHighlightTitle } from './gridTheme';
+import {
+  HIGHLIGHT_COLORS, normalizeHighlightColor, type HighlightColor,
+} from '@/lib/highlightColor';
 import {
   fteWeightedTarget, roundedObligation, computeCallObligationCensus,
   type CallObligationCensus,
@@ -189,6 +192,10 @@ interface AssignmentInfo {
   // Server-computed severity counts (grid route helpers' ValidationSummary).
   // null = never validated (flags column null), distinct from all-zero.
   validation_summary?: ValidationSummary | null;
+  // Hand-set billing mark (patch42) — 'blue' | 'red' | 'yellow' | null. Also
+  // undefined on a pre-patch42 DB, where the grid route's narrow retry drops
+  // the column entirely; normalizeHighlightColor folds both to "no mark".
+  highlight_color?: HighlightColor | null;
   providers: ProviderInfo | null;
 }
 
@@ -245,6 +252,20 @@ interface GridData {
 interface ActiveCell {
   slotId: string;
   assignmentId: string | null;
+  x: number;
+  y: number;
+}
+
+// Right-click palette target (2026-07-28, patch42). Distinct state from
+// ActiveCell so the LEFT-click provider picker is untouched — the two popovers
+// never share a code path, and left-click behaves exactly as it always has.
+// Only ASSIGNED cells can be marked: the colour describes one provider's call,
+// so it is stored on the assignment row and there is nothing to hang it on
+// when the cell is open.
+interface PaletteCell {
+  assignmentId: string;
+  current: HighlightColor | null;
+  label: string;
   x: number;
   y: number;
 }
@@ -343,6 +364,7 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
   const [calendarMonthOffset, setCalendarMonthOffset] = useState(0);
   const [weekOffset, setWeekOffset] = useState(0);
   const [activeCell, setActiveCell] = useState<ActiveCell | null>(null);
+  const [paletteCell, setPaletteCell] = useState<PaletteCell | null>(null);
   const [pickerSearch, setPickerSearch] = useState('');
   const [actionError, setActionError] = useState<string | null>(null);
   const [showCounts, setShowCounts] = useState(false);
@@ -355,6 +377,7 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
   const [renameValue, setRenameValue] = useState('');
   const [renameBusy, setRenameBusy] = useState(false);
   const pickerRef = useRef<HTMLDivElement>(null);
+  const paletteRef = useRef<HTMLDivElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
 
   /* ── Data Fetching ──────────────────────────────────────────────────────── */
@@ -427,6 +450,29 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
       searchInputRef.current.focus();
     }
   }, [activeCell]);
+
+  /* ── Close the highlight palette on outside click / Escape ───────────────── */
+  // Same dismissal contract as the picker above, and deliberately NO focus
+  // handling: the palette never moves focus in, so it cannot trap it. Escape
+  // and any click elsewhere close it; tabbing away just leaves it open behind
+  // you until the next click, exactly like the picker.
+  useEffect(() => {
+    if (!paletteCell) return;
+    const handleKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setPaletteCell(null);
+    };
+    const handleClick = (e: MouseEvent) => {
+      if (paletteRef.current && !paletteRef.current.contains(e.target as Node)) {
+        setPaletteCell(null);
+      }
+    };
+    document.addEventListener('keydown', handleKey);
+    document.addEventListener('mousedown', handleClick, true);
+    return () => {
+      document.removeEventListener('keydown', handleKey);
+      document.removeEventListener('mousedown', handleClick, true);
+    };
+  }, [paletteCell]);
 
   /* ── Clear action error after 3s ────────────────────────────────────────── */
 
@@ -729,6 +775,8 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
         // (overnight call only — included in the visual list, but not in
         // the headline count). Matches the grid view's column-header rule.
         countsTowardCount: boolean;
+        // Hand-set billing mark (patch42) — see CalendarWorker.
+        highlight: HighlightColor | null;
       }>>,
       overParAssignmentIds: new Set<string>(),
     };
@@ -760,6 +808,7 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
       color: string;
       providerType: string;
       countsTowardCount: boolean;
+      highlight: HighlightColor | null;
     }>> = {};
 
     for (const slot of grid.slots) {
@@ -786,6 +835,7 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
           color: slot.shift_types.color_hex || '#64748b',
           providerType: type,
           countsTowardCount,
+          highlight: normalizeHighlightColor(a.highlight_color),
         });
       }
     }
@@ -938,6 +988,49 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
     } catch {
       setGrid({ ...grid, slots: prevSlots });
       setActionError('Failed to remove assignment');
+    }
+  };
+
+  // ── Manual billing highlight (2026-07-28, patch42) ──────────────────────
+  // Right-click → paint a cell blue/red/yellow, or clear it. Stored on the
+  // assignment row, so it is visible to everyone who opens the schedule — the
+  // point being that a physician reading the finalized schedule can see which
+  // of their calls they can bill extra for.
+  //
+  // Optimistic paint, then patch the server's row over it. The server is the
+  // authority on the value (route-validated against the three colours + null);
+  // a rejected write reverts and surfaces through the standard action toast —
+  // including the "patch42 not applied yet" 501, so a missing column reads as
+  // a clear explanation rather than a colour that silently refuses to stick.
+  const setHighlight = async (assignmentId: string, color: HighlightColor | null) => {
+    if (!grid) return;
+    const prevSlots = grid.slots;
+    setPaletteCell(null);
+    setGrid(g => g ? {
+      ...g,
+      slots: g.slots.map(s => ({
+        ...s,
+        assignments: s.assignments.map(a =>
+          a.id === assignmentId ? { ...a, highlight_color: color } : a),
+      })),
+    } : g);
+
+    try {
+      const res = await fetch('/api/scheduling/schedule-assignments', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: assignmentId, highlight_color: color }),
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok) {
+        setGrid(g => g ? { ...g, slots: prevSlots } : g);
+        setActionError(data?.error || `Failed to set cell colour (${res.status})`);
+        return;
+      }
+      if (data?.assignment) applyAssignmentRows([data.assignment as AssignmentRow]);
+    } catch (e) {
+      setGrid(g => g ? { ...g, slots: prevSlots } : g);
+      setActionError(e instanceof Error ? e.message : 'Failed to set cell colour');
     }
   };
 
@@ -2001,6 +2094,18 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
                         // signal (OVER wins, mirroring the whole-cell tag
                         // precedence) — segments must not hide pool pickups.
                         const segExtra = !!segProvider && !callTakerIds.has(segProvider.id);
+                        // A split segment IS a billable call in its own right
+                        // (its own slot, its own assignment, its own burden
+                        // weight), so it takes the same hand-set mark. The
+                        // segment wash is the shift-type colour rather than
+                        // cellBackground's chain, so the override is applied
+                        // directly here — same tokens, same inset ring.
+                        const segHighlight = segProvider
+                          ? normalizeHighlightColor(segAssignment?.highlight_color)
+                          : null;
+                        const segBg = (hover: boolean) => segHighlight
+                          ? (hover ? gridTokens.manualHighlightHover : gridTokens.manualHighlight)[segHighlight]
+                          : colorWithAlpha(seg.shift_types.color_hex, hover ? 0.26 : segProvider ? 0.14 : 0.05);
                         return (
                           <div
                             key={seg.id}
@@ -2013,16 +2118,30 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
                               });
                               setPickerSearch('');
                             }}
-                            title={`${seg.shift_types.name}${segProvider ? ` — ${segProvider.short_display_name}` : ' — open'}${segExtra ? ' — extra call (not in the regular call pool at this site)' : ''}`}
+                            onContextMenu={(e) => {
+                              if (!segProvider || !segAssignment?.id) return;
+                              e.preventDefault();
+                              e.stopPropagation();
+                              setActiveCell(null);
+                              setPickerSearch('');
+                              setPaletteCell({
+                                assignmentId: segAssignment.id,
+                                current: segHighlight,
+                                label: `${seg.shift_types.code} · ${formatMMDD(date)} — ${segProvider.short_display_name}`,
+                                x: e.clientX, y: e.clientY,
+                              });
+                            }}
+                            title={`${seg.shift_types.name}${segProvider ? ` — ${segProvider.short_display_name}` : ' — open'}${segExtra ? ' — extra call (not in the regular call pool at this site)' : ''}${segHighlight ? `\n${manualHighlightTitle(segHighlight)}` : ''}`}
                             style={{
                               flex: 1,
                               display: 'flex', alignItems: 'center', gap: 3,
                               padding: '0 3px', minHeight: 14, cursor: 'pointer',
                               borderTop: sIdx > 0 ? '1px dashed ' + gridTokens.line : 'none',
-                              background: colorWithAlpha(seg.shift_types.color_hex, segProvider ? 0.14 : 0.05),
+                              background: segBg(false),
+                              boxShadow: segHighlight ? gridTokens.manualHighlightOutline : undefined,
                             }}
-                            onMouseEnter={(e) => { (e.currentTarget as HTMLDivElement).style.background = colorWithAlpha(seg.shift_types.color_hex, 0.26); }}
-                            onMouseLeave={(e) => { (e.currentTarget as HTMLDivElement).style.background = colorWithAlpha(seg.shift_types.color_hex, segProvider ? 0.14 : 0.05); }}
+                            onMouseEnter={(e) => { (e.currentTarget as HTMLDivElement).style.background = segBg(true); }}
+                            onMouseLeave={(e) => { (e.currentTarget as HTMLDivElement).style.background = segBg(false); }}
                           >
                             <span style={{
                               fontSize: 7.5, fontWeight: 800, letterSpacing: '0.03em',
@@ -2097,8 +2216,33 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
                 // unused: validation badge top-left, lock top-right,
                 // OVER/EXTRA bottom-right).
                 const isSellback = isAssigned && !!provider && !!sellbackByDate[date]?.has(provider.id);
+                // Hand-set billing mark (patch42). Normalized, so a pre-patch
+                // row (column absent → undefined) and an out-of-vocabulary
+                // value both fold to "no mark" instead of blanking the cell.
+                // Gated on isAssigned as belt-and-braces: the mark describes a
+                // PROVIDER's call, and the writers already clear it whenever a
+                // row reverts to open (sequenceAutoFill.revertToOpen) or is
+                // reassigned/deleted — this makes a mark that somehow survived
+                // onto an open row invisible rather than misleading.
+                const manualHighlight = isAssigned
+                  ? normalizeHighlightColor(assignment?.highlight_color)
+                  : null;
 
-                const cellFlags = { isOverPar, isExtraCall, isHoliday, isWeekend };
+                const cellFlags = { isOverPar, isExtraCall, isHoliday, isWeekend, manualHighlight };
+                // The computed explanation still applies even when the manual
+                // colour out-ranks its wash, so the mark's tooltip is APPENDED
+                // rather than replacing it.
+                const computedTitle =
+                  isOverPar && provider
+                    ? `${provider.short_display_name} is past their rounded call obligation for this block — this is one of their extra calls.`
+                    : isExtraCall && provider
+                      ? `Provider picking up Extra call — ${provider.short_display_name} is not in the regular call pool at this site.`
+                      : isSellback && provider
+                        ? `${provider.short_display_name} is selling back PTO — working this date.`
+                        : undefined;
+                const cellTitle = manualHighlight
+                  ? [manualHighlightTitle(manualHighlight), computedTitle].filter(Boolean).join('\n')
+                  : computedTitle;
 
                 return (
                   <div
@@ -2113,17 +2257,30 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
                       });
                       setPickerSearch('');
                     }}
-                    title={
-                      isOverPar && provider
-                        ? `${provider.short_display_name} is past their rounded call obligation for this block — this is one of their extra calls.`
-                        : isExtraCall && provider
-                          ? `Provider picking up Extra call — ${provider.short_display_name} is not in the regular call pool at this site.`
-                          : isSellback && provider
-                            ? `${provider.short_display_name} is selling back PTO — working this date.`
-                            : undefined
-                    }
+                    // Right-click → colour palette (patch42). ASSIGNED cells
+                    // only: the mark lives on the assignment row, so an open
+                    // cell has nothing to store it on. On an open cell we
+                    // deliberately do NOT preventDefault — the browser's own
+                    // menu keeps working, which is the pre-existing behaviour
+                    // everywhere else on the page.
+                    onContextMenu={(e) => {
+                      if (!slot || !isAssigned || !assignment?.id) return;
+                      e.preventDefault();
+                      e.stopPropagation();
+                      setActiveCell(null);
+                      setPickerSearch('');
+                      setPaletteCell({
+                        assignmentId: assignment.id,
+                        current: manualHighlight,
+                        label: `${st.code} · ${formatMMDD(date)} — ${provider!.short_display_name}`,
+                        x: e.clientX,
+                        y: e.clientY,
+                      });
+                    }}
+                    title={cellTitle}
                     style={{
                       background: cellBackground(cellFlags),
+                      boxShadow: cellOutline(cellFlags),
                       borderBottom: '1px solid ' + gridTokens.line,
                       borderRight: '1px solid ' + gridTokens.line,
                       borderLeft: isToday ? '2px solid ' + gridTokens.accentStrong : isSatBorder ? '2px solid #1e3a5f' : 'none',
@@ -2293,6 +2450,93 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
           holidayMap={holidayMap}
           todayStr={todayStr}
         />
+      )}
+
+      {/* ── Highlight Palette (right-click on an assigned cell) ───────────────
+          Manual billing mark, patch42. Deliberately its own popover, entirely
+          separate from the left-click picker below: left-click behaviour is
+          unchanged, and neither popover can be reached from the other's code
+          path. Dismissable by Escape or any outside click (effect above); it
+          never takes focus, so it cannot trap it. */}
+
+      {paletteCell && (
+        <div
+          ref={paletteRef}
+          role="menu"
+          aria-label="Cell colour"
+          style={{
+            position: 'fixed',
+            left: Math.min(paletteCell.x, window.innerWidth - 196),
+            top: Math.min(paletteCell.y, window.innerHeight - 190),
+            width: 184,
+            background: 'var(--bg-surface)',
+            border: '1px solid var(--border)',
+            borderRadius: 12,
+            boxShadow: '0 16px 40px rgba(0,0,0,0.5)',
+            zIndex: 520,
+            overflow: 'hidden',
+          }}
+        >
+          <div style={{
+            padding: '8px 11px', background: 'var(--bg-deep)', borderBottom: '1px solid var(--border)',
+            fontSize: 10, fontWeight: 700, letterSpacing: '0.04em', textTransform: 'uppercase',
+            color: 'var(--text-muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+          }}>
+            {paletteCell.label}
+          </div>
+          <div style={{ padding: 7, display: 'flex', flexDirection: 'column', gap: 3 }}>
+            {HIGHLIGHT_COLORS.map(color => {
+              const selected = paletteCell.current === color;
+              return (
+                <button
+                  key={color}
+                  role="menuitemradio"
+                  aria-checked={selected}
+                  onClick={() => setHighlight(paletteCell.assignmentId, color)}
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: 9,
+                    padding: '7px 9px', borderRadius: 8, cursor: 'pointer',
+                    border: '1px solid ' + (selected ? 'var(--text-dim)' : 'var(--border)'),
+                    background: selected ? 'var(--bg-deep)' : 'transparent',
+                    color: 'var(--text)', fontSize: 12.5, fontWeight: 700, textAlign: 'left',
+                  }}
+                >
+                  {/* Swatch renders the EXACT token the cell will take,
+                      inset ring included — what you pick is what you get. */}
+                  <span aria-hidden style={{
+                    width: 18, height: 18, borderRadius: 5, flexShrink: 0,
+                    background: gridTokens.manualHighlight[color],
+                    boxShadow: gridTokens.manualHighlightOutline,
+                  }} />
+                  <span style={{ textTransform: 'capitalize', flex: 1 }}>{color}</span>
+                  {selected && (
+                    <span aria-hidden style={{ fontSize: 11, color: 'var(--text-dim)' }}>&#10003;</span>
+                  )}
+                </button>
+              );
+            })}
+            <button
+              role="menuitem"
+              onClick={() => setHighlight(paletteCell.assignmentId, null)}
+              disabled={paletteCell.current === null}
+              style={{
+                display: 'flex', alignItems: 'center', gap: 9,
+                padding: '7px 9px', borderRadius: 8, marginTop: 2,
+                cursor: paletteCell.current === null ? 'default' : 'pointer',
+                border: '1px solid var(--border)', background: 'transparent',
+                color: paletteCell.current === null ? 'var(--text-dim)' : 'var(--text-muted)',
+                fontSize: 12.5, fontWeight: 700, textAlign: 'left',
+                opacity: paletteCell.current === null ? 0.5 : 1,
+              }}
+            >
+              <span aria-hidden style={{
+                width: 18, height: 18, borderRadius: 5, flexShrink: 0,
+                background: gridTokens.bodyCell, border: '1px dashed var(--border)',
+              }} />
+              <span style={{ flex: 1 }}>Clear</span>
+            </button>
+          </div>
+        </div>
       )}
 
       {/* ── Provider Picker / Action Popover ──────────────────────────────── */}
@@ -4084,6 +4328,10 @@ interface CalendarWorker {
   color: string;
   providerType: string;
   countsTowardCount: boolean;
+  // Hand-set billing mark (patch42) carried through so the calendar lens shows
+  // the same marks the month/week grid does. A mark that vanished when the
+  // user switched view mode would read as data loss.
+  highlight: HighlightColor | null;
 }
 
 function CalendarView({
@@ -4300,10 +4548,16 @@ function CalendarView({
                       || (w.initials && w.initials.trim())
                       || w.shortName;
                     const isOverPar = overParAssignmentIds.has(w.assignmentId);
+                    // Manual mark out-ranks the over-par wash here for the same
+                    // reason it does in the grid: over-par is computed, this is
+                    // hand-set. The chip keeps the inset ring so the two reds
+                    // stay tellable apart at a glance.
+                    const marked = w.highlight;
                     return (
                       <div
                         key={wi}
                         title={
+                          (marked ? manualHighlightTitle(marked) + ' ' : '') +
                           (isOverPar ? 'Past rounded call obligation — one of their extra calls. ' : '') +
                           `${w.shortName} · ${w.shiftCode}`
                         }
@@ -4312,9 +4566,12 @@ function CalendarView({
                           fontSize: 10, lineHeight: 1.25,
                           color: 'var(--text)',
                           whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
-                          background: isOverPar ? gridTokens.overPar : 'transparent',
+                          background: marked
+                            ? gridTokens.manualHighlight[marked]
+                            : isOverPar ? gridTokens.overPar : 'transparent',
+                          boxShadow: marked ? gridTokens.manualHighlightOutline : undefined,
                           borderRadius: 3,
-                          padding: isOverPar ? '0 2px' : 0,
+                          padding: (marked || isOverPar) ? '0 2px' : 0,
                         }}
                       >
                         <span style={{

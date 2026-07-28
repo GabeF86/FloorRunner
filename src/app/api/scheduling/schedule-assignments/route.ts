@@ -4,10 +4,13 @@ import { evaluateAssignment, validationFlagsFor } from '@/lib/rulesEngine/evalua
 import { applySequenceAutoFill, cleanupSequenceAutoFill } from '@/lib/rulesEngine/sequenceAutoFill';
 import {
   GRID_ASSIGNMENT_COLUMNS,
+  GRID_ASSIGNMENT_COLUMNS_PRE42,
+  isMissingColumnErr,
   withValidationSummary,
   type ValidationSummary,
 } from '../schedules/[id]/grid/route.helpers';
 import { revalidateNeighbors } from '@/lib/rulesEngine/neighborRevalidation';
+import { parseHighlightColor } from '@/lib/highlightColor';
 
 // Never prerender — this route hits Supabase per request.
 export const dynamic = 'force-dynamic';
@@ -26,16 +29,48 @@ type JoinedAssignmentRow = {
 // evicted / cleared siblings) in the grid column shape. Best-effort: on a
 // query error it returns { assignment: null, siblings: [] } and the client
 // falls back to a full grid reload.
+// A grid-shape re-select with the same pre-patch42 narrow retry the grid route
+// uses (route.helpers.ts): GRID_ASSIGNMENT_COLUMNS names highlight_color, so on
+// a DB that predates patch42 the wide select is a missing-column error. Without
+// the retry these re-selects would return null and every cell edit would fall
+// back to a full grid reload — working, but a needless round-trip on every
+// click for the whole deploy→patch window.
+type WideRes = { data: unknown; error: { message: string; code?: string } | null };
+
+async function selectGridShapeBySlotIds(
+  sb: ReturnType<typeof sbSchedulingServer>,
+  slotIds: string[],
+): Promise<WideRes> {
+  const run = (columns: string) => sb
+    .from('assignments')
+    .select(columns)
+    .in('schedule_slot_id', slotIds) as unknown as Promise<WideRes>;
+  const wide = await run(GRID_ASSIGNMENT_COLUMNS);
+  if (wide.error && isMissingColumnErr(wide.error)) return run(GRID_ASSIGNMENT_COLUMNS_PRE42);
+  return wide;
+}
+
+async function selectGridShapeById(
+  sb: ReturnType<typeof sbSchedulingServer>,
+  id: string,
+): Promise<WideRes> {
+  const run = (columns: string) => sb
+    .from('assignments')
+    .select(columns)
+    .eq('id', id)
+    .single() as unknown as Promise<WideRes>;
+  const wide = await run(GRID_ASSIGNMENT_COLUMNS);
+  if (wide.error && isMissingColumnErr(wide.error)) return run(GRID_ASSIGNMENT_COLUMNS_PRE42);
+  return wide;
+}
+
 async function selectAffectedRows(
   sb: ReturnType<typeof sbSchedulingServer>,
   triggerSlotId: string,
   siblingSlotIds: string[],
 ): Promise<{ assignment: JoinedAssignmentRow | null; siblings: JoinedAssignmentRow[] }> {
   const slotIds = [...new Set([triggerSlotId, ...siblingSlotIds])];
-  const { data, error } = await sb
-    .from('assignments')
-    .select(GRID_ASSIGNMENT_COLUMNS)
-    .in('schedule_slot_id', slotIds);
+  const { data, error } = await selectGridShapeBySlotIds(sb, slotIds);
   if (error) {
     console.error('[schedule-assignments] affected-row re-select failed:', error.message);
     return { assignment: null, siblings: [] };
@@ -70,22 +105,41 @@ export async function POST(req: NextRequest) {
   // (migration 20260524000000_add_assignment_unique_constraints.sql). Upsert
   // is atomic, so two concurrent edits can't both insert a duplicate row for
   // the same slot (the previous update-else-insert raced).
-  const { data, error } = await sb
+  const upsertRow = {
+    schedule_slot_id: body.schedule_slot_id,
+    provider_id: body.provider_id,
+    assignment_status: 'assigned',
+    source_type: 'manual',
+    assigned_at: new Date().toISOString(),
+    validation_flags: validationFlagsFor(evalResult),
+  };
+
+  // highlight_color: null is LOAD-BEARING, not decoration (2026-07-28,
+  // patch42). ON CONFLICT DO UPDATE rewrites exactly the columns named in the
+  // payload and leaves every other column untouched, so a REASSIGNMENT (this
+  // upsert flipping provider_id on an existing row) would otherwise carry
+  // provider A's hand-set billing mark straight onto provider B's call. That
+  // is the same failure the validation_flags comment above guards against, and
+  // it matters more here: the mark exists to tell a physician which of THEIR
+  // calls is billable. Naming the column clears it, which is the documented
+  // contract — the mark lives on the assignment and dies with it.
+  //
+  // Narrow retry for the same reason the reads have one: on a pre-patch42 DB
+  // the column does not exist and naming it would fail the write outright,
+  // turning "highlighting isn't available yet" into "you cannot assign anyone".
+  // Dropping it there is exact — a column that does not exist holds no mark.
+  const upsert = (row: Record<string, unknown>) => sb
     .from('assignments')
-    .upsert(
-      {
-        schedule_slot_id: body.schedule_slot_id,
-        provider_id: body.provider_id,
-        assignment_status: 'assigned',
-        source_type: 'manual',
-        assigned_at: new Date().toISOString(),
-        validation_flags: validationFlagsFor(evalResult),
-      },
-      { onConflict: 'schedule_slot_id' },
-    )
+    .upsert(row, { onConflict: 'schedule_slot_id' })
     .select()
-    .single();
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+    .single() as unknown as Promise<WideRes>;
+
+  let upsertRes = await upsert({ ...upsertRow, highlight_color: null });
+  if (upsertRes.error && isMissingColumnErr(upsertRes.error)) {
+    upsertRes = await upsert(upsertRow);
+  }
+  if (upsertRes.error) return NextResponse.json({ error: upsertRes.error.message }, { status: 500 });
+  const data = upsertRes.data as Record<string, unknown> | null;
 
   // Sequence auto-fill reads the site's ACTIVE CALL PATTERN (loaded once
   // inside the module off the trigger slot's site — rule_definitions are
@@ -121,7 +175,25 @@ export async function POST(req: NextRequest) {
 export async function PATCH(req: NextRequest) {
   const sb = sbSchedulingServer();
   const body = await req.json();
-  const { id, ...fields } = body;
+  const { id, ...rest } = body;
+  const fields = rest as Record<string, unknown>;
+
+  // highlight_color hardening (2026-07-28, patch42) — the same route-hardening
+  // idiom the schedule PATCH uses for provider_limits / schedule_name /
+  // scenario_manifest: when the key is PRESENT it is shape-validated before any
+  // write, and a bad value is a 400 that never reaches the DB. The client is
+  // never trusted here even though the DB carries a CHECK constraint: the CHECK
+  // is the last line of defence, and a constraint violation surfaces as an
+  // opaque 500 rather than a message anyone can act on. `null` is valid and
+  // means "clear the manual mark".
+  const wantsHighlight = 'highlight_color' in fields;
+  if (wantsHighlight) {
+    const parsed = parseHighlightColor(fields.highlight_color);
+    if (!parsed.ok) {
+      return NextResponse.json({ error: parsed.error }, { status: 400 });
+    }
+    fields.highlight_color = parsed.value;
+  }
 
   const { data, error } = await sb
     .from('assignments')
@@ -129,16 +201,25 @@ export async function PATCH(req: NextRequest) {
     .eq('id', id)
     .select()
     .single();
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+  if (error) {
+    // Pre-patch42 DB: the write cannot degrade the way a read can (there is
+    // nowhere to put the mark), so say exactly that instead of surfacing a raw
+    // PostgREST column error. The grid itself keeps working — its read ladder
+    // drops the column — so this is the ONLY thing the user loses in the
+    // deploy→patch window, and they get told why.
+    if (wantsHighlight && isMissingColumnErr(error)) {
+      return NextResponse.json({
+        error: 'Cell highlighting is not available yet — the database is missing '
+          + 'assignments.highlight_color (apply supabase_scheduling_patch42_assignment_highlight.sql).',
+      }, { status: 501 });
+    }
+    return NextResponse.json({ error: error.message }, { status: 500 });
+  }
 
   // Re-select the row in the grid column shape (providers join +
   // validation_summary) so the client can patch the cell without a refetch.
   // Best-effort: on failure `assignment` is null and the client falls back.
-  const { data: joinedRow, error: joinErr } = await sb
-    .from('assignments')
-    .select(GRID_ASSIGNMENT_COLUMNS)
-    .eq('id', id)
-    .single();
+  const { data: joinedRow, error: joinErr } = await selectGridShapeById(sb, id);
   if (joinErr) {
     console.error('[schedule-assignments] PATCH re-select failed:', joinErr.message);
   }

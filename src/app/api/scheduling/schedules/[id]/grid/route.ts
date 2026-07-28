@@ -6,6 +6,7 @@ import {
   GRID_SCHEDULE_COLUMNS,
   GRID_SLOT_COLUMNS,
   GRID_SLOT_COLUMNS_PRE35,
+  GRID_SLOT_COLUMNS_PRE42,
   isMissingColumnErr,
   withValidationSummary,
 } from './route.helpers';
@@ -47,21 +48,33 @@ export async function GET(
   // still renders per-flag messages in tooltips and the cell detail panel).
   // The two select strings infer different supabase-js row types; the route
   // treats rows structurally (embedArray + validation summaries), so widen.
-  let slotRes: { data: unknown; error: { message: string; code?: string } | null } = await sb
+  //
+  // NARROW-RETRY LADDER (see route.helpers.ts for the rung definitions):
+  // GRID_SLOT_COLUMNS → PRE42 (drop patch42's highlight_color) → PRE35 (drop
+  // the patch35 call-split columns too). Each rung only drops columns the DB
+  // does not have, and a column that does not exist can hold no data, so every
+  // fallback is exact for the DB it serves. This is what keeps the grid
+  // rendering in the window between a code deploy and its patch being applied
+  // — degraded (the dropped feature is invisible), never a 500.
+  const selectSlots = (columns: string) => sb
     .from('schedule_slots')
-    .select(GRID_SLOT_COLUMNS)
+    .select(columns)
     .eq('schedule_version_id', version.id)
     .order('slot_date')
-    .order('slot_index');
+    .order('slot_index') as unknown as Promise<{
+      data: unknown; error: { message: string; code?: string } | null;
+    }>;
+
+  let slotRes = await selectSlots(GRID_SLOT_COLUMNS);
+  if (slotRes.error && isMissingColumnErr(slotRes.error)) {
+    // Pre-patch42 DB: assignments.highlight_color doesn't exist yet — and can
+    // hold no manual mark, so the narrow select is exact (every cell unmarked).
+    slotRes = await selectSlots(GRID_SLOT_COLUMNS_PRE42);
+  }
   if (slotRes.error && isMissingColumnErr(slotRes.error)) {
     // Pre-patch35 DB: the call-split columns don't exist yet — and can hold
     // no segments, so the narrow select is exact (weights default to 1).
-    slotRes = await sb
-      .from('schedule_slots')
-      .select(GRID_SLOT_COLUMNS_PRE35)
-      .eq('schedule_version_id', version.id)
-      .order('slot_date')
-      .order('slot_index');
+    slotRes = await selectSlots(GRID_SLOT_COLUMNS_PRE35);
   }
   const rawSlots = slotRes.data as Array<{ assignments?: unknown }> | null;
   const slotErr = slotRes.error;

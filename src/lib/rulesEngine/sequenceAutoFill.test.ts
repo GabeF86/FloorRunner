@@ -947,6 +947,48 @@ describe('cleanupSequenceAutoFill', () => {
     expect(up[0].provider_id).toBeNull();
     expect(up[0].assignment_status).toBe('open');
     expect(up[0].validation_flags).toBeNull(); // never a fake-clean []
+    // The scheduler's hand-set billing mark (patch42) belongs to the provider
+    // whose call it described, so reopening the row takes it with them. This
+    // matters twice over: the reopened row SURVIVES (unlike the manual DELETE
+    // path, which drops it), and the fill pass writes back into exactly these
+    // rows with an .update() — so a mark left behind here would reappear on
+    // whoever is filled into the slot next.
+    expect(up[0].highlight_color).toBeNull();
+  });
+
+  // Pre-patch42 DB: the revert must never fail because of a PRESENTATION
+  // column — failing it would leave a derived shift wrongly assigned.
+  it('retries the revert without highlight_color on a pre-patch42 DB, and still clears the fill', async () => {
+    const base = tables({
+      trigger: triggerSlot({ date: MON }),
+      slots: [slot({
+        id: 'slot-d1-tue', date: TUE, code: 'D1',
+        assignments: [{ id: 'a-d1', provider_id: 'p1', assignment_status: 'assigned', source_type: 'auto_generated' }],
+      })],
+    });
+    const { sb, calls } = makeFakeSupabase({
+      tables: {
+        ...base,
+        assignments: (filters) => {
+          const update = filters.find(f => f.method === 'update');
+          if (update && 'highlight_color' in (update.args[0] as Record<string, unknown>)) {
+            return { data: null, error: { message: "Could not find the 'highlight_color' column of 'assignments' in the schema cache", code: 'PGRST204' } };
+          }
+          if (update) return { data: [{}], error: null };
+          return (base.assignments as (f: typeof filters) => { data: unknown; error: unknown })(filters);
+        },
+      },
+    });
+    const result = await cleanupSequenceAutoFill(sb, 'trig', 'p1', CLASSIC_PATTERN);
+
+    // Degraded (no mark to clear on that DB), never broken — the D1 is open.
+    expect(result.clearedSlotIds).toEqual(['slot-d1-tue']);
+    const up = updates(calls);
+    expect(up).toHaveLength(2);
+    expect(up[0]).toHaveProperty('highlight_color');
+    expect(up[1]).not.toHaveProperty('highlight_color');
+    expect(up[1].provider_id).toBeNull();
+    expect(up[1].assignment_status).toBe('open');
   });
 
   it('never touches manual assignments or other providers', async () => {

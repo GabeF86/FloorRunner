@@ -1,0 +1,255 @@
+-- supabase_scheduling_patch42_assignment_highlight.sql
+-- One nullable, CHECK-constrained colour column on assignments: the
+-- scheduler's HAND-SET "this call is billable extra" mark on the schedule grid.
+--
+-- PROJECT: apply ONLY to Supabase ref qhwdbtixhzdsgwwtcfrm ("Floor Runner" —
+-- the ref in .env.local). Two OTHER Supabase projects are connected to this
+-- machine for DIFFERENT apps (atlas-staging, ChiefOS); running FloorRunner DDL
+-- through those is a known foot-gun. VERIFY THE REF BEFORE APPLYING.
+--
+-- STATUS: NOT YET APPLIED.
+--   After applying, replace this block with:
+--     APPLIED <date> to project qhwdbtixhzdsgwwtcfrm via the project-scoped
+--     supabase-floorrunner MCP (apply_migration "patch42_assignment_highlight").
+--     Post-apply spot checks: <record the actual results of VERIFICATION 1–5
+--     below — in particular query 3, the CHECK rejecting a bad value, and
+--     query 5, the round trip through the deployed grid API>.
+--
+-- ── WHY ─────────────────────────────────────────────────────────────────────
+-- Gabriel, verbatim: "I need a way to manually highlight cells that I consider
+-- to be extra call for that provider so that when they look at the finalized
+-- schedule they can see which of their calls they will be able to bill extra
+-- for. Make the cell color blue." Then, asked how it should interact with the
+-- grid's existing automatic markings: "Keep everything the same, just give me
+-- the ability to change the color of the cell of my choosing. Options just be
+-- blue and red and yellow."
+--
+-- So this is an ANNOTATION, not a derived state. Nothing computes it, nothing
+-- validates against it, and no engine reads it — the scheduler paints a cell,
+-- and the physician reading the finalized schedule sees which of their calls
+-- pays extra. It is deliberately NOT the same thing as the grid's automatic
+-- over-par red (calls past a provider's rounded obligation) or extra-call blue
+-- (a call taken by someone outside the site's call pool), both of which the
+-- engine derives and neither of which this patch touches.
+--
+-- ── WHY ON assignments, AND NOT ON schedule_slots ───────────────────────────
+-- The mark describes ONE PROVIDER's call ("extra call for that provider"), and
+-- assignments is the only table that carries provider ↔ slot. Putting it on the
+-- slot would leave the mark behind when the cell is reassigned, so provider A's
+-- billing note would appear on provider B's call. On the assignment row the
+-- lifecycle falls out for free:
+--   * CLEAR a cell → DELETE /api/scheduling/schedule-assignments deletes the
+--     whole row (mark included) and re-inserts a fresh 'open' row naming only
+--     schedule_slot_id / assignment_status / source_type, so highlight_color
+--     lands at its column default, NULL.
+--   * REASSIGN a cell → POST upserts ON CONFLICT (schedule_slot_id), which
+--     rewrites only the columns the payload names. That is NOT automatic: the
+--     route explicitly writes highlight_color = NULL in that payload, exactly
+--     as it explicitly writes validation_flags, and for the same reason —
+--     ON CONFLICT DO UPDATE leaves unnamed columns alone, so without it the
+--     previous provider's mark would survive onto the new one.
+--   * DELETE a slot or a version → ON DELETE CASCADE takes the row with it.
+-- Both behaviours are pinned by tests in
+-- src/app/api/scheduling/schedule-assignments/route.test.ts.
+--
+-- ── WHY text + CHECK, AND NOT AN ENUM, AND NOT FREE TEXT ────────────────────
+-- Free text is out on its own: a typo ('bleu', 'Blue') would be stored happily
+-- and then resolve to no colour at all in the UI — an INVISIBLE highlight,
+-- which is worse than a rejected one, because the scheduler believes the cell
+-- is marked and the physician never sees it. The constraint exists to make that
+-- impossible at the storage layer, not merely unlikely at the API layer.
+--
+-- Chosen over a Postgres enum because this is presentation vocabulary, not a
+-- clinical one. The schema's enums (assignment_status, source_type,
+-- availability_type, …) name states the engine reasons about and that must not
+-- drift. This names three swatch colours the owner picked. Adding a fourth to a
+-- CHECK is one ALTER; adding one to an enum is a type change with its own
+-- transaction rules, and REMOVING an enum value is not supported at all. The
+-- schema already precedents this for presentation values — shift_types.color_hex
+-- is plain text.
+--
+-- The three values are single-homed in src/lib/highlightColor.ts
+-- (HIGHLIGHT_COLORS) and asserted there by highlightColor.test.ts. THIS LIST AND
+-- THAT ONE MUST MATCH — a fourth colour is a code change AND a patch.
+--
+-- ── DEPLOY ORDER: PATCH FIRST, THEN PUSH ────────────────────────────────────
+-- The two directions are NOT symmetric, and only one of them can break anything.
+--
+--   PATCH FIRST, CODE LATER — safe, and the recommended order. Adding a
+--   NULLABLE column with no default is backward compatible: it rewrites no
+--   rows, every existing row reads NULL (= no mark), and the currently deployed
+--   code never names the column, so it neither reads nor writes it. Every
+--   INSERT in the codebase names its columns explicitly (there is no
+--   INSERT-without-column-list anywhere that a new column could shift), so
+--   nothing changes shape. Zero behaviour change until the code ships. The
+--   CHECK likewise validates nothing that exists: it admits NULL, and every
+--   pre-existing row is NULL.
+--
+--   CODE FIRST, PATCH LATER — the direction that matters, because new code
+--   SELECTs a column an un-patched DB does not have, and PostgREST answers that
+--   with 42703 / PGRST204 rather than ignoring it. Unmitigated, that is not a
+--   missing feature, it is a 500 on the whole grid: highlight_color rides on
+--   the ASSIGNMENTS EMBED inside the slot select, so one unknown column fails
+--   the query that fetches every cell on the page. Mitigated in three places so
+--   this window degrades instead of breaking:
+--     1. READ — the grid route walks a narrow-retry ladder
+--        (GRID_SLOT_COLUMNS → …_PRE42 → …_PRE35, route.helpers.ts). The PRE42
+--        rung drops exactly this column and nothing else, which is EXACT: a
+--        column that does not exist can hold no marks, so the grid renders with
+--        every cell unmarked — precisely the truth about that database.
+--     2. WRITE (assign) — the POST upsert names highlight_color to clear it,
+--        and retries without it on a missing-column error, so a pre-patch DB
+--        cannot turn "highlighting isn't available yet" into "you cannot assign
+--        anyone".
+--     3. WRITE (paint) — a PATCH that tries to SET a colour cannot degrade;
+--        there is nowhere to put it. That one returns 501 with a message naming
+--        this file, so the user is told to apply the patch rather than shown a
+--        raw PostgREST column error.
+--   Net: code-first leaves the app fully usable minus the new feature. Still,
+--   apply this first — the mitigations exist for the accidental ordering, not
+--   as a licence to prefer it.
+--
+-- ── IDEMPOTENT ──────────────────────────────────────────────────────────────
+-- ADD COLUMN IF NOT EXISTS + a catalog-guarded ADD CONSTRAINT. Safe to re-run
+-- any number of times: re-running adds nothing, alters nothing, and writes no
+-- rows. No data migration, no backfill, nothing to back up before applying.
+-- (ADD CONSTRAINT has no IF NOT EXISTS in Postgres, hence the DO block; a bare
+-- re-run would otherwise fail with 42710 duplicate_object.)
+--
+-- ── LOCKING ─────────────────────────────────────────────────────────────────
+-- ADD COLUMN of a nullable column with NO default is metadata-only in Postgres
+-- 11+ — no table rewrite, no per-row work, an ACCESS EXCLUSIVE lock held for
+-- microseconds. The CHECK is added on an already-populated table, but every
+-- existing value is NULL and NULL passes, so the validation scan is trivial at
+-- the measured scale (~4k assignment rows, 2026-07-27). Safe to apply live.
+--
+-- ── NO INDEX ────────────────────────────────────────────────────────────────
+-- Deliberately none. Nothing queries BY highlight_color: it is fetched as part
+-- of the assignments embed already keyed on schedule_slot_id, and written by
+-- primary key. An index here would be write overhead on a live, actively
+-- written table in exchange for a lookup no code performs. Revisit only if a
+-- "show me every marked call this block" report is ever built.
+
+ALTER TABLE scheduling.assignments
+  ADD COLUMN IF NOT EXISTS highlight_color text;
+
+COMMENT ON COLUMN scheduling.assignments.highlight_color IS
+  'Manual grid highlight set by the scheduler (patch42): blue | red | yellow, '
+  'or NULL for no mark. Presentation only — an annotation marking a call as '
+  'billable extra. No engine reads it and no rule validates against it. '
+  'Vocabulary is single-homed in src/lib/highlightColor.ts.';
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+     WHERE conname = 'assignments_highlight_color_check'
+       AND conrelid = 'scheduling.assignments'::regclass
+  ) THEN
+    ALTER TABLE scheduling.assignments
+      ADD CONSTRAINT assignments_highlight_color_check
+      CHECK (highlight_color IS NULL OR highlight_color IN ('blue', 'red', 'yellow'));
+  END IF;
+END $$;
+
+-- PostgREST serves reads and writes from a CACHED schema. Until it reloads, a
+-- select naming the new column is answered 42703 and an insert/update naming it
+-- is answered PGRST204 ("Could not find the 'highlight_color' column of
+-- 'assignments' in the schema cache") — which the app classifies as "this DB
+-- predates patch42" and silently degrades on. That would look exactly like a
+-- failed apply. Supabase's DDL event trigger normally reloads by itself; this is
+-- belt-and-braces. If the app still reports highlighting unavailable a minute
+-- after applying, run this again (or restart the API from the dashboard) BEFORE
+-- suspecting the column.
+NOTIFY pgrst, 'reload schema';
+
+-- ╔══════════════════════════════════════════════════════════════════════════╗
+-- ║ VERIFICATION — run these AFTER applying. Query 3 is the one that matters:║
+-- ║ it proves a typo cannot become an invisible colour.                      ║
+-- ╚══════════════════════════════════════════════════════════════════════════╝
+--
+-- ── (1) the column exists, is nullable, has no default ──────────────────────
+--   SELECT column_name, data_type, is_nullable, column_default
+--     FROM information_schema.columns
+--    WHERE table_schema = 'scheduling' AND table_name = 'assignments'
+--      AND column_name = 'highlight_color';
+--   -- expect: exactly one row — text / YES / NULL. A non-null default would
+--   -- mean every existing call silently acquired a mark.
+--
+-- ── (2) every pre-existing row is unmarked ──────────────────────────────────
+--   SELECT count(*) AS total,
+--          count(highlight_color) AS marked
+--     FROM scheduling.assignments;
+--   -- expect: marked = 0 immediately after applying (count() skips NULLs).
+--   -- Anything else means this patch was not the first thing to touch the
+--   -- column.
+--
+-- ── (3) THE PROOF: the CHECK actually refuses a bad value ───────────────────
+-- Do not take the constraint's existence in the catalog as evidence that it
+-- works. Run it against a real row and watch it fail.
+--   BEGIN;
+--     -- pick any assignment; nothing is kept
+--     UPDATE scheduling.assignments
+--        SET highlight_color = 'blue'
+--      WHERE id = (SELECT id FROM scheduling.assignments LIMIT 1);
+--     -- expect: UPDATE 1
+--     UPDATE scheduling.assignments
+--        SET highlight_color = 'bleu'
+--      WHERE id = (SELECT id FROM scheduling.assignments LIMIT 1);
+--     -- expect: ERROR 23514 new row for relation "assignments" violates
+--     --         check constraint "assignments_highlight_color_check"
+--     -- If this SUCCEEDS, the constraint did not apply — stop and fix it.
+--     UPDATE scheduling.assignments
+--        SET highlight_color = 'Blue'   -- case matters
+--      WHERE id = (SELECT id FROM scheduling.assignments LIMIT 1);
+--     -- expect: the same 23514.
+--     UPDATE scheduling.assignments
+--        SET highlight_color = NULL
+--      WHERE id = (SELECT id FROM scheduling.assignments LIMIT 1);
+--     -- expect: UPDATE 1 — NULL is always allowed (it is "no mark").
+--   ROLLBACK;
+--
+-- ── (4) the constraint is where it should be ────────────────────────────────
+--   SELECT conname, pg_get_constraintdef(oid)
+--     FROM pg_constraint
+--    WHERE conrelid = 'scheduling.assignments'::regclass
+--      AND conname = 'assignments_highlight_color_check';
+--   -- expect: CHECK (highlight_color IS NULL OR highlight_color = ANY
+--   --         (ARRAY['blue'::text, 'red'::text, 'yellow'::text]))
+--
+-- ── (5) end to end through the deployed app ─────────────────────────────────
+--   In the UI: open a schedule grid, RIGHT-CLICK an assigned cell, pick Blue.
+--   The cell paints immediately (strong blue + a dark inset ring — distinctly
+--   heavier than the pale automatic extra-call blue). Then:
+--     a. Reload the page — the mark is still there (it is stored, not local).
+--     b. Confirm it in the DB:
+--          SELECT a.id, p.short_display_name, ss.slot_date, a.highlight_color
+--            FROM scheduling.assignments a
+--            JOIN scheduling.schedule_slots ss ON ss.id = a.schedule_slot_id
+--            LEFT JOIN scheduling.providers p ON p.id = a.provider_id
+--           WHERE a.highlight_color IS NOT NULL
+--           ORDER BY ss.slot_date;
+--     c. REASSIGN that same cell to a different provider, then re-run (b) —
+--        the row must come back with highlight_color NULL. The mark belongs to
+--        the provider whose call it described; it must not follow the cell.
+--     d. Right-click again → Clear. The cell returns to its normal computed
+--        background (weekend gray / holiday amber / over-par red as applicable
+--        — the automatic states were only out-ranked, never overwritten).
+--
+-- ╔══════════════════════════════════════════════════════════════════════════╗
+-- ║ ROLLBACK                                                                 ║
+-- ╚══════════════════════════════════════════════════════════════════════════╝
+--
+--   ALTER TABLE scheduling.assignments
+--     DROP CONSTRAINT IF EXISTS assignments_highlight_color_check;
+--   ALTER TABLE scheduling.assignments
+--     DROP COLUMN IF EXISTS highlight_color;
+--   NOTIFY pgrst, 'reload schema';
+--
+-- DESTRUCTIVE: dropping the column discards every mark the scheduler has made,
+-- and there is no other copy of them. Deployed code keeps working — it falls
+-- back onto the PRE42 read rung and the 501 write branch, i.e. the same
+-- degraded-but-functional state as before the patch — but the marks themselves
+-- are gone for good. Export first if any exist:
+--   SELECT a.id, a.highlight_color FROM scheduling.assignments a
+--    WHERE a.highlight_color IS NOT NULL;

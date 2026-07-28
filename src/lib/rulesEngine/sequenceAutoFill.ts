@@ -303,17 +303,37 @@ async function loadCandidateSlots(
 // Revert an assignment row to an open slot. validation_flags goes to null —
 // "not validated", never a fake-clean [] the UI would read as checked-and-
 // passed (clinical invariant 6 / carried Task 8 finding).
+//
+// highlight_color goes to null for the same family of reason (2026-07-28,
+// patch42): it is the scheduler's HAND-SET "this call is billable extra" mark,
+// and it belongs to the provider whose call it described. This function is the
+// single chokepoint through which an assignment row becomes OPEN again while
+// SURVIVING as a row (both the pre-fill eviction path and the cleanup path go
+// through it; the manual DELETE route instead drops the row outright). Leaving
+// the mark behind would strand it on an unassigned cell — and worse, the fill
+// path below writes into exactly these reopened rows with an .update(), so the
+// next provider filled into this slot would inherit the previous one's billing
+// mark.
+//
+// Retried without the column on a pre-patch42 DB: a column that does not exist
+// holds no mark, so dropping it is exact — and the revert itself must never
+// fail for a presentation column, since failing it would leave a derived shift
+// wrongly assigned.
 async function revertToOpen(sb: SupabaseClient, assignmentId: string): Promise<boolean> {
-  const { error } = await sb
-    .from('assignments')
-    .update({
-      provider_id: null,
-      assignment_status: 'open',
-      source_type: 'manual',
-      assigned_at: null,
-      validation_flags: null,
-    })
-    .eq('id', assignmentId);
+  const openFields = {
+    provider_id: null,
+    assignment_status: 'open',
+    source_type: 'manual',
+    assigned_at: null,
+    validation_flags: null,
+  };
+  const revert = (fields: Record<string, unknown>) =>
+    sb.from('assignments').update(fields).eq('id', assignmentId);
+
+  let { error } = await revert({ ...openFields, highlight_color: null });
+  if (error && isMissingColumnError(error)) {
+    ({ error } = await revert(openFields));
+  }
   if (error) {
     console.error(`[sequenceAutoFill] failed to revert assignment ${assignmentId} to open: ${error.message}`);
     return false;
