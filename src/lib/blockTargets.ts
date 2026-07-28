@@ -25,8 +25,13 @@
 // comes from `owedUnitsFor` — the same function the solver's steering tier and
 // the generation banner's shortfall report call. The panel's default and the
 // engine's default therefore cannot drift: Paoli's live bands
-// ([{minFte:0.75,units:1},{minFte:0,units:0.5}]) give a 0.75+ doc one weekend
-// and a 0.5 FTE doc one weekend DAY, which is his rule stated as data.
+// ([{minFte:0.6,units:1},{minFte:0,units:0.5}]) give a 0.6+ doc one full neuro
+// weekend and anyone below one weekend DAY, which is his rule stated as data:
+// "every call taker should be given a neuro weekend call, except for horan".
+// The boundary moved 0.75 -> 0.6 on 2026-07-27 (patch40) because at 0.75 it
+// created a SECOND exception nobody asked for — Hussain is 0.66 FTE (a third
+// of his time is ICU) and fell in with Horan. Do not restate these numbers
+// anywhere: this module reads the live config, and its tests assert 0.6.
 //
 // BLANK MEANS DERIVED (the Limits-tab convention, providerLimits.ts). He
 // overrides ~4 people out of ~10; a panel that made him type nine numbers for
