@@ -18,6 +18,7 @@ vi.mock('@/lib/rulesEngine/commit', () => ({
 }));
 
 import { PATCH } from './route';
+import { buildBlockManifest, zeroBuckets } from '@/lib/blockTargets';
 
 function setup(over: Record<string, unknown> = {}) {
   const { sb, calls } = makeFakeSupabase({
@@ -218,6 +219,81 @@ describe('PATCH /api/scheduling/schedules/:id — schedule_name rename', () => {
     const written = updateArgs(calls)[0];
     expect(written.schedule_name).toBe('New Name');
     expect(written.notes).toBe('kept');
+  });
+});
+
+// ── scenario_manifest hardening (2026-07-27, Block Targets panel) ────────────
+// The stakes are higher than the other two hardened keys: projectScenario
+// rejects the WHOLE manifest on any validation failure and generates WITHOUT
+// the scenario, so an unvalidated write is a schedule that silently ignores
+// every number the owner entered. Validate BEFORE the write; store VERBATIM
+// (the patch37 "artifact as authored" decision — normalizing would strip the
+// panel's additive `blockTargets` sidecar, which zod's non-strict object drops
+// on parse).
+describe('PATCH /api/scheduling/schedules/:id — scenario_manifest hardening', () => {
+  const updateArgs = (calls: ReturnType<typeof setup>['calls']) =>
+    callsFor(calls, 'schedules', 'update').map(c => c.args[0] as Record<string, unknown>);
+
+  const validManifest = () => buildBlockManifest({
+    providers: [{ providerId: 'prov-1', displayName: 'Horan', fte: 0.5, overrides: { SAT_C1: 1 } }],
+    basis: { slotCounts: { ...zeroBuckets(), MTH_C1: 44, SAT_C1: 11 }, parLevel: 11, neuro: null },
+    generatedAt: '2026-07-27T12:00:00.000Z',
+  });
+
+  it('rejects a malformed manifest with 400 + the validation errors, and writes nothing', async () => {
+    const { calls } = setup();
+    const { res, json } = await patch({ scenario_manifest: { not: 'a manifest' } });
+    expect(res.status).toBe(400);
+    expect(json.error).toMatch(/scenario_manifest/);
+    expect(json.errors.length).toBeGreaterThan(0);
+    expect(updateArgs(calls)).toHaveLength(0);
+  });
+
+  it('rejects a manifest broken in ONE field (the engine would drop the whole thing)', async () => {
+    const broken = validManifest() as unknown as Record<string, unknown>;
+    (broken.providers as Array<{ targets: Record<string, unknown> }>)[0].targets.SAT_C1 = 'one';
+    const { calls } = setup();
+    const { res, json } = await patch({ scenario_manifest: broken });
+    expect(res.status).toBe(400);
+    expect(json.errors.join(' ')).toMatch(/SAT_C1/);
+    expect(updateArgs(calls)).toHaveLength(0);
+  });
+
+  it('rejects a non-object manifest', async () => {
+    for (const bad of ['{}', 42, []]) {
+      const { calls } = setup();
+      const { res } = await patch({ scenario_manifest: bad });
+      expect(res.status).toBe(400);
+      expect(updateArgs(calls)).toHaveLength(0);
+    }
+  });
+
+  it('writes a valid manifest VERBATIM — the panel sidecar survives the round trip', async () => {
+    const { calls } = setup();
+    const manifest = validManifest();
+    const { res } = await patch({ scenario_manifest: manifest, notes: 'rides along' });
+    expect(res.status).toBe(200);
+    const written = updateArgs(calls);
+    expect(written).toHaveLength(1);
+    expect(written[0].scenario_manifest).toEqual(manifest);
+    // The sidecar is NOT part of paoliBlockManifestSchema (a non-strict object
+    // strips it on parse) — storing the parsed copy would have lost it.
+    expect((written[0].scenario_manifest as { blockTargets?: unknown }).blockTargets)
+      .toEqual(manifest.blockTargets);
+    expect(written[0].notes).toBe('rides along');
+  });
+
+  it('null clears the manifest', async () => {
+    const { calls } = setup();
+    const { res } = await patch({ scenario_manifest: null });
+    expect(res.status).toBe(200);
+    expect(updateArgs(calls)[0].scenario_manifest).toBeNull();
+  });
+
+  it('a PATCH without the key is untouched', async () => {
+    const { calls } = setup();
+    await patch({ notes: 'edit' });
+    expect('scenario_manifest' in updateArgs(calls)[0]).toBe(false);
   });
 });
 

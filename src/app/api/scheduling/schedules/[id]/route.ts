@@ -3,6 +3,7 @@ import { sbSchedulingServer } from '@/lib/supabaseScheduling';
 import { publishRevalidation, type PublishValidationSummary } from '@/lib/rulesEngine/commit';
 import { parseProviderLimits } from '@/lib/providerLimits';
 import { parseScheduleName } from '@/lib/scheduleName';
+import { validateManifest } from '@/lib/paoliBlock/manifest';
 
 // Never prerender — this route hits Supabase per request.
 export const dynamic = 'force-dynamic';
@@ -77,6 +78,32 @@ export async function PATCH(
       return NextResponse.json({ error: parsed.error }, { status: 400 });
     }
     (body as Record<string, unknown>).schedule_name = parsed.value;
+  }
+
+  // scenario_manifest hardening (2026-07-27, the Block Targets panel): same
+  // route-hardening style. This one matters more than most — projectScenario
+  // rejects the WHOLE manifest on ANY validation failure and generates
+  // WITHOUT the scenario, so an unvalidated write means a schedule that
+  // silently ignores every target, prohibition and linkage the owner entered.
+  // Validated BEFORE any write; a bad shape is a 400 carrying the zod issues.
+  //
+  // Written VERBATIM, never normalized (contrast provider_limits): the patch37
+  // storage decision is that this column holds the artifact AS AUTHORED, and
+  // paoliBlockManifestSchema is a non-strict zod object, so writing the parsed
+  // copy would silently strip additive keys — the panel's `blockTargets`
+  // derived-vs-overridden sidecar first among them. null clears.
+  if (body && typeof body === 'object' && 'scenario_manifest' in body) {
+    const raw = (body as Record<string, unknown>).scenario_manifest;
+    if (raw !== null && raw !== undefined) {
+      const parsed = validateManifest(raw);
+      if (!parsed.ok) {
+        return NextResponse.json({
+          error: `scenario_manifest is not a valid block manifest — the engine would reject it and `
+            + `generate WITHOUT the scenario: ${parsed.errors.slice(0, 3).join('; ')}`,
+          errors: parsed.errors,
+        }, { status: 400 });
+      }
+    }
   }
 
   const { data, error } = await sb
