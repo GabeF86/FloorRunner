@@ -19,6 +19,7 @@
 
 import { useMemo, useState } from 'react';
 import type { BucketKey, Linkage } from '@/lib/paoliBlock/manifest';
+import type { StrandedEdits } from '@/lib/blockTargetsPanel';
 import {
   checkFeasibility,
   derivedTargetsFor,
@@ -83,9 +84,15 @@ export interface BlockTargetsTabProps {
   setImportAcknowledged: (v: boolean) => void;
   /** Stored manifest rows with no provider id — reported, never silent. */
   droppedUnidentified: string[];
+  /** Something is stored but no rows could be read from it (garbage jsonb, a
+   * foreign shape, an empty providers list). Gated like `imported`. */
+  unreadable: boolean;
+  /** Typed cells and split partners the pool selection has stranded. */
+  stranded: StrandedEdits;
   hasStoredManifest: boolean;
   dirty: boolean;
   onClearAll: () => void;
+  onCancelClear: () => void;
   clearRequested: boolean;
   /** buildBlockManifest's own errors (blank / duplicate provider ids). */
   manifestErrors: string[];
@@ -95,7 +102,8 @@ export function BlockTargetsTab(props: BlockTargetsTabProps) {
   const {
     liveRows, rows, basis, cellText, setCellText, commitRows, state,
     imported, importAcknowledged, setImportAcknowledged, droppedUnidentified,
-    hasStoredManifest, dirty, onClearAll, clearRequested, manifestErrors,
+    unreadable, stranded, hasStoredManifest, dirty, onClearAll, onCancelClear,
+    clearRequested, manifestErrors,
   } = props;
 
   const [expanded, setExpanded] = useState(false);
@@ -176,9 +184,11 @@ export function BlockTargetsTab(props: BlockTargetsTabProps) {
       {imported && (
         <Notice tone="warn">
           <strong>These targets came from a workbook import, not this panel.</strong>{' '}
-          Saving replaces that manifest with what is shown here. Everything the panel cannot
-          edit (no-call dates, fixed assignments, preferences) is carried through untouched,
-          but every stated number is treated as typed.
+          Saving replaces that manifest with what is shown here. No-call dates, fixed
+          assignments and preferences are carried through untouched, and every stated number
+          is treated as typed — but the workbook&rsquo;s own audit trail does NOT survive:
+          its expected-vs-computed checksums, its import conflicts and the raw source text
+          behind each constraint are replaced by this panel&rsquo;s.
           <label style={{ display: 'flex', alignItems: 'center', gap: 7, marginTop: 7, cursor: 'pointer' }}>
             <input
               type="checkbox"
@@ -190,6 +200,37 @@ export function BlockTargetsTab(props: BlockTargetsTabProps) {
           </label>
         </Notice>
       )}
+      {unreadable && (
+        <Notice tone="danger">
+          <strong>Something is stored in this schedule&rsquo;s block targets, but none of it could
+          be read</strong> — it is not a manifest this panel understands (a foreign shape, an
+          empty provider list, or damaged data). Saving REPLACES it with what is shown here,
+          and whatever it held is gone.
+          <label style={{ display: 'flex', alignItems: 'center', gap: 7, marginTop: 7, cursor: 'pointer' }}>
+            <input
+              type="checkbox"
+              checked={importAcknowledged}
+              onChange={e => setImportAcknowledged(e.target.checked)}
+              style={{ accentColor: 'var(--danger)', width: 14, height: 14 }}
+            />
+            <span style={{ fontWeight: 700 }}>I understand — let me replace it</span>
+          </label>
+        </Notice>
+      )}
+      {stranded.cellProviderIds.length > 0 && (
+        <Notice tone="warn">
+          {stranded.cellProviderIds.length} provider(s) have targets you typed but are no longer
+          in the call pool, so their numbers are NOT in what will be saved. Re-check them on the
+          Pool tab to keep those numbers.
+        </Notice>
+      )}
+      {stranded.orphanedSplits.map((o, i) => (
+        <Notice key={`orphan-${i}`} tone="warn">
+          <strong>{o.displayName}&rsquo;s 12-hour split names {o.partner}, who is not in the call
+          pool.</strong> {o.displayName} keeps their half; the other 12 hours belong to nobody.
+          Re-check {o.partner}, or remove the linkage.
+        </Notice>
+      ))}
       {droppedUnidentified.length > 0 && (
         <Notice tone="warn">
           The stored manifest has {droppedUnidentified.length} row(s) with no matching provider
@@ -201,6 +242,12 @@ export function BlockTargetsTab(props: BlockTargetsTabProps) {
         <Notice tone="danger">
           <strong>Block targets will be CLEARED on save.</strong> The engine will fall back to
           its ordinary FTE quota for every provider.
+          <button
+            onClick={onCancelClear}
+            style={{
+              ...tinyBtn, marginLeft: 8, color: 'var(--danger)', borderColor: 'var(--danger)',
+            }}
+          >keep them instead</button>
         </Notice>
       )}
 
@@ -293,7 +340,7 @@ export function BlockTargetsTab(props: BlockTargetsTabProps) {
                     return (
                       <span
                         key={b}
-                        title={`Claimed by a linkage — ${links.filter(l => l.kind === 'either-or').map(describeLinkage).join('; ')}.\nThe engine caps the whole group at one call, so this bucket is held at 0. Type a number here only if you mean to raise that group ceiling.`}
+                        title={`Claimed by a linkage — ${links.filter(l => l.kind === 'either-or').map(describeLinkage).join('; ')}.\nThe engine caps the whole GROUP at one call, so this bucket is held at 0 and is not edited on its own. Remove the linkage (× on the chip below) to get this cell back.`}
                         style={{
                           display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 3,
                           height: 25, borderRadius: 6, fontSize: 12,

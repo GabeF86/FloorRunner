@@ -67,9 +67,12 @@ function render(
       importAcknowledged={false}
       setImportAcknowledged={() => {}}
       droppedUnidentified={[]}
+      unreadable={false}
+      stranded={{ cellProviderIds: [], orphanedSplits: [] }}
       hasStoredManifest={false}
       dirty={false}
       onClearAll={() => {}}
+      onCancelClear={() => {}}
       clearRequested={false}
       manifestErrors={[]}
       {...over}
@@ -104,6 +107,12 @@ describe('BlockTargetsTab', () => {
     // The either-or's buckets are rendered as CLAIMED, not as editable cells —
     // the whole point (an editable 0.66 there would double the group ceiling).
     expect(html).toContain('⇄ 0');
+    // COUNT the inputs, because `toContain('⇄ 0')` alone would still pass if
+    // the claimed cell regressed into <input placeholder="⇄ 0">. Collapsed = 4
+    // visible columns × 4 rows = 16 cells, minus Hussain's 2 claimed ones = 14,
+    // plus zero checkboxes in this state.
+    const inputCount = (html.match(/<input/g) ?? []).length;
+    expect(inputCount).toBe(14);
     // Under-coverage is stated as normal, never as an error.
     expect(html).toContain('paid pickups');
     expect(html).not.toContain('Over-constrained');
@@ -114,6 +123,34 @@ describe('BlockTargetsTab', () => {
     const html = render(rows, {}, { imported: true, hasStoredManifest: true, dirty: true });
     expect(html).toContain('came from a workbook import');
     expect(html).toContain('let me overwrite the imported manifest');
+  });
+
+  it('warns before replacing a stored manifest it could not read', () => {
+    const rows = buildPanelRows({ pool: POOL, storedManifest: null }).rows;
+    const html = render(rows, {}, { unreadable: true, hasStoredManifest: true, dirty: true });
+    expect(html).toContain('none of it could');
+    expect(html).toContain('let me replace it');
+    // It must NOT be described as a workbook import — that would be a guess.
+    expect(html).not.toContain('came from a workbook import');
+  });
+
+  it('surfaces edits the pool selection has stranded, including half a 12h split', () => {
+    const rows = buildPanelRows({ pool: POOL, storedManifest: null }).rows;
+    const html = render(rows, {}, {
+      stranded: {
+        cellProviderIds: ['p-gone'],
+        orphanedSplits: [{ providerId: 'p-horan', displayName: 'Horan', partner: 'Havildar' }],
+      },
+    });
+    expect(html).toContain('are NOT in what will be saved');
+    expect(html).toContain('the other 12 hours belong to nobody');
+  });
+
+  it('offers a way back out of "clear all targets"', () => {
+    const rows = buildPanelRows({ pool: POOL, storedManifest: null }).rows;
+    const html = render(rows, {}, { clearRequested: true, hasStoredManifest: true });
+    expect(html).toContain('will be CLEARED on save');
+    expect(html).toContain('keep them instead');
   });
 
   it('calls out an over-constrained bucket', () => {

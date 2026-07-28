@@ -165,10 +165,27 @@ export function parseTargetCell(raw: string): TargetCellParse {
   return { ok: true, value: n };
 }
 
-/** Every cell whose text will not parse. Save is blocked while this is
- * non-empty — never silently drop a value he typed. */
-export function invalidCellKeys(cellText: Readonly<Record<string, string>>): string[] {
+/** The provider id half of a cellText key. */
+export function providerIdOfCellKey(key: string): string {
+  const i = key.lastIndexOf('|');
+  return i < 0 ? key : key.slice(0, i);
+}
+
+/**
+ * Every cell whose text will not parse. Save is blocked while this is
+ * non-empty — never silently drop a value he typed.
+ *
+ * SCOPED, because cellText is keyed by provider and outlives the row: when a
+ * provider leaves the pool their row disappears but their cells do not, and an
+ * unscoped scan would then block Save over a cell that is nowhere on screen to
+ * fix. Only cells belonging to a rendered row can block.
+ */
+export function invalidCellKeys(
+  cellText: Readonly<Record<string, string>>,
+  providerIds?: ReadonlySet<string>,
+): string[] {
   return Object.keys(cellText)
+    .filter(k => (providerIds ? providerIds.has(providerIdOfCellKey(k)) : true))
     .filter(k => !parseTargetCell(cellText[k] ?? '').ok)
     .sort();
 }
@@ -234,10 +251,19 @@ export interface PanelRow extends BlockTargetsProvider {
 
 export interface PanelRowsResult {
   rows: PanelRow[];
-  /** True when a manifest is stored and did NOT come from this panel. */
+  /** True when a READABLE manifest is stored that did NOT come from this panel. */
   imported: boolean;
-  /** True when anything at all is stored. */
+  /**
+   * True when the column holds ANYTHING — read off the raw value, never off
+   * the row count. A manifest whose `providers` is missing, not an array or
+   * empty yields zero rows, and treating that as "nothing stored" would hide
+   * both the overwrite warning and the clear button, letting one edit
+   * overwrite a column whose contents were never understood.
+   */
   hasStoredManifest: boolean;
+  /** Stored, non-null, but no rows could be read from it. Gated exactly like
+   * `imported`: it is not the panel's to overwrite without being told. */
+  unreadable: boolean;
   /** Stored provider rows with no provider id — unmatchable, so they are
    * dropped rather than round-tripped. Surfaced, never silent. */
   droppedUnidentified: string[];
@@ -259,8 +285,9 @@ export function buildPanelRows(opts: {
   nameFor?: (providerId: string) => string | null;
 }): PanelRowsResult {
   const storedRows = readPanelProviders(opts.storedManifest);
-  const hasStoredManifest = storedRows.length > 0;
-  const imported = hasStoredManifest && !isPanelAuthored(opts.storedManifest);
+  const hasStoredManifest = opts.storedManifest != null;
+  const unreadable = hasStoredManifest && storedRows.length === 0;
+  const imported = hasStoredManifest && !unreadable && !isPanelAuthored(opts.storedManifest);
 
   const storedById = new Map<string, BlockTargetsProvider>();
   const droppedUnidentified: string[] = [];
@@ -304,7 +331,133 @@ export function buildPanelRows(opts: {
     });
   }
 
-  return { rows, imported, hasStoredManifest, droppedUnidentified };
+  return { rows, imported, hasStoredManifest, unreadable, droppedUnidentified };
+}
+
+// ── stranded edits, dirtiness, and the write decision ────────────────────────
+
+export interface OrphanedSplit {
+  providerId: string;
+  displayName: string;
+  partner: string;
+}
+
+export interface StrandedEdits {
+  /** Providers with typed cells but NO row on the panel — their numbers would
+   * be dropped on save without a word. */
+  cellProviderIds: string[];
+  /** split-12h linkages whose named partner is no longer a row. The linkage
+   * and the initiator's 0.5 survive; the other half of the call belongs to
+   * nobody, and neither resolveTargets nor projectScenario can see it. */
+  orphanedSplits: OrphanedSplit[];
+}
+
+/** Edits that no longer belong to any visible row — always surfaced, never
+ * silently discarded (the pool selection can strand them at any time). */
+export function strandedEdits(
+  rows: readonly PanelRow[],
+  cellText: Readonly<Record<string, string>>,
+): StrandedEdits {
+  const present = new Set(rows.map(r => r.providerId));
+  const names = new Set(rows.map(r => r.displayName.trim().toLowerCase()));
+  const cellProviderIds = [...new Set(
+    Object.entries(cellText)
+      .filter(([, v]) => v.trim() !== '')
+      .map(([k]) => providerIdOfCellKey(k))
+      .filter(pid => !present.has(pid)),
+  )].sort();
+
+  const orphanedSplits: OrphanedSplit[] = [];
+  for (const row of rows) {
+    for (const l of row.linkages ?? []) {
+      if (l.kind !== 'split-12h') continue;
+      for (const partner of l.members.slice(1)) {
+        if (!names.has(partner.trim().toLowerCase())) {
+          orphanedSplits.push({ providerId: row.providerId, displayName: row.displayName, partner });
+        }
+      }
+    }
+  }
+  return { cellProviderIds, orphanedSplits };
+}
+
+/**
+ * A stable signature of everything the panel would WRITE. Dirtiness is this
+ * compared against the signature taken at seed time — never a one-way latch:
+ * typing a value and deleting it again must not leave the panel armed to write
+ * a manifest, because a written manifest states a hard ceiling for EVERY
+ * provider in it, not just the ones he touched.
+ *
+ * Cells are counted whether or not their row is currently rendered (an edit
+ * stranded by a pool change is still an edit), and linkages come off the rows,
+ * so pool membership alone never moves the signature.
+ */
+export function targetEditFingerprint(
+  rows: readonly PanelRow[],
+  cellText: Readonly<Record<string, string>>,
+): string {
+  const cells = Object.entries(cellText)
+    .map(([k, v]) => [k, v.trim()] as const)
+    .filter(([, v]) => v !== '')
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+  const links = rows
+    .filter(r => (r.linkages?.length ?? 0) > 0)
+    .map(r => [r.providerId, r.linkages] as const)
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+  return JSON.stringify({ cells, links });
+}
+
+export type TargetWriteAction = 'omit' | 'clear' | 'manifest';
+
+export interface TargetWritePlan {
+  /** 'omit' = do not send the key at all; 'clear' = send null; 'manifest' =
+   * send the built artifact. */
+  write: TargetWriteAction;
+  /** Non-null = Save must be disabled, and this is why (shown as the button's
+   * title). */
+  blocked: string | null;
+}
+
+/**
+ * Whether this save touches scenario_manifest, and whether it may proceed.
+ *
+ * Lifted out of the component deliberately: this is the entire guarantee
+ * behind "a pool-only save never rewrites a stored manifest" and "a failed
+ * fetch never clobbers one", and it belongs next to a test like every other
+ * decision the panel makes.
+ */
+export function targetWritePlan(input: {
+  manifestState: 'loading' | 'ready' | 'failed';
+  dirty: boolean;
+  clearRequested: boolean;
+  imported: boolean;
+  unreadable: boolean;
+  importAcknowledged: boolean;
+  invalidCellCount: number;
+  manifestErrors: readonly string[];
+}): TargetWritePlan {
+  // Never write what was never read. A load that failed or has not landed
+  // leaves the column exactly as it is.
+  if (input.manifestState !== 'ready') return { write: 'omit', blocked: null };
+  if (!input.dirty && !input.clearRequested) return { write: 'omit', blocked: null };
+
+  const needsAck = input.imported || input.unreadable;
+  if (needsAck && !input.importAcknowledged) {
+    return {
+      write: input.clearRequested ? 'clear' : 'manifest',
+      blocked: input.unreadable
+        ? 'The stored block targets could not be read — acknowledge replacing them on the Block Targets tab first'
+        : 'Acknowledge overwriting the imported manifest on the Block Targets tab first',
+    };
+  }
+  if (input.clearRequested) return { write: 'clear', blocked: null };
+  if (input.invalidCellCount > 0) {
+    return { write: 'manifest', blocked: 'Fix the highlighted block-target values (numbers ≥ 0)' };
+  }
+  if (input.manifestErrors.length > 0) {
+    return { write: 'manifest', blocked: input.manifestErrors[0] };
+  }
+  return { write: 'manifest', blocked: null };
 }
 
 // ── column plan ──────────────────────────────────────────────────────────────

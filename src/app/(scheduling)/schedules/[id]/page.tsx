@@ -68,6 +68,7 @@ import {
 } from '@/lib/blockTargets';
 import {
   buildPanelRows, cellTextFromRows, invalidCellKeys, rowsWithCellText,
+  strandedEdits, targetEditFingerprint, targetWritePlan,
   type PanelRow, type PoolMember,
 } from '@/lib/blockTargetsPanel';
 import { BlockTargetsTab } from './BlockTargetsTab';
@@ -2750,7 +2751,6 @@ function PoolSelectorModal({
   const [storedManifest, setStoredManifest] = useState<unknown>(null);
   const [cellText, setCellText] = useState<Record<string, string>>({});
   const [linkageEdits, setLinkageEdits] = useState<Record<string, PanelRow['linkages']>>({});
-  const [targetsDirty, setTargetsDirty] = useState(false);
   const [importAcknowledged, setImportAcknowledged] = useState(false);
   const [clearTargets, setClearTargets] = useState(false);
 
@@ -2908,8 +2908,8 @@ function PoolSelectorModal({
   // intersected with the call-taker criterion, exactly the way the engine
   // narrows it (pool selection NARROWS, never widens — 2026-07-21). Day docs
   // in the pool have no call targets and would only be noise here.
-  const callPool: PoolMember[] = useMemo(() => providers
-    .filter(p => checked.has(p.id))
+  const poolMembersFor = useCallback((ids: ReadonlySet<string>): PoolMember[] => providers
+    .filter(p => ids.has(p.id))
     .filter(p => {
       const prof = profileByPid.get(p.id);
       return !!(prof?.call_taker || prof?.partial_call_taker);
@@ -2923,25 +2923,45 @@ function PoolSelectorModal({
       // fte_value for the generation. Coercing differently here would let a 0
       // or null profile FTE reach the engine as a real 0 and zero every target.
       profileFte: profileByPid.get(p.id)?.fte_value || 1,
-    })), [providers, checked, profileByPid]);
+    })), [providers, profileByPid]);
+
+  const nameForPid = useCallback((pid: string): string | null => {
+    const p = providers.find(x => x.id === pid);
+    return p ? (p.last_name || p.short_display_name) : null;
+  }, [providers]);
+
+  const callPool: PoolMember[] = useMemo(
+    () => poolMembersFor(checked), [poolMembersFor, checked]);
 
   // The wiring the data layer specifies: weighted per-bucket capacity from the
   // block's own slots, the STORED par (authoritative — never clamped to the
   // pool's ΣFTE), and the site pattern's neuro bands.
   const targetsBasis: DerivationBasis = useMemo(() => ({
-    slotCounts: bucketSlotCounts(blockSlots),
+    // The site's OWN neuro code, not the C1/C2/C3 default: a site whose
+    // neuroWeekend.code is not 'C3' would otherwise have every neuro slot fall
+    // out of the census, NEURO_FSS capacity read 0, and the feasibility strip
+    // report a permanently over-constrained bucket on a perfectly feasible block.
+    slotCounts: bucketSlotCounts(blockSlots, { neuroCode: neuroWeekend?.code }),
     parLevel,
     neuro: neuroWeekend,
   }), [blockSlots, parLevel, neuroWeekend]);
 
-  const panelRows = useMemo(() => buildPanelRows({
-    pool: callPool,
-    storedManifest,
-    nameFor: pid => {
-      const p = providers.find(x => x.id === pid);
-      return p ? (p.last_name || p.short_display_name) : null;
-    },
-  }), [callPool, storedManifest, providers]);
+  const panelRows = useMemo(
+    () => buildPanelRows({ pool: callPool, storedManifest, nameFor: nameForPid }),
+    [callPool, storedManifest, nameForPid]);
+
+  // The rows a save would write for an ARBITRARY pool selection. "Use Default
+  // Pool" discards the current selection, so the manifest it writes must
+  // describe the DEFAULT pool — not the one being thrown away.
+  const liveRowsForSelection = useCallback((ids: ReadonlySet<string>): PanelRow[] => {
+    const base = buildPanelRows({
+      pool: poolMembersFor(ids), storedManifest, nameFor: nameForPid,
+    });
+    const withLinkages = base.rows.map(r => (linkageEdits[r.providerId]
+      ? { ...r, linkages: linkageEdits[r.providerId] }
+      : r));
+    return rowsWithCellText(withLinkages, cellText);
+  }, [poolMembersFor, storedManifest, nameForPid, linkageEdits, cellText]);
 
   // Rows are DERIVED (pool + stored manifest + his linkage edits) rather than
   // held in state, so toggling the pool on the Pool tab can never leave a
@@ -2956,15 +2976,34 @@ function PoolSelectorModal({
     () => rowsWithCellText(targetRows, cellText), [targetRows, cellText]);
 
   // Seed the typed cells ONCE, when the stored manifest lands. Re-seeding on
-  // every rebuild would overwrite whatever he is in the middle of typing.
+  // every rebuild would overwrite whatever he is in the middle of typing. The
+  // signature taken here is what "dirty" is measured against.
   const targetsSeeded = useRef(false);
+  const seededFingerprint = useRef<string>('');
   useEffect(() => {
     if (manifestState !== 'ready' || targetsSeeded.current) return;
     targetsSeeded.current = true;
-    setCellText(cellTextFromRows(panelRows.rows));
+    const seeded = cellTextFromRows(panelRows.rows);
+    seededFingerprint.current = targetEditFingerprint(panelRows.rows, seeded);
+    setCellText(seeded);
   }, [manifestState, panelRows]);
 
-  const invalidTargetCells = useMemo(() => invalidCellKeys(cellText), [cellText]);
+  // Dirty by COMPARISON, never a latch: typing a value and deleting it again
+  // must leave the panel disarmed, because writing a manifest states a hard
+  // ceiling for every provider in it — not only the ones he touched.
+  const targetsDirty = targetsSeeded.current
+    && targetEditFingerprint(targetRows, cellText) !== seededFingerprint.current;
+
+  // Only cells belonging to a RENDERED row can block the save — an invalid
+  // cell for a provider who has since left the pool is nowhere to fix.
+  const visibleTargetIds = useMemo(
+    () => new Set(targetRows.map(r => r.providerId)), [targetRows]);
+  const invalidTargetCells = useMemo(
+    () => invalidCellKeys(cellText, visibleTargetIds), [cellText, visibleTargetIds]);
+
+  // Edits the pool selection has stranded — reported, never dropped in silence.
+  const strandedTargetEdits = useMemo(
+    () => strandedEdits(targetRows, cellText), [targetRows, cellText]);
 
   // Built from exactly the rows the panel shows, so what he reviews is what
   // gets written (only `generatedAt` is refreshed at save time).
@@ -2976,23 +3015,29 @@ function PoolSelectorModal({
     }).errors;
   }, [manifestState, clearTargets, liveTargetRows, targetsBasis, scheduleLabel, blockStartYear]);
 
-  const wantsTargetWrite = targetsDirty || clearTargets;
-  const targetsBlocked = wantsTargetWrite && (
-    (panelRows.imported && !importAcknowledged)
-    || (!clearTargets && (invalidTargetCells.length > 0 || targetsManifestErrors.length > 0))
-  );
+  // The whole scenario_manifest decision, single-homed and tested.
+  const targetPlan = targetWritePlan({
+    manifestState,
+    dirty: targetsDirty,
+    clearRequested: clearTargets,
+    imported: panelRows.imported,
+    unreadable: panelRows.unreadable,
+    importAcknowledged,
+    invalidCellCount: invalidTargetCells.length,
+    manifestErrors: targetsManifestErrors,
+  });
+  const wantsTargetWrite = targetPlan.write !== 'omit';
+  const targetsBlocked = targetPlan.blocked !== null;
 
   const commitTargetRows = (next: PanelRow[]) => {
     const edits: Record<string, PanelRow['linkages']> = {};
     for (const r of next) edits[r.providerId] = r.linkages ?? [];
     setLinkageEdits(edits);
     setClearTargets(false);
-    setTargetsDirty(true);
   };
   const editCellText = (next: Record<string, string>) => {
     setCellText(next);
     setClearTargets(false);
-    setTargetsDirty(true);
   };
 
   const save = async (asDefault: boolean) => {
@@ -3023,9 +3068,11 @@ function PoolSelectorModal({
       // (or asked to clear them). A manifest steers the whole generation, so a
       // pool-only save must leave a stored one exactly as it was. A failed
       // fetch omits the key for the same reason the limits one does.
-      if (manifestState === 'ready' && wantsTargetWrite) {
-        body.scenario_manifest = clearTargets ? null : buildBlockManifest({
-          providers: liveTargetRows,
+      if (targetPlan.write === 'clear') {
+        body.scenario_manifest = null;
+      } else if (targetPlan.write === 'manifest') {
+        body.scenario_manifest = buildBlockManifest({
+          providers: liveRowsForSelection(asDefault ? defaultSelection : checked),
           basis: targetsBasis,
           scheduleLabel,
           defaultYear: blockStartYear,
@@ -3350,10 +3397,13 @@ function PoolSelectorModal({
             importAcknowledged={importAcknowledged}
             setImportAcknowledged={setImportAcknowledged}
             droppedUnidentified={panelRows.droppedUnidentified}
+            unreadable={panelRows.unreadable}
+            stranded={strandedTargetEdits}
             hasStoredManifest={panelRows.hasStoredManifest}
             dirty={targetsDirty}
             clearRequested={clearTargets}
-            onClearAll={() => { setClearTargets(true); setTargetsDirty(true); }}
+            onClearAll={() => setClearTargets(true)}
+            onCancelClear={() => setClearTargets(false)}
             manifestErrors={targetsManifestErrors}
           />
         )}
@@ -3380,11 +3430,7 @@ function PoolSelectorModal({
               disabled={saving || totalSelected === 0 || hasInvalidLimit || targetsBlocked}
               title={
                 hasInvalidLimit ? 'Fix the highlighted limit values (whole numbers ≥ 0)'
-                : invalidTargetCells.length > 0 ? 'Fix the highlighted block-target values (numbers ≥ 0)'
-                : targetsManifestErrors.length > 0 ? targetsManifestErrors[0]
-                : (panelRows.imported && !importAcknowledged && wantsTargetWrite)
-                  ? 'Acknowledge overwriting the imported manifest on the Block Targets tab first'
-                  : undefined}
+                : targetPlan.blocked ?? undefined}
               style={{
                 padding: '7px 16px', fontSize: 12.5, fontWeight: 700, border: 'none', borderRadius: 8,
                 background: 'linear-gradient(135deg,#0ea5e9,#6366f1)',

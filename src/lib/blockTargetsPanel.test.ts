@@ -39,7 +39,10 @@ import {
   overridesFromCellText,
   parseTargetCell,
   rowsWithCellText,
+  strandedEdits,
   summarizePanel,
+  targetEditFingerprint,
+  targetWritePlan,
   type PanelRow,
   type PoolMember,
 } from './blockTargetsPanel';
@@ -192,6 +195,31 @@ describe('cellText ↔ overrides', () => {
       { providerId: 'p1', displayName: 'X', fte: 1, overrides: overridesFromCellText('p1', text) },
       BASIS,
     ).overridden).toEqual(['FRI_C2']);
+  });
+
+  it('a typed ZERO survives the whole save → reopen → seed round trip', () => {
+    // Half of "blank means derived" is that a typed 0 is NOT blank. A
+    // truthiness check anywhere on this path (cellTextFromRows' guard most of
+    // all) would silently turn every stated zero back into a derived cell on
+    // the next open, with no other test failing.
+    const stored = buildBlockManifest({
+      providers: [{
+        providerId: 'p-horan', displayName: 'Horan', fte: 0.5,
+        overrides: { FRI_C2: 0, SAT_C1: 1 },
+      }],
+      basis: BASIS,
+    });
+    expect(stored.providers[0].targets.FRI_C2).toBe(0);
+    const reopened = buildPanelRows({ pool: POOL, storedManifest: stored });
+    const horan = reopened.rows.find(r => r.providerId === 'p-horan')!;
+    expect(horan.overrides).toEqual({ FRI_C2: 0, SAT_C1: 1 });
+    const text = cellTextFromRows(reopened.rows);
+    expect(text[cellKey('p-horan', 'FRI_C2')]).toBe('0');
+    // …and it is still an OVERRIDE, not a blank that re-derives to 0.5.
+    const live = rowsWithCellText(reopened.rows, text);
+    const res = resolveTargets(live.find(r => r.providerId === 'p-horan')!, BASIS);
+    expect(res.targets.FRI_C2).toBe(0);
+    expect(res.overridden).toContain('FRI_C2');
   });
 
   it('cellTextFromRows seeds only the typed cells, so everything else re-derives', () => {
@@ -416,14 +444,34 @@ describe('columnPlan', () => {
   });
 
   it('the real collapsed panel for his block hides nothing that matters', () => {
-    // His four overridden rows, collapsed. Every typed cell is a weekend C1,
-    // so nothing is forced — and nothing typed is hidden.
+    // His four overridden rows, collapsed. Every typed cell here is a weekend
+    // C1 — all PRIMARY — so this alone cannot exercise the force-show rule:
+    // asserted explicitly so the weak half of this test cannot be mistaken for
+    // the strong one.
     const rows = statedRows();
     const resolved = rows.map(r => resolveTargets(r, BASIS));
     const plan = columnPlan({ expanded: false, resolved });
     const typed = new Set(resolved.flatMap(r => r.overridden));
     const claimed = new Set(resolved.flatMap(r => r.eitherOrCovered));
     for (const b of [...typed, ...claimed]) expect(plan.visible).toContain(b);
+    expect(plan.forced).toEqual({}); // nothing secondary is in play yet
+
+    // Now the same panel with ONE secondary-bucket edit — the case the rule
+    // exists for. Move Hussain's either-or onto the Saturday/Sunday SECOND
+    // calls and give Simon a M–Th C2 override.
+    const withSecondary = rowsWithCellText(
+      applyEitherOr(statedState().rows, 'p-hussain', ['SAT_C2', 'SUN_C2']),
+      { ...statedState().cellText, [cellKey('p-simon', 'MTH_C2')]: '2' },
+    );
+    const plan2 = columnPlan({
+      expanded: false,
+      resolved: withSecondary.map(r => resolveTargets(r, BASIS)),
+    });
+    expect(plan2.forced).toEqual({ MTH_C2: 'typed', SAT_C2: 'linked', SUN_C2: 'linked' });
+    for (const b of ['MTH_C2', 'SAT_C2', 'SUN_C2'] as const) {
+      expect(plan2.visible).toContain(b);
+      expect(plan2.hidden).not.toContain(b);
+    }
   });
 });
 
@@ -451,7 +499,8 @@ describe('either-or (Hussain: a Friday OR a Sunday call, engine’s choice)', ()
     rows = applyEitherOr(rows, 'p-hussain', ['SAT_C2', 'SUN_C2']);
     const links = rows.find(r => r.providerId === 'p-hussain')!.linkages!;
     expect(links.filter(l => l.kind === 'either-or')).toHaveLength(1);
-    expect(links[0].members).toEqual(['SAT:C2', 'SUN:C2']);
+    // BY KIND, not by position — a row can carry a split-12h alongside.
+    expect(links.find(l => l.kind === 'either-or')!.members).toEqual(['SAT:C2', 'SUN:C2']);
   });
 
   it('clearing gives the cells back to the formula', () => {
@@ -629,8 +678,14 @@ describe('his block, stated through the panel API', () => {
   it('the two he never touched arrive at the engine on the FORMULA', () => {
     const manifest = buildBlockManifest({ providers: statedRows(), basis: BASIS });
     const amusa = manifest.providers.find(p => p.providerId === 'p-amusa')!;
-    expect(amusa.targets).toMatchObject({
-      MTH_C1: 4, MTH_C2: 4, FRI_C1: 1, SAT_C1: 1, SUN_C1: 1, NEURO_FSS: 1,
+    // All NINE, not a subset: a toMatchObject here would let the weekend
+    // second calls derive to anything at all.
+    expect(amusa.targets).toEqual({
+      MTH_C1: 4, MTH_C2: 4,
+      FRI_C1: 1, FRI_C2: 1,
+      SAT_C1: 1, SAT_C2: 1,
+      SUN_C1: 1, SUN_C2: 1,
+      NEURO_FSS: 1,
     });
   });
 
@@ -734,6 +789,175 @@ describe('his block, stated through the panel API', () => {
     expect(horan.targets.MTH_C1).toBe(2.5); // derived, followed the block
     expect(horan.targets.SAT_C1).toBe(1);   // typed, held
     expect(horan.targets.SUN_C1).toBe(0.5); // typed, held
+  });
+});
+
+// ── the write decision, and the states that must never write ─────────────────
+
+describe('invalidCellKeys scoping', () => {
+  it('ignores invalid cells belonging to no rendered row (nothing to fix on screen)', () => {
+    const text = {
+      [cellKey('p-horan', 'SAT_C1')]: 'abc',
+      [cellKey('p-gone', 'SAT_C1')]: 'abc',
+    };
+    expect(invalidCellKeys(text)).toHaveLength(2);          // unscoped
+    expect(invalidCellKeys(text, new Set(['p-horan'])))
+      .toEqual([cellKey('p-horan', 'SAT_C1')]);             // scoped to rows
+    expect(invalidCellKeys(text, new Set(['p-horan', 'p-gone']))).toHaveLength(2);
+  });
+});
+
+describe('strandedEdits', () => {
+  it('reports typed cells whose provider is no longer a row', () => {
+    const rows = freshRows();
+    const s = strandedEdits(rows, {
+      [cellKey('p-horan', 'SAT_C1')]: '1',
+      [cellKey('p-gone', 'SUN_C1')]: '1',
+      [cellKey('p-blank', 'SUN_C1')]: '   ', // blank is not an edit
+    });
+    expect(s.cellProviderIds).toEqual(['p-gone']);
+  });
+
+  it('reports a 12h split whose partner has left the pool', () => {
+    // The linkage lives on Horan and names Havildar; the 0.5 halves are typed
+    // on both. Drop Havildar and half a Sunday call belongs to nobody —
+    // resolveTargets never inspects split-12h and projectScenario keeps the
+    // names unresolved, so nothing downstream would ever say so.
+    const { rows, cellText } = applySplitTwelveHour(freshRows(), {}, {
+      selfId: 'p-horan', partnerId: 'p-havildar', bucket: 'SUN_C1',
+    });
+    const withoutPartner = rows.filter(r => r.providerId !== 'p-havildar');
+    const s = strandedEdits(withoutPartner, cellText);
+    expect(s.orphanedSplits).toEqual([
+      { providerId: 'p-horan', displayName: 'Horan', partner: 'Havildar' },
+    ]);
+    expect(s.cellProviderIds).toEqual(['p-havildar']);
+    // With the partner present, nothing is stranded.
+    expect(strandedEdits(rows, cellText)).toEqual({ cellProviderIds: [], orphanedSplits: [] });
+  });
+});
+
+describe('targetEditFingerprint (dirty is a comparison, never a latch)', () => {
+  const seed = () => targetEditFingerprint(freshRows(), {});
+
+  it('typing a value and deleting it again returns to the seeded signature', () => {
+    const rows = freshRows();
+    const typed = targetEditFingerprint(rows, { [cellKey('p-horan', 'SAT_C1')]: '1' });
+    expect(typed).not.toBe(seed());
+    // Cleared back to blank — the panel must be DISARMED again, or a no-op
+    // visit would write a manifest of hard ceilings for every provider.
+    expect(targetEditFingerprint(rows, { [cellKey('p-horan', 'SAT_C1')]: '' })).toBe(seed());
+    expect(targetEditFingerprint(rows, { [cellKey('p-horan', 'SAT_C1')]: '  ' })).toBe(seed());
+  });
+
+  it('adding a linkage and removing it again returns to the seeded signature', () => {
+    const linked = applyEitherOr(freshRows(), 'p-hussain', ['FRI_C1', 'SUN_C1']);
+    expect(targetEditFingerprint(linked, {})).not.toBe(seed());
+    expect(targetEditFingerprint(clearEitherOr(linked, 'p-hussain'), {})).toBe(seed());
+  });
+
+  it('is stable under pool membership alone', () => {
+    // The same edits, with two providers removed from the pool: the signature
+    // must not move, or changing the pool would arm a manifest write.
+    const rows = freshRows();
+    const text = { [cellKey('p-horan', 'SAT_C1')]: '1' };
+    const smaller = rows.filter(r => !['p-amusa', 'p-jones'].includes(r.providerId));
+    expect(targetEditFingerprint(smaller, text)).toBe(targetEditFingerprint(rows, text));
+  });
+
+  it('does not depend on key insertion order', () => {
+    const rows = freshRows();
+    const a = { [cellKey('p-horan', 'SAT_C1')]: '1', [cellKey('p-simon', 'FRI_C1')]: '1' };
+    const b = { [cellKey('p-simon', 'FRI_C1')]: '1', [cellKey('p-horan', 'SAT_C1')]: '1' };
+    expect(targetEditFingerprint(rows, a)).toBe(targetEditFingerprint(rows, b));
+  });
+});
+
+describe('targetWritePlan', () => {
+  const base = {
+    manifestState: 'ready' as const,
+    dirty: false,
+    clearRequested: false,
+    imported: false,
+    unreadable: false,
+    importAcknowledged: false,
+    invalidCellCount: 0,
+    manifestErrors: [] as string[],
+  };
+
+  it('OMITS the key when the fetch has not landed or failed — never clobbers', () => {
+    // Even a dirty panel must not write against a manifest it never read.
+    expect(targetWritePlan({ ...base, manifestState: 'loading', dirty: true }))
+      .toEqual({ write: 'omit', blocked: null });
+    expect(targetWritePlan({ ...base, manifestState: 'failed', dirty: true }))
+      .toEqual({ write: 'omit', blocked: null });
+    expect(targetWritePlan({ ...base, manifestState: 'failed', clearRequested: true }))
+      .toEqual({ write: 'omit', blocked: null });
+  });
+
+  it('OMITS the key for a pool-only save (nothing edited here)', () => {
+    expect(targetWritePlan(base)).toEqual({ write: 'omit', blocked: null });
+    // …even when a manifest is stored and imported: not touching the tab means
+    // not rewriting the column.
+    expect(targetWritePlan({ ...base, imported: true }))
+      .toEqual({ write: 'omit', blocked: null });
+  });
+
+  it('writes the manifest once edited, and clears when asked', () => {
+    expect(targetWritePlan({ ...base, dirty: true }))
+      .toEqual({ write: 'manifest', blocked: null });
+    expect(targetWritePlan({ ...base, clearRequested: true }))
+      .toEqual({ write: 'clear', blocked: null });
+  });
+
+  it('blocks an overwrite of an imported or unreadable manifest until acknowledged', () => {
+    const imported = targetWritePlan({ ...base, dirty: true, imported: true });
+    expect(imported.blocked).toMatch(/imported manifest/);
+    expect(targetWritePlan({ ...base, dirty: true, imported: true, importAcknowledged: true }))
+      .toEqual({ write: 'manifest', blocked: null });
+
+    const unreadable = targetWritePlan({ ...base, dirty: true, unreadable: true });
+    expect(unreadable.blocked).toMatch(/could not be read/);
+    // Clearing an unreadable manifest is still a destructive overwrite.
+    expect(targetWritePlan({ ...base, clearRequested: true, unreadable: true }).blocked)
+      .toMatch(/could not be read/);
+  });
+
+  it('blocks on invalid cells and on manifest errors, but never on a clear', () => {
+    expect(targetWritePlan({ ...base, dirty: true, invalidCellCount: 1 }).blocked)
+      .toMatch(/Fix the highlighted/);
+    expect(targetWritePlan({ ...base, dirty: true, manifestErrors: ['Ghost: no provider id'] }).blocked)
+      .toBe('Ghost: no provider id');
+    // A clear does not care that a cell is unparseable — it deletes everything.
+    expect(targetWritePlan({ ...base, clearRequested: true, invalidCellCount: 3 }))
+      .toEqual({ write: 'clear', blocked: null });
+  });
+});
+
+describe('a stored manifest that cannot be read', () => {
+  it('is reported as stored-but-unreadable, never as "nothing stored"', () => {
+    // Garbage jsonb, a foreign shape, and a schema-legal empty provider list
+    // all yield zero rows. Treating any of them as absent would hide the
+    // overwrite warning and let one edit destroy the column.
+    for (const junk of [
+      { hello: 'world' },
+      { providers: 'not an array' },
+      { manifestVersion: 1, providers: [] },
+    ]) {
+      const res = buildPanelRows({ pool: POOL, storedManifest: junk });
+      expect(res.hasStoredManifest).toBe(true);
+      expect(res.unreadable).toBe(true);
+      expect(res.imported).toBe(false); // an unreadable thing is not "a workbook"
+      expect(res.rows.every(r => r.inPool)).toBe(true);
+    }
+  });
+
+  it('an absent manifest is genuinely absent', () => {
+    for (const empty of [null, undefined]) {
+      const res = buildPanelRows({ pool: POOL, storedManifest: empty });
+      expect(res.hasStoredManifest).toBe(false);
+      expect(res.unreadable).toBe(false);
+    }
   });
 });
 
