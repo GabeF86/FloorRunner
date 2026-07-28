@@ -180,13 +180,23 @@ describe('derivedTargetsFor', () => {
   });
 
   it('derives NEURO from the pattern bands, NOT the FTE formula', () => {
-    // Bands: 0.75+ → 1 full weekend, below → 0.5 (one weekend DAY — Horan).
+    // BOUNDARY MOVED 0.75 → 0.6 (Gabriel 2026-07-27, second revision). His rule
+    // is "every call taker gets a neuro weekend call, EXCEPT for horan". At 0.75
+    // the bands created a second exception nobody asked for: Hussain is 0.66
+    // (a third of his time is ICU) and fell into the half band alongside Horan.
+    // Bands are now: 0.6+ → 1 full weekend, below → 0.5 (one weekend DAY).
     expect(derivedTargetsFor(1, PAOLI_BASIS)[NEURO_BUCKET]).toBe(1);
     expect(derivedTargetsFor(0.75, PAOLI_BASIS)[NEURO_BUCKET]).toBe(1);
-    expect(derivedTargetsFor(0.5, PAOLI_BASIS)[NEURO_BUCKET]).toBe(0.5);
-    // The formula would have said 11/11 × 1.0 = 1 for everyone and 0.5 for a
-    // 0.5 FTE — the same by luck at the extremes, DIFFERENT in between:
-    expect(derivedTargetsFor(0.66, PAOLI_BASIS)[NEURO_BUCKET]).toBe(0.5); // band, not 0.66
+    expect(derivedTargetsFor(0.66, PAOLI_BASIS)[NEURO_BUCKET]).toBe(1); // Hussain — was 0.5
+    expect(derivedTargetsFor(0.5, PAOLI_BASIS)[NEURO_BUCKET]).toBe(0.5); // Horan, the sole exception
+    // Sharpest discriminator against the FTE formula: below the boundary the
+    // formula would say 11/11 × 0.58 = 0.58, the band says half a weekend.
+    expect(derivedTargetsFor(0.58, PAOLI_BASIS)[NEURO_BUCKET]).toBe(0.5);
+    // The EFFECTIVE floor is 0.59, not 0.6: owedUnitsFor clears a band when
+    // `fte + WEIGHT_EPSILON >= minFte`, and the house epsilon is 0.01. That is
+    // deliberate (the same stored-fraction tolerance used across the engine),
+    // and harmless here — real FTEs are quarters and thirds, nowhere near it.
+    expect(derivedTargetsFor(0.59, PAOLI_BASIS)[NEURO_BUCKET]).toBe(1);
   });
 
   it('a site with no neuro requirement derives 0 units', () => {
@@ -630,8 +640,10 @@ describe('checkFeasibility', () => {
   it('covers the neuro bucket in weekend units', () => {
     const rows = checkManifestFeasibility(paoliManifest(), PAOLI_BASIS.slotCounts);
     const neuro = rows.find(r => r.bucket === NEURO_BUCKET)!;
-    // 8 docs at 1.0 unit + Horan 0.5 + Hussain 0.5 = 9 against 11 weekends.
-    expect(neuro).toMatchObject({ slots: 11, stated: 9, status: 'under' });
+    // 9 docs at 1.0 unit + Horan 0.5 = 9.5 against 11 weekends. Hussain moved
+    // from 0.5 to 1.0 when the band boundary went 0.75 → 0.6 (2026-07-27) —
+    // Horan is now the only doc owing half a neuro weekend, which is the rule.
+    expect(neuro).toMatchObject({ slots: 11, stated: 9.5, status: 'under' });
   });
 
   it('returns one row per bucket, in BUCKET_KEYS order', () => {

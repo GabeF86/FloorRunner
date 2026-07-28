@@ -57,7 +57,7 @@ export const WEEKEND_V2_PATTERN: CallPatternDoc = CallPatternDocSchema.parse({
       // friday/C3 shift_templates row is deactivated in patch38). The Sunday
       // partner is FTE-gated: 0.75+ docs take the pair, a sub-0.75 doc takes
       // Saturday alone and the Sunday becomes a neuro remainder.
-      { trigger: 'C3', links: [{ offset: -1, code: 'D4' }, { offset: 1, code: 'C3', minFte: 0.75 }] },
+      { trigger: 'C3', links: [{ offset: -1, code: 'D4' }, { offset: 1, code: 'C3', minFte: 0.6 }] },
       { trigger: 'C1', links: [{ offset: -1, code: 'D2' }] },
       { trigger: 'C2', links: [{ offset: -1, code: 'C2' }, { offset: 1, code: 'C1' }] },
     ]},
@@ -113,18 +113,33 @@ export const WEEKEND_V2_PATTERN: CallPatternDoc = CallPatternDocSchema.parse({
     { kind: 'pre_pto', relativeDay: 'thursday_prior_week', codes: ['C1', 'C2'], maxProviders: 2, enabled: true },
   ],
   optimizerMovableDayTypes: ['weekday', 'friday'],
-  // Neuro requirement (Gabriel 2026-07-27, REVISED same day): "Every call taker
-  // should be given a neuro weekend call, except for horan it should only be
-  // one weekend day of neuro." So the requirement is now UNIVERSAL — 0.75+ docs
-  // (which is every call taker bar Horan, the site's 0.5) owe one full neuro
-  // weekend per block, and a sub-0.75 doc owes a single weekend day. The
-  // earlier shape carried a third band, { minFte: 1, units: 0 }, exempting
-  // full-timers so they rotated through neuro on fairness alone; that exemption
-  // is exactly what the revision removes and it is gone here. The bottom band's
-  // 0.5 pairs with the Sat C3 → Sun C3 link's minFte 0.75 gate above: Horan
-  // anchors Saturday, the Sunday is minted as a remainder, and only a doc still
-  // short of their band may take it. `units: 0` remains a legal band value
+  // Neuro requirement (Gabriel 2026-07-27, REVISED TWICE the same day): "Every
+  // call taker should be given a neuro weekend call, except for horan it should
+  // only be one weekend day of neuro." The requirement is UNIVERSAL and Horan
+  // — the site's only 0.5 — is the ONLY exception. The earlier shape carried a
+  // third band, { minFte: 1, units: 0 }, exempting full-timers so they rotated
+  // through neuro on fairness alone; that exemption is exactly what the first
+  // revision removed and it is gone here. `units: 0` remains a legal band value
   // (callPattern.ts) — no shipped pattern uses it any more.
+  //
+  // THE BOUNDARY IS 0.6, NOT 0.75 (second revision, same day). At 0.75 the
+  // bands quietly created a SECOND exception the rule never asked for: Hussain
+  // is 0.66 FTE (he spends a third of his time in the ICU), so he fell into the
+  // bottom band and owed half a neuro weekend like Horan. 0.6 puts every call
+  // taker except Horan in the full band, which is what the rule actually says.
+  //
+  // The Sat C3 → Sun C3 link's gate above MUST carry the SAME 0.6, and does.
+  // The two are one decision, not two: the band says how much a doc owes, the
+  // link gate says whether they may take the Sat+Sun PAIR that discharges it in
+  // one weekend. Split them and Hussain owes a full weekend he is gated out of
+  // ever taking as a pair — he could only satisfy it as two separate single
+  // days, which is not the duty anyone described. callPattern.ts's
+  // neuroWeekendWarnings exists to catch exactly that divergence: it warns when
+  // a link's minFte is not one of the band boundaries.
+  //
+  // Below the boundary (Horan alone today) the gate suppresses the Sunday link:
+  // she anchors Saturday, the Sunday is minted as a remainder, and only a doc
+  // still short of their band may take it.
   //
   // FEASIBILITY, measured 2026-07-27 against a real 11-weekend board rather
   // than argued: supply is one unit per weekend (11.0), demand is (N−1) × 1.0
@@ -150,7 +165,7 @@ export const WEEKEND_V2_PATTERN: CallPatternDoc = CallPatternDocSchema.parse({
   neuroWeekend: {
     code: 'C3',
     requirementBands: [
-      { minFte: 0.75, units: 1 },
+      { minFte: 0.6, units: 1 },
       { minFte: 0, units: 0.5 },
     ],
   },
