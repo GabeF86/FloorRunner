@@ -44,7 +44,7 @@ import {
 import { scenarioChargeKeys } from './rulesEngine/providerCaps';
 import { buildScenarioCallCaps } from './rulesEngine/providerCaps';
 import { WEEKEND_V2_PATTERN } from './rulesEngine/patterns/weekendV2';
-import { addDays, dayOfWeekUTC } from './rulesEngine/shared';
+import { addDays, dayOfWeekUTC, dayTypeBucketOn } from './rulesEngine/shared';
 
 // The LIVE Paoli neuro config — imported, never restated, so the panel's
 // defaults and the engine's cannot drift apart in a fixture.
@@ -110,15 +110,37 @@ describe('bucketSlotCounts', () => {
   });
 
   it('folds a HOLIDAY day type into its day-of-week bucket (Labor Day is a Monday)', () => {
-    // The engine charges a Monday-holiday placement to MTH|C1 (scenarioBucketOf
-    // is date-based), so the panel must budget for it in MTH. Dropping holidays
-    // would make the block's MTH_C1 43 and his "4 Weekday C1" derive as 3.909.
+    // The engine charges a Monday-holiday placement to MTH|C1, so the panel
+    // must budget for it in MTH. Dropping holidays would make the block's
+    // MTH_C1 43 and his "4 Weekday C1" derive as 3.909.
     const laborDay = bucketSlotCounts([callSlot('2026-09-07', 'C1', {}, 'major_holiday')]);
     expect(laborDay.MTH_C1).toBe(1);
     // A federal-holiday FRIDAY still belongs to FRI, not MTH.
     const goodFriday = bucketSlotCounts([callSlot('2026-08-14', 'C1', {}, 'federal_holiday')]);
     expect(goodFriday.FRI_C1).toBe(1);
     expect(goodFriday.MTH_C1).toBe(0);
+  });
+
+  it('CROSS-CHECK: the workbook bucket is the ENGINE bucket, renamed (one rule, two vocabularies)', () => {
+    // 2026-07-27: shared.dayTypeBucketOn became the engine's date-aware
+    // fairness bucket and this module now routes its holiday folding through
+    // it. Pin the correspondence on every day type × every day of the week —
+    // if either side ever moves alone, this fails.
+    const RENAME: Record<string, string> = {
+      weekday: 'MTH', friday: 'FRI', saturday: 'SAT', sunday: 'SUN',
+    };
+    const DAY_TYPES = [
+      'weekday', 'friday', 'saturday', 'sunday', 'federal_holiday', 'major_holiday',
+    ];
+    for (let i = 0; i < 7; i++) {
+      const date = addDays('2026-09-06', i); // Sun..Sat
+      for (const dt of DAY_TYPES) {
+        const counts = bucketSlotCounts([callSlot(date, 'C1', {}, dt)]);
+        const expectedBucket = RENAME[dayTypeBucketOn(dt, date)];
+        expect(expectedBucket).toBeDefined();
+        expect(counts[`${expectedBucket}_C1` as keyof typeof counts]).toBe(1);
+      }
+    }
   });
 
   it('folds split segments under their PARENT code at their burden weight', () => {

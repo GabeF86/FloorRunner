@@ -24,12 +24,15 @@ import { dayOfWeekUTC, addDays } from './shared';
 import { paoliBlockManifestSchema } from '@/lib/paoliBlock/manifest';
 import type { PaoliBlockManifest, ProviderManifest } from '@/lib/paoliBlock/manifest';
 
-// ── workbook buckets (DAY-OF-WEEK scoped, deliberately NOT dayTypeBucket) ────
+// ── workbook buckets (DAY-OF-WEEK scoped, a separate vocabulary) ────────────
 // The workbook's targets are day-of-week columns ("Monday–Thursday C1"), so a
-// Monday major holiday (Labor Day 2026-09-07) belongs to MTH here even though
-// the engine's fairness bucket for that slot is 'holiday'. Scenario caps and
-// variance use these dow buckets exactly; the engine's own quota steering
-// (ctx.bucketTarget) keeps its day-type buckets — see genContext.
+// Monday major holiday (Labor Day 2026-09-07) belongs to MTH here. Since
+// 2026-07-27 the ENGINE agrees: shared.dayTypeBucketOn charges that same slot
+// to the 'weekday' fairness bucket, which is what applyScenarioBucketTargets
+// below writes MTH targets into. (Before that they disagreed — an MTH_C1
+// target landed on `pid|weekday|C1` while the Labor Day slot asked for
+// `pid|holiday|C1` and found no target at all.) Scenario caps and variance use
+// these dow buckets exactly; the engine keeps its own day-type vocabulary.
 export const SCENARIO_BUCKETS = ['MTH', 'FRI', 'SAT', 'SUN'] as const;
 export type ScenarioBucket = (typeof SCENARIO_BUCKETS)[number];
 export const NEURO_KEY = 'NEURO_FSS';

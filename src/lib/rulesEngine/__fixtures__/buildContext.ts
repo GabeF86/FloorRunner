@@ -3,7 +3,7 @@
 //     goldenParity.test.ts so both goldenParity and patternEngine reuse it).
 //   buildCtx / prov / callSlot / dSlot / cred / shiftInfo — small targeted
 //     helpers for the pattern-interpreter cases.
-import { addDays, dayOfWeekUTC, dayTypeBucket, dayTypeFromDow } from '../shared';
+import { addDays, dayOfWeekUTC, dayTypeBucketOn, dayTypeFromDow } from '../shared';
 import type {
   GenerationContext, SlotToFill, CandidateProvider, AvailabilityEntry,
   SiteCredentials, ShiftTypeInfo,
@@ -115,9 +115,13 @@ export function buildFixtureContext(overrides: Partial<GenerationContext> = {}):
   const crossSiteByDate = new Map<string, Set<string>>();
   crossSiteByDate.set('p04', new Set(['2026-01-20', '2026-01-21']));
 
+  // Same date-aware bucket key genContext builds (dayTypeBucketOn): the fixture
+  // must key its targets the way production does, or the quota gate looks up a
+  // key the fixture never wrote. This block is holiday-free, so every key here
+  // is byte-identical to the pre-2026-07-27 day-type-only keys.
   const bucketTotals = new Map<string, number>();
   for (const s of slotsToFill) {
-    const key = `${dayTypeBucket(s.derived_day_type)}|${s.shift_type_code}`;
+    const key = `${dayTypeBucketOn(s.derived_day_type, s.slot_date)}|${s.shift_type_code}`;
     bucketTotals.set(key, (bucketTotals.get(key) || 0) + s.required_count);
   }
 
@@ -207,7 +211,7 @@ export function buildCtx(
   const bucketTotals = new Map<string, number>();
   const bucketTarget = new Map<string, number>();
   for (const s of slots) {
-    const key = `${dayTypeBucket(s.derived_day_type)}|${s.shift_type_code}`;
+    const key = `${dayTypeBucketOn(s.derived_day_type, s.slot_date)}|${s.shift_type_code}`;
     bucketTotals.set(key, (bucketTotals.get(key) || 0) + 1);
     for (const p of providers) bucketTarget.set(`${p.id}|${key}`, 99);
   }

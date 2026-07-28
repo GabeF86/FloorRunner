@@ -139,23 +139,28 @@ describe('estimateCallSlots', () => {
   ];
   const agg = aggregateTemplateSlotCounts(RAW);
   const comp = rangeComposition(JAN.start, JAN.end, JAN_HOLIDAYS);
-  const est = estimateCallSlots(agg, comp.dayTypeCounts);
+  const est = estimateCallSlots(agg, comp.dayTypeDates);
 
   it('applies the Friday union, count-0 suppression and holiday day types per bucket', () => {
     expect(Object.fromEntries(est.byBucket)).toEqual({
-      // weekday: 15 days × (C1 + C2) = 30
-      weekday: 30,
+      // weekday: 15 days × (C1 + C2) = 30, PLUS the major_holiday slate on
+      // Jan 1 — a THURSDAY, so its 2 slots are weekday calls (2026-07-27:
+      // a holiday counts as the day of the week it falls on). 30 + 2 = 32.
+      weekday: 32,
       // friday: 5 days × (C3 friday + C2 weekday fill; C1 suppressed by count-0 friday row) = 10
       friday: 10,
       saturday: 5,
       sunday: 4,
-      // major holiday Jan 1: 2 slots; federal Jan 19 has NO federal_holiday
-      // template row → contributes nothing (both would lump into 'holiday').
-      holiday: 2,
+      // No 'holiday' bucket exists any more. Federal Jan 19 (a Monday) has no
+      // federal_holiday template row, so it contributes nothing either way.
     });
+    expect(est.byBucket.has('holiday')).toBe(false);
     expect(est.total).toBe(51);
     expect(est.byBucketCode.get('friday|C2')).toEqual({ bucket: 'friday', code: 'C2', count: 5 });
     expect(est.byBucketCode.get('friday|C1')).toBeUndefined();
+    // The holiday slate's code is C1, so it merges into the weekday C1 column:
+    // 15 weekday C1 + 2 from Thursday Jan 1.
+    expect(est.byBucketCode.get('weekday|C1')).toEqual({ bucket: 'weekday', code: 'C1', count: 17 });
   });
 
   it('CROSS-CHECK: equals a per-date route-style materialization (slateForDayType + templateSlotCount over every date)', () => {
@@ -172,7 +177,13 @@ describe('estimateCallSlots', () => {
         const count = templateSlotCount(tmpl);
         simulatedTotal += count;
         if (count > 0) {
-          const bucket = dayType === 'major_holiday' || dayType === 'federal_holiday' ? 'holiday' : dayType;
+          // The bucket rule restated INDEPENDENTLY (not by importing
+          // dayTypeBucketOn): a holiday day type is charged to the day of the
+          // week its DATE falls on; everything else is its own day type.
+          const dow = new Date(date + 'T00:00:00Z').getUTCDay();
+          const bucket = dayType === 'major_holiday' || dayType === 'federal_holiday'
+            ? (dow === 6 ? 'saturday' : dow === 0 ? 'sunday' : dow === 5 ? 'friday' : 'weekday')
+            : dayType;
           const key = `${bucket}|${tmpl.shift_types.code}`;
           simulatedByBucketCode.set(key, (simulatedByBucketCode.get(key) ?? 0) + count);
         }
@@ -349,11 +360,37 @@ describe('computeScheduleActuals', () => {
     expect(assignmentFills({ provider_id: null, assignment_status: 'assigned' })).toBe(false);
   });
 
-  it('missing derived_day_type falls back to the single-homed holiday-aware derivation', () => {
-    const slots = [slot('2026-01-01', 'C1', 'call', 'a')]; // Jan 1 = major holiday, no stored day type
-    const out = computeScheduleActuals(slots, [], comp.workingDaySet, JAN_HOLIDAYS);
-    expect(out.a.callCounts).toEqual([{ bucket: 'holiday', code: 'C1', count: 1 }]);
-    expect(out.a.assignedWorkdays).toEqual([]); // major holiday is not a working day
+  it('a holiday-dated call counts in the bucket of the DAY OF THE WEEK it falls on', () => {
+    // Jan 1 2026 is a THURSDAY and a major holiday. Gabriel 2026-07-27: a
+    // holiday belongs to its weekday's obligation, so this is a weekday call —
+    // it used to land in a separate 'holiday' bucket that matched no target.
+    // Both the stored-day-type path and the missing-day-type fallback (which
+    // re-derives via derivedDayTypeFor) must agree.
+    const stored = computeScheduleActuals(
+      [slot('2026-01-01', 'C1', 'call', 'a', { derived_day_type: 'major_holiday' })],
+      [], comp.workingDaySet, JAN_HOLIDAYS);
+    expect(stored.a.callCounts).toEqual([{ bucket: 'weekday', code: 'C1', count: 1 }]);
+
+    const derived = computeScheduleActuals(
+      [slot('2026-01-01', 'C1', 'call', 'a')], // no stored day type
+      [], comp.workingDaySet, JAN_HOLIDAYS);
+    expect(derived.a.callCounts).toEqual([{ bucket: 'weekday', code: 'C1', count: 1 }]);
+    expect(derived.a.assignedWorkdays).toEqual([]); // major holiday is not a working day
+
+    // Jan 3 2026 is a Saturday; a major holiday there is a SATURDAY call.
+    const sat = computeScheduleActuals(
+      [slot('2026-01-03', 'C1', 'call', 'a', { derived_day_type: 'major_holiday' })],
+      [], comp.workingDaySet, [{ holiday_date: '2026-01-03', is_major_holiday: true }]);
+    expect(sat.a.callCounts).toEqual([{ bucket: 'saturday', code: 'C1', count: 1 }]);
+  });
+
+  it('a STORED non-holiday day type still wins over the date (precedence unchanged)', () => {
+    // Sat 2026-01-03 stored as 'weekday' buckets weekday — the date is consulted
+    // ONLY for holiday day types, which is what keeps every other key identical.
+    const out = computeScheduleActuals(
+      [slot('2026-01-03', 'C1', 'call', 'a', { derived_day_type: 'weekday' })],
+      [], comp.workingDaySet, JAN_HOLIDAYS);
+    expect(out.a.callCounts).toEqual([{ bucket: 'weekday', code: 'C1', count: 1 }]);
   });
 
   it('accepts the one-to-one assignments embed shape (single object, not array)', () => {
@@ -550,6 +587,9 @@ describe('buildPlannerContext + providerPlannerNumbers', () => {
               { bucket: 'weekday', code: 'C1', count: 2 },
               { bucket: 'saturday', code: 'C1', count: 1 },
               // A bucket the templates produce NO slots for must still render.
+              // 'holiday' is deliberately the example: the engine stopped
+              // emitting it on 2026-07-27, so a stored row carrying it is
+              // exactly the legacy shape this path has to survive.
               { bucket: 'holiday', code: 'CH', count: 1 },
             ],
             assignedWorkdays: ['2026-01-12', '2026-01-13'],

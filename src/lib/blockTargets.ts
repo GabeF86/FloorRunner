@@ -85,17 +85,20 @@
 // not type by hand (which is what the real Paoli workbook rows do), and warns
 // — never silently — when explicit values still sum past one.
 //
-// HOLIDAY DAY TYPES (2026-07-27, deliberate deviation from a plain
-// derived_day_type map). The workbook buckets are DAY-OF-WEEK columns
-// ("Monday–Thursday C1"), and the engine charges a Monday-holiday placement to
-// MTH|C1 via scenario.scenarioBucketOf(date) — so a 'major_holiday' slot has
-// no day-type bucket but absolutely has a workbook bucket. Dropping Labor Day
+// HOLIDAY DAY TYPES (2026-07-27). The workbook buckets are DAY-OF-WEEK columns
+// ("Monday–Thursday C1"), and a Monday-holiday placement is charged to MTH|C1 —
+// so a 'major_holiday' slot absolutely has a workbook bucket. Dropping Labor Day
 // (2026-09-07, a Monday inside the live 8/10–10/25 block) would make MTH_C1 43
 // instead of 44, his "4 Weekday C1" would derive as 3.909, and every MTH cap
 // would be one slot short of what the engine will actually charge against it.
-// So: derived_day_type decides for weekday/friday/saturday/sunday, and any
-// other day type (holidays, or an unrecognized value) falls back to the DATE's
-// day of week through scenarioBucketOf — the engine's own mapping, single-homed.
+//
+// This module got that right BEFORE the engine did, and the two are now ONE
+// RULE: shared.dayTypeBucketOn is the engine's date-aware fairness bucket
+// (a holiday counts as the day of the week it falls on, Gabriel verbatim), and
+// bucketOfSlot below is that function's answer translated into the workbook's
+// MTH/FRI/SAT/SUN vocabulary. An unrecognized day type still falls back to the
+// DATE through scenarioBucketOf, which is what the engine's own quota
+// denominator does for the same slot.
 //
 // PURE — no I/O, no DB, no schema of its own. VALIDATION LIVES AT THE ROUTE:
 // schedules/[id] PATCH runs paoliBlockManifestSchema before any write, so this
@@ -120,6 +123,7 @@ import {
 import { compareChecksums, computeChecksums, type ChecksumRow } from '@/lib/paoliBlock/checksums';
 import { normalizeName } from '@/lib/paoliBlock/names';
 import { DEFAULT_SCENARIO_CODE_MAP, scenarioBucketOf, type ScenarioBucket } from '@/lib/rulesEngine/scenario';
+import { dayTypeBucketOn } from '@/lib/rulesEngine/shared';
 import { owedUnitsFor, type NeuroWeekendConfig } from '@/lib/rulesEngine/neuroWeekend';
 import { fteWeightedTarget } from '@/lib/fteTarget';
 import { WEIGHT_EPSILON, callBurdenWeight, parentCallCodeOf } from '@/lib/callBurden';
@@ -174,15 +178,20 @@ export interface BucketCodeOptions {
   neuroCode?: string;
 }
 
-const DAY_TYPE_TO_BUCKET: Record<string, ScenarioBucket> = {
+// Engine fairness bucket -> workbook column. The only translation this module
+// needs: the holiday folding itself lives in dayTypeBucketOn.
+const ENGINE_BUCKET_TO_WORKBOOK: Record<string, ScenarioBucket> = {
   weekday: 'MTH', friday: 'FRI', saturday: 'SAT', sunday: 'SUN',
 };
 
 function bucketOfSlot(slot: BlockSlot): ScenarioBucket {
   const dt = slot.derived_day_type;
-  // Holidays (and anything unrecognized) fall back to the DATE's day of week —
-  // the engine's own charge mapping. See the module header.
-  return (dt ? DAY_TYPE_TO_BUCKET[dt] : undefined) ?? scenarioBucketOf(slot.slot_date);
+  // dayTypeBucketOn already folds a holiday onto its day of the week; anything
+  // it cannot bucket (an unrecognized day type, or no day type at all) falls
+  // back to the DATE. See the module header.
+  const engineBucket = dt ? dayTypeBucketOn(dt, slot.slot_date) : undefined;
+  return (engineBucket ? ENGINE_BUCKET_TO_WORKBOOK[engineBucket] : undefined)
+    ?? scenarioBucketOf(slot.slot_date);
 }
 
 /**

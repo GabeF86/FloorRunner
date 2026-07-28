@@ -6,6 +6,8 @@
 //   - working-day credit       → plannerMath.computeScheduleActuals (the
 //     generation banner's workDayReport analogue: weekday assignments +
 //     post-call rest days credited as worked + ICU weeks, disjoint sets)
+//   - fairness bucket          → rulesEngine/shared.ts (dayTypeBucketOn — the
+//     DATE-aware bucket: a holiday counts as the day of the week it falls on)
 //   - neuro weekend credit     → rulesEngine/neuroWeekend.ts
 //     (creditedUnitsByProvider — pair 1.0 / single day 0.5, the SAME function
 //     the solver's gates and the generation banner use)
@@ -13,6 +15,7 @@
 // renders; every domain rule routes through here → the shared helpers.
 
 import { requiredWorkDays } from './rulesEngine/workDays';
+import { dayTypeBucketOn } from './rulesEngine/shared';
 import {
   creditedUnitsByProvider,
   type NeuroPlacement,
@@ -30,23 +33,27 @@ import {
 
 /* ── Bucket day counts ───────────────────────────────────────────────────── */
 
-// The modal's four bucket columns, keyed by STORED derived_day_type — the
-// same exact-match keys the bucket aggregation uses. Holiday day types
-// ('major_holiday' / 'federal_holiday') have no bucket column, so they get no
-// day count either: a Monday major holiday never inflates M–Th. The stored
-// day type already encodes the holiday calendar, so no re-derivation here.
+// The modal's four bucket columns — the engine's four fairness buckets
+// (rulesEngine/shared.dayTypeBucketOn). There is no holiday column because
+// there is no holiday bucket: a holiday-dated day belongs to the column for
+// the day of the week it falls on (Gabriel 2026-07-27 — "Holidays that fall
+// out on a weekend Friday saturday or sunday, get included in the obligatory
+// weekend count, and those that fall out on weekdays do the same"). So Labor
+// Day, a Monday, is one of the block's M–Th days and its calls are M–Th calls.
 export const BUCKET_DAY_TYPES = ['weekday', 'friday', 'saturday', 'sunday'] as const;
 export type BucketDayType = (typeof BUCKET_DAY_TYPES)[number];
 
-// Distinct slot dates per bucket day type from the schedule's slots — "how
-// many M–Th / Fri / Sat / Sun days are in this block". Distinct by date so
-// multi-slot days (C1+C2+C3 on one date) count once.
+// Distinct slot dates per bucket from the schedule's slots — "how many M–Th /
+// Fri / Sat / Sun days are in this block". Distinct by date so multi-slot days
+// (C1+C2+C3 on one date) count once. Routed through the ENGINE's bucket
+// function, so the header day counts and the columns underneath them can never
+// classify a date differently.
 export function bucketDayCounts(
   slots: ReadonlyArray<{ slot_date: string; derived_day_type: string }>,
 ): Record<BucketDayType, number> {
   const seen = new Map<BucketDayType, Set<string>>(BUCKET_DAY_TYPES.map(t => [t, new Set<string>()]));
   for (const s of slots) {
-    seen.get(s.derived_day_type as BucketDayType)?.add(s.slot_date);
+    seen.get(dayTypeBucketOn(s.derived_day_type, s.slot_date) as BucketDayType)?.add(s.slot_date);
   }
   const out = {} as Record<BucketDayType, number>;
   for (const t of BUCKET_DAY_TYPES) out[t] = seen.get(t)!.size;

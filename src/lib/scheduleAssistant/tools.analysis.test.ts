@@ -221,7 +221,7 @@ describe('get_fairness_report', () => {
   const row = (r: { providers: FairnessRow[] }, id: string) =>
     r.providers.find(p => p.provider_id === id);
 
-  it('counts call-category assignments per provider, bucketed by dayTypeBucket', async () => {
+  it('counts call-category assignments per provider, bucketed by dayTypeBucketOn', async () => {
     const r = await report();
     expect(r.total_call_assignments).toBe(4);
     const p1 = row(r, 'p1')!;
@@ -263,6 +263,27 @@ describe('get_fairness_report', () => {
     const r = await report();
     // ratios: p1 = 3/1 = 3, p2 = 0/0.5 = 0 → mean 1.5 → population stdev 1.5
     expect(r.stdev_calls_per_fte).toBeCloseTo(1.5, 10);
+  });
+
+  it('a holiday-dated call is reported under its day of the week, never a holiday bucket', async () => {
+    // 2026-09-07 = Labor Day, a MONDAY → weekday. 2026-07-04 = a SATURDAY
+    // holiday → saturday. (Gabriel 2026-07-27; before this the assistant
+    // reported a 'holiday' bucket the engine's quota knew nothing about.)
+    const { executors, sb } = run({
+      providers: canned(FAIRNESS_PROVIDERS.slice(0, 1)),
+      schedule_slots: canned([
+        { id: 'h1', slot_date: '2026-09-07', derived_day_type: 'major_holiday',
+          shift_types: { code: 'C1', category: 'call' },
+          assignments: [{ provider_id: 'p1', assignment_status: 'assigned' }] },
+        { id: 'h2', slot_date: '2026-07-04', derived_day_type: 'federal_holiday',
+          shift_types: { code: 'C1', category: 'call' },
+          assignments: [{ provider_id: 'p1', assignment_status: 'assigned' }] },
+      ]),
+    });
+    const out = await executors.get_fairness_report(sb, ctx, {});
+    const r = out.result as FairnessResult;
+    const p1 = r.providers.find(p => p.provider_id === 'p1')!;
+    expect(p1.calls_by_bucket).toEqual({ weekday: 1, saturday: 1 });
   });
 
   it('scopes the pool query when the schedule has a provider override', async () => {

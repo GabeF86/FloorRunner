@@ -49,14 +49,33 @@ describe('bucketDayCounts', () => {
     ])).toEqual({ weekday: 2, friday: 1, saturday: 1, sunday: 1 });
   });
 
-  it('a Monday major holiday is NOT a weekday — holiday day types get no bucket count (mirrors the modal columns)', () => {
-    // 2026-05-25 = Memorial Day, a Monday: stored derived_day_type is
-    // 'major_holiday', so it must not inflate M–Th. Non-major federal
-    // holidays ('federal_holiday') carry no bucket column either.
+  it('a Monday major holiday IS one of the M–Th days (Gabriel 2026-07-27)', () => {
+    // "Holidays that fall out on a weekend Friday saturday or sunday, get
+    // included in the obligatory weekend count, and those that fall out on
+    // weekdays do the same." 2026-05-25 = Memorial Day, a MONDAY → M–Th.
+    // 2026-06-19 = Juneteenth, a FRIDAY → Fri. Both used to count in NO column,
+    // which is why a Labor Day call vanished from this modal entirely.
     expect(bucketDayCounts([
       slot('2026-05-25', 'major_holiday'),
       slot('2026-06-19', 'federal_holiday'),
       slot('2026-03-02', 'weekday'),
+    ])).toEqual({ weekday: 2, friday: 1, saturday: 0, sunday: 0 });
+  });
+
+  it('weekend holidays land on their weekend day', () => {
+    // 2026-07-04 = Independence Day, a SATURDAY; 2026-11-01 is a SUNDAY.
+    expect(bucketDayCounts([
+      slot('2026-07-04', 'major_holiday'),
+      slot('2026-11-01', 'federal_holiday'),
+    ])).toEqual({ weekday: 0, friday: 0, saturday: 1, sunday: 1 });
+  });
+
+  it('a holiday date already counted under a non-holiday slot is still ONE day', () => {
+    // Distinctness is by DATE within a bucket, so a mixed-day-type date cannot
+    // inflate the header count.
+    expect(bucketDayCounts([
+      slot('2026-05-25', 'major_holiday'),
+      slot('2026-05-25', 'weekday'),
     ])).toEqual({ weekday: 1, friday: 0, saturday: 0, sunday: 0 });
   });
 

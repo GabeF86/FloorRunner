@@ -11,7 +11,7 @@ import type { ScenarioDoc } from './scenario';
 import { solveMultiStart } from './multiStart';
 import { computeScenarioReport } from './scenarioReport';
 import { WEEKEND_V2_PATTERN } from './patterns/weekendV2';
-import { addDays, dayOfWeekUTC, dayTypeFromDow, dayTypeBucket } from './shared';
+import { addDays, dayOfWeekUTC, dayTypeFromDow, dayTypeBucketOn } from './shared';
 import type {
   GenerationContext, SlotToFill, CandidateProvider, ShiftTypeInfo, SeedAssignment,
 } from './genTypes';
@@ -101,9 +101,14 @@ function buildPaoliCtx(scenario: ScenarioDoc, seeds: SeedAssignment[]): Generati
   }));
 
   const PAR = 9;
+  // genContext's date-aware bucket key (dayTypeBucketOn): Labor Day is a
+  // MONDAY, so its C1/C2 slots belong to weekday|C1 / weekday|C2 — the same
+  // bucket applyScenarioBucketTargets writes the manifest's MTH_C1/MTH_C2
+  // targets into. Under the old day-type-only key they landed in holiday|*,
+  // which no scenario target ever addressed.
   const bucketTotals = new Map<string, number>();
   for (const s of slotsToFill) {
-    const key = `${dayTypeBucket(s.derived_day_type)}|${s.shift_type_code}`;
+    const key = `${dayTypeBucketOn(s.derived_day_type, s.slot_date)}|${s.shift_type_code}`;
     bucketTotals.set(key, (bucketTotals.get(key) || 0) + 1);
   }
   const rawTargets = new Map<string, number>();

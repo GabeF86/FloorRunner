@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import { emptySolveState } from './genTypes';
 import { loadGenerationContext, computeBucketTargets, floorBucketTargets } from './genContext';
-import { buildPrePtoByThursday } from './shared';
+import { addDays, buildPrePtoByThursday, dayOfWeekUTC } from './shared';
+import { evaluateEligibility } from './eligibility';
 import { CLASSIC_PATTERN } from './callPattern';
 import type {
   CandidateProvider, AssignmentExplanation, CandidateRejection, SolutionMetrics,
@@ -459,8 +460,11 @@ describe('loadGenerationContext — historical fairness RPC (requirement 4)', ()
     { provider_id: 'p1', bucket: 'weekday', code: 'C2', n: 2 },
     { provider_id: 'p2', bucket: 'sunday', code: 'C1', n: 1 },
   ];
-  // Legacy raw rows equivalent to the aggregate above (dayTypeBucket now keeps
-  // saturday and sunday as their own buckets).
+  // Legacy raw rows equivalent to the aggregate above (saturday and sunday are
+  // their own buckets). The slot_date on each row is deliberately arbitrary:
+  // the legacy scan buckets through dayTypeBucketOn, and a NON-holiday
+  // derived_day_type wins over the date, so only a holiday-typed row would
+  // consult it.
   const legacyRows = [
     ...Array.from({ length: 3 }, () => ({ provider_id: 'p1', schedule_slots: { slot_date: '2025-12-01', site_id: 'site1', derived_day_type: 'saturday', shift_types: { code: 'C1', category: 'call' } } })),
     ...Array.from({ length: 2 }, () => ({ provider_id: 'p1', schedule_slots: { slot_date: '2025-12-02', site_id: 'site1', derived_day_type: 'weekday', shift_types: { code: 'C2', category: 'call' } } })),
@@ -933,5 +937,131 @@ describe('loadGenerationContext — override pool narrows the call-taker criteri
     const res = await runOverride(['p8'], [partial], [partialProv]);
     expect(res.ctx).toBeTruthy();
     expect(res.ctx!.providers.map(p => p.id)).toEqual(['p8']);
+  });
+});
+
+// ── A HOLIDAY COUNTS AS THE DAY OF THE WEEK IT FALLS ON ──────────────────────
+// Gabriel 2026-07-27, verbatim: "Holidays that fall out on a weekend Friday
+// saturday or sunday, get included in the obligatory weekend count, and those
+// that fall out on weekdays do the same."
+//
+// THE LIVE CASE, end to end through the real load path. His block is
+// 2026-08-10 (Mon) … 2026-10-25 (Sun): 11 weeks, so 44 Mon–Thu dates, two of
+// which are MONDAY holidays — Labor Day 2026-09-07 and Columbus Day
+// 2026-10-12. At par 11 his model says a 1.0 FTE owes 4 weekday C1s (44 ÷ 11).
+//
+// Before this change the two holidays were pulled into a separate 'holiday'
+// bucket, the weekday bucket held 42, the target came out 42/11 = 3.8181…, and
+// eligibility's `assigned + 1 > target` gate refused the FOURTH weekday C1 —
+// which is exactly the complaint. In 'all' fill mode a relaxation pass fills
+// regardless, so it only ever showed in obligatory mode.
+describe('bucket denominator: holiday-dated call slots count in their weekday bucket', () => {
+  const BLOCK_START = '2026-08-10'; // Monday
+  const LABOR_DAY = '2026-09-07';   // Monday
+  const COLUMBUS = '2026-10-12';    // Monday
+  const PAR = 11;
+
+  // Mon–Thu dates of the 11-week block, in order.
+  const monThuDates = (): string[] => {
+    const out: string[] = [];
+    for (let w = 0; w < 11; w++) {
+      for (let d = 0; d < 4; d++) out.push(addDays(BLOCK_START, w * 7 + d));
+    }
+    return out;
+  };
+
+  const dayTypeOf = (d: string) =>
+    d === LABOR_DAY ? 'major_holiday' : d === COLUMBUS ? 'federal_holiday' : 'weekday';
+
+  const blockSlots = () => monThuDates().map(d => rawSlot({
+    id: `c1-${d}`, date: d, code: 'C1', category: 'call', dayType: dayTypeOf(d),
+  }));
+
+  const loadBlock = () => run({
+    schedule_slots: { data: blockSlots(), error: null },
+    sites: { data: { call_par_level: PAR, organization_id: 'org1' }, error: null },
+  });
+
+  it('the fixture really is 44 Mon–Thu dates with exactly 2 holidays among them', () => {
+    const dates = monThuDates();
+    expect(dates).toHaveLength(44);
+    expect(dates).toContain(LABOR_DAY);
+    expect(dates).toContain(COLUMBUS);
+    expect(dates.filter(d => dayTypeOf(d) !== 'weekday')).toEqual([LABOR_DAY, COLUMBUS]);
+    // Both holidays are MONDAYS (0=Sun..6=Sat) — the whole point of the rule.
+    expect(dayOfWeekUTC(LABOR_DAY)).toBe(1);
+    expect(dayOfWeekUTC(COLUMBUS)).toBe(1);
+  });
+
+  it('weekday|C1 totals 44, not 42 — and there is no holiday bucket at all', async () => {
+    const { res } = await loadBlock();
+    const ctx = res.ctx!;
+    expect(ctx.bucketTotals.get('weekday|C1')).toBe(44);
+    expect(ctx.bucketTotals.get('holiday|C1')).toBeUndefined();
+    expect([...ctx.bucketTotals.keys()].some(k => k.startsWith('holiday|'))).toBe(false);
+  });
+
+  it("a 1.0 FTE's weekday|C1 target is 4.0 at par 11 — the number he states, not 3.818", async () => {
+    const { res } = await loadBlock();
+    const ctx = res.ctx!;
+    expect(ctx.bucketTarget.get('p1|weekday|C1')).toBeCloseTo(4, 10);
+    // The old, holiday-folding denominator would have produced this instead.
+    expect(ctx.bucketTarget.get('p1|weekday|C1')).not.toBeCloseTo(42 / PAR, 10);
+    // 0.5 FTE scales off the same 44.
+    expect(ctx.bucketTarget.get('p2|weekday|C1')).toBeCloseTo(2, 10);
+  });
+
+  it('THE COMPLAINT: the quota gate now permits the FOURTH weekday C1 and still stops the fifth', async () => {
+    const { res } = await loadBlock();
+    const ctx = res.ctx!;
+    const slot = ctx.slotsToFill.find(s => s.derived_day_type === 'weekday')!;
+    const p1 = ctx.providers.find(p => p.id === 'p1')!;
+
+    const stateWith = (n: number) => {
+      const st = emptySolveState();
+      st.bucketAssigned.set('p1|weekday|C1', n);
+      return st;
+    };
+    // 3 held → the 4th is allowed (3 + 1 > 4 is false).
+    expect(evaluateEligibility(slot, p1, stateWith(3), ctx, 'call').eligible).toBe(true);
+    // 4 held → the 5th is refused, because 4 IS the obligation.
+    expect(evaluateEligibility(slot, p1, stateWith(4), ctx, 'call'))
+      .toEqual({ eligible: false, reason: 'bucket-quota' });
+  });
+
+  it('a HOLIDAY-dated slot is charged to weekday|C1 too — same key, same ceiling', async () => {
+    const { res } = await loadBlock();
+    const ctx = res.ctx!;
+    const holidaySlot = ctx.slotsToFill.find(s => s.slot_date === LABOR_DAY)!;
+    expect(holidaySlot.derived_day_type).toBe('major_holiday');
+    const p1 = ctx.providers.find(p => p.id === 'p1')!;
+
+    const st = emptySolveState();
+    st.bucketAssigned.set('p1|weekday|C1', 4);
+    // Charged against the WEEKDAY ceiling, so a doc already at 4 weekday calls
+    // is refused Labor Day. Under the old scheme this asked for
+    // 'p1|holiday|C1' — target 0 (no such bucket) — and was refused for the
+    // opposite reason: it could never be granted at all.
+    expect(evaluateEligibility(holidaySlot, p1, st, ctx, 'call'))
+      .toEqual({ eligible: false, reason: 'bucket-quota' });
+    const empty = emptySolveState();
+    expect(evaluateEligibility(holidaySlot, p1, empty, ctx, 'call').eligible).toBe(true);
+  });
+
+  it('a SATURDAY holiday lands in the saturday bucket (the weekend half of the rule)', async () => {
+    // 2026-07-04 is a Saturday; 2026-07-03 (observed) is the Friday before.
+    const { res } = await run({
+      schedule_slots: { data: [
+        rawSlot({ id: 'sat', date: '2026-07-04', code: 'C1', category: 'call', dayType: 'major_holiday' }),
+        rawSlot({ id: 'fri', date: '2026-07-03', code: 'C1', category: 'call', dayType: 'federal_holiday' }),
+      ], error: null },
+      sites: { data: { call_par_level: 1, organization_id: 'org1' }, error: null },
+    });
+    const ctx = res.ctx!;
+    expect(dayOfWeekUTC('2026-07-04')).toBe(6);
+    expect(dayOfWeekUTC('2026-07-03')).toBe(5);
+    expect(ctx.bucketTotals.get('saturday|C1')).toBe(1);
+    expect(ctx.bucketTotals.get('friday|C1')).toBe(1);
+    expect(ctx.bucketTotals.get('holiday|C1')).toBeUndefined();
   });
 });

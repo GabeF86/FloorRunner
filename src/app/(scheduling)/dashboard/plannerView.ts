@@ -120,9 +120,16 @@ export function filterRoster(
 }
 
 // ── Bucket display order ─────────────────────────────────────────────────────
-// Chronological reading order for the fairness buckets (dayTypeBucket keys);
+// Chronological reading order for the fairness buckets (dayTypeBucketOn keys);
 // unknown buckets sort after the known ones, alphabetically. Display-only —
-// the buckets themselves come from the engine's dayTypeBucket.
+// the buckets themselves come from the engine's dayTypeBucketOn.
+//
+// 'holiday' is KEPT in the order even though the engine stopped emitting it on
+// 2026-07-27 (a holiday now counts as the day of the week it falls on). Rows
+// carrying it can still arrive from data written before the change — most
+// concretely the historical_call_counts RPC, whose bucket CASE is patched
+// separately — and this list is the only thing that gives such a row a sensible
+// position and a capitalized label instead of dumping it at the tail.
 
 const BUCKET_ORDER = ['weekday', 'friday', 'saturday', 'sunday', 'holiday'];
 

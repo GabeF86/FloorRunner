@@ -6,7 +6,7 @@
 // mechanically converted to take the run object; behavior is byte-identical.
 // solve.ts builds the run and orchestrates; the pass modules (passes/) and
 // the main loop consume these functions.
-import { addDays, daysBetween, dayTypeBucket, datesOverlap, dayOfWeekUTC } from './shared';
+import { addDays, daysBetween, dayTypeBucketOn, datesOverlap, dayOfWeekUTC } from './shared';
 import { evaluateEligibility } from './eligibility';
 import { dayChainsFor, blockChainsFor } from './callPattern';
 import { mayEvictPreFill, preFillCodes, shiftRank } from './preFillEviction';
@@ -368,7 +368,7 @@ export function record(
   // Overlay call slots still count toward buckets and call recency — only the
   // one-assignment-per-day budget is exempt.
   if (slot.shift_type_category === 'call') {
-    incBucket(state, p.id, slot.derived_day_type, slot.shift_type_code);
+    incBucket(state, p.id, slot.derived_day_type, slot.slot_date, slot.shift_type_code);
     // Provider call caps: every REAL call placement (any source — chain links
     // and overridden pins included) maintains the tally, per KEY (per-code +
     // scenario bucket/either-or/neuro — capCharges is the one home). Computed
@@ -497,7 +497,11 @@ function scenarioPrefTier(run: SolverRun, pid: string, slot: SlotToFill): number
 // tuple is the pre-change ratio/recency/id sort, byte for byte.
 export function scoreCall(run: SolverRun, cands: CandidateProvider[], slot: SlotToFill) {
   const { ctx, state } = run;
-  const k = `${dayTypeBucket(slot.derived_day_type)}|${slot.shift_type_code}`;
+  // Date-aware bucket (dayTypeBucketOn): the SAME key eligibility's quota gate
+  // and incBucket use, so the fairness ratio a candidate is sorted on is
+  // measured in the bucket the placement will actually be charged to. A
+  // holiday-dated call counts as its day of the week (Gabriel 2026-07-27).
+  const k = `${dayTypeBucketOn(slot.derived_day_type, slot.slot_date)}|${slot.shift_type_code}`;
   const seed = run.tieBreakSeed;
   // Neuro requirement steering (2026-07-27): for neuro-code slots, a provider
   // still short of their band requirement sorts ahead of one who is not.

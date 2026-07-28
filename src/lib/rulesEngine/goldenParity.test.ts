@@ -66,6 +66,17 @@ describe('golden parity fixture — sanity (not a no-op)', () => {
 // post-call block); CLASSIC_PATTERN must preserve that or holiday calls lose
 // their post-call day off (clinical invariant #1). Regression for the
 // Task 5 review finding.
+//
+// WHY THIS BLOCK STILL PROVES PARITY AFTER THE 2026-07-27 BUCKET CHANGE.
+// dayTypeBucketOn moved holiday-dated slots into their weekday's fairness
+// bucket, and solveLegacy is FROZEN on the old day-type-only dayTypeBucket for
+// its own incBucket/scoring — but it calls the LIVE evaluateEligibility, which
+// now keys the quota the new way. The two only interact through the quota gate,
+// and buildCtx gives every bucket a target of 99, so on this fixture no quota
+// binds in either engine and the placements are decided by the same eligibility
+// + scoring path. Do NOT tighten the targets here to make a point: that would
+// pit a frozen bucket vocabulary against a live one and the divergence would be
+// an artifact of the harness, not of solve().
 describe('golden parity — holiday call slots', () => {
   const holidayCtx = () => {
     // Mon 2026-01-19 typed as federal_holiday, flanked by Sun 01-18 and a

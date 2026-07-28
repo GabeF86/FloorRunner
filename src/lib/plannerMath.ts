@@ -12,7 +12,7 @@
 //     extracted from the schedules POST route so estimates can't diverge
 //     from real slot creation)
 //   - date/bucket primitives    → rulesEngine/shared.ts (addDays,
-//     dayTypeBucket, isDismissedAvailability)
+//     dayTypeBucketOn, isDismissedAvailability)
 //   - embed normalization       → lib/embed.ts (embedArray)
 // Drift-proofing is by construction (imports) AND by test: plannerMath.test.ts
 // cross-checks these assemblies against the engine helpers on identical inputs.
@@ -23,7 +23,7 @@
 
 import {
   addDays,
-  dayTypeBucket,
+  dayTypeBucketOn,
   isDismissedAvailability,
 } from './rulesEngine/shared';
 import {
@@ -117,6 +117,11 @@ export interface PlannerHoliday {
 
 export interface RangeComposition {
   dates: string[];                       // every calendar date in [start, end]
+  /** derived day_type -> the dates in range carrying it, ascending. Carried
+   * alongside the counts because a day type is NOT enough to bucket a slot:
+   * a holiday day type is charged to the fairness bucket of the day of the
+   * week it falls on, which only the date knows (estimateCallSlots). */
+  dayTypeDates: Map<string, string[]>;
   dayTypeCounts: Map<string, number>;    // derived day_type -> #dates in range
   majorHolidayDates: Set<string>;        // majors in range (workingDays input)
   workingDaySet: Set<string>;            // weekdays minus major holidays
@@ -148,14 +153,22 @@ export function rangeComposition(
   const majorHolidayDates = new Set(
     holidays.filter(h => h.is_major_holiday).map(h => h.holiday_date));
   const dates = enumerateRange(dateStart, dateEnd);
-  const dayTypeCounts = new Map<string, number>();
+  const dayTypeDates = new Map<string, string[]>();
   const workingDaySet = new Set<string>();
   for (const d of dates) {
     const dt = derivedDayTypeFor(d, holidayByDate.get(d));
-    dayTypeCounts.set(dt, (dayTypeCounts.get(dt) ?? 0) + 1);
+    const list = dayTypeDates.get(dt);
+    if (list) list.push(d);
+    else dayTypeDates.set(dt, [d]);
     if (isWorkingDay(d, majorHolidayDates)) workingDaySet.add(d);
   }
-  return { dates, dayTypeCounts, majorHolidayDates, workingDaySet, workingDays: workingDaySet.size };
+  // Derived, never counted twice — the two views cannot disagree.
+  const dayTypeCounts = new Map<string, number>(
+    [...dayTypeDates].map(([dt, ds]) => [dt, ds.length]));
+  return {
+    dates, dayTypeDates, dayTypeCounts, majorHolidayDates,
+    workingDaySet, workingDays: workingDaySet.size,
+  };
 }
 
 // ── Future-block call-slot estimate (templates × day-type composition) ───────
@@ -169,29 +182,44 @@ export interface CallSlotEstimate {
 // Call slots a range WOULD materialize from the active templates: for each
 // day type present in the range, the slate is slateForDayType (Friday
 // partial-override union included) and each row contributes count × #days.
-// Buckets collapse via the engine's dayTypeBucket (holiday day types lump
-// into 'holiday'; sat/sun separate). Estimates only — actual schedules may
-// differ (e.g. later required_count edits).
+//
+// The SLATE is chosen by day type (template rows are stored per day type —
+// a 'major_holiday' row is a real, separately-editable row), but the fairness
+// BUCKET is chosen by dayTypeBucketOn, per DATE: a Monday holiday's call slots
+// land in the weekday bucket (Gabriel 2026-07-27). That is why this takes the
+// range's day-type DATES rather than a bare count — one day type can span
+// several buckets once holidays are folded in. The planner card's buckets must
+// agree with the engine's or the dashboard contradicts the schedule.
+//
+// Estimates only — actual schedules may differ (e.g. later required_count edits).
 export function estimateCallSlots(
   templateCounts: ReadonlyArray<TemplateSlotCountRow>,
-  dayTypeCounts: ReadonlyMap<string, number>,
+  dayTypeDates: ReadonlyMap<string, readonly string[]>,
 ): CallSlotEstimate {
   let total = 0;
   const byBucket = new Map<string, number>();
   const byBucketCode = new Map<string, { bucket: string; code: string; count: number }>();
-  for (const [dayType, nDays] of dayTypeCounts) {
-    if (nDays <= 0) continue;
-    for (const row of slateForDayType(templateCounts, dayType)) {
-      if (row.category !== 'call') continue;
-      const slots = row.count * nDays;
-      if (slots <= 0) continue; // count-0 rows exist only to suppress (Friday contract)
-      const bucket = dayTypeBucket(dayType);
-      total += slots;
-      byBucket.set(bucket, (byBucket.get(bucket) ?? 0) + slots);
-      const key = `${bucket}|${row.code}`;
-      const cur = byBucketCode.get(key);
-      if (cur) cur.count += slots;
-      else byBucketCode.set(key, { bucket, code: row.code, count: slots });
+  for (const [dayType, dates] of dayTypeDates) {
+    if (dates.length === 0) continue;
+    const slate = slateForDayType(templateCounts, dayType).filter(r => r.category === 'call');
+    if (slate.length === 0) continue;
+    // Days of this day type, grouped by the bucket their DATE puts them in.
+    const daysByBucket = new Map<string, number>();
+    for (const d of dates) {
+      const b = dayTypeBucketOn(dayType, d);
+      daysByBucket.set(b, (daysByBucket.get(b) ?? 0) + 1);
+    }
+    for (const row of slate) {
+      for (const [bucket, nDays] of daysByBucket) {
+        const slots = row.count * nDays;
+        if (slots <= 0) continue; // count-0 rows exist only to suppress (Friday contract)
+        total += slots;
+        byBucket.set(bucket, (byBucket.get(bucket) ?? 0) + slots);
+        const key = `${bucket}|${row.code}`;
+        const cur = byBucketCode.get(key);
+        if (cur) cur.count += slots;
+        else byBucketCode.set(key, { bucket, code: row.code, count: slots });
+      }
     }
   }
   return { total, byBucket, byBucketCode };
@@ -320,7 +348,7 @@ export interface ProviderActuals {
 
 // Reconstructs per-provider actuals from a draft schedule's slot rows +
 // availability, using the SAME classifiers the engine's report uses
-// (assignmentFills, dayTypeBucket, creditsAsWorkedAvailability, working-day
+// (assignmentFills, dayTypeBucketOn, creditsAsWorkedAvailability, working-day
 // membership). Differences from workDayReport, both deliberate: post-call
 // rest is derived from requires_post_call_rule (+1 day — the invariant's
 // definition) rather than a CallPatternDoc's block offsets (no engine/pattern
@@ -362,7 +390,10 @@ export function computeScheduleActuals(
       const pid = a.provider_id as string;
       const p = acc(pid);
       if (st.category === 'call') {
-        const bucket = dayTypeBucket(dayType);
+        // Date-aware: a holiday-dated call counts in its day-of-week bucket
+        // (the engine's rule — Gabriel 2026-07-27), so the card's per-bucket
+        // actuals line up with the quota the engine enforced.
+        const bucket = dayTypeBucketOn(dayType, slot.slot_date);
         const key = `${bucket}|${st.code}`;
         const cur = p.callCounts.get(key);
         if (cur) cur.count += 1;
@@ -478,7 +509,7 @@ export interface PlannerContext {
 export function buildPlannerContext(payload: PlannerPayload): PlannerContext {
   const composition = rangeComposition(
     payload.range.date_start, payload.range.date_end, payload.holidays);
-  const callEstimate = estimateCallSlots(payload.templates, composition.dayTypeCounts);
+  const callEstimate = estimateCallSlots(payload.templates, composition.dayTypeDates);
   const census = computeCallObligationCensus({
     storedParLevel: payload.site.call_par_level,
     siteId: payload.site.id,
@@ -509,7 +540,7 @@ export interface PlannerWhatIf extends DayStatsWhatIf {
 }
 
 export interface PlannerBucketRow {
-  bucket: string;          // fairness bucket (dayTypeBucket)
+  bucket: string;          // fairness bucket (dayTypeBucketOn)
   slots: number;           // call slots the range materializes in this bucket
   expected: number;        // fteWeightedTarget(slots, parLevel, fte) — fractional
   assigned: number | null; // filled call assignments (null without actuals)

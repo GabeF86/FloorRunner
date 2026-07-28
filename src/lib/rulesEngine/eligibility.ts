@@ -2,7 +2,7 @@ import {
   BOOKEND_EXTENDING_TYPES,
   addDays,
   dayOfWeekUTC,
-  dayTypeBucket,
+  dayTypeBucketOn,
   isBlockingAvailability,
   isDateBlocked,
 } from './shared';
@@ -118,8 +118,15 @@ export function evaluateEligibility(
 
   // Bucket quota (the full 'call' gate ONLY — waived under 'call-no-quota'):
   // "would one more push us past target?"
+  //
+  // The bucket is DATE-AWARE (dayTypeBucketOn): a holiday-dated call is charged
+  // to the day of the week it lands on, so the Monday holidays inside a block
+  // count toward the weekday bucket rather than a separate holiday one. Before
+  // that, the live 11-week Paoli block's 44 Mon–Thu C1 slots totalled only 42 in
+  // this bucket, a 1.0 FTE's target came out 42/11 = 3.818, and the check below
+  // refused their 4th weekday C1 (44/11 = 4 is the number Gabriel states).
   if (gate === 'call') {
-    const k = `${p.id}|${dayTypeBucket(slot.derived_day_type)}|${slot.shift_type_code}`;
+    const k = `${p.id}|${dayTypeBucketOn(slot.derived_day_type, slot.slot_date)}|${slot.shift_type_code}`;
     const assigned = state.bucketAssigned.get(k) || 0;
     const target = ctx.bucketTarget.get(k) ?? 0;
     if (assigned + 1 > target) {

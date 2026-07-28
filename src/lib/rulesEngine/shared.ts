@@ -348,6 +348,12 @@ export function normalizeWeekdays(v: unknown): boolean[] {
 // blocks call-takers rotate through Saturday and Sunday evenly instead of one
 // person accumulating all the Saturdays. Friday and weekday stand alone; the two
 // holiday types still lump into one 'holiday' bucket (out of scope for the split).
+//
+// FROZEN SHAPE — DO NOT CHANGE THE SIGNATURE OR THE MAPPING. solveLegacy.ts
+// (the frozen golden-parity twin, never edited) calls this with a single string
+// argument. The LIVE bucketing rule is dayTypeBucketOn below; this stays as the
+// day-type-only mapping legacy was written against, and as the shared first
+// half of the live rule.
 export function dayTypeBucket(dt: string): string {
   if (dt === 'weekday') return 'weekday';
   if (dt === 'friday') return 'friday';
@@ -355,6 +361,48 @@ export function dayTypeBucket(dt: string): string {
   if (dt === 'sunday') return 'sunday';
   if (dt === 'federal_holiday' || dt === 'major_holiday') return 'holiday';
   return dt;
+}
+
+// THE LIVE fairness bucket (2026-07-27, Gabriel verbatim: "Holidays that fall
+// out on a weekend Friday saturday or sunday, get included in the obligatory
+// weekend count, and those that fall out on weekdays do the same"). A
+// holiday-dated call belongs to the bucket of the DAY OF THE WEEK it lands on —
+// there is no separate holiday fairness bucket, because there is no separate
+// holiday obligation: Labor Day is a Monday, and a Monday call is a weekday
+// call.
+//
+// WHY THE DATE IS REQUIRED. `derived_day_type` collapses every holiday to
+// 'federal_holiday' / 'major_holiday' and so cannot say which day of the week
+// it was; only the slot's DATE can. Callers therefore hand in both, and the
+// day type still WINS whenever it names a real day (weekday/friday/saturday/
+// sunday) — the date is consulted only for the holiday types, which is what
+// keeps every non-holiday key byte-identical to dayTypeBucket's.
+//
+// The bug this fixes was measured on the live Paoli 11-week block: 2 of its 44
+// Mon–Thu dates are Monday holidays (Labor Day 2026-09-07, Columbus Day
+// 2026-10-12), so the weekday bucket held 42 slots. At par 11 that made a 1.0
+// FTE's weekday|C1 target 42/11 = 3.818, and the `assigned + 1 > target` quota
+// gate (eligibility.ts) then refused their 4th weekday C1. Gabriel's model says
+// 4 — which is exactly 44/11. In 'all' fill mode the relaxation pass fills
+// regardless, which is why the ceiling only ever showed up in obligatory mode.
+//
+// This also un-breaks the SCENARIO layer, which was already day-of-week scoped:
+// applyScenarioBucketTargets writes a manifest's MTH_C1 target to
+// `pid|weekday|C1`, but a Monday-holiday slot used to ask for `pid|holiday|C1`
+// and find nothing — target 0, placement refused. Same rule, one home now.
+//
+// Unknown day types pass through unchanged (dayTypeBucket's own behavior);
+// nothing in the schema produces one, and silently re-deriving them from the
+// date would be a second, invisible rule.
+//
+// Reuses dayTypeFromDow — the single-homed DOW→day-type mapping right above,
+// which already emits exactly this vocabulary. (scenario.ts's scenarioBucketOf
+// is the same idea in the workbook's MTH/FRI/SAT/SUN vocabulary and is
+// deliberately left alone; lib/blockTargets.ts routes ITS holiday folding
+// through this function so the three can never disagree.)
+export function dayTypeBucketOn(dt: string, date: string): string {
+  const bucket = dayTypeBucket(dt);
+  return bucket === 'holiday' ? dayTypeFromDow(dayOfWeekUTC(date)) : bucket;
 }
 
 // ── Pre-PTO Thursday placement index ────────────────────────────────────────

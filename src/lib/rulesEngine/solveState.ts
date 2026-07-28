@@ -3,7 +3,7 @@
 // genTypes.ts (2026-07-20 solve decomposition); genTypes RE-EXPORTS
 // SolveState/emptySolveState so existing imports (tests included) keep
 // working unchanged. Never touches I/O.
-import { addDays, dayTypeBucket, daysBetween } from './shared';
+import { addDays, dayTypeBucketOn, daysBetween } from './shared';
 import { creditWorkedDay } from './workDays';
 import type { WorkDayBudget } from './genTypes';
 
@@ -69,14 +69,19 @@ export function creditWorkDay(s: SolveState, budget: WorkDayBudget | undefined, 
   if (!budget) return;
   creditWorkedDay(s.creditedWorkDays, budget.workingDaySet, pid, date);
 }
-export function incBucket(s: SolveState, pid: string, dt: string, code: string) {
-  incBucketBy(s, pid, dt, code, 1);
+// `date` is the slot date and is REQUIRED, not decorative: a holiday-typed slot
+// is charged to the bucket of the day of the week it falls on (dayTypeBucketOn
+// — Gabriel 2026-07-27), and derived_day_type alone cannot say which that is.
+// The written key must match the one eligibility's quota gate and scoreCall
+// read, so all three route through the same function.
+export function incBucket(s: SolveState, pid: string, dt: string, date: string, code: string) {
+  incBucketBy(s, pid, dt, date, code, 1);
 }
 // Weighted variant (2026-07-22, call splits): segment SEEDS count under the
 // PARENT code at their fractional call_burden_weight — the caller maps the
 // code and supplies the weight. Placements stay on incBucket (weight 1).
-export function incBucketBy(s: SolveState, pid: string, dt: string, code: string, n: number) {
-  const k = `${pid}|${dayTypeBucket(dt)}|${code}`;
+export function incBucketBy(s: SolveState, pid: string, dt: string, date: string, code: string, n: number) {
+  const k = `${pid}|${dayTypeBucketOn(dt, date)}|${code}`;
   s.bucketAssigned.set(k, (s.bucketAssigned.get(k) || 0) + n);
 }
 // The per-provider call-date lists are kept sorted ascending and deduped;

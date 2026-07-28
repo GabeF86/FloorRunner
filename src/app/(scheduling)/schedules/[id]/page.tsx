@@ -27,7 +27,10 @@ import { reasonCodeLabel } from '@/lib/validation/providers';
 // Pure row-level classifier for LIVE pto_sellback rows — the grid must agree
 // with the engine's date-level override (rulesEngine/shared.ts isDateBlocked)
 // about which dates a provider is working, so it imports the same predicate.
-import { isActiveSellback } from '@/lib/rulesEngine/shared';
+// dayTypeBucketOn = the engine's DATE-AWARE fairness bucket. The Call Counts
+// columns must group calls exactly as the quota that placed them did, so a
+// holiday-dated call shows under the day of the week it falls on (2026-07-27).
+import { isActiveSellback, dayTypeBucketOn } from '@/lib/rulesEngine/shared';
 // requiredWorkDaysWithLimit = the engine's per-provider requirement (round(FTE
 // × WD) − PTO, overridden by a stated Limits-tab workingDays/daysOff entry) —
 // the Call Counts "Working Days" column shows actual/required from the SAME
@@ -3474,7 +3477,9 @@ const smallBtn: React.CSSProperties = {
 function CallCountsModal({ grid, onClose }: { grid: GridData; onClose: () => void }) {
   // Bucket key = day_type group (weekday | friday | saturday | sunday).
   // Saturday and Sunday are SEPARATE fairness buckets (mirrors the engine's
-  // dayTypeBucket) so per-day call burden is visible per provider.
+  // dayTypeBucketOn) so per-day call burden is visible per provider. There is
+  // no holiday column because the engine has no holiday bucket — a holiday
+  // counts as the day of the week it falls on (Gabriel 2026-07-27).
   const BUCKETS = [
     { key: 'weekday',  label: 'M–Th' },
     { key: 'friday',   label: 'Fri' },
@@ -3500,8 +3505,9 @@ function CallCountsModal({ grid, onClose }: { grid: GridData; onClose: () => voi
   // authoritative 2026-07-24, matching the engine's obligatory-mode cap)
   // and an every-call-slot count — holiday-dated slots and non-C1/C2/C3 call
   // codes included. The bucketed columns below are DISPLAY grouping only
-  // (C1–C3 across the four day-type buckets; holiday-dated calls have no
-  // column) — they never feed the obligation/extra/OVER math.
+  // (C1–C3 across the four day-type buckets; a holiday-dated call shows in the
+  // column for its day of the week, a call code outside C1–C3 in none) — they
+  // never feed the obligation/extra/OVER math.
   const census = callCensusFromGrid(grid);
 
   const providersWithCalls = new Set<string>();
@@ -3517,13 +3523,13 @@ function CallCountsModal({ grid, onClose }: { grid: GridData; onClose: () => voi
     const code = parentCallCodeOf(rawCode, slot.shift_types);
     if (!CODES.includes(code as typeof CODES[number])) continue;
     const weight = callBurdenWeight(slot.shift_types);
-    const dt = slot.derived_day_type;
-    let bucket: string;
-    if (dt === 'weekday') bucket = 'weekday';
-    else if (dt === 'friday') bucket = 'friday';
-    else if (dt === 'saturday') bucket = 'saturday';
-    else if (dt === 'sunday') bucket = 'sunday';
-    else continue; // no holiday display column — the census above still counts these slots
+    // The ENGINE's bucket (dayTypeBucketOn): a holiday-dated call lands in the
+    // column for the day of the week it falls on, so a Labor Day (Monday) call
+    // shows under M–Th instead of vanishing from every column. Anything the
+    // engine does not bucket into one of the four columns (an unknown day type)
+    // still has no column; the census above counts every call slot regardless.
+    const bucket = dayTypeBucketOn(slot.derived_day_type, slot.slot_date);
+    if (!BUCKETS.some(b => b.key === bucket)) continue;
     const key = `${bucket}|${code}`;
     blockTotals[key] = (blockTotals[key] || 0) + weight;
     for (const a of slot.assignments || []) {
@@ -3574,8 +3580,8 @@ function CallCountsModal({ grid, onClose }: { grid: GridData; onClose: () => voi
     counts[pid]?.[`${bucket}|${code}`] || 0;
 
   // Call Total = EVERY call assignment (census), not just the bucketed C1–C3
-  // columns — a holiday-dated call counts here (and in the obligation math)
-  // even though it has no bucket column of its own.
+  // columns — a call code outside C1–C3 counts here (and in the obligation
+  // math) even though it has no bucket column of its own.
   const rowTotal = (pid: string) => census.actualCallsFor(pid);
 
   const colTotal = (bucket: string, code: string) => {
@@ -3643,7 +3649,7 @@ function CallCountsModal({ grid, onClose }: { grid: GridData; onClose: () => voi
     fteWeightedTarget(blockTotals[`${bucket}|${code}`] || 0, census.effectivePar, census.poolFteFor(pid));
   // TOTAL-level fractional expected — straight from the shared census (all
   // call slots ÷ effective par × FTE), NOT a sum of the display buckets: the
-  // buckets exclude holiday-dated calls, the obligation never does.
+  // buckets cover only the C1–C3 codes, the obligation covers every call slot.
   const rowExpected = (pid: string) => census.totalExpectedFor(pid);
   const colExpected = (bucket: string, code: string) => {
     let t = 0;
@@ -3800,7 +3806,7 @@ function CallCountsModal({ grid, onClose }: { grid: GridData; onClose: () => voi
             <tr style={{ background: 'var(--bg)', color: 'var(--text-muted)' }}>
               <th rowSpan={2} style={{ padding: '6px 10px', textAlign: 'left', borderBottom: '1px solid var(--border)', fontWeight: 700 }}>Provider</th>
               {BUCKETS.map(b => (
-                <th key={b.key} colSpan={3} title={`${bucketDays[b.key]} ${b.label} day${bucketDays[b.key] === 1 ? '' : 's'} in this block — distinct slot dates by stored day type. Holiday-dated days are excluded (they have no bucket column).`} style={{
+                <th key={b.key} colSpan={3} title={`${bucketDays[b.key]} ${b.label} day${bucketDays[b.key] === 1 ? '' : 's'} in this block — distinct slot dates in this bucket. Holidays are INCLUDED, counted as the day of the week they fall on: Labor Day is a Monday, so it is one of the M–Th days and its calls are M–Th calls.`} style={{
                   padding: '6px 10px', textAlign: 'center', fontWeight: 700,
                   borderBottom: '1px solid var(--border)', borderLeft: '1px solid var(--border)',
                   color: 'var(--text-muted)', cursor: 'help',

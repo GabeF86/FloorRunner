@@ -9,6 +9,7 @@ import {
   effectivePtoRange,
   normalizeWeekdays,
   dayTypeBucket,
+  dayTypeBucketOn,
   isBlockingAvailability,
   isActiveNoCallRequest,
   isActiveCallRequest,
@@ -100,6 +101,64 @@ describe('dayTypeBucket', () => {
     expect(dayTypeBucket('saturday')).not.toBe(dayTypeBucket('sunday'));
     expect(dayTypeBucket('saturday')).not.toBe('weekend');
     expect(dayTypeBucket('sunday')).not.toBe('weekend');
+  });
+
+  it('is FROZEN at the day-type-only mapping solveLegacy was written against', () => {
+    // solveLegacy.ts (never edited — the golden-parity net) calls this with one
+    // string argument. If the live rule ever needs to move, it moves in
+    // dayTypeBucketOn, not here.
+    expect(dayTypeBucket.length).toBe(1);
+    expect(dayTypeBucket('federal_holiday')).toBe('holiday');
+  });
+});
+
+// Gabriel 2026-07-27, verbatim: "Holidays that fall out on a weekend Friday
+// saturday or sunday, get included in the obligatory weekend count, and those
+// that fall out on weekdays do the same." A holiday-dated call is charged to
+// the bucket of the DAY OF THE WEEK it lands on — there is no holiday bucket.
+describe('dayTypeBucketOn (the LIVE fairness bucket — holidays count as their weekday)', () => {
+  // 2026-09-07 Labor Day = MONDAY; 2026-10-12 Columbus Day = MONDAY;
+  // 2026-07-03 (observed Independence Day) = FRIDAY; 2026-07-04 = SATURDAY;
+  // 2026-11-01 = SUNDAY.
+  it('puts a MONDAY holiday in the weekday bucket (the live Paoli case)', () => {
+    expect(dayTypeBucketOn('major_holiday', '2026-09-07')).toBe('weekday');
+    expect(dayTypeBucketOn('federal_holiday', '2026-10-12')).toBe('weekday');
+    // ...and the old rule did NOT — this is the behavior change.
+    expect(dayTypeBucket('major_holiday')).toBe('holiday');
+  });
+
+  it('puts a SATURDAY holiday in the saturday bucket, a SUNDAY one in sunday, a FRIDAY one in friday', () => {
+    expect(dayTypeBucketOn('major_holiday', '2026-07-04')).toBe('saturday');
+    expect(dayTypeBucketOn('federal_holiday', '2026-11-01')).toBe('sunday');
+    expect(dayTypeBucketOn('major_holiday', '2026-07-03')).toBe('friday');
+  });
+
+  it('never emits a holiday bucket — every DOW lands on that DOW\'s ordinary bucket', () => {
+    // 2026-09-06 is a Sunday, so i = 0..6 walks Sun..Sat.
+    const expected = ['sunday', 'weekday', 'weekday', 'weekday', 'weekday', 'friday', 'saturday'];
+    for (let i = 0; i < 7; i++) {
+      const d = addDays('2026-09-06', i);
+      for (const dt of ['federal_holiday', 'major_holiday']) {
+        expect(dayTypeBucketOn(dt, d)).toBe(expected[i]);
+        expect(dayTypeBucketOn(dt, d)).not.toBe('holiday');
+      }
+    }
+  });
+
+  it('the DAY TYPE still wins whenever it names a real day — non-holiday keys are byte-identical', () => {
+    // Every non-holiday day type maps exactly as dayTypeBucket does, whatever
+    // the date says. That equality is what keeps golden parity intact: only
+    // holiday-typed slots move.
+    for (const dt of ['weekday', 'friday', 'saturday', 'sunday']) {
+      for (let i = 0; i < 7; i++) {
+        const d = addDays('2026-09-06', i);
+        expect(dayTypeBucketOn(dt, d)).toBe(dayTypeBucket(dt));
+      }
+    }
+  });
+
+  it('passes unknown day types through unchanged (no silent re-derivation)', () => {
+    expect(dayTypeBucketOn('zebra', '2026-09-07')).toBe('zebra');
   });
 });
 

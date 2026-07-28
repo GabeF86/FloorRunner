@@ -495,7 +495,7 @@ export function seedSolveState(ctx: GenerationContext, doc: CallPatternDoc): Sol
       // The parent code also rides into the realized-call ledger (2026-07-26,
       // scenario linkage/NEURO decisions read it — a seeded Sun C2 segment
       // realizes SUN:C2).
-      incBucketBy(state, seed.provider_id, seed.derived_day_type,
+      incBucketBy(state, seed.provider_id, seed.derived_day_type, seed.slot_date,
         parentCallCodeOf(seed.shift_type_code, info), callBurdenWeight(info));
       addCallDate(state, seed.provider_id, seed.slot_date,
         parentCallCodeOf(seed.shift_type_code, info));

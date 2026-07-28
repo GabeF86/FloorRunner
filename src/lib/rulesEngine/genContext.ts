@@ -10,6 +10,7 @@ import {
   NEIGHBOR_WINDOW_DAYS,
   addDays,
   dayTypeBucket,
+  dayTypeBucketOn,
   isMissingRelationError,
   normalizeWeekdays,
   buildPrePtoByThursday,
@@ -868,13 +869,23 @@ export async function loadGenerationContext(
     for (const row of (hist || []) as Array<Record<string, unknown>>) {
       const pid = row.provider_id as string | null;
       const ss = row.schedule_slots as {
+        slot_date?: string;
         derived_day_type?: string;
         shift_types?: { code?: string };
       } | null;
       if (!pid || !ss) continue;
       const code = ss.shift_types?.code;
       if (!code) continue;
-      addHistorical(pid, dayTypeBucket(ss.derived_day_type || 'weekday'), code, 1);
+      // Same date-aware bucketing the RPC path must emit (a holiday counts as
+      // its day of the week — Gabriel 2026-07-27), so the legacy scan and the
+      // SQL aggregate cannot key history differently. slot_date is in the
+      // select above; a row without one keeps the day type's own bucket.
+      addHistorical(
+        pid,
+        ss.slot_date
+          ? dayTypeBucketOn(ss.derived_day_type || 'weekday', ss.slot_date)
+          : dayTypeBucket(ss.derived_day_type || 'weekday'),
+        code, 1);
     }
   } else {
     for (const row of (rpcRes.data || []) as Array<Record<string, unknown>>) {
@@ -892,12 +903,17 @@ export async function loadGenerationContext(
   // a split call (open or filled, in any combination) totals exactly ONE call
   // of load. Whole calls are weight 1 / parent = own code — unsplit schedules
   // produce the identical integer totals (fill-mode golden pins).
-  const bucketKeyFor = (dt: string, code: string) =>
-    `${dayTypeBucket(dt)}|${parentCallCodeOf(code, shiftTypes?.get(code))}`;
+  // Date-aware (dayTypeBucketOn, Gabriel 2026-07-27): a holiday-dated call slot
+  // is counted in the bucket of the day of the week it falls on. This is the
+  // DENOMINATOR side of the quota — the live 11-week Paoli block holds 44 Mon–Thu
+  // C1 slots of which two are Monday holidays, and folding them out left the
+  // weekday bucket at 42, targeting a 1.0 FTE at 3.818 instead of 4.
+  const bucketKeyFor = (dt: string, date: string, code: string) =>
+    `${dayTypeBucketOn(dt, date)}|${parentCallCodeOf(code, shiftTypes?.get(code))}`;
   const weightFor = (code: string) => callBurdenWeight(shiftTypes?.get(code));
   const bucketTotals = new Map<string, number>();
   for (const s of [...slotsToFill, ...manualCallSlots]) {
-    const key = bucketKeyFor(s.derived_day_type, s.shift_type_code);
+    const key = bucketKeyFor(s.derived_day_type, s.slot_date, s.shift_type_code);
     bucketTotals.set(key, (bucketTotals.get(key) || 0) + s.required_count * weightFor(s.shift_type_code));
   }
   // Include already-assigned slots so targets reflect total schedule load
@@ -908,7 +924,7 @@ export async function loadGenerationContext(
     const n = assignments.filter(a => a.provider_id).length;
     if (n > 0) {
       const dt = (raw.derived_day_type as string) || 'weekday';
-      const key = bucketKeyFor(dt, st.code);
+      const key = bucketKeyFor(dt, raw.slot_date as string, st.code);
       bucketTotals.set(key, (bucketTotals.get(key) || 0) + n * weightFor(st.code));
     }
   }
