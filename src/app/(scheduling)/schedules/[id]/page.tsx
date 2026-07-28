@@ -78,6 +78,14 @@ import {
   type PanelRow, type PoolMember,
 } from '@/lib/blockTargetsPanel';
 import { BlockTargetsTab } from './BlockTargetsTab';
+// Cell picker eligibility (2026-07-28). ALL the logic lives in slotCandidates —
+// a pure, tested module that mirrors evaluateEligibility's decisions for the
+// subset a client can evaluate (and names the ones it cannot). This component
+// only renders what it returns; never add a rule here.
+import {
+  buildCandidateIndex, candidatesForSlot, filterCandidateGroups, overrideConfirmMessage,
+  type CandidateCredentialRow, type CrossSiteBookingRow, type SlotCandidate,
+} from '@/lib/slotCandidates';
 
 /* ── Interfaces ──────────────────────────────────────────────────────────── */
 
@@ -122,6 +130,10 @@ interface EmploymentProfile {
   partial_call_taker: boolean;
   fte_value: number | null;
   employment_status: string | null;
+  // Sun..Sat jsonb — the engine's weekday-availability gate, consumed by the
+  // cell picker through slotCandidates. Absent on a payload whose profiles read
+  // fell to the narrow retry; normalizeWeekdays coerces that to all-true.
+  available_weekdays?: unknown;
 }
 
 interface AvailabilityEntry {
@@ -162,6 +174,9 @@ interface ShiftTypeInfo {
   // fractional call credit. Absent (pre-patch payloads) = whole call.
   parent_call_code?: string | null;
   call_burden_weight?: number | null;
+  // patch18. Feeds the cell picker's same-date check through the canonical
+  // overlayMayCoexist table. Absent reads as non-overlay (conservative).
+  is_overlay?: boolean | null;
 }
 
 interface ProviderInfo {
@@ -213,6 +228,10 @@ interface Slot {
   slot_index: number;
   locked: boolean;
   derived_day_type: string;
+  // schedule_slots.provider_group — 'physician' | 'crna' | 'both'. THE column
+  // evaluateEligibility's group gate reads (not the shift type's), so the cell
+  // picker mirrors the engine rather than approximating it.
+  provider_group?: string | null;
   shift_types: ShiftTypeInfo;
   assignments: AssignmentInfo[];
 }
@@ -247,6 +266,11 @@ interface GridData {
   // Counts modal reads `neuroWeekend.code` from it; nothing else on this page
   // consumes the pattern. Type-only import, so zod never enters this bundle.
   callPattern?: CallPatternDoc | null;
+  // Cell-picker eligibility inputs (2026-07-28). BOTH are nullable, and null
+  // means "the route could not check this dimension" — never "nothing is
+  // blocked". slotCandidates turns a null into a visible notice in the picker.
+  credentials?: CandidateCredentialRow[] | null;
+  crossSite?: CrossSiteBookingRow[] | null;
 }
 
 interface ActiveCell {
@@ -366,6 +390,9 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
   const [activeCell, setActiveCell] = useState<ActiveCell | null>(null);
   const [paletteCell, setPaletteCell] = useState<PaletteCell | null>(null);
   const [pickerSearch, setPickerSearch] = useState('');
+  // Cell picker: is the "Unavailable (n)" section expanded? Collapsed by
+  // default and reset every time the picker opens on a new cell.
+  const [showBlockedCandidates, setShowBlockedCandidates] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [showCounts, setShowCounts] = useState(false);
   const [showAssistant, setShowAssistant] = useState(false);
@@ -1258,22 +1285,50 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
   const activeAssignment = activeCell?.assignmentId && activeSlot ? activeSlot.assignments.find(a => a.id === activeCell.assignmentId) ?? null : null;
   const isAssignedCell = !!activeAssignment?.provider_id;
 
-  const filteredProviders = useMemo(() => {
-    if (!grid || !activeSlot) return [];
-    const search = pickerSearch.toLowerCase();
-    return grid.providers
-      .filter(p => p.status === 'active')
-      .filter(p => {
-        if (!search) return true;
-        return p.short_display_name.toLowerCase().includes(search)
-          || p.first_name.toLowerCase().includes(search)
-          || p.last_name.toLowerCase().includes(search)
-          || p.initials.toLowerCase().includes(search);
-      })
-      .sort((a, b) => a.short_display_name.localeCompare(b.short_display_name));
-  }, [grid, activeSlot, pickerSearch]);
+  // Candidate eligibility (2026-07-28). Three memos, deliberately layered so
+  // the list is INSTANT and never stale: the index rebuilds only when the grid
+  // payload changes (including after every optimistic assign, so yesterday's
+  // C1 starts blocking today the moment it lands), the groups recompute per
+  // cell, and typing only re-filters. Nothing here refetches.
+  const candidateIndex = useMemo(() => {
+    if (!grid) return null;
+    return buildCandidateIndex({
+      providers: grid.providers,
+      profiles: grid.profiles || [],
+      availability: grid.availability || [],
+      slots: grid.slots,
+      // undefined (an older cached payload) is treated exactly like a failed
+      // load: unchecked, and said out loud.
+      credentials: grid.credentials ?? null,
+      crossSite: grid.crossSite ?? null,
+      callPattern: grid.callPattern ?? null,
+    });
+  }, [grid]);
 
-  const activeSlotDate = activeSlot?.slot_date ?? '';
+  const slotCandidates = useMemo(() => {
+    if (!candidateIndex || !activeSlot) return null;
+    return candidatesForSlot(candidateIndex, activeSlot.id);
+  }, [candidateIndex, activeSlot]);
+
+  const pickerGroups = useMemo(
+    () => (slotCandidates ? filterCandidateGroups(slotCandidates, pickerSearch) : null),
+    [slotCandidates, pickerSearch],
+  );
+
+  // Every new cell starts with Unavailable collapsed.
+  const activeCellSlotId = activeCell?.slotId ?? null;
+  useEffect(() => { setShowBlockedCandidates(false); }, [activeCellSlotId]);
+
+  // Hard-blocked people stay SELECTABLE behind a confirm naming the reason.
+  // Silently making them unassignable would be a capability regression — the
+  // scheduler could get stuck whenever the data is wrong (a PTO row that should
+  // have been cancelled, a stale cross-site draft). The list stops him from
+  // picking someone unavailable BY ACCIDENT; it never stops him on purpose.
+  const pickCandidate = (c: SlotCandidate) => {
+    if (!activeSlot) return;
+    if (c.hard.length > 0 && !confirm(overrideConfirmMessage(c))) return;
+    assignProvider(activeSlot.id, c.provider.id);
+  };
 
   // Aggregate validation_flags across every assignment so the user can verify
   // at a glance whether their active rules are firing and whether anything is
@@ -1319,7 +1374,6 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
   }, [grid]);
 
   const [showRulesSummary, setShowRulesSummary] = useState(false);
-  const assignedOnActiveDate = assignedOnDate[activeSlotDate] ?? new Set<string>();
 
   /* ── Render ─────────────────────────────────────────────────────────────── */
 
@@ -2717,56 +2771,71 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
                   }}
                 />
               </div>
+              {/* Candidate list (2026-07-28). Available first, then no-call
+                  requesters (soft — flagged, still one click), then everyone
+                  who is blocked, collapsed behind a count. Every decision and
+                  every sentence comes from slotCandidates; this is markup. */}
               <div style={{ flex: 1, overflowY: 'auto', padding: '4px 0' }}>
-                {filteredProviders.length === 0 && (
+                {pickerGroups && pickerGroups.unchecked.length > 0 && (
+                  <div style={{
+                    margin: '0 10px 8px', padding: '7px 9px', borderRadius: 8,
+                    border: '1px solid rgba(251,191,36,0.35)', background: 'rgba(251,191,36,0.10)',
+                    fontSize: 10.5, lineHeight: 1.45, color: '#fcd34d',
+                  }}>
+                    {pickerGroups.unchecked.map(w => <div key={w}>{w}</div>)}
+                  </div>
+                )}
+                {pickerGroups
+                  && pickerGroups.available.length === 0
+                  && pickerGroups.soft.length === 0
+                  && pickerGroups.blocked.length === 0 && (
                   <div style={{ padding: '12px 14px', fontSize: 12, color: 'var(--text-dim)' }}>
                     No providers found
                   </div>
                 )}
-                {filteredProviders.map(p => {
-                  const alreadyAssigned = assignedOnActiveDate.has(p.id);
-                  return (
-                    <div
-                      key={p.id}
-                      onClick={() => {
-                        if (alreadyAssigned) return;
-                        if (activeSlot) assignProvider(activeSlot.id, p.id);
-                      }}
+
+                {pickerGroups && pickerGroups.available.length > 0 && (
+                  <>
+                    <PickerSectionLabel text={`Available (${pickerGroups.available.length})`} />
+                    {pickerGroups.available.map(c => (
+                      <PickerRow key={c.provider.id} candidate={c} onPick={pickCandidate} />
+                    ))}
+                  </>
+                )}
+
+                {pickerGroups && pickerGroups.soft.length > 0 && (
+                  <>
+                    <PickerSectionLabel
+                      text={`Flagged — still assignable (${pickerGroups.soft.length})`}
+                      tone="#fbbf24"
+                    />
+                    {pickerGroups.soft.map(c => (
+                      <PickerRow key={c.provider.id} candidate={c} onPick={pickCandidate} />
+                    ))}
+                  </>
+                )}
+
+                {pickerGroups && pickerGroups.blocked.length > 0 && (
+                  <>
+                    <button
+                      onClick={() => setShowBlockedCandidates(v => !v)}
                       style={{
-                        display: 'flex', alignItems: 'center', gap: 10,
-                        padding: '8px', borderRadius: 8,
-                        cursor: alreadyAssigned ? 'not-allowed' : 'pointer',
-                        opacity: alreadyAssigned ? 0.4 : 1,
-                        transition: 'background 0.1s',
+                        display: 'flex', alignItems: 'center', gap: 6, width: 'calc(100% - 20px)',
+                        margin: '8px 10px 2px', padding: '6px 8px', borderRadius: 8,
+                        border: '1px solid var(--border)', background: 'transparent',
+                        color: 'var(--text-dim)', fontSize: 10.5, fontWeight: 800,
+                        letterSpacing: 0.5, textTransform: 'uppercase', cursor: 'pointer',
+                        textAlign: 'left',
                       }}
-                      onMouseEnter={e => { if (!alreadyAssigned) e.currentTarget.style.background = 'rgba(56,189,248,0.10)'; }}
-                      onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
                     >
-                      {/* Initials avatar */}
-                      <div style={{
-                        width: 28, height: 28, borderRadius: '50%', fontSize: 10.5, fontWeight: 800,
-                        display: 'flex', alignItems: 'center', justifyContent: 'center',
-                        background: 'rgba(56,189,248,0.16)', color: '#7dd3fc',
-                        flexShrink: 0,
-                      }}>
-                        {p.initials}
-                      </div>
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                          {p.short_display_name}
-                          {alreadyAssigned && <span style={{ fontWeight: 400, color: 'var(--text-dim)', marginLeft: 4 }}>(assigned)</span>}
-                        </div>
-                      </div>
-                      <span style={{
-                        fontSize: 9, fontWeight: 800, padding: '2px 6px', borderRadius: 4,
-                        background: 'rgba(100,116,139,0.22)', color: 'var(--text-dim)',
-                        textTransform: 'uppercase', flexShrink: 0,
-                      }}>
-                        {p.provider_type}
-                      </span>
-                    </div>
-                  );
-                })}
+                      <span style={{ fontSize: 9 }}>{showBlockedCandidates ? '▾' : '▸'}</span>
+                      Unavailable ({pickerGroups.blocked.length})
+                    </button>
+                    {showBlockedCandidates && pickerGroups.blocked.map(c => (
+                      <PickerRow key={c.provider.id} candidate={c} onPick={pickCandidate} />
+                    ))}
+                  </>
+                )}
               </div>
             </>
           )}
@@ -2810,6 +2879,75 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
       {showAssistant && (
         <AssistantPanel scheduleId={id} onMutated={loadGrid} onClose={() => setShowAssistant(false)} />
       )}
+    </div>
+  );
+}
+
+/* ── Cell picker rows (2026-07-28) ────────────────────────────────────────── */
+// Pure presentation. Grouping, reasons and wording all arrive on the
+// SlotCandidate; nothing here decides anything.
+
+function PickerSectionLabel({ text, tone }: { text: string; tone?: string }) {
+  return (
+    <div style={{
+      padding: '8px 12px 4px', fontSize: 10, fontWeight: 800, letterSpacing: 0.6,
+      textTransform: 'uppercase', color: tone ?? 'var(--text-dim)',
+    }}>
+      {text}
+    </div>
+  );
+}
+
+function PickerRow({
+  candidate, onPick,
+}: { candidate: SlotCandidate; onPick: (c: SlotCandidate) => void }) {
+  const { provider, group, reasonText, reasonTexts } = candidate;
+  const dimmed = group === 'blocked';
+  const accent = group === 'blocked' ? '#f87171' : group === 'soft' ? '#fbbf24' : '#7dd3fc';
+  return (
+    <div
+      onClick={() => onPick(candidate)}
+      // The full reason list on hover; the row itself shows the leading one.
+      title={reasonTexts.join(' · ')}
+      style={{
+        display: 'flex', alignItems: 'center', gap: 10,
+        padding: '8px', borderRadius: 8, cursor: 'pointer',
+        opacity: dimmed ? 0.62 : 1, transition: 'background 0.1s',
+      }}
+      onMouseEnter={e => (e.currentTarget.style.background = 'rgba(56,189,248,0.10)')}
+      onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
+    >
+      <div style={{
+        width: 28, height: 28, borderRadius: '50%', fontSize: 10.5, fontWeight: 800,
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        background: group === 'available' ? 'rgba(56,189,248,0.16)' : 'rgba(100,116,139,0.20)',
+        color: accent, flexShrink: 0,
+      }}>
+        {provider.initials}
+      </div>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{
+          fontSize: 13, fontWeight: 700, color: 'var(--text)',
+          whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+        }}>
+          {provider.short_display_name}
+        </div>
+        {reasonText && (
+          <div style={{
+            fontSize: 10.5, color: accent, whiteSpace: 'nowrap',
+            overflow: 'hidden', textOverflow: 'ellipsis',
+          }}>
+            {reasonText}
+          </div>
+        )}
+      </div>
+      <span style={{
+        fontSize: 9, fontWeight: 800, padding: '2px 6px', borderRadius: 4,
+        background: 'rgba(100,116,139,0.22)', color: 'var(--text-dim)',
+        textTransform: 'uppercase', flexShrink: 0,
+      }}>
+        {provider.provider_type}
+      </span>
     </div>
   );
 }

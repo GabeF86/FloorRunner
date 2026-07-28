@@ -2,7 +2,14 @@ import { NextRequest, NextResponse } from 'next/server';
 import { sbSchedulingServer } from '@/lib/supabaseScheduling';
 import { embedArray } from '@/lib/embed';
 import { CallPatternDocSchema, type CallPatternDoc } from '@/lib/rulesEngine/callPattern';
+import { fetchCommittedAssignments } from '@/lib/rulesEngine/committedAssignments';
+import { addDays } from '@/lib/rulesEngine/shared';
+import type { CandidateCredentialRow, CrossSiteBookingRow } from '@/lib/slotCandidates';
 import {
+  GRID_CREDENTIAL_COLUMNS,
+  GRID_CROSS_SITE_COLUMNS,
+  GRID_PROFILE_COLUMNS,
+  GRID_PROFILE_COLUMNS_NO_WEEKDAYS,
   GRID_SCHEDULE_COLUMNS,
   GRID_SLOT_COLUMNS,
   GRID_SLOT_COLUMNS_PRE35,
@@ -115,14 +122,33 @@ export async function GET(
   if (holErr) return NextResponse.json({ error: holErr.message }, { status: 500 });
 
   // 6. Fetch employment profiles so the UI can tell which providers are
-  //    home-site (for Off rows) and their call-taker status.
+  //    home-site (for Off rows) and their call-taker status. available_weekdays
+  //    (2026-07-28) additionally powers the picker's weekday gate.
+  //
+  //    NARROW RETRY: this read deliberately swallows its error (a profile
+  //    failure must not 500 the grid), which means a missing column would
+  //    blank EVERY profile and silently kill the Off/Available rows. So the
+  //    wide select falls back to the historical column list on a missing-column
+  //    error — an absent column can hold no weekday pattern, so the fallback is
+  //    exact (normalizeWeekdays coerces the absent value to all-true, i.e. "no
+  //    stated restriction", which is what a DB without the column means).
   const providerIds = (providers || []).map(p => p.id);
-  const { data: profiles } = providerIds.length > 0
-    ? await sb
-        .from('provider_employment_profiles')
-        .select('provider_id, home_site_id, call_taker, partial_call_taker, fte_value, employment_status')
-        .in('provider_id', providerIds)
-    : { data: [] };
+  const selectProfiles = (columns: string) => sb
+    .from('provider_employment_profiles')
+    .select(columns)
+    .in('provider_id', providerIds) as unknown as Promise<{
+      data: unknown; error: { message: string; code?: string } | null;
+    }>;
+
+  let profileRes: { data: unknown; error: { message: string; code?: string } | null } =
+    { data: [], error: null };
+  if (providerIds.length > 0) {
+    profileRes = await selectProfiles(GRID_PROFILE_COLUMNS);
+    if (profileRes.error && isMissingColumnErr(profileRes.error)) {
+      profileRes = await selectProfiles(GRID_PROFILE_COLUMNS_NO_WEEKDAYS);
+    }
+  }
+  const profiles = profileRes.data as unknown[] | null;
 
   // 7. Fetch availability entries (PTO, sick, unavailable, etc.) overlapping
   //    the schedule date range.
@@ -167,6 +193,80 @@ export async function GET(
     }
   } catch { /* table missing on a pre-patch18 DB — no neuro term */ }
 
+  // 9. Site credentials for the roster (2026-07-28) — who may take call at all
+  //    at this site, and which codes/day types they are cleared for. Same shape
+  //    loadGenerationContext builds (genContext §4), so the picker can apply the
+  //    engine's credential gate rule-for-rule.
+  //
+  //    DEGRADATION: `null`, never `[]`. An empty array means "checked, nobody
+  //    is restricted"; null means "not checked", which the picker surfaces to
+  //    the user. Conflating the two would let a transient read failure present
+  //    an uncredentialed provider as available with no warning anywhere.
+  let credentials: CandidateCredentialRow[] | null = null;
+  if (providerIds.length > 0) {
+    try {
+      const credRes = await sb
+        .from('provider_site_credentials')
+        .select(GRID_CREDENTIAL_COLUMNS)
+        .eq('site_id', schedule.site_id)
+        .in('provider_id', providerIds);
+      if (!credRes.error) credentials = (credRes.data ?? []) as CandidateCredentialRow[];
+    } catch { /* relation missing on an old DB — credentials go unchecked */ }
+  } else {
+    credentials = [];
+  }
+
+  // 10. Cross-site bookings (2026-07-28) — clinical invariant 3: a provider
+  //     assigned in a PUBLISHED version at ANY other schedule/site on a date in
+  //     this block cannot also be placed here. The committed ("published")
+  //     predicate is single-homed in committedAssignments.ts and MUST NOT be
+  //     re-inlined; this route is a caller like the engine's.
+  //
+  //     Exclusion is by parent SCHEDULE, not version: sibling versions of this
+  //     schedule are clones (the versions route copies slots+assignments), so
+  //     counting them would make every draft self-conflict. Same choice
+  //     genContext §6 and dayShiftAutoGen §5 make.
+  //
+  //     The window starts ONE DAY BEFORE date_start so a rest-requiring call
+  //     the day before the block still earns its post-call day off on day 1
+  //     (invariant 1) — the joined requires_post_call_rule flag is what carries
+  //     it. Same widening dayShiftAutoGen uses.
+  //
+  //     DEGRADATION: `null` = not checked (see step 9).
+  let crossSite: CrossSiteBookingRow[] | null = null;
+  if (providerIds.length > 0) {
+    try {
+      const { data: crossRows, error: crossErr } = await fetchCommittedAssignments(
+        sb,
+        GRID_CROSS_SITE_COLUMNS,
+        {
+          providerIds,
+          start: addDays(schedule.date_start, -1),
+          end: schedule.date_end,
+          excludeScheduleId: id,
+        },
+      );
+      if (!crossErr) {
+        crossSite = [];
+        for (const row of (crossRows ?? []) as Array<Record<string, unknown>>) {
+          const ss = row.schedule_slots as {
+            slot_date?: string;
+            shift_types?: { requires_post_call_rule?: boolean | null } | null;
+          } | null;
+          const pid = row.provider_id as string | null;
+          if (!pid || !ss?.slot_date) continue;
+          crossSite.push({
+            provider_id: pid,
+            slot_date: ss.slot_date,
+            requires_post_call_rule: ss.shift_types?.requires_post_call_rule === true,
+          });
+        }
+      }
+    } catch { /* embed unsupported on an old DB — cross-site goes unchecked */ }
+  } else {
+    crossSite = [];
+  }
+
   return NextResponse.json({
     schedule,
     version,
@@ -176,6 +276,8 @@ export async function GET(
     profiles: profiles || [],
     availability: availability || [],
     callPattern,
+    credentials,
+    crossSite,
   }, {
     headers: { 'Cache-Control': 'no-store, no-cache, must-revalidate' },
   });

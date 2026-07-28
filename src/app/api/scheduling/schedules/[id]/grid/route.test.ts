@@ -11,6 +11,10 @@ import {
   GRID_SLOT_COLUMNS_PRE42,
   GRID_ASSIGNMENT_COLUMNS,
   GRID_ASSIGNMENT_COLUMNS_PRE42,
+  GRID_CREDENTIAL_COLUMNS,
+  GRID_CROSS_SITE_COLUMNS,
+  GRID_PROFILE_COLUMNS,
+  GRID_PROFILE_COLUMNS_NO_WEEKDAYS,
   validationSummaryFor,
 } from './route.helpers';
 
@@ -47,8 +51,21 @@ describe('grid column lists', () => {
     }
     // call_rank added 2026-07-27: the Call Counts Obligatory Weekends column
     // identifies the PRIMARY call code by rank 0, never by a code-name literal.
-    expect(GRID_SLOT_COLUMNS).toContain('shift_types(id, code, name, color_hex, category, call_type, display_order, provider_group, requires_post_call_rule, call_rank, parent_call_code, call_burden_weight)');
+    // is_overlay added 2026-07-28: the picker's same-date check consumes the
+    // canonical overlayMayCoexist table, which reads it.
+    expect(GRID_SLOT_COLUMNS).toContain('shift_types(id, code, name, color_hex, category, call_type, display_order, provider_group, requires_post_call_rule, call_rank, is_overlay, parent_call_code, call_burden_weight)');
     expect(GRID_SLOT_COLUMNS).toContain(`assignments(${GRID_ASSIGNMENT_COLUMNS})`);
+  });
+
+  // 2026-07-28. The picker's group gate mirrors evaluateEligibility, which
+  // reads schedule_slots.provider_group — NOT shift_types.provider_group. Both
+  // must ride the select, on every rung, or the mirror silently reads the
+  // wrong column.
+  it('every slot rung carries slot-level provider_group AND is_overlay for the picker', () => {
+    for (const cols of [GRID_SLOT_COLUMNS, GRID_SLOT_COLUMNS_PRE42, GRID_SLOT_COLUMNS_PRE35]) {
+      expect(cols).toContain('derived_day_type, provider_group, shift_types(');
+      expect(cols).toContain('is_overlay');
+    }
   });
 
   // call_rank is a patch18 column, so it survives the patch35 narrow retry —
@@ -341,5 +358,136 @@ describe('grid payload: site active call pattern', () => {
     const { res, json } = await get();
     expect(res.status).toBe(200);
     expect(json.callPattern).toBeNull();
+  });
+});
+
+// ── Manual-assignment picker inputs (2026-07-28) ─────────────────────────────
+// credentials + crossSite are what let the grid's cell picker filter to the
+// providers who are actually available. Both must degrade to `null` ("not
+// checked") rather than `[]` ("checked, nobody blocked") — slotCandidates turns
+// a null into a visible notice, and conflating them would let a read failure
+// silently present an ineligible provider as available.
+describe('grid payload: picker eligibility inputs', () => {
+  const PROVIDERS = [{ id: 'p1' }, { id: 'p2' }];
+
+  function setupPicker(over: Record<string, unknown> = {}) {
+    const { sb, calls } = makeFakeSupabase({
+      tables: {
+        schedules: {
+          data: {
+            id: 'sched-1', organization_id: 'org-1', site_id: 'site-1',
+            date_start: '2026-01-05', date_end: '2026-01-31', sites: null,
+          },
+          error: null,
+        },
+        schedule_versions: { data: { id: 'ver-1', version_number: 1, version_status: 'draft' }, error: null },
+        schedule_slots: { data: [], error: null },
+        providers: { data: PROVIDERS, error: null },
+        holiday_calendars: { data: [], error: null },
+        provider_employment_profiles: { data: [{ provider_id: 'p1', available_weekdays: [true, false, true, true, true, true, true] }], error: null },
+        provider_availability: { data: [], error: null },
+        provider_site_credentials: { data: [{ provider_id: 'p1', is_active: true, credentialed: true }], error: null },
+        assignments: {
+          data: [{
+            provider_id: 'p2',
+            schedule_slots: {
+              slot_date: '2026-01-09', site_id: 'site-2',
+              schedule_versions: { schedule_id: 'other-sched', version_status: 'published' },
+              shift_types: { requires_post_call_rule: true },
+            },
+          }],
+          error: null,
+        },
+        ...over,
+      },
+    });
+    holder.sb = sb;
+    return { calls };
+  }
+
+  it('ships site credentials in the engine’s own shape, scoped to this site and roster', async () => {
+    const { calls } = setupPicker();
+    const { res, json } = await get();
+    expect(res.status).toBe(200);
+    expect(json.credentials).toEqual([{ provider_id: 'p1', is_active: true, credentialed: true }]);
+    expect(callsFor(calls, 'provider_site_credentials', 'select')[0].args[0]).toBe(GRID_CREDENTIAL_COLUMNS);
+    expect(callsFor(calls, 'provider_site_credentials', 'eq').map(c => c.args)).toContainEqual(['site_id', 'site-1']);
+    expect(callsFor(calls, 'provider_site_credentials', 'in').map(c => c.args)).toContainEqual(['provider_id', ['p1', 'p2']]);
+  });
+
+  it('a credentials read failure degrades to null (NOT [] — "unchecked", not "nobody blocked")', async () => {
+    setupPicker({ provider_site_credentials: { data: null, error: { message: 'connection reset' } } });
+    const { res, json } = await get();
+    expect(res.status).toBe(200);
+    expect(json.credentials).toBeNull();
+  });
+
+  it('flattens cross-site bookings with the joined post-call flag', async () => {
+    const { calls } = setupPicker();
+    const { res, json } = await get();
+    expect(res.status).toBe(200);
+    expect(json.crossSite).toEqual([
+      { provider_id: 'p2', slot_date: '2026-01-09', requires_post_call_rule: true },
+    ]);
+    expect(callsFor(calls, 'assignments', 'select')[0].args[0]).toBe(GRID_CROSS_SITE_COLUMNS);
+  });
+
+  // The committed predicate is single-homed in committedAssignments.ts — this
+  // route is a CALLER. These are the filters that module applies on its behalf.
+  it('scopes the cross-site scan to PUBLISHED versions, excluding this schedule, over the block ±1 day', async () => {
+    const { calls } = setupPicker();
+    await get();
+    const eqs = callsFor(calls, 'assignments', 'eq').map(c => c.args);
+    expect(eqs).toContainEqual(['schedule_slots.schedule_versions.version_status', 'published']);
+    expect(eqs).toContainEqual(['assignment_status', 'assigned']);
+    // Sibling versions of THIS schedule are clones — excluded by parent schedule.
+    expect(callsFor(calls, 'assignments', 'neq').map(c => c.args))
+      .toContainEqual(['schedule_slots.schedule_versions.schedule_id', 'sched-1']);
+    // One day before date_start so a rest-requiring call the night before the
+    // block still earns its post-call day off on day 1 (invariant 1).
+    expect(callsFor(calls, 'assignments', 'gte').map(c => c.args))
+      .toContainEqual(['schedule_slots.slot_date', '2026-01-04']);
+    expect(callsFor(calls, 'assignments', 'lte').map(c => c.args))
+      .toContainEqual(['schedule_slots.slot_date', '2026-01-31']);
+  });
+
+  it('a cross-site read failure degrades to null', async () => {
+    setupPicker({ assignments: { data: null, error: { message: 'boom' } } });
+    const { res, json } = await get();
+    expect(res.status).toBe(200);
+    expect(json.crossSite).toBeNull();
+  });
+
+  it('an empty roster short-circuits both reads to [] (checked, nothing to check)', async () => {
+    setupPicker({ providers: { data: [], error: null } });
+    const { json } = await get();
+    expect(json.credentials).toEqual([]);
+    expect(json.crossSite).toEqual([]);
+  });
+
+  it('profiles carry available_weekdays for the picker’s weekday gate', async () => {
+    const { calls } = setupPicker();
+    const { json } = await get();
+    expect(callsFor(calls, 'provider_employment_profiles', 'select')[0].args[0]).toBe(GRID_PROFILE_COLUMNS);
+    expect(json.profiles[0].available_weekdays).toEqual([true, false, true, true, true, true, true]);
+  });
+
+  // The profiles read swallows its error, so a missing column would blank every
+  // profile and silently kill the Off/Available virtual rows. Narrow retry.
+  it('retries profiles without available_weekdays when the column is missing — profiles survive', async () => {
+    const { calls } = setupPicker({
+      provider_employment_profiles: (filters: { method: string; args: unknown[] }[]) => {
+        const sel = (filters.find(f => f.method === 'select')?.args[0] as string) ?? '';
+        if (sel.includes('available_weekdays')) {
+          return { data: null, error: { message: 'column available_weekdays does not exist', code: '42703' } };
+        }
+        return { data: [{ provider_id: 'p1', home_site_id: 'site-1' }], error: null };
+      },
+    });
+    const { res, json } = await get();
+    expect(res.status).toBe(200);
+    const selects = callsFor(calls, 'provider_employment_profiles', 'select').map(c => c.args[0]);
+    expect(selects).toEqual([GRID_PROFILE_COLUMNS, GRID_PROFILE_COLUMNS_NO_WEEKDAYS]);
+    expect(json.profiles).toEqual([{ provider_id: 'p1', home_site_id: 'site-1' }]);
   });
 });

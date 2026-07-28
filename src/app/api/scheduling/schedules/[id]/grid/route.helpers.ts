@@ -54,14 +54,52 @@ export const GRID_ASSIGNMENT_COLUMNS_PRE42 =
 // lands on rung 3 and loses the highlight — impossible in practice (patch35
 // has been live since 2026-07-22) and degraded rather than broken if it ever
 // happened.
+// Slot-level `provider_group` and shift_types.`is_overlay` (2026-07-28) feed
+// the manual-assignment picker's candidate filter (src/lib/slotCandidates.ts).
+// Both are the columns the ENGINE gates on — schedule_slots.provider_group is
+// what evaluateEligibility's group check reads (NOT the shift type's), and
+// is_overlay is what the canonical overlayMayCoexist table reads — so the
+// picker mirrors the engine's decision instead of approximating it. Neither
+// gets a new ladder rung: both predate patch35, and the bottom rung already
+// selects call_rank (patch18), so a DB that can serve PRE35 can serve these.
 export const GRID_SLOT_COLUMNS =
-  `id, slot_date, shift_type_id, slot_index, locked, derived_day_type, shift_types(id, code, name, color_hex, category, call_type, display_order, provider_group, requires_post_call_rule, call_rank, parent_call_code, call_burden_weight), assignments(${GRID_ASSIGNMENT_COLUMNS})` as const;
+  `id, slot_date, shift_type_id, slot_index, locked, derived_day_type, provider_group, shift_types(id, code, name, color_hex, category, call_type, display_order, provider_group, requires_post_call_rule, call_rank, is_overlay, parent_call_code, call_burden_weight), assignments(${GRID_ASSIGNMENT_COLUMNS})` as const;
 
 export const GRID_SLOT_COLUMNS_PRE42 =
-  `id, slot_date, shift_type_id, slot_index, locked, derived_day_type, shift_types(id, code, name, color_hex, category, call_type, display_order, provider_group, requires_post_call_rule, call_rank, parent_call_code, call_burden_weight), assignments(${GRID_ASSIGNMENT_COLUMNS_PRE42})` as const;
+  `id, slot_date, shift_type_id, slot_index, locked, derived_day_type, provider_group, shift_types(id, code, name, color_hex, category, call_type, display_order, provider_group, requires_post_call_rule, call_rank, is_overlay, parent_call_code, call_burden_weight), assignments(${GRID_ASSIGNMENT_COLUMNS_PRE42})` as const;
 
 export const GRID_SLOT_COLUMNS_PRE35 =
-  `id, slot_date, shift_type_id, slot_index, locked, derived_day_type, shift_types(id, code, name, color_hex, category, call_type, display_order, provider_group, requires_post_call_rule, call_rank), assignments(${GRID_ASSIGNMENT_COLUMNS_PRE42})` as const;
+  `id, slot_date, shift_type_id, slot_index, locked, derived_day_type, provider_group, shift_types(id, code, name, color_hex, category, call_type, display_order, provider_group, requires_post_call_rule, call_rank, is_overlay), assignments(${GRID_ASSIGNMENT_COLUMNS_PRE42})` as const;
+
+// ── Manual-assignment picker inputs (2026-07-28) ─────────────────────────────
+// The grid payload already carried PTO, post-call and same-date evidence; the
+// picker additionally needs the two dimensions a client cannot derive:
+// credentials and cross-site bookings. Each loads independently and degrades
+// to `null` (= "not checked"), never to a silent empty list — slotCandidates
+// turns a null into a user-visible "this was not checked" notice, because a
+// filtered list that quietly drops a check is worse than no filter at all.
+
+// Mirrors loadGenerationContext's credential shape (genContext.ts §4) minus
+// skill_tags, which no eligibility rule reads.
+export const GRID_CREDENTIAL_COLUMNS =
+  'provider_id, is_active, credentialed, can_take_call, can_take_weekend_call, can_take_holiday_call, allowed_shift_types, excluded_shift_types';
+
+// The committed cross-site scan's select, byte-identical in shape to
+// dayShiftAutoGen's (it needs the same joined post-call flag). The
+// `schedule_versions!inner(...)` embed is REQUIRED — fetchCommittedAssignments
+// filters the published predicate on it.
+export const GRID_CROSS_SITE_COLUMNS =
+  'provider_id, schedule_slots!inner(slot_date, site_id, schedule_versions!inner(schedule_id, version_status), shift_types(requires_post_call_rule))';
+
+// available_weekdays (Sun..Sat jsonb) is the engine's weekday-availability
+// gate. It rides the existing profiles read with its own narrow retry: the
+// profiles query captures no error today, so a missing column would blank
+// EVERY profile and silently break the home-site/call-taker virtual rows.
+export const GRID_PROFILE_COLUMNS =
+  'provider_id, home_site_id, call_taker, partial_call_taker, fte_value, employment_status, available_weekdays';
+
+export const GRID_PROFILE_COLUMNS_NO_WEEKDAYS =
+  'provider_id, home_site_id, call_taker, partial_call_taker, fte_value, employment_status';
 
 // Missing-column detection for the pre-patch35 / pre-patch42 retries (42703 or
 // a message naming a column) — mirrors the engine's posture. PostgREST answers
