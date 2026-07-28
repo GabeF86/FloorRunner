@@ -31,13 +31,17 @@ import {
   readPanelState,
   resolveTargets,
   splitTwelveHourLinkage,
+  statedProviders,
   zeroBuckets,
   type BlockSlot,
   type BlockTargetsProvider,
   type DerivationBasis,
 } from './blockTargets';
 import { BUCKET_KEYS, paoliBlockManifestSchema } from './paoliBlock/manifest';
-import { NEURO_KEY, projectScenario } from './rulesEngine/scenario';
+import {
+  NEURO_KEY, applyScenarioBucketTargets, projectScenario,
+} from './rulesEngine/scenario';
+import { scenarioChargeKeys } from './rulesEngine/providerCaps';
 import { buildScenarioCallCaps } from './rulesEngine/providerCaps';
 import { WEEKEND_V2_PATTERN } from './rulesEngine/patterns/weekendV2';
 import { addDays, dayOfWeekUTC } from './rulesEngine/shared';
@@ -419,15 +423,21 @@ describe('buildBlockManifest', () => {
     const { checksums } = paoliManifest();
     expect(checksums.expected).toBeNull();
     expect(checksums.ok).toBeNull();
-    expect(checksums.computed.providerRows).toBe(10);
-    expect(checksums.computed.totalFte).toBe(8.66);
-    // 6 × 4 derived + 3 + 3 + 2 + 2.64 = 34.64 M–Th C1 across the roster.
-    expect(checksums.computed.targets.MTH_C1).toBe(34.64);
+    // The checksums cover WHAT WAS WRITTEN — the four he stated, not the ten on
+    // the panel (2026-07-27: untouched providers are omitted, never capped).
+    expect(checksums.computed.providerRows).toBe(4);
+    expect(checksums.computed.totalFte).toBe(2.66); // 0.5 + 0.75 + 0.75 + 0.66
+    // 2 + 3 + 3 + 2.64 = 10.64 M–Th C1 across the four stated rows. Their M–Th
+    // cells are all DERIVED — being written for a Saturday drags the rest of
+    // the row into the manifest with it, which is exactly why the six he never
+    // touched must stay out.
+    expect(checksums.computed.targets.MTH_C1).toBe(10.64);
   });
 
   it('records a blank provider id as an ERROR (the engine would drop the row)', () => {
     const m = buildBlockManifest({
-      providers: [{ providerId: '  ', displayName: 'Nobody', fte: 1 }],
+      // Must STATE something, or the row is omitted before it can be checked.
+      providers: [{ providerId: '  ', displayName: 'Nobody', fte: 1, overrides: { SAT_C1: 1 } }],
       basis: PAOLI_BASIS,
     });
     expect(m.errors[0]).toMatch(/no provider id/);
@@ -438,12 +448,112 @@ describe('buildBlockManifest', () => {
   it('flags a duplicated provider id', () => {
     const m = buildBlockManifest({
       providers: [
-        { providerId: 'p1', displayName: 'A', fte: 1 },
-        { providerId: 'p1', displayName: 'B', fte: 1 },
+        { providerId: 'p1', displayName: 'A', fte: 1, overrides: { SAT_C1: 1 } },
+        { providerId: 'p1', displayName: 'B', fte: 1, overrides: { SAT_C1: 1 } },
       ],
       basis: PAOLI_BASIS,
     });
     expect(m.errors[0]).toMatch(/duplicate provider id/);
+  });
+});
+
+// ── who gets written (2026-07-27: only the people he stated) ─────────────────
+
+describe('statedProviders / buildBlockManifest write scope', () => {
+  it('writes ONLY the four he stated — the six he never touched are absent', () => {
+    const m = paoliManifest();
+    expect(m.providers.map(p => p.providerId)).toEqual([
+      'prov-horan', 'prov-havildar', 'prov-simon', 'prov-hussain',
+    ]);
+    // Ganiyu-class: a 1.0 FTE nobody touched is nowhere in the artifact.
+    expect(m.providers.some(p => p.providerId === 'prov-amusa')).toBe(false);
+  });
+
+  it('any ONE of the five kinds of statement is enough to be written', () => {
+    const kinds: Array<[string, Partial<BlockTargetsProvider>]> = [
+      ['override', { overrides: { SAT_C1: 1 } }],
+      ['typed zero', { overrides: { SAT_C1: 0 } }],
+      ['linkage', {
+        linkages: [eitherOrLinkage(
+          [{ scope: 'FRI', code: 'C1' }, { scope: 'SUN', code: 'C1' }], { source: 's' })],
+      }],
+      ['prohibition', { prohibitions: [{ dates: ['2026-09-12'], callCodes: 'all', source: 's' }] }],
+      ['fixed assignment', { fixedAssignments: [{ date: '2026-09-12', code: 'C1', source: 's' }] }],
+      ['preference', { preferences: [{ kind: 'weekday', weekday: 'FRI', source: 's' }] }],
+    ];
+    for (const [label, stated] of kinds) {
+      const providers = [
+        { providerId: 'p-stated', displayName: 'Stated', fte: 1, ...stated },
+        { providerId: 'p-blank', displayName: 'Blank', fte: 1 },
+      ];
+      expect(statedProviders(providers).written.map(p => p.providerId), label)
+        .toEqual(['p-stated']);
+      expect(buildBlockManifest({ providers, basis: PAOLI_BASIS }).providers.map(p => p.providerId), label)
+        .toEqual(['p-stated']);
+    }
+  });
+
+  it('an either-or row qualifies on the LINKAGE, so its zeroed cells are really written', () => {
+    // The zeros in a covered bucket are stated by the linkage, not typed — an
+    // `overrides`-only test would have dropped this provider and with them the
+    // whole either-or.
+    const providers: BlockTargetsProvider[] = [{
+      providerId: 'p-hussain', displayName: 'Hussain', fte: 0.66,
+      linkages: [eitherOrLinkage(
+        [{ scope: 'FRI', code: 'C1' }, { scope: 'SUN', code: 'C1' }], { source: 's' })],
+    }];
+    const m = buildBlockManifest({ providers, basis: PAOLI_BASIS });
+    expect(m.providers).toHaveLength(1);
+    expect(m.providers[0].targets.FRI_C1).toBe(0);
+    expect(m.providers[0].targets.SUN_C1).toBe(0);
+    expect(m.providers[0].linkages[0].kind).toBe('either-or');
+  });
+
+  it('a split-12h partner is never orphaned, even with their own half cleared', () => {
+    // The panel's own flow types 0.5 on BOTH rows, so both qualify. But that is
+    // a property of one code path: clear the partner's cell and the linkage
+    // would name a provider the manifest never mentions — half a Sunday call
+    // belonging to nobody. The partner is pulled in by NAME.
+    const providers: BlockTargetsProvider[] = [
+      {
+        providerId: 'p-horan', displayName: 'Horan', fte: 0.5,
+        overrides: { SUN_C1: 0.5 },
+        linkages: [splitTwelveHourLinkage('Horan', ['Havildar'], { source: 's' })],
+      },
+      { providerId: 'p-havildar', displayName: 'Havildar', fte: 0.75 }, // half cleared
+      { providerId: 'p-amusa', displayName: 'Amusa', fte: 1 },          // genuinely untouched
+    ];
+    const sel = statedProviders(providers);
+    expect(sel.written.map(p => p.providerId)).toEqual(['p-horan', 'p-havildar']);
+    expect(sel.splitPartnersPulledIn.map(p => p.providerId)).toEqual(['p-havildar']);
+
+    const m = buildBlockManifest({ providers, basis: PAOLI_BASIS });
+    // Every name the linkage uses resolves to a provider IN the manifest.
+    const names = new Set(m.providers.map(p => p.sourceName));
+    for (const member of m.providers[0].linkages[0].members) expect(names.has(member)).toBe(true);
+    // …and it is said out loud, because being pulled in DOES cap them.
+    expect(m.warnings.some(w => /Havildar.*12-hour split names them/.test(w))).toBe(true);
+    // Amusa, who no linkage names, still stays out.
+    expect(m.providers.some(p => p.providerId === 'p-amusa')).toBe(false);
+  });
+
+  it('a purely-formula panel writes NO providers at all', () => {
+    const m = buildBlockManifest({
+      providers: [
+        { providerId: 'p1', displayName: 'A', fte: 1 },
+        { providerId: 'p2', displayName: 'B', fte: 0.5 },
+      ],
+      basis: PAOLI_BASIS,
+    });
+    expect(m.providers).toEqual([]);
+    // Still a legal artifact — callers store null rather than this (see
+    // targetWritePlan), but it must never be malformed.
+    expect(paoliBlockManifestSchema.safeParse(m).success).toBe(true);
+    expect(projectScenario(m, {}).scenario!.providers.size).toBe(0);
+  });
+
+  it('says in the artifact itself that absence is deliberate', () => {
+    expect(paoliManifest().warnings.some(w => /deliberately ABSENT/.test(w))).toBe(true);
   });
 });
 
@@ -473,12 +583,15 @@ describe('panel state (blank means derived, across a save/reopen)', () => {
       slotCounts: { ...PAOLI_BASIS.slotCounts, MTH_C1: 55 },
     };
     const rebuilt = buildBlockManifest({ providers: reopened, basis: newBasis });
-    const amusa = rebuilt.providers.find(p => p.providerId === 'prov-amusa')!;
-    expect(amusa.targets.MTH_C1).toBe(5); // 55 ÷ 11 × 1.0 — followed the block
+    // Horan is written (he stated a Saturday), so his row carries BOTH kinds of
+    // cell — and only the typed ones hold.
     const horan = rebuilt.providers.find(p => p.providerId === 'prov-horan')!;
     expect(horan.targets.MTH_C1).toBe(2.5); // derived, followed the block
     expect(horan.targets.SAT_C1).toBe(1);   // TYPED — held
     expect(horan.targets.SUN_C1).toBe(0.5); // TYPED — held
+    // Amusa stated nothing, so there is no cell of hers to freeze in the first
+    // place — she is not in the artifact at all.
+    expect(rebuilt.providers.some(p => p.providerId === 'prov-amusa')).toBe(false);
   });
 
   it('a save/reopen/save cycle on the SAME basis is a fixed point', () => {
@@ -497,8 +610,12 @@ describe('panel state (blank means derived, across a save/reopen)', () => {
     const imported = { ...paoliManifest(), blockTargets: undefined };
     expect(readPanelState(imported)).toBeNull();
     const rows = readPanelProviders(imported);
-    const amusa = rows.find(r => r.providerId === 'prov-amusa')!;
-    expect(amusa.overrides!.MTH_C1).toBe(4); // a workbook cell is an author's number
+    // Horan's M–Th C1 was DERIVED when this was saved, but without a sidecar
+    // there is no way to know that — a workbook cell is an author's number, so
+    // every stated cell comes back typed.
+    const horan = rows.find(r => r.providerId === 'prov-horan')!;
+    expect(horan.overrides!.MTH_C1).toBe(2);
+    expect(horan.overrides!.SAT_C1).toBe(1);
   });
 
   it('readPanelState is defensive about junk jsonb', () => {
@@ -520,23 +637,29 @@ describe('round trip: the panel manifest through the ENGINE', () => {
   const knownProviderIds = new Set(paoliPanelProviders().map(p => p.providerId));
   const projected = projectScenario(manifest, { knownProviderIds });
 
-  it('projects cleanly — every provider matched, no warnings', () => {
+  it('projects cleanly — the four stated providers, no warnings', () => {
     expect(projected.warnings).toEqual([]);
     expect(projected.scenario).not.toBeNull();
-    expect(projected.scenario!.providers.size).toBe(10);
+    expect(projected.scenario!.providers.size).toBe(4);
     expect(projected.scenario!.neuroCode).toBe('C3');
   });
 
-  it('untouched providers arrive at the engine with the FORMULA numbers', () => {
-    const amusa = projected.scenario!.providers.get('prov-amusa')!;
-    expect(Object.fromEntries(amusa.targets)).toEqual({
-      'MTH|C1': 4, 'MTH|C2': 4,
-      'FRI|C1': 1, 'FRI|C2': 1,
-      'SAT|C1': 1, 'SAT|C2': 1,
-      'SUN|C1': 1, 'SUN|C2': 1,
-    });
-    expect(amusa.neuroTarget).toBe(1);
-    expect(amusa.scenarioFte).toBe(1);
+  it('a provider he never touched is ABSENT — and therefore UNCAPPED', () => {
+    // The inversion of the old "untouched providers arrive on the formula".
+    // Arriving on the formula meant arriving as a HARD CEILING at the formula
+    // number, which is exactly what he rejected: a full-timer who could have
+    // absorbed a fifth M–Th C1 to cover a gap would have been refused.
+    expect(projected.scenario!.providers.has('prov-amusa')).toBe(false);
+    // No warning either — an omitted provider is a deliberate absence, not a
+    // parse failure, and must not read as a defect in the generation report.
+    expect(projected.warnings.join(' ')).not.toMatch(/amusa/i);
+    // Nothing downstream constrains them: no ceiling, no charge keys, no
+    // bucket-target override.
+    const caps = buildScenarioCallCaps(projected.scenario);
+    expect(caps!.has('prov-amusa')).toBe(false);
+    expect(scenarioChargeKeys(projected.scenario!, 'prov-amusa', '2026-08-17', 'C1')).toEqual([]);
+    const steered = applyScenarioBucketTargets(new Map(), projected.scenario!);
+    expect([...steered.keys()].some(k => k.startsWith('prov-amusa'))).toBe(false);
   });
 
   it("Horan: one Saturday C1, half a Sunday C1, one neuro weekend DAY", () => {
@@ -591,14 +714,17 @@ describe('round trip: the panel manifest through the ENGINE', () => {
     expect(hussain.get('S:NEURO_FSS')).toBe(1); // ceil(0.5) — one weekend day
     // Horan's half-Sunday admits one whole placement (or a 0.5 segment).
     expect(caps.get('prov-horan')!.get('S:SUN|C1')).toBe(1);
-    expect(caps.get('prov-amusa')!.get('S:MTH|C1')).toBe(4);
+    // Amusa has NO cap of any kind — the whole point of omitting her. Her M–Th
+    // C1 would have been ceil'd to 4 and become a hard refusal at the fifth.
+    expect(caps.has('prov-amusa')).toBe(false);
   });
 
   it('projectScenario would DROP an unmatched row — the builder never emits one', () => {
     // Guard on the guard: prove the warning path exists, so the clean run above
-    // means something.
+    // means something. The row must STATE something or it is omitted first.
     const bad = buildBlockManifest({
-      providers: [{ providerId: '', displayName: 'Ghost', fte: 1 }], basis: PAOLI_BASIS,
+      providers: [{ providerId: '', displayName: 'Ghost', fte: 1, overrides: { SAT_C1: 1 } }],
+      basis: PAOLI_BASIS,
     });
     const res = projectScenario(bad, {});
     expect(res.warnings[0]).toMatch(/unmatched/);
@@ -610,12 +736,32 @@ describe('round trip: the panel manifest through the ENGINE', () => {
 
 describe('checkFeasibility', () => {
   it('reports the paid-pickup remainder as UNDER, never as an error', () => {
-    const rows = checkManifestFeasibility(paoliManifest(), PAOLI_BASIS.slotCounts);
+    // THE PANEL'S STRIP sums the WHOLE roster's resolved demand — stated where
+    // stated, formula where not — because the six providers left out of the
+    // manifest still take calls (the engine gives them their ordinary FTE
+    // quota, which is this same formula). Summing only the written slice would
+    // report "under" purely because four people were written.
+    const rows = checkFeasibility(
+      paoliPanelProviders().map(p => resolveTargets(p, PAOLI_BASIS).targets),
+      PAOLI_BASIS.slotCounts,
+    );
     const mth = rows.find(r => r.bucket === 'MTH_C1')!;
+    // 6 × 4 derived + 3 + 3 + 2 + 2.64 = 34.64 — unchanged by the write scope,
+    // which is precisely the property that keeps this strip meaningful.
     expect(mth).toMatchObject({ slots: 44, stated: 34.64, delta: -9.36, status: 'under' });
     expect(rows.every(r => !r.overConstrained)).toBe(true);
     // ΣFTE 8.66 under a par of 11 — under-covering is the design, not a fault.
     expect(rows.filter(r => r.status === 'over')).toEqual([]);
+  });
+
+  it('checkManifestFeasibility measures only the STATED SLICE — a different question', () => {
+    // Kept honest rather than repurposed: off a partial manifest this sums four
+    // people, so its `under` says little. Its `over` is still a real defect in
+    // what was written, which is what it is for.
+    const rows = checkManifestFeasibility(paoliManifest(), PAOLI_BASIS.slotCounts);
+    const mth = rows.find(r => r.bucket === 'MTH_C1')!;
+    expect(mth).toMatchObject({ slots: 44, stated: 10.64, status: 'under' });
+    expect(rows.every(r => !r.overConstrained)).toBe(true);
   });
 
   it('flags a bucket whose stated targets EXCEED the slots that exist', () => {
@@ -638,7 +784,10 @@ describe('checkFeasibility', () => {
   });
 
   it('covers the neuro bucket in weekend units', () => {
-    const rows = checkManifestFeasibility(paoliManifest(), PAOLI_BASIS.slotCounts);
+    const rows = checkFeasibility(
+      paoliPanelProviders().map(p => resolveTargets(p, PAOLI_BASIS).targets),
+      PAOLI_BASIS.slotCounts,
+    );
     const neuro = rows.find(r => r.bucket === NEURO_BUCKET)!;
     // 9 docs at 1.0 unit + Horan 0.5 = 9.5 against 11 weekends. Hussain moved
     // from 0.5 to 1.0 when the band boundary went 0.75 → 0.6 (2026-07-27) —

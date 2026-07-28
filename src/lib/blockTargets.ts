@@ -47,6 +47,34 @@
 // silently FREEZE as an override, which is precisely the failure this panel
 // exists to avoid.
 //
+// ONLY THE PROVIDERS HE STATED ARE WRITTEN (Gabriel 2026-07-27, answering the
+// question this module raised). Writing the whole roster would have made the
+// six people he never looked at into HARD CAPS at their formula numbers, and a
+// scenario cap BLOCKS a fill where the ordinary FTE quota only STEERS — the
+// house rule is "quota never blocks fills" (scheduler_fill_overhaul). Capping
+// six untouched people would refuse a full-timer who could have absorbed a
+// fifth M–Th C1 to cover a gap, and drop that slot into the paid-pickup layer
+// for no reason he chose. So `providers[]` carries ONLY rows with something
+// stated — an override, a linkage, a prohibition, a fixed assignment or a
+// preference (statedProviders) — and everyone else is ABSENT from the manifest
+// entirely and keeps ordinary FTE behavior. That is legitimate downstream by
+// construction: projectScenario iterates `manifest.providers` and warns only
+// about rows it FINDS and cannot use (no id / not in the pool), never about a
+// provider it does not find, and buildScenarioCallCaps / scenarioChargeKeys /
+// applyScenarioBucketTargets all key off `scenario.providers`, so an omitted
+// provider has no `S:` cap and no target override at all.
+//
+// THE ONE BACK-FILL: a split-12h linkage's members are provider display NAMES,
+// so omitting a named partner would leave the linkage naming somebody the
+// manifest never mentions — a half-Sunday belonging to nobody, the same orphan
+// class strandedEdits already catches for a partner who left the pool. In the
+// panel's own flow both halves are typed 0.5 so both rows qualify anyway, but
+// that is a property of one code path, not of the artifact. statedProviders
+// therefore pulls in any provider NAMED by an included row's split-12h linkage
+// and buildBlockManifest records it as a warning — never silently. One pass is
+// provably enough: a back-filled provider states nothing (that is why they were
+// missing), so they carry no linkage that could name a further partner.
+//
 // EITHER-OR OWNS ITS BUCKETS (2026-07-27). "Take either one Friday or one
 // Sunday call" is enforced by providerCaps.buildScenarioCallCaps as a GROUP
 // ceiling of max(1, ceil(Σ targets of the covered buckets)) — the members'
@@ -591,6 +619,74 @@ export function readPanelProviders(manifest: unknown): BlockTargetsProvider[] {
   });
 }
 
+// ── who gets written ─────────────────────────────────────────────────────────
+
+/**
+ * Does this row STATE anything, or is it purely on the formula?
+ *
+ * Any one of an override, a linkage, a prohibition, a fixed assignment or a
+ * preference makes a row stated. The last three never come from the panel's own
+ * UI (it has no editor for them) but do ride through from an imported workbook,
+ * and dropping them on save would be a silent clinical change — buildPanelRows
+ * carries them precisely so they survive.
+ *
+ * Note an either-or row qualifies on its LINKAGE, which is what makes the zeros
+ * resolveTargets writes into the covered buckets safe: those zeros are stated by
+ * the linkage rather than typed, so `overrides` alone would not have seen them.
+ */
+export function statesSomething(p: BlockTargetsProvider): boolean {
+  const overrides = p.overrides ?? {};
+  if (BUCKET_KEYS.some(k => typeof overrides[k] === 'number' && Number.isFinite(overrides[k]))) {
+    return true;
+  }
+  return (p.linkages?.length ?? 0) > 0
+    || (p.prohibitions?.length ?? 0) > 0
+    || (p.fixedAssignments?.length ?? 0) > 0
+    || (p.preferences?.length ?? 0) > 0;
+}
+
+export interface StatedProviderSelection<T extends BlockTargetsProvider> {
+  /** The rows buildBlockManifest will write, in the order given. */
+  written: T[];
+  /** Of those, the ones present ONLY because a split-12h linkage names them —
+   * they state nothing of their own. Reported, never silent. */
+  splitPartnersPulledIn: T[];
+}
+
+/**
+ * The providers a manifest built from these rows will actually carry.
+ *
+ * THE single home of that decision — buildBlockManifest writes exactly this set
+ * and the panel's footer counts exactly this set, so what he is told before
+ * saving cannot disagree with what is saved. See the module header for why the
+ * untouched rows are omitted rather than frozen at their formula numbers.
+ */
+export function statedProviders<T extends BlockTargetsProvider>(
+  providers: readonly T[],
+): StatedProviderSelection<T> {
+  const stated = new Set<T>(providers.filter(statesSomething));
+
+  // Back-fill split-12h partners named by an included row (module header).
+  const namedByASplit = new Set<string>();
+  for (const p of stated) {
+    for (const l of p.linkages ?? []) {
+      if (l.kind !== 'split-12h') continue;
+      for (const member of l.members) namedByASplit.add(member.trim().toLowerCase());
+    }
+  }
+  const splitPartnersPulledIn: T[] = [];
+  if (namedByASplit.size > 0) {
+    for (const p of providers) {
+      if (stated.has(p)) continue;
+      if (!namedByASplit.has(p.displayName.trim().toLowerCase())) continue;
+      stated.add(p);
+      splitPartnersPulledIn.push(p);
+    }
+  }
+
+  return { written: providers.filter(p => stated.has(p)), splitPartnersPulledIn };
+}
+
 // ── manifest build ───────────────────────────────────────────────────────────
 
 export interface BuildBlockManifestInput {
@@ -611,6 +707,14 @@ export interface BuildBlockManifestInput {
  * required field of paoliBlockManifestSchema is present and typed; the
  * `targets` record carries all nine buckets (zod 4's `z.record(z.enum(...))`
  * demands exhaustiveness) with the FINAL absolute numbers the engine reads.
+ *
+ * ONLY the rows that state something are written (statedProviders — see the
+ * module header). A provider absent from `providers[]` is not capped, not
+ * steered and not mentioned: the engine gives them their ordinary FTE quota,
+ * which steers but never blocks a fill. An input of purely-formula rows
+ * therefore yields `providers: []`, which is schema-legal and steers nobody —
+ * callers store NULL rather than that (targetWritePlan), because an empty
+ * providers list reads back as "stored but unreadable".
  */
 export function buildBlockManifest(input: BuildBlockManifestInput): BlockTargetsManifest {
   const generatedAt = input.generatedAt ?? new Date().toISOString();
@@ -622,7 +726,9 @@ export function buildBlockManifest(input: BuildBlockManifestInput): BlockTargets
   const checksumRows: ChecksumRow[] = [];
   const seenIds = new Set<string>();
 
-  const providers: ProviderManifest[] = input.providers.map(p => {
+  const selection = statedProviders(input.providers);
+
+  const providers: ProviderManifest[] = selection.written.map(p => {
     const resolved = resolveTargets(p, input.basis);
     const name = p.displayName.trim() || p.providerId;
     const id = p.providerId.trim();
@@ -656,6 +762,21 @@ export function buildBlockManifest(input: BuildBlockManifestInput): BlockTargets
     + `(the computed totals below are the panel's own).`,
     `Blank cells were derived: non-neuro buckets = bucket slots ÷ par ${input.basis.parLevel} × FTE; `
     + `NEURO_FSS = the site pattern's neuro weekend requirement bands.`);
+  // Stated UNCONDITIONALLY and WITHOUT a count of who was left out. The number
+  // omitted is a fact about one panel session, not about the constraint set —
+  // recording it would also break the save → reopen → save fixed point, because
+  // reopening a manifest hands back only the providers it names.
+  warnings.push(
+    `Only the providers with something stated are in this manifest. Everyone else on the panel is `
+    + `deliberately ABSENT and keeps their ordinary FTE targets, which steer but never cap. That is the `
+    + `point: a stated target is a HARD ceiling, and freezing an untouched provider at their formula `
+    + `number would block fills nobody asked to block.`);
+  for (const p of selection.splitPartnersPulledIn) {
+    warnings.push(
+      `${p.displayName.trim() || p.providerId}: stated nothing, but a 12-hour split names them as the partner — `
+      + `included so the linkage does not name a provider this manifest never mentions. Their targets are all `
+      + `derived, so this DOES cap them; clear the split if that is not intended.`);
+  }
 
   return {
     manifestVersion: PAOLI_BLOCK_MANIFEST_VERSION,
@@ -693,7 +814,8 @@ export interface FeasibilityRow {
   bucket: BucketKey;
   /** Capacity: weighted slots (weekend UNITS for NEURO_FSS). */
   slots: number;
-  /** Σ of every provider's stated target for this bucket. */
+  /** Σ of the targets handed in for this bucket — for the panel's strip that is
+   * the WHOLE roster's resolved demand, stated and derived alike. */
   stated: number;
   /** stated − slots. Positive = over-constrained. */
   delta: number;
@@ -703,16 +825,29 @@ export interface FeasibilityRow {
 }
 
 /**
- * Per-bucket sanity of a stated block.
+ * Per-bucket sanity of a block.
  *
- *   over  — the stated targets ask for MORE calls than the block contains.
- *           Something has to give: the scenario ceilings are hard, so slots go
- *           unfilled or providers sit capped. This is the row worth flagging.
+ *   over  — the targets ask for MORE calls than the block contains. Something
+ *           has to give: the scenario ceilings are hard, so slots go unfilled
+ *           or providers sit capped. This is the row worth flagging.
  *   under — the targets leave slots over. NORMAL AND EXPECTED here, never an
  *           error: par is authoritative (2026-07-24) and when the pool's ΣFTE
  *           is below the par the obligations deliberately under-cover the
  *           block — the remainder is the paid-pickup layer, taken after the
  *           schedule is built.
+ *
+ * WHAT TO SUM, NOW THAT ONLY STATED PROVIDERS ARE WRITTEN (2026-07-27). The
+ * panel's strip hands in every ROW's RESOLVED targets — the whole roster,
+ * derived where he typed nothing — NOT the manifest's stated slice. That is
+ * deliberate. The question the strip answers is "will this block hold what the
+ * roster is going to ask of it", and an omitted provider still asks: the engine
+ * gives them their ordinary FTE quota target, which is numerically the same
+ * formula `derivedTargetsFor` uses. Summing only the four written rows would
+ * answer a question nobody asked, drop every bucket far under, and turn the
+ * whole strip into noise that says "we only wrote four people" in nine
+ * different colours. Over-constraint is also still detected correctly this way:
+ * the stated rows are the only ones that can exceed their formula share, so
+ * they are exactly what pushes a bucket over.
  *
  * WEIGHT_EPSILON absorbs stored-fraction noise so three 0.3333 thirds never
  * read as over a whole call.
@@ -731,7 +866,16 @@ export function checkFeasibility(
   });
 }
 
-/** Feasibility straight off a built/stored manifest. */
+/**
+ * Feasibility of the manifest's STATED SLICE alone.
+ *
+ * NOT what the panel's strip shows, and not interchangeable with it: since
+ * 2026-07-27 a manifest carries only the providers he stated, so this sums four
+ * people where the strip sums ten. Use it to ask "do the stated constraints
+ * alone already over-fill a bucket" — an `over` here is a real defect in what
+ * was written. An `under` here is close to meaningless, because the providers
+ * that would have filled the rest are simply not in the artifact.
+ */
 export function checkManifestFeasibility(
   manifest: Pick<PaoliBlockManifest, 'providers'>,
   slotCounts: BucketNumbers,

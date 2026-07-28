@@ -55,7 +55,9 @@ import {
   type BlockSlot,
   type DerivationBasis,
 } from './blockTargets';
-import { BUCKET_KEYS, validateManifest, type BucketKey } from './paoliBlock/manifest';
+import {
+  BUCKET_KEYS, paoliBlockManifestSchema, validateManifest, type BucketKey,
+} from './paoliBlock/manifest';
 import { projectScenario } from './rulesEngine/scenario';
 import { buildScenarioCallCaps } from './rulesEngine/providerCaps';
 import { WEEKEND_V2_PATTERN } from './rulesEngine/patterns/weekendV2';
@@ -277,7 +279,9 @@ describe('buildPanelRows', () => {
   it('flags an IMPORTED manifest, and treats its stated numbers as authored', () => {
     const imported = {
       ...buildBlockManifest({
-        providers: [{ providerId: 'p-horan', displayName: 'Horan', fte: 0.5 }],
+        // The override is what puts Horan in the manifest at all (2026-07-27);
+        // MTH_C1 stays DERIVED, which is the cell this test is about.
+        providers: [{ providerId: 'p-horan', displayName: 'Horan', fte: 0.5, overrides: { SAT_C1: 1 } }],
         basis: BASIS,
       }),
       source: { workbook: 'Paoli block 2026.xlsx', sheetName: 'Aug', shape: 'full' as const },
@@ -321,7 +325,9 @@ describe('buildPanelRows', () => {
   it('keeps an IMPORTED scenarioFte that disagrees with the profile, and flags it', () => {
     const imported = {
       ...buildBlockManifest({
-        providers: [{ providerId: 'p-hussain', displayName: 'Hussain', fte: 0.66 }],
+        providers: [{
+          providerId: 'p-hussain', displayName: 'Hussain', fte: 0.66, overrides: { SAT_C1: 1 },
+        }],
         basis: BASIS,
       }),
       source: { workbook: 'wb.xlsx', sheetName: 'Aug', shape: 'full' as const },
@@ -336,7 +342,11 @@ describe('buildPanelRows', () => {
 
   it('a PANEL-authored FTE follows the live profile instead (it was only ever a copy)', () => {
     const manifest = buildBlockManifest({
-      providers: [{ providerId: 'p-hussain', displayName: 'Hussain', fte: 0.66 }],
+      // Stated, so the row is really IN the manifest — without an override the
+      // manifest would be empty and this would pass for the wrong reason.
+      providers: [{
+        providerId: 'p-hussain', displayName: 'Hussain', fte: 0.66, overrides: { SAT_C1: 1 },
+      }],
       basis: BASIS,
     });
     const pool: PoolMember[] = [{ providerId: 'p-hussain', displayName: 'Hussain', profileFte: 0.75 }];
@@ -364,7 +374,7 @@ describe('buildPanelRows', () => {
 
   it('reports (rather than silently round-trips) a stored row with no provider id', () => {
     const manifest = buildBlockManifest({
-      providers: [{ providerId: '', displayName: 'Ghost', fte: 1 }],
+      providers: [{ providerId: '', displayName: 'Ghost', fte: 1, overrides: { SAT_C1: 1 } }],
       basis: BASIS,
     });
     const res = buildPanelRows({ pool: POOL, storedManifest: manifest });
@@ -646,12 +656,26 @@ describe('his block, stated through the panel API', () => {
     const summary = summarizePanel(statedRows(), BASIS);
     expect(summary).toEqual({
       providerCount: 6,
+      // The blast radius, counted through the same function the save writes
+      // from: four rows become ceilings, Amusa and Jones stay uncapped.
+      writtenProviderCount: 4,
+      writtenProviderIds: ['p-horan', 'p-havildar', 'p-simon', 'p-hussain'],
       touchedProviderCount: 4,
       // Horan SAT+SUN, Havildar FRI+SAT+SUN, Simon FRI+SAT, Hussain SAT.
       typedCellCount: 8,
       linkageCount: 2,
       warnings: [],
     });
+  });
+
+  it('the footer count and the saved manifest can never disagree', () => {
+    // Both go through statedProviders. If they ever diverged the panel would
+    // promise one blast radius and deliver another.
+    const rows = statedRows();
+    const summary = summarizePanel(rows, BASIS);
+    const manifest = buildBlockManifest({ providers: rows, basis: BASIS });
+    expect(manifest.providers).toHaveLength(summary.writtenProviderCount);
+    expect(manifest.providers.map(p => p.providerId)).toEqual(summary.writtenProviderIds);
   });
 
   it('the manifest the panel builds PASSES the validator the PATCH route runs', () => {
@@ -675,16 +699,27 @@ describe('his block, stated through the panel API', () => {
     expect(serialized.blockTargets.overrides['p-horan']).toEqual(['SAT_C1', 'SUN_C1']);
   });
 
-  it('the two he never touched arrive at the engine on the FORMULA', () => {
+  it('the two he never touched are LEFT OUT, and every stated row still carries all nine buckets', () => {
+    // Inverted on 2026-07-27. This used to assert that Amusa arrived at the
+    // engine on the formula — which meant arriving as a HARD CEILING at the
+    // formula number. He chose uncapped instead, so the assertion is now that
+    // she is not in the artifact at all.
     const manifest = buildBlockManifest({ providers: statedRows(), basis: BASIS });
-    const amusa = manifest.providers.find(p => p.providerId === 'p-amusa')!;
-    // All NINE, not a subset: a toMatchObject here would let the weekend
-    // second calls derive to anything at all.
-    expect(amusa.targets).toEqual({
-      MTH_C1: 4, MTH_C2: 4,
-      FRI_C1: 1, FRI_C2: 1,
-      SAT_C1: 1, SAT_C2: 1,
-      SUN_C1: 1, SUN_C2: 1,
+    expect(manifest.providers.map(p => p.providerId))
+      .toEqual(['p-horan', 'p-havildar', 'p-simon', 'p-hussain']);
+    for (const untouched of ['p-amusa', 'p-jones']) {
+      expect(manifest.providers.some(p => p.providerId === untouched)).toBe(false);
+    }
+    // A row that IS written still states all NINE buckets, derived cells and
+    // all — a toMatchObject here would let the weekend second calls derive to
+    // anything at all. This is the cost of being written, and the reason the
+    // untouched rows must stay out.
+    const simon = manifest.providers.find(p => p.providerId === 'p-simon')!;
+    expect(simon.targets).toEqual({
+      MTH_C1: 3, MTH_C2: 3,
+      FRI_C1: 1, FRI_C2: 0.75,
+      SAT_C1: 1, SAT_C2: 0.75,
+      SUN_C1: 0.75, SUN_C2: 0.75,
       NEURO_FSS: 1,
     });
   });
@@ -783,12 +818,137 @@ describe('his block, stated through the panel API', () => {
     const rebuilt = buildBlockManifest({
       providers: rowsWithCellText(reopened.rows, text), basis: biggerBlock,
     });
-    const amusa = rebuilt.providers.find(p => p.providerId === 'p-amusa')!;
-    expect(amusa.targets.MTH_C1).toBe(5);  // followed the block
+    // Amusa is not written, so there is no cell of hers that could freeze.
+    expect(rebuilt.providers.some(p => p.providerId === 'p-amusa')).toBe(false);
     const horan = rebuilt.providers.find(p => p.providerId === 'p-horan')!;
     expect(horan.targets.MTH_C1).toBe(2.5); // derived, followed the block
     expect(horan.targets.SAT_C1).toBe(1);   // typed, held
     expect(horan.targets.SUN_C1).toBe(0.5); // typed, held
+  });
+});
+
+// ── the write contract: only the people he stated ────────────────────────────
+
+describe('only the stated providers are written (Gabriel 2026-07-27)', () => {
+  // The pool as it really is: the four he speaks about, plus full-timers he
+  // never mentions. Ganiyu is the one that matters — 1.0 FTE, untouched, and
+  // exactly the person a full-roster write would have frozen at four M–Th C1s.
+  const POOL_WITH_GANIYU: PoolMember[] = [
+    ...POOL,
+    { providerId: 'p-ganiyu', displayName: 'Ganiyu', profileFte: 1 },
+  ];
+
+  function statedPanel(): PanelRow[] {
+    let rows = buildPanelRows({ pool: POOL_WITH_GANIYU, storedManifest: null }).rows;
+    let cellText: Record<string, string> = {};
+    cellText[cellKey('p-horan', 'SAT_C1')] = '1';
+    const split = applySplitTwelveHour(rows, cellText, {
+      selfId: 'p-horan', partnerId: 'p-havildar', bucket: 'SUN_C1',
+    });
+    rows = split.rows;
+    cellText = split.cellText;
+    for (const pid of ['p-havildar', 'p-simon']) {
+      cellText[cellKey(pid, 'FRI_C1')] = '1';
+      cellText[cellKey(pid, 'SAT_C1')] = '1';
+    }
+    cellText[cellKey('p-hussain', 'SAT_C1')] = '1';
+    rows = applyEitherOr(rows, 'p-hussain', ['FRI_C1', 'SUN_C1']);
+    return rowsWithCellText(rows, cellText);
+  }
+
+  const manifest = buildBlockManifest({
+    providers: statedPanel(), basis: BASIS, scheduleLabel: 'Paoli 8/10–10/25',
+    defaultYear: 2026, generatedAt: '2026-07-27T12:00:00.000Z',
+  });
+
+  it('writes exactly FOUR providers and passes paoliBlockManifestSchema', () => {
+    expect(manifest.providers).toHaveLength(4);
+    expect(manifest.providers.map(p => p.sourceName))
+      .toEqual(['Horan', 'Havildar', 'Simon', 'Hussain']);
+    const parsed = paoliBlockManifestSchema.safeParse(manifest);
+    expect(parsed.success ? [] : parsed.error.issues.map(i => `${i.path.join('.')}: ${i.message}`))
+      .toEqual([]);
+  });
+
+  it('projects to FOUR ScenarioProviders with the targets and linkages he stated', () => {
+    const projected = projectScenario(manifest, {
+      knownProviderIds: new Set(POOL_WITH_GANIYU.map(p => p.providerId)),
+    });
+    expect(projected.warnings).toEqual([]);
+    const scen = projected.scenario!;
+    expect(scen.providers.size).toBe(4);
+
+    // Horan: a Saturday, half a Sunday (the 12h daytime segment), half a neuro
+    // weekend — and the split linkage naming his partner.
+    const horan = scen.providers.get('p-horan')!;
+    expect(horan.targets.get('SAT|C1')).toBe(1);
+    expect(horan.targets.get('SUN|C1')).toBe(0.5);
+    expect(horan.neuroTarget).toBe(0.5);
+    expect(horan.linkages.find(l => l.kind === 'split-12h')!.rawMembers)
+      .toEqual(['Horan', 'Havildar']);
+
+    // Havildar holds the other 12h; Simon's Sunday is untouched → derived.
+    expect(scen.providers.get('p-havildar')!.targets.get('SUN|C1')).toBe(0.5);
+    expect(scen.providers.get('p-simon')!.targets.get('SUN|C1')).toBe(0.75);
+    for (const pid of ['p-havildar', 'p-simon']) {
+      expect(scen.providers.get(pid)!.targets.get('FRI|C1')).toBe(1);
+      expect(scen.providers.get(pid)!.targets.get('SAT|C1')).toBe(1);
+    }
+
+    // Hussain: a Saturday plus ONE of Friday/Sunday, folded into a group cap.
+    const hussain = scen.providers.get('p-hussain')!;
+    expect(hussain.targets.get('FRI|C1')).toBe(0);
+    expect(hussain.targets.get('SUN|C1')).toBe(0);
+    expect(hussain.linkages.find(l => l.kind === 'either-or')!.rawMembers)
+      .toEqual(['FRI:C1', 'SUN:C1']);
+    const caps = buildScenarioCallCaps(scen)!;
+    expect(caps.get('p-hussain')!.get('S:EO#0')).toBe(1);
+    expect(caps.get('p-hussain')!.get('S:SAT|C1')).toBe(1);
+  });
+
+  it('Ganiyu — 1.0 FTE, never touched — is ABSENT and therefore UNCAPPED', () => {
+    // The whole decision in one assertion. A full-roster write would have given
+    // her S:MTH|C1 = 4, and the fifth M–Th C1 that covers a gap would have been
+    // REFUSED — a scenario cap blocks where the FTE quota only steers.
+    expect(manifest.providers.some(p => p.providerId === 'p-ganiyu')).toBe(false);
+    expect(JSON.stringify(manifest)).not.toContain('Ganiyu');
+
+    const projected = projectScenario(manifest, {
+      knownProviderIds: new Set(POOL_WITH_GANIYU.map(p => p.providerId)),
+    });
+    expect(projected.scenario!.providers.has('p-ganiyu')).toBe(false);
+    // Absence is deliberate, so it must not surface as a defect in the report.
+    expect(projected.warnings).toEqual([]);
+    // No ceiling of any kind.
+    expect(buildScenarioCallCaps(projected.scenario)!.has('p-ganiyu')).toBe(false);
+  });
+
+  it('re-opening brings Ganiyu back as untouched-and-derived, not as missing', () => {
+    // readPanelProviders only knows the four in the manifest; buildPanelRows
+    // merges them onto the POOL, so an omitted provider must reappear as an
+    // ordinary blank row — not vanish from the panel he edits.
+    const reopened = buildPanelRows({ pool: POOL_WITH_GANIYU, storedManifest: manifest });
+    expect(reopened.unreadable).toBe(false);
+    expect(reopened.imported).toBe(false);
+    expect(reopened.rows.map(r => r.providerId)).toEqual(POOL_WITH_GANIYU.map(p => p.providerId));
+
+    const ganiyu = reopened.rows.find(r => r.providerId === 'p-ganiyu')!;
+    expect(ganiyu.overrides).toEqual({});
+    expect(ganiyu.linkages).toEqual([]);
+    expect(ganiyu.inPool).toBe(true);
+    expect(ganiyu.fte).toBe(1); // follows the live profile
+    expect(ganiyu.fteFromManifest).toBe(false);
+    // Her cells are blank, so the grid shows the formula as a placeholder.
+    expect(cellTextFromRows(reopened.rows)[cellKey('p-ganiyu', 'MTH_C1')]).toBeUndefined();
+    expect(resolveTargets(ganiyu, BASIS).targets.MTH_C1).toBe(4);
+    expect(resolveTargets(ganiyu, BASIS).overridden).toEqual([]);
+    // And saving again does not quietly acquire her.
+    const again = buildBlockManifest({
+      providers: rowsWithCellText(reopened.rows, cellTextFromRows(reopened.rows)),
+      basis: BASIS, scheduleLabel: 'Paoli 8/10–10/25',
+      defaultYear: 2026, generatedAt: '2026-07-27T12:00:00.000Z',
+    });
+    expect(again).toEqual(manifest);
   });
 });
 
@@ -883,6 +1043,9 @@ describe('targetWritePlan', () => {
     importAcknowledged: false,
     invalidCellCount: 0,
     manifestErrors: [] as string[],
+    // Non-zero throughout: these cases are about the read/ack/validity gates,
+    // not about an empty panel. The nothing-stated rule has its own test.
+    statedProviderCount: 4,
   };
 
   it('OMITS the key when the fetch has not landed or failed — never clobbers', () => {
@@ -932,6 +1095,33 @@ describe('targetWritePlan', () => {
     expect(targetWritePlan({ ...base, clearRequested: true, invalidCellCount: 3 }))
       .toEqual({ write: 'clear', blocked: null });
   });
+
+  it('an emptied panel CLEARS rather than storing a manifest with no providers', () => {
+    // Since only stated rows are written, deleting every value yields
+    // providers: [] — legal, but it steers nobody AND buildPanelRows reads a
+    // zero-row manifest back as `unreadable`, so the next open would show a red
+    // "none of it could be read" banner over the panel's own output.
+    expect(targetWritePlan({ ...base, dirty: true, statedProviderCount: 0 }))
+      .toEqual({ write: 'clear', blocked: null });
+  });
+
+  it('…but an unparseable cell still BLOCKS, and is never mistaken for an empty panel', () => {
+    // Invalid text contributes no override, so statedProviderCount can be 0
+    // while a value he typed is sitting on screen. Clearing his targets because
+    // he mistyped one would be the worst possible reading of that.
+    expect(targetWritePlan({
+      ...base, dirty: true, statedProviderCount: 0, invalidCellCount: 1,
+    })).toEqual({ write: 'manifest', blocked: 'Fix the highlighted block-target values (numbers ≥ 0)' });
+    expect(targetWritePlan({
+      ...base, dirty: true, statedProviderCount: 0, manifestErrors: ['Ghost: no provider id'],
+    }).blocked).toBe('Ghost: no provider id');
+  });
+
+  it('an emptied IMPORTED manifest still needs the acknowledgement first', () => {
+    expect(targetWritePlan({
+      ...base, dirty: true, statedProviderCount: 0, imported: true,
+    }).blocked).toMatch(/imported manifest/);
+  });
 });
 
 describe('a stored manifest that cannot be read', () => {
@@ -975,9 +1165,21 @@ describe('summarizePanel', () => {
     expect(summary.warnings[0]).toMatch(/ceiling for the group will be 2/);
   });
 
-  it('an untouched roster reports nothing changed', () => {
+  it('an untouched roster reports nothing changed AND nothing to write', () => {
     expect(summarizePanel(freshRows(), BASIS)).toEqual({
-      providerCount: 6, touchedProviderCount: 0, typedCellCount: 0, linkageCount: 0, warnings: [],
+      providerCount: 6,
+      writtenProviderCount: 0,
+      writtenProviderIds: [],
+      touchedProviderCount: 0,
+      typedCellCount: 0,
+      linkageCount: 0,
+      warnings: [],
     });
+  });
+
+  it('counts a row written for a linkage alone, with no typed cell anywhere', () => {
+    const summary = summarizePanel(applyEitherOr(freshRows(), 'p-hussain', ['FRI_C1', 'SUN_C1']), BASIS);
+    expect(summary.writtenProviderIds).toEqual(['p-hussain']);
+    expect(summary.typedCellCount).toBe(0);
   });
 });

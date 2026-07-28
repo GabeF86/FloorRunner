@@ -63,7 +63,7 @@ import { WEIGHT_EPSILON, callBurdenWeight, parentCallCodeOf, formatCallWeight } 
 // from paoliBlock/manifest, which pulls zod into this bundle — a cost its
 // header accepts to keep ONE list of bucket keys.
 import {
-  bucketSlotCounts, buildBlockManifest,
+  bucketSlotCounts, buildBlockManifest, statedProviders,
   type BlockSlot, type DerivationBasis,
 } from '@/lib/blockTargets';
 import {
@@ -3015,6 +3015,12 @@ function PoolSelectorModal({
     }).errors;
   }, [manifestState, clearTargets, liveTargetRows, targetsBasis, scheduleLabel, blockStartYear]);
 
+  // How many rows would actually be written — only the ones with something
+  // stated (blockTargets.statedProviders). Zero means the save stores NOTHING
+  // rather than an empty manifest.
+  const statedTargetCount = useMemo(
+    () => statedProviders(liveTargetRows).written.length, [liveTargetRows]);
+
   // The whole scenario_manifest decision, single-homed and tested.
   const targetPlan = targetWritePlan({
     manifestState,
@@ -3025,6 +3031,7 @@ function PoolSelectorModal({
     importAcknowledged,
     invalidCellCount: invalidTargetCells.length,
     manifestErrors: targetsManifestErrors,
+    statedProviderCount: statedTargetCount,
   });
   const wantsTargetWrite = targetPlan.write !== 'omit';
   const targetsBlocked = targetPlan.blocked !== null;
@@ -3071,12 +3078,18 @@ function PoolSelectorModal({
       if (targetPlan.write === 'clear') {
         body.scenario_manifest = null;
       } else if (targetPlan.write === 'manifest') {
-        body.scenario_manifest = buildBlockManifest({
+        const built = buildBlockManifest({
           providers: liveRowsForSelection(asDefault ? defaultSelection : checked),
           basis: targetsBasis,
           scheduleLabel,
           defaultYear: blockStartYear,
         });
+        // The plan was computed from the CURRENT selection; "save as default"
+        // rebuilds from a different one, which can leave nothing stated. An
+        // empty providers[] steers nobody and reads back as unreadable, so
+        // store null instead — the same thing targetWritePlan decides when it
+        // can see the count.
+        body.scenario_manifest = built.providers.length > 0 ? built : null;
       }
       const res = await fetch(`/api/scheduling/schedules/${scheduleId}`, {
         method: 'PATCH',

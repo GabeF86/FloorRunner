@@ -41,7 +41,15 @@
 //    a whole 0.75 Sunday and quietly asking for a second Sunday call.
 //    applySplitTwelveHour does all three edits together so they cannot separate.
 //
-// 5. AN IMPORTED MANIFEST IS NOT THE PANEL'S TO REWRITE. buildPanelRows carries
+// 5. THE FOOTER STATES THE BLAST RADIUS, AND COUNTS IT THE WAY THE SAVE DOES.
+//    Only rows with something stated are written (blockTargets.statedProviders
+//    — the people he never touched stay UNCAPPED, see that module's header), so
+//    the footer cannot say "every provider listed". summarizePanel counts
+//    through the very same function buildBlockManifest writes from, and hands
+//    back writtenProviderIds so the grid can mark exactly those rows: he sees
+//    who he is about to constrain BEFORE he saves, not after.
+//
+// 6. AN IMPORTED MANIFEST IS NOT THE PANEL'S TO REWRITE. buildPanelRows carries
 //    prohibitions, fixedAssignments and preferences through untouched (the
 //    panel has no UI for them, and dropping a workbook's "no call 9/12" on save
 //    would be a silent clinical change), and keeps an imported scenarioFte that
@@ -61,6 +69,7 @@ import {
   readPanelProviders,
   resolveTargets,
   splitTwelveHourLinkage,
+  statedProviders,
   type BlockTargetsProvider,
   type DerivationBasis,
   type LinkageSlotRef,
@@ -384,9 +393,9 @@ export function strandedEdits(
 /**
  * A stable signature of everything the panel would WRITE. Dirtiness is this
  * compared against the signature taken at seed time — never a one-way latch:
- * typing a value and deleting it again must not leave the panel armed to write
- * a manifest, because a written manifest states a hard ceiling for EVERY
- * provider in it, not just the ones he touched.
+ * typing a value and deleting it again must not leave the panel armed, because
+ * every stated number it does write is a HARD ceiling, and a panel armed with
+ * nothing stated writes a CLEAR that deletes whatever was stored.
  *
  * Cells are counted whether or not their row is currently rendered (an edit
  * stranded by a pool change is still an edit), and linkages come off the rows,
@@ -425,6 +434,15 @@ export interface TargetWritePlan {
  * behind "a pool-only save never rewrites a stored manifest" and "a failed
  * fetch never clobbers one", and it belongs next to a test like every other
  * decision the panel makes.
+ *
+ * NOTHING STATED ⇒ CLEAR, NOT AN EMPTY MANIFEST (2026-07-27). Since only stated
+ * providers are written, emptying the panel now yields `providers: []` — legal,
+ * but it steers nobody AND buildPanelRows reads a zero-row manifest back as
+ * `unreadable`, which would greet the next open with a red "none of it could be
+ * read" banner over something this panel wrote itself. Storing null instead says
+ * the same thing honestly. It is checked AFTER the invalid-cell and error gates
+ * so an unparseable cell (which contributes no override, and so could leave
+ * nothing stated) still blocks the save rather than silently clearing.
  */
 export function targetWritePlan(input: {
   manifestState: 'loading' | 'ready' | 'failed';
@@ -435,6 +453,8 @@ export function targetWritePlan(input: {
   importAcknowledged: boolean;
   invalidCellCount: number;
   manifestErrors: readonly string[];
+  /** Rows that would be written — summarizePanel's writtenProviderCount. */
+  statedProviderCount: number;
 }): TargetWritePlan {
   // Never write what was never read. A load that failed or has not landed
   // leaves the column exactly as it is.
@@ -457,6 +477,7 @@ export function targetWritePlan(input: {
   if (input.manifestErrors.length > 0) {
     return { write: 'manifest', blocked: input.manifestErrors[0] };
   }
+  if (input.statedProviderCount === 0) return { write: 'clear', blocked: null };
   return { write: 'manifest', blocked: null };
 }
 
@@ -650,9 +671,22 @@ export function clearSplitTwelveHour(rows: readonly PanelRow[], selfId: string):
 // ── summary ──────────────────────────────────────────────────────────────────
 
 export interface PanelSummary {
-  /** Rows that will be written to the manifest. */
+  /** Rows ON THE PANEL — the call pool plus any stored out-of-pool row. NOT
+   * the number written: see writtenProviderCount. */
   providerCount: number;
-  /** Rows with at least one typed cell or a linkage. */
+  /**
+   * Rows that will actually land in the manifest's `providers[]`. Counted with
+   * blockTargets.statedProviders — the same function buildBlockManifest writes
+   * from, so the footer cannot promise a different blast radius than the save
+   * delivers. Everyone else is absent and keeps ordinary FTE targets.
+   */
+  writtenProviderCount: number;
+  /** Their provider ids, so the panel can mark exactly those rows. */
+  writtenProviderIds: string[];
+  /** Rows with at least one typed cell or a linkage. Differs from
+   * writtenProviderCount at the edges: an imported row carrying only
+   * prohibitions is written but was never touched here, and a split partner can
+   * be pulled in by name alone. */
   touchedProviderCount: number;
   typedCellCount: number;
   linkageCount: number;
@@ -678,8 +712,11 @@ export function summarizePanel(
     if (resolved.overridden.length > 0 || links > 0) touchedProviderCount += 1;
     for (const w of resolved.warnings) warnings.push(`${row.displayName}: ${w}`);
   }
+  const written = statedProviders(rows).written;
   return {
     providerCount: rows.length,
+    writtenProviderCount: written.length,
+    writtenProviderIds: written.map(r => r.providerId),
     touchedProviderCount,
     typedCellCount,
     linkageCount,

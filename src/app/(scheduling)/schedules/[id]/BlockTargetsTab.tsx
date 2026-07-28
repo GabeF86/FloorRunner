@@ -134,6 +134,12 @@ export function BlockTargetsTab(props: BlockTargetsTabProps) {
 
   const summary = useMemo(() => summarizePanel(liveRows, basis), [liveRows, basis]);
 
+  // Exactly the rows that will land in the manifest — counted by the same
+  // function that writes it, so the ● markers and the footer can never promise
+  // a different blast radius than the save delivers.
+  const written = useMemo(
+    () => new Set(summary.writtenProviderIds), [summary.writtenProviderIds]);
+
   if (state === 'loading') {
     return <Shell><div style={{ padding: 20, color: 'var(--text-dim)', fontSize: 13 }}>Loading block targets...</div></Shell>;
   }
@@ -259,6 +265,10 @@ export function BlockTargetsTab(props: BlockTargetsTabProps) {
         <LegendSwatch kind="typed">1</LegendSwatch><span>you typed it</span>
         <LegendSwatch kind="derived">4</LegendSwatch><span>from the formula — clear a cell to get back here</span>
         <LegendSwatch kind="claimed">⇄</LegendSwatch><span>claimed by a linkage</span>
+        <span style={{ color: 'var(--info)', fontSize: 9 }}>●</span>
+        <span>saved as ceilings</span>
+        <span style={{ color: 'var(--text-faint)', fontSize: 9 }}>○</span>
+        <span>left out — keeps ordinary FTE targets</span>
         <button
           onClick={() => setExpanded(v => !v)}
           style={{ ...tinyBtn, marginLeft: 'auto' }}
@@ -321,6 +331,7 @@ export function BlockTargetsTab(props: BlockTargetsTabProps) {
                   fontSize: 12.5, color: 'var(--text)', whiteSpace: 'nowrap',
                   overflow: 'hidden', textOverflow: 'ellipsis',
                 }}>
+                  <RowMark willWrite={written.has(row.providerId)} name={row.displayName} />
                   {row.displayName}
                   {inert && <Tag tone="neutral">not in pool</Tag>}
                   {row.fteFromManifest && (
@@ -435,8 +446,22 @@ export function BlockTargetsTab(props: BlockTargetsTabProps) {
             + `· ${summary.typedCellCount} typed cell${summary.typedCellCount === 1 ? '' : 's'} `
             + `· ${summary.linkageCount} linkage${summary.linkageCount === 1 ? '' : 's'}.`}
         {' '}
-        Saving states a target for <strong>every provider listed</strong>, and the engine treats
-        each one as a ceiling — including the rows still on the formula.
+        {summary.writtenProviderCount === 0 ? (
+          <>
+            Nothing is stated, so saving stores <strong>no block targets at all</strong> — every
+            provider keeps their ordinary FTE targets.
+          </>
+        ) : (
+          <>
+            Saving writes <strong>{summary.writtenProviderCount} of {summary.providerCount} providers</strong>{' '}
+            (marked ●) — only the rows with something stated. The engine treats every number on a written
+            row as a ceiling, derived cells included.{' '}
+            {summary.writtenProviderCount === summary.providerCount
+              ? 'Every row on this panel states something, so all of them are capped.'
+              : `The other ${summary.providerCount - summary.writtenProviderCount} are left out of the `
+                + `manifest entirely and keep their ordinary FTE targets, which steer but never block a fill.`}
+          </>
+        )}
         {' '}
         <strong style={{ color: 'var(--text-muted)' }}>
           Saving stores the targets; it does not change this draft. Run Auto-Generate for the
@@ -482,6 +507,27 @@ function clearedValueOf(
   claimed: Set<BucketKey>,
 ): number {
   return claimed.has(bucket) ? 0 : derivedTargetsFor(fte, basis)[bucket];
+}
+
+/**
+ * Whether this row is going INTO the manifest. A filled dot means the row is
+ * written and every number on it becomes a hard ceiling; a hollow one means the
+ * row is left out entirely and the provider keeps their ordinary FTE targets.
+ * The distinction is the whole point of the 2026-07-27 write contract, so it is
+ * visible on the row rather than only summarized in the footer.
+ */
+function RowMark({ willWrite, name }: { willWrite: boolean; name: string }) {
+  return (
+    <span
+      title={willWrite
+        ? `${name} is written into the block manifest — every number on this row becomes a ceiling the engine cannot exceed.`
+        : `${name} states nothing, so they are left out of the manifest entirely and keep their ordinary FTE targets (which steer, but never block a fill). Type a value or add a linkage to include them.`}
+      style={{
+        display: 'inline-block', width: 12, marginRight: 5, fontSize: 9,
+        color: willWrite ? 'var(--info)' : 'var(--text-faint)', cursor: 'help',
+      }}
+    >{willWrite ? '●' : '○'}</span>
+  );
 }
 
 function LegendSwatch({ kind, children }: { kind: 'typed' | 'derived' | 'claimed'; children: React.ReactNode }) {
@@ -677,7 +723,9 @@ function Feasibility({ rows }: { rows: FeasibilityRow[] }) {
           return (
             <span
               key={r.bucket}
-              title={`${BUCKET_TITLES[r.bucket]}\nStated across the roster: ${formatTarget(r.stated)}\nIn the block: ${formatTarget(r.slots)}\n`
+              title={`${BUCKET_TITLES[r.bucket]}\nAsked for across the WHOLE roster: ${formatTarget(r.stated)}\n`
+                + `(stated where stated, formula where not — the providers left out of the manifest still take calls)\n`
+                + `In the block: ${formatTarget(r.slots)}\n`
                 + (r.status === 'over'
                   ? 'OVER — the roster is asking for more of these than exist. Scenario ceilings are hard, so slots go unfilled or providers sit capped.'
                   : r.status === 'exact'
@@ -702,7 +750,8 @@ function Feasibility({ rows }: { rows: FeasibilityRow[] }) {
         {over.length > 0
           ? `Over-constrained: ${over.map(o => `${BUCKET_LABELS[o.bucket]} (+${formatTarget(o.delta)})`).join(', ')}. `
             + 'The block does not contain that many of these calls — something will go unfilled.'
-          : 'Stated / in the block. Under-target is normal — the pool runs below par and the remainder is taken as paid pickups.'}
+          : 'Asked for / in the block, across the whole roster — not just the rows being saved. '
+            + 'Under-target is normal: the pool runs below par and the remainder is taken as paid pickups.'}
       </div>
     </div>
   );
