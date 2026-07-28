@@ -97,7 +97,8 @@ import { BlockTargetsTab } from './BlockTargetsTab';
 // only renders what it returns; never add a rule here.
 import {
   buildCandidateIndex, candidatesForSlot, filterCandidateGroups, overrideConfirmMessage,
-  type CandidateCredentialRow, type CrossSiteBookingRow, type SlotCandidate,
+  type CandidateCredentialRow, type CrossSiteBookingRow, type DayShiftRelease,
+  type SlotCandidate,
 } from '@/lib/slotCandidates';
 
 /* ── Interfaces ──────────────────────────────────────────────────────────── */
@@ -407,6 +408,12 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
   // default and reset every time the picker opens on a new cell.
   const [showBlockedCandidates, setShowBlockedCandidates] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
+  // Day-shift release partial failure (2026-07-28). DELIBERATELY a second,
+  // STICKY error state rather than a flavour of actionError: this is the one
+  // edit on the page that can leave TWO slots changed when only one was asked
+  // for, and a 3-second auto-dismissing toast is indistinguishable from silence
+  // for anyone who looked away mid-click. It stays until dismissed.
+  const [swapFailure, setSwapFailure] = useState<string | null>(null);
   const [showCounts, setShowCounts] = useState(false);
   const [showAssistant, setShowAssistant] = useState(false);
   // Inline rename (Gabriel 2026-07-22): the header pencil PATCHes
@@ -946,13 +953,45 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
     });
   }, []);
 
-  const assignProvider = async (slotId: string, providerId: string) => {
+  // ── The day-shift release (2026-07-28) ──────────────────────────────────
+  // Gabriel: "anyone in a D4 and up slot on a day that has an empty call slot
+  // … they are technically available to be placed on call that day and taken
+  // out of the D spot." slotCandidates decides WHETHER (pattern-derived — see
+  // its header); this performs it. Two writes, and the ORDER is the decision:
+  //
+  //   CLEAR THE DAY SHIFT FIRST, THEN PLACE THE CALL.
+  //
+  // Place-then-clear leaves, on a failed clear, the provider on the call AND
+  // on the day shift — a same-date double-booking, the exact state the engine
+  // forbids. Worse, POST evaluates BEFORE it writes, so the call row would be
+  // stamped with flags computed against a world that the clear was supposed to
+  // change. Clear-then-place fails the other way: two OPEN slots. That is a
+  // coverage gap, not a clinical violation; it is plainly visible on the grid;
+  // and it is fixable with the same picker already in the scheduler's hand.
+  // Under-cover over mis-cover is this app's posture everywhere else too.
+  //
+  // NOT ATOMIC, and deliberately not. Real atomicity needs both writes in one
+  // transaction, which the Supabase JS client cannot express — it would take a
+  // Postgres function behind an RPC, i.e. a migration. A new server route that
+  // ran both writes in sequence would NOT be atomic either; it would only
+  // shrink the window and save a round-trip. So the window is real, and the
+  // answer is loudness: any partial outcome resyncs from the server and raises
+  // the STICKY swapFailure banner naming exactly which slots are now open.
+  const assignProvider = async (
+    slotId: string, providerId: string, release?: DayShiftRelease | null,
+  ) => {
     if (!grid) return;
-    // Optimistic update
+    const shifts = release?.shifts ?? [];
+    const who = grid.providers.find(p => p.id === providerId)?.short_display_name ?? 'The provider';
+    const targetCode = grid.slots.find(s => s.id === slotId)?.shift_types?.code ?? 'this slot';
+    const releasedSlotIds = new Set(shifts.map(s => s.slotId));
+
+    // Optimistic update — the target cell fills, every released cell empties.
     const prevSlots = [...grid.slots];
     setGrid({
       ...grid,
       slots: grid.slots.map(s => {
+        if (releasedSlotIds.has(s.id)) return { ...s, assignments: [] };
         if (s.id !== slotId) return s;
         const provider = grid.providers.find(p => p.id === providerId);
         const newAssignment: AssignmentInfo = {
@@ -969,6 +1008,35 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
     setActiveCell(null);
     setPickerSearch('');
 
+    // ── Step 1: vacate the day shift(s). Any failure aborts the whole move —
+    // the call is NOT placed, so nobody is ever double-booked.
+    const freed: string[] = [];
+    for (const rel of shifts) {
+      let why: string | null = null;
+      try {
+        const res = await fetch(`/api/scheduling/schedule-assignments?id=${rel.assignmentId}`, { method: 'DELETE' });
+        const data = await res.json().catch(() => null);
+        if (!res.ok) why = data?.error || `HTTP ${res.status}`;
+        else if (data?.assignment) {
+          applyAssignmentRows([data.assignment as AssignmentRow, ...((data.siblings ?? []) as AssignmentRow[])]);
+        }
+      } catch (e) {
+        why = e instanceof Error ? e.message : 'request failed';
+      }
+      if (why) {
+        setGrid({ ...grid, slots: prevSlots });
+        setSwapFailure(
+          `Could not clear ${who} from ${rel.code}, so the ${targetCode} assignment was not made (${why}).`
+          + (freed.length > 0
+            ? ` ${who} was already cleared from ${freed.join(', ')} — ${freed.length > 1 ? 'those slots are' : 'that slot is'} open now.`
+            : ' Nothing else was changed.'));
+        await loadGrid();
+        return;
+      }
+      freed.push(rel.code);
+    }
+
+    // ── Step 2: place the call.
     try {
       const res = await fetch('/api/scheduling/schedule-assignments', {
         method: 'POST',
@@ -978,7 +1046,12 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
       const data = await res.json().catch(() => null);
       if (!res.ok) {
         setGrid({ ...grid, slots: prevSlots });
-        setActionError(data?.error || 'Failed to assign');
+        if (freed.length > 0) {
+          setSwapFailure(`${who} was cleared from ${freed.join(', ')} but could NOT be placed on ${targetCode}`
+            + ` (${data?.error || `HTTP ${res.status}`}). ${freed.join(', ')} and ${targetCode} are all open now — reassign from the grid.`);
+        } else {
+          setActionError(data?.error || 'Failed to assign');
+        }
         // The write may have partially landed (sequence auto-fill runs after
         // the upsert) — resync from the server rather than trusting local state.
         await loadGrid();
@@ -992,8 +1065,17 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
         await loadGrid();
       }
     } catch (e) {
+      const msg = e instanceof Error ? e.message : 'Failed to assign provider';
       setGrid({ ...grid, slots: prevSlots });
-      setActionError(e instanceof Error ? e.message : 'Failed to assign provider');
+      if (freed.length > 0) {
+        // The POST may or may not have landed — the day shift is definitely
+        // gone, so the server is the only honest source here.
+        setSwapFailure(`${who} was cleared from ${freed.join(', ')} but the ${targetCode} assignment failed (${msg}).`
+          + ' Check the grid — the call may not have been placed.');
+        await loadGrid();
+      } else {
+        setActionError(msg);
+      }
     }
   };
 
@@ -1337,10 +1419,17 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
   // scheduler could get stuck whenever the data is wrong (a PTO row that should
   // have been cancelled, a stale cross-site draft). The list stops him from
   // picking someone unavailable BY ACCIDENT; it never stops him on purpose.
+  //
+  // c.release, when present, rides along: assigning MUST vacate the day shift
+  // or the provider is double-booked. Deliberately NO extra confirm for it —
+  // the consequence is already spelled out in the row the user just clicked
+  // ("Currently on D6 — will be moved to C1"), and this is the common action
+  // the whole change exists to make easier. The override confirm above still
+  // restates the move, because a confirm must never hide a second write.
   const pickCandidate = (c: SlotCandidate) => {
     if (!activeSlot) return;
     if (c.hard.length > 0 && !confirm(overrideConfirmMessage(c))) return;
-    assignProvider(activeSlot.id, c.provider.id);
+    assignProvider(activeSlot.id, c.provider.id, c.release);
   };
 
   // Aggregate validation_flags across every assignment so the user can verify
@@ -1979,10 +2068,18 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
         </div>
       )}
 
-      {/* Action error toast */}
-      {actionError && (
-        <div style={{ position: 'fixed', top: 20, right: 20, zIndex: 600, maxWidth: 420 }}>
-          <Banner tone="error">{actionError}</Banner>
+      {/* Action error toast (3s) + the STICKY day-shift-release failure, one
+          stacked container so they can never overlap. swapFailure sits on top
+          and only leaves when dismissed — see the swapFailure state comment. */}
+      {(actionError || swapFailure) && (
+        <div style={{
+          position: 'fixed', top: 20, right: 20, zIndex: 600, maxWidth: 460,
+          display: 'flex', flexDirection: 'column', gap: 8,
+        }}>
+          {swapFailure && (
+            <Banner tone="error" onDismiss={() => setSwapFailure(null)}>{swapFailure}</Banner>
+          )}
+          {actionError && <Banner tone="error">{actionError}</Banner>}
         </div>
       )}
 
@@ -2914,14 +3011,14 @@ function PickerSectionLabel({ text, tone }: { text: string; tone?: string }) {
 function PickerRow({
   candidate, onPick,
 }: { candidate: SlotCandidate; onPick: (c: SlotCandidate) => void }) {
-  const { provider, group, reasonText, reasonTexts } = candidate;
+  const { provider, group, reasonText, reasonTexts, release } = candidate;
   const dimmed = group === 'blocked';
   const accent = group === 'blocked' ? '#f87171' : group === 'soft' ? '#fbbf24' : '#7dd3fc';
   return (
     <div
       onClick={() => onPick(candidate)}
       // The full reason list on hover; the row itself shows the leading one.
-      title={reasonTexts.join(' · ')}
+      title={[...reasonTexts, ...(release ? [release.text] : [])].join(' · ')}
       style={{
         display: 'flex', alignItems: 'center', gap: 10,
         padding: '8px', borderRadius: 8, cursor: 'pointer',
@@ -2951,6 +3048,18 @@ function PickerRow({
             overflow: 'hidden', textOverflow: 'ellipsis',
           }}>
             {reasonText}
+          </div>
+        )}
+        {/* The day-shift release. Its OWN line, never folded into reasonText:
+            picking this row performs a second write, and the user must see
+            that before clicking — including when a soft reason owns the line
+            above. Amber, because it is a consequence, not a reason. */}
+        {release && (
+          <div style={{
+            fontSize: 10.5, color: '#fbbf24', whiteSpace: 'nowrap',
+            overflow: 'hidden', textOverflow: 'ellipsis',
+          }}>
+            {release.text}
           </div>
         )}
       </div>

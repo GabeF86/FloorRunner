@@ -11,10 +11,12 @@
 import { describe, it, expect } from 'vitest';
 import {
   buildCandidateIndex, candidatesForSlot, filterCandidateGroups, overrideConfirmMessage,
+  sequenceOwnedDayCodes,
   type CandidateAvailabilityRow, type CandidateCredentialRow, type CandidateProviderRow,
   type CandidateSlotRow, type CrossSiteBookingRow, type SlotCandidateGroups,
 } from './slotCandidates';
 import { CLASSIC_PATTERN, type CallPatternDoc } from './rulesEngine/callPattern';
+import { WEEKEND_V2_PATTERN } from './rulesEngine/patterns/weekendV2';
 
 /* ── Fixtures ─────────────────────────────────────────────────────────────── */
 
@@ -62,7 +64,9 @@ function classify(opts: BuildOpts = {}, slotId = 'target'): SlotCandidateGroups 
     slots: opts.slots ?? [targetSlot()],
     credentials: opts.credentials === undefined ? [] : opts.credentials,
     crossSite: opts.crossSite === undefined ? [] : opts.crossSite,
-    callPattern: opts.callPattern ?? CLASSIC_PATTERN,
+    // `in`, not `??` — an EXPLICIT null means "this site has no parsed pattern"
+    // and must reach the index as null (it disables the day-shift release).
+    callPattern: 'callPattern' in opts ? opts.callPattern : CLASSIC_PATTERN,
   });
   return candidatesForSlot(index, slotId);
 }
@@ -427,6 +431,220 @@ describe('same-date', () => {
   });
 });
 
+/* ── Day-shift release (2026-07-28) ───────────────────────────────────────── */
+//
+// "anyone in a D4 and up slot on a day that has an empty call slot, they should
+// not be placed in the unavailable list, they are technically available to be
+// placed on call that day and taken out of the D spot" — Gabriel.
+//
+// The "D4 and up" boundary is DERIVED from the pattern, never named.
+
+describe('sequenceOwnedDayCodes', () => {
+  it('resolves Paoli (weekendV2) to exactly D1, D2, D3', () => {
+    expect([...sequenceOwnedDayCodes(WEEKEND_V2_PATTERN)].sort()).toEqual(['D1', 'D2', 'D3']);
+  });
+
+  it('resolves CLASSIC to the same three', () => {
+    expect([...sequenceOwnedDayCodes(CLASSIC_PATTERN)].sort()).toEqual(['D1', 'D2', 'D3']);
+  });
+
+  // THE TRAP. weekendV2's saturday C3 block chain links '−1 D4' and its
+  // saturday C1 block chain links '−1 D2'. Block chains are the weekend's
+  // designed shape, not the call sequence's derived fills — reading doc.blocks
+  // would make D4 sequence-owned and re-block exactly the code Gabriel named.
+  it('IGNORES block-chain links — D4 appears in doc.blocks and is still FREE', () => {
+    const blockLinkCodes = WEEKEND_V2_PATTERN.blocks
+      .flatMap(b => b.chains).flatMap(c => c.links).map(l => l.code);
+    expect(blockLinkCodes).toContain('D4');          // it really is in there
+    expect(sequenceOwnedDayCodes(WEEKEND_V2_PATTERN).has('D4')).toBe(false);
+  });
+
+  it('a pattern with no dayChain links owns nothing', () => {
+    expect(sequenceOwnedDayCodes({ ...CLASSIC_PATTERN, dayChains: [] }).size).toBe(0);
+  });
+});
+
+describe('day-shift release', () => {
+  // An ordinary day shift held by p1 on the target date, with a persisted id.
+  const dayShift = (code: string, over: Partial<CandidateSlotRow> = {}): CandidateSlotRow => ({
+    id: 'day-' + code,
+    slot_date: '2026-01-05',
+    derived_day_type: 'weekday',
+    provider_group: 'both',
+    shift_types: { code, category: 'regular' },
+    assignments: [{ id: 'a-' + code, provider_id: 'p1' }],
+    ...over,
+  });
+
+  it('a doc on D6 is AVAILABLE for that day’s call and carries the day-shift detail', () => {
+    const g = classify({ slots: [targetSlot(), dayShift('D6')] });
+    expect(names(g.available)).toEqual(['p1']);
+    expect(g.blocked).toEqual([]);
+    expect(g.available[0].hard).toEqual([]);
+    expect(g.available[0].release).toEqual({
+      shifts: [{ assignmentId: 'a-D6', slotId: 'day-D6', code: 'D6' }],
+      text: 'Currently on D6 — will be moved to C1',
+    });
+  });
+
+  it('names the TARGET call code in the sentence, not a generic word', () => {
+    const g = classify({
+      slots: [
+        targetSlot({ shift_types: { code: 'C2', category: 'call', requires_post_call_rule: true } }),
+        dayShift('D9'),
+      ],
+    });
+    expect(g.available[0].release?.text).toBe('Currently on D9 — will be moved to C2');
+  });
+
+  it.each(['D1', 'D2', 'D3'])('a doc on %s stays hard-blocked — the call sequence owns it', code => {
+    const g = classify({ slots: [targetSlot(), dayShift(code)] });
+    expect(names(g.blocked)).toEqual(['p1']);
+    expect(g.blocked[0].hard).toEqual(['same-date']);
+    expect(g.blocked[0].reasonText).toBe('Already assigned 1/5');
+    expect(g.blocked[0].release).toBeNull();
+  });
+
+  it('a doc on another CALL that day stays hard-blocked', () => {
+    const g = classify({
+      slots: [targetSlot(), dayShift('C2', {
+        shift_types: { code: 'C2', category: 'call', requires_post_call_rule: false },
+      })],
+    });
+    expect(names(g.blocked)).toEqual(['p1']);
+    expect(g.blocked[0].hard).toEqual(['same-date']);
+    expect(g.blocked[0].release).toBeNull();
+  });
+
+  // Relaxing same-date must not relax anything else.
+  it('a doc on D6 who is ALSO on PTO stays hard-blocked', () => {
+    const g = classify({
+      slots: [targetSlot(), dayShift('D6')],
+      availability: [pto('p1', '2026-01-05', '2026-01-05')],
+    });
+    expect(names(g.blocked)).toEqual(['p1']);
+    expect(g.blocked[0].hard).toEqual(['availability-blocked']);   // same-date is gone…
+    expect(g.blocked[0].release).not.toBeNull();                   // …but the move still applies
+  });
+
+  const otherBlockers: Array<[string, BuildOpts, string]> = [
+    ['post-call', { crossSite: [{ provider_id: 'p1', slot_date: '2026-01-04', requires_post_call_rule: true }] }, 'post-call'],
+    ['cross-site', { crossSite: [{ provider_id: 'p1', slot_date: '2026-01-05' }] }, 'cross-site'],
+    ['credential', { credentials: [{ provider_id: 'p1', is_active: true, credentialed: true, can_take_call: false }] }, 'credential'],
+    ['weekday', { profiles: [{ provider_id: 'p1', available_weekdays: [true, false, true, true, true, true, true] }] }, 'weekday-unavailable'],
+  ];
+  it.each(otherBlockers)('a doc on D6 blocked by %s is still blocked', (_label, extra, reason) => {
+    const g = classify({ slots: [targetSlot(), dayShift('D6')], ...extra });
+    expect(names(g.blocked)).toEqual(['p1']);
+    expect(g.blocked[0].hard).toContain(reason);
+    expect(g.blocked[0].hard).not.toContain('same-date');
+  });
+
+  // No pattern ⇒ no way to tell sequence-owned from free ⇒ do not guess.
+  it('a NULL call pattern hard-blocks D6 exactly as before', () => {
+    const g = classify({ callPattern: null, slots: [targetSlot(), dayShift('D6')] });
+    expect(names(g.blocked)).toEqual(['p1']);
+    expect(g.blocked[0].hard).toEqual(['same-date']);
+    expect(g.blocked[0].release).toBeNull();
+  });
+
+  // Call slots only: pulling someone off one day shift to put them in another
+  // is not what was asked for, and has no call-coverage justification.
+  it('the relaxation does NOT apply when the TARGET is a day shift', () => {
+    const g = classify({
+      slots: [
+        targetSlot({ shift_types: { code: 'D7', category: 'regular' } }),
+        dayShift('D6'),
+      ],
+    });
+    expect(names(g.blocked)).toEqual(['p1']);
+    expect(g.blocked[0].hard).toEqual(['same-date']);
+    expect(g.blocked[0].release).toBeNull();
+  });
+
+  // All-or-nothing: one un-releasable collision and the whole block stands.
+  it('a doc on D6 AND another call is hard-blocked — the release is all-or-nothing', () => {
+    const g = classify({
+      slots: [
+        targetSlot(),
+        dayShift('D6'),
+        dayShift('C2', {
+          id: 'other-call',
+          shift_types: { code: 'C2', category: 'call', requires_post_call_rule: false },
+        }),
+      ],
+    });
+    expect(names(g.blocked)).toEqual(['p1']);
+    expect(g.blocked[0].hard).toEqual(['same-date']);
+    expect(g.blocked[0].release).toBeNull();
+  });
+
+  it('two ordinary day shifts are both released and both named', () => {
+    const g = classify({ slots: [targetSlot(), dayShift('D6'), dayShift('D7')] });
+    expect(names(g.available)).toEqual(['p1']);
+    expect(g.available[0].release?.shifts.map(s => s.code)).toEqual(['D6', 'D7']);
+    expect(g.available[0].release?.text).toBe('Currently on D6, D7 — will be moved to C1');
+  });
+
+  // An unsaved optimistic row cannot be cleared by id: the DELETE would match
+  // nothing and no-op, leaving the double-booking the release exists to avoid.
+  it('an UNSAVED (temp-) day-shift row is not releasable', () => {
+    const g = classify({
+      slots: [targetSlot(), dayShift('D6', { assignments: [{ id: 'temp-1769000000000', provider_id: 'p1' }] })],
+    });
+    expect(g.blocked[0].hard).toEqual(['same-date']);
+    expect(g.blocked[0].release).toBeNull();
+  });
+
+  it('a day-shift row with NO id is not releasable', () => {
+    const g = classify({
+      slots: [targetSlot(), dayShift('D6', { assignments: [{ provider_id: 'p1' }] })],
+    });
+    expect(g.blocked[0].hard).toEqual(['same-date']);
+    expect(g.blocked[0].release).toBeNull();
+  });
+
+  it('an occupied slot with NO shift type is not releasable (its code is unknowable)', () => {
+    const g = classify({
+      slots: [targetSlot(), dayShift('D6', { shift_types: null })],
+    });
+    expect(g.blocked[0].hard).toEqual(['same-date']);
+    expect(g.blocked[0].release).toBeNull();
+  });
+
+  it('a doc with no same-date assignment at all carries a NULL release', () => {
+    expect(classify().available[0].release).toBeNull();
+  });
+
+  it('a released doc who also requested no call is SOFT, and both lines survive', () => {
+    const g = classify({
+      slots: [targetSlot(), dayShift('D6')],
+      availability: [pto('p1', '2026-01-05', '2026-01-05', 'approved', 'no_call_request')],
+    });
+    expect(names(g.soft)).toEqual(['p1']);
+    expect(g.soft[0].reasonText).toBe('Requested no call 1/5');
+    expect(g.soft[0].release?.text).toBe('Currently on D6 — will be moved to C1');
+  });
+
+  // End-to-end on the pattern actually live at Paoli.
+  describe('against the live Paoli pattern', () => {
+    const paoli = (slots: CandidateSlotRow[]) =>
+      classify({ callPattern: WEEKEND_V2_PATTERN, slots });
+
+    it('D4 — a block-chain link, but not sequence-owned — is released', () => {
+      const g = paoli([targetSlot(), dayShift('D4')]);
+      expect(names(g.available)).toEqual(['p1']);
+      expect(g.available[0].release?.shifts[0].code).toBe('D4');
+    });
+
+    it('D2 — created by the C1 dayChain — is not', () => {
+      const g = paoli([targetSlot(), dayShift('D2')]);
+      expect(names(g.blocked)).toEqual(['p1']);
+      expect(g.blocked[0].hard).toEqual(['same-date']);
+    });
+  });
+});
+
 /* ── Cross-site — clinical invariant 3 ────────────────────────────────────── */
 
 describe('cross-site', () => {
@@ -709,5 +927,28 @@ describe('overrideConfirmMessage', () => {
     expect(msg).toContain('On PTO 1/5–1/9');
     expect(msg).toContain('Booked at another site');
     expect(msg).toContain('Assign anyway?');
+  });
+
+  it('a release survives the override and is stated in the confirm', () => {
+    const g = classify({
+      providers: [provider('p1', { short_display_name: 'G. Amusa' })],
+      slots: [
+        targetSlot(),
+        {
+          id: 'day-D6', slot_date: '2026-01-05', derived_day_type: 'weekday', provider_group: 'both',
+          shift_types: { code: 'D6', category: 'regular' },
+          assignments: [{ id: 'a-D6', provider_id: 'p1' }],
+        },
+      ],
+      availability: [pto('p1', '2026-01-05', '2026-01-05')],
+    });
+    const msg = overrideConfirmMessage(g.blocked[0]);
+    expect(msg).toContain('On PTO 1/5');
+    expect(msg).toContain('Currently on D6 — will be moved to C1.');
+  });
+
+  it('says nothing about a move when there is none', () => {
+    const g = classify({ availability: [pto('p1', '2026-01-05', '2026-01-05')] });
+    expect(overrideConfirmMessage(g.blocked[0])).not.toContain('will be moved');
   });
 });

@@ -25,7 +25,8 @@
 //   same-date             overlayMayCoexist(existing, incoming) — the canonical
 //                         coexistence table, consumed literally (unlike the
 //                         engine's incremental SolveState form, this module has
-//                         both objects in hand).
+//                         both objects in hand). ONE deliberate divergence, the
+//                         DAY-SHIFT RELEASE — see below.
 //   cross-site            a booking in a PUBLISHED version at any other
 //                         schedule/site — the route hands us the dates via
 //                         fetchCommittedAssignments (invariant 3).
@@ -48,6 +49,52 @@
 //   HARD during generation, but it is a planning preference, not a safety
 //   rule, so here it is SOFT/advisory (surfaced, never blocking). Deliberate
 //   divergence, called out so nobody "fixes" it into a hard block.
+//
+// ── The DAY-SHIFT RELEASE (2026-07-28) ─────────────────────────────────────
+//   Gabriel: "anyone in a D4 and up slot on a day that has an empty call slot,
+//   they should not be placed in the unavailable list, they are technically
+//   available to be placed on call that day and taken out of the D spot."
+//
+//   A blanket same-date block was hiding real capacity. A doc sitting in an
+//   ORDINARY day shift is genuinely available for that day's call — you just
+//   pull them off the day shift. A doc sitting in a SEQUENCE-OWNED day shift is
+//   not: that shift exists only because a call chain minted it (pre-call and
+//   post-call fills), so vacating it breaks a call sequence.
+//
+//   "D4 and up" is NOT hardcoded — it is DERIVED, and the pattern is the only
+//   thing that knows. sequenceOwnedDayCodes() reads doc.dayChains[].links[].code:
+//   those are exactly the codes the call sequence CREATES. At Paoli (weekendV2)
+//   that resolves to {D1, D2, D3}; CLASSIC_PATTERN resolves to the same three.
+//   Everything else — D4, D5, D6, … — is free.
+//
+//   THE TRAP: doc.blocks[].chains[].links[].code also contains day codes (the
+//   Saturday C3 chain links −1 D4; the Saturday C1 chain links −1 D2). Those are
+//   BLOCK chains — the weekend's designed shape, not the call sequence's derived
+//   fills — and D4 appearing there must NOT make it sequence-owned. So the set
+//   comes from dayChains ONLY. Reading doc.blocks too would re-block exactly the
+//   code Gabriel named.
+//
+//   The set is deliberately NOT day-type scoped even though dayChains are. A
+//   released day shift is vacated on the CALL's date, but its sequence ownership
+//   was conferred by the call that minted it on a NEIGHBOURING date, whose day
+//   type this module has no business guessing. Code-level granularity is the
+//   honest one: a D1 anywhere is a post-call fill by construction.
+//
+//   NOTHING ELSE RELAXES. The release applies only when (a) the target slot is a
+//   CALL slot, (b) the site HAS a parsed pattern, and (c) EVERY same-date
+//   collision is a releasable day shift. Another call that day still blocks, and
+//   post-call / PTO / cross-site / credential / weekday / group are untouched —
+//   a released provider who is also on PTO is still hard-blocked.
+//
+//   NO PATTERN, NO RELEASE. With callPattern null (absent, or failed to parse
+//   server-side) there is no way to tell sequence-owned from free, so the block
+//   stands exactly as before. Guessing here would break a call chain silently.
+//
+//   The release is DATA, not an action: `SlotCandidate.release` names the
+//   assignment rows the caller must clear and carries the sentence to show in
+//   the row, so the consequence is visible BEFORE the click. Performing it is
+//   the caller's job (schedules/[id]/page.tsx assignProvider: clear first, then
+//   place — see its comment for the failure reasoning).
 //
 // ── Approximation risk (no SolveState) ─────────────────────────────────────
 //   evaluateEligibility reads a live SolveState — the in-flight placements of
@@ -132,7 +179,8 @@ export interface CandidateSlotRow {
   /** schedule_slots.provider_group — 'physician' | 'crna' | 'both'. */
   provider_group?: string | null;
   shift_types: CandidateShiftTypeRow | null;
-  assignments: Array<{ provider_id?: string | null }>;
+  /** `id` is assignments.id — the key the release hands back for the DELETE. */
+  assignments: Array<{ id?: string | null; provider_id?: string | null }>;
 }
 
 export interface CandidateCredentialRow {
@@ -199,6 +247,27 @@ const SOFT_ORDER: CandidateSoftReason[] = ['no-call-request', 'weekend-adjacent-
 
 /* ── Output ───────────────────────────────────────────────────────────────── */
 
+/** One ordinary day-shift assignment that assigning this call would vacate. */
+export interface ReleasedDayShift {
+  /** assignments.id — the DELETE key. Never empty, never an unsaved id. */
+  assignmentId: string;
+  /** schedule_slots.id, so the caller can paint the freed cell. */
+  slotId: string;
+  /** shift_types.code, e.g. 'D6'. */
+  code: string;
+}
+
+/**
+ * The day-shift release (see the header). Present ⇒ assigning this provider to
+ * this slot REQUIRES clearing `shifts` as well; leaving them would same-date
+ * double-book the provider, which the engine forbids.
+ */
+export interface DayShiftRelease {
+  shifts: ReleasedDayShift[];
+  /** 'Currently on D6 — will be moved to C1'. Show it in the row. */
+  text: string;
+}
+
 export interface SlotCandidate {
   provider: CandidateProviderRow;
   group: 'available' | 'soft' | 'blocked';
@@ -210,6 +279,13 @@ export interface SlotCandidate {
   reasonTexts: string[];
   /** reasonTexts[0] ?? '' — the line the picker shows next to the name. */
   reasonText: string;
+  /**
+   * Non-null ⇒ this provider holds ordinary day shift(s) on the slot date that
+   * assigning here must vacate. Deliberately independent of `group`: a provider
+   * hard-blocked for some OTHER reason (PTO) can still be assigned through the
+   * override confirm, and that assignment must vacate the day shift too.
+   */
+  release: DayShiftRelease | null;
 }
 
 export interface SlotCandidateGroups {
@@ -229,7 +305,40 @@ const EMPTY_GROUPS: SlotCandidateGroups = { available: [], soft: [], blocked: []
 
 /* ── Index ────────────────────────────────────────────────────────────────── */
 
-interface Occupancy { slotId: string; category: string; isOverlay: boolean }
+interface Occupancy {
+  slotId: string;
+  /** assignments.id as it arrived. '' when the row carried none. */
+  assignmentId: string;
+  /** shift_types.code. '' when the slot carries no shift type. */
+  code: string;
+  category: string;
+  isOverlay: boolean;
+}
+
+/**
+ * The day codes this pattern's CALL SEQUENCE creates — dayChains[].links[].code
+ * and nothing else. See the DAY-SHIFT RELEASE note in the header for why
+ * doc.blocks is excluded (it lists D4, which must stay free) and why the set is
+ * not day-type scoped. Paoli/weekendV2 → {D2, D3, D1}; CLASSIC → {D2, D3, D1}.
+ */
+export function sequenceOwnedDayCodes(doc: CallPatternDoc): Set<string> {
+  const codes = new Set<string>();
+  for (const chain of doc.dayChains) {
+    for (const link of chain.links ?? []) codes.add(link.code);
+  }
+  return codes;
+}
+
+// The grid paints an optimistic assignment row with a client-minted
+// 'temp-<ms>' id before the server answers. Such a row cannot be cleared by id
+// — the DELETE would match nothing and no-op silently, leaving exactly the
+// double-booking the release exists to prevent. So an unsaved row is NOT
+// releasable and the same-date block stands until the real id lands (one
+// round-trip). Deliberately a string check, not a lookup: the module owns the
+// safety property, not the component.
+function isPersistedAssignmentId(id: string): boolean {
+  return id.length > 0 && !id.startsWith('temp-');
+}
 
 export interface CandidateIndex {
   providers: CandidateProviderRow[];
@@ -243,6 +352,15 @@ export interface CandidateIndex {
   /** date → pid → what that provider already holds that date. */
   occupancyByDate: Map<string, Map<string, Occupancy[]>>;
   doc: CallPatternDoc;
+  /**
+   * Day codes owned by the call sequence, or NULL when the site has no parsed
+   * pattern. null is load-bearing: it disables the day-shift release entirely
+   * rather than falling back to CLASSIC's set, because a site whose pattern
+   * failed to parse may own completely different codes. `doc` above still falls
+   * back to CLASSIC for post-call rest — that fallback is the engine's own and
+   * errs toward MORE blocking; this one would err toward less.
+   */
+  sequenceOwned: ReadonlySet<string> | null;
   unchecked: string[];
 }
 
@@ -331,6 +449,8 @@ export function buildCandidateIndex(inputs: SlotCandidateInputs): CandidateIndex
       if (!pid) continue;
       const occ: Occupancy = {
         slotId: slot.id,
+        assignmentId: a.id ?? '',
+        code: st?.code ?? '',
         category: st?.category ?? 'regular',
         isOverlay: st?.is_overlay === true,
       };
@@ -373,6 +493,9 @@ export function buildCandidateIndex(inputs: SlotCandidateInputs): CandidateIndex
   return {
     providers, slotById, availByPid, weekdaysByPid, credByPid,
     crossSiteByPid, postCallByPid, occupancyByDate, doc, unchecked,
+    // Off inputs.callPattern, NOT `doc` — a missing pattern must disable the
+    // release, not inherit CLASSIC's codes. See CandidateIndex.sequenceOwned.
+    sequenceOwned: inputs.callPattern ? sequenceOwnedDayCodes(inputs.callPattern) : null,
   };
 }
 
@@ -419,6 +542,9 @@ export function candidatesForSlot(index: CandidateIndex, slotId: string): SlotCa
   const isCallSlot = st?.category === 'call';
   const incoming = { category: st?.category ?? 'regular', is_overlay: st?.is_overlay === true };
   const occupants = index.occupancyByDate.get(date);
+  // Non-null ⇒ the day-shift release is in play for this slot (call target +
+  // parsed pattern). Hoisted so the per-provider loop is a set lookup.
+  const sequenceOwned = isCallSlot ? index.sequenceOwned : null;
 
   const available: SlotCandidate[] = [];
   const soft: SlotCandidate[] = [];
@@ -461,9 +587,30 @@ export function candidatesForSlot(index: CandidateIndex, slotId: string): SlotCa
     const held = occupants?.get(p.id) ?? [];
     const collides = held.filter(o => o.slotId !== slot.id
       && !overlayMayCoexist({ category: o.category, is_overlay: o.isOverlay }, incoming));
+    let release: DayShiftRelease | null = null;
     if (collides.length > 0) {
-      hard.push('same-date');
-      text['same-date'] = `Already assigned ${mmdd(date)}`;
+      // THE DAY-SHIFT RELEASE (header). Call slots only, pattern required, and
+      // ALL-or-nothing: one un-releasable collision (another call, a
+      // sequence-owned D1/D2/D3, an unsaved row, a slot with no shift type) and
+      // the block stands unchanged for the whole provider.
+      const releasable = sequenceOwned
+        ? collides.filter(o => o.category !== 'call'
+          && o.code !== ''
+          && !sequenceOwned.has(o.code)
+          && isPersistedAssignmentId(o.assignmentId))
+        : [];
+      if (releasable.length === collides.length) {
+        release = {
+          shifts: releasable.map(o => ({
+            assignmentId: o.assignmentId, slotId: o.slotId, code: o.code,
+          })),
+          text: `Currently on ${releasable.map(o => o.code).join(', ')}`
+            + ` — will be moved to ${st?.code ?? 'call'}`,
+        };
+      } else {
+        hard.push('same-date');
+        text['same-date'] = `Already assigned ${mmdd(date)}`;
+      }
     }
 
     // ── cross-site (invariant 3; overlay-blind, exactly as the engine) ──
@@ -562,6 +709,10 @@ export function candidatesForSlot(index: CandidateIndex, slotId: string): SlotCa
       soft: orderedSoft,
       reasonTexts,
       reasonText: reasonTexts[0] ?? '',
+      // Deliberately NOT folded into reasonTexts: those are why a provider is
+      // blocked or flagged, and this is neither. The picker renders it as its
+      // own line so it stays visible even when a soft reason owns reasonText.
+      release,
     };
     if (group === 'blocked') blocked.push(candidate);
     else if (group === 'soft') soft.push(candidate);
@@ -602,5 +753,8 @@ export function filterCandidateGroups(
  */
 export function overrideConfirmMessage(c: SlotCandidate): string {
   const why = c.reasonTexts.length > 0 ? c.reasonTexts.join('; ') : 'blocked';
-  return `${c.provider.short_display_name} is unavailable for this slot:\n\n${why}\n\nAssign anyway?`;
+  // A release survives the override — assigning still vacates the day shift, so
+  // say so here too rather than letting the confirm hide a second write.
+  const move = c.release ? `\n\n${c.release.text}.` : '';
+  return `${c.provider.short_display_name} is unavailable for this slot:\n\n${why}${move}\n\nAssign anyway?`;
 }
