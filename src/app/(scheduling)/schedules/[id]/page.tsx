@@ -25,6 +25,12 @@ import {
 import {
   computeCallCountColumns, extraCallsByBucketCode, extraKey, BUCKET_LABELS,
 } from '@/lib/callCountColumns';
+// Call Counts CHAIN CONNECTORS (2026-07-28): which of those columns the site's
+// call pattern hands to ONE provider (the Sat C2 doc also holds Fri C2 and Sun
+// C1), resolved onto the column indices so the band above the header can draw
+// them. The rule and the offset→day-type step live in the module; this file
+// only draws what it returns.
+import { computeCallChainConnectors } from '@/lib/callCountChains';
 // Type-only: the grid route parses the site's active pattern server-side and
 // ships the validated doc, so zod stays out of this client bundle.
 import type { CallPatternDoc } from '@/lib/rulesEngine/callPattern';
@@ -3934,6 +3940,31 @@ function CallCountsModal({ grid, onClose }: { grid: GridData; onClose: () => voi
   const codeColor = (code: string) =>
     code === 'C1' ? '#0ea5e9' : code === 'C2' ? '#34d399' : '#a855f7';
 
+  // CHAIN CONNECTORS (Gabriel 2026-07-28) — "a small line connector on top of
+  // the C1 C2 etc that connects the call shifts that are linked, so that when
+  // im using the call count box to help manually fill the schedule, its a good
+  // reminder of which calls are connected". A weekend here is a designed SET,
+  // not one shift: the site's CallPatternDoc block chains hand Sat C2 + Fri C2
+  // + Sun C1 to ONE provider, and the table used to show those as three
+  // unrelated columns. lib/callCountChains resolves the pattern's day OFFSETS
+  // to day types (through the engine's date helpers) and each (bucket, code)
+  // member to the column that DRAWS it — which is what carries the neuro group,
+  // where Sat C3 and Sun C3 sit outside the Sat/Sun groups. A site with no
+  // pattern, or one that failed to parse (the grid route ships null), gets an
+  // empty list and no band at all.
+  const chains = computeCallChainConnectors(grid.callPattern, columns);
+  // Band geometry, small by request: an 11px row per chain, the line at 5px and
+  // a 9px tick crossing it. Drawn with BORDERS, never background colour —
+  // browsers drop background graphics when printing unless the user opts in,
+  // and this table is printed to fill in by hand.
+  const CHAIN_ROW_H = 11, CHAIN_LINE_TOP = 5, CHAIN_TICK_TOP = 1, CHAIN_TICK_H = 9;
+  // Single-column headers trailing the (bucket, code) pairs, each rowSpan={2}:
+  // Obligation, Call Total, Obligatory Weekends, PTO Days, Days Off, Working
+  // Days. A band row is 1 label + columns.length ticks + a filler spanning the
+  // extras half and these, so it is exactly as wide as every other row
+  // (1 + 2 × columns.length + 6) and no colSpan can drift.
+  const TRAILING_HEADER_COLS = 6;
+
   // PTO-days tally — approved planned-leave days overlapping the schedule
   // window, counted Mon-Fri only (weekends don't consume PTO).
   const scheduleStart = grid.schedule.date_start;
@@ -4171,6 +4202,15 @@ function CallCountsModal({ grid, onClose }: { grid: GridData; onClose: () => voi
             }
             #call-counts-print table { font-size: 7pt !important; width: 100% !important; }
             #call-counts-print th, #call-counts-print td { padding: 2px 3px !important; }
+            /* The connector band's cells must stay UNPADDED or the 3px of
+               horizontal padding above cuts a 6px gap into every chain line at
+               each column boundary. The band is drawn in borders (not
+               background colour, which browsers drop when printing) on plain
+               divs, so the #000/#fff th/td overrides above leave the chain
+               colours alone; the row label carries the chain's name for the
+               black-and-white case. */
+            #call-counts-print .cc-chain-cell { padding: 0 !important; }
+            #call-counts-print .cc-chain-label { padding: 0 4px 1px 0 !important; }
             #call-counts-print .no-print { display: none !important; }
           }
         `}</style>
@@ -4181,6 +4221,10 @@ function CallCountsModal({ grid, onClose }: { grid: GridData; onClose: () => voi
             <div style={{ fontSize: 16, fontWeight: 800, color: 'var(--text)' }}>Call Counts</div>
             <div style={{ fontSize: 12, color: 'var(--text-dim)', marginTop: 2 }}>
               {grid.schedule.schedule_name} — per provider, per day bucket, per call tier. Obligatory weekends, PTO days (M–F only), FTE days off, and credited working days shown separately.
+              {/* The band has tooltips on screen and none on paper, so the
+                  printed sheet has to say what the brackets are. Only shown
+                  when there are chains to explain. */}
+              {chains.length > 0 && ' Bracketed columns above the header are calls the site’s call pattern gives to ONE provider — the ticks mark the members.'}
             </div>
             <div
               style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 4, fontWeight: 600 }}
@@ -4207,6 +4251,56 @@ function CallCountsModal({ grid, onClose }: { grid: GridData; onClose: () => voi
 
         <table style={{ borderCollapse: 'collapse', width: '100%', fontSize: 12 }}>
           <thead>
+            {/* Chain connector band — one row per chain the site's pattern
+                gives to a single provider, above the headers it connects. The
+                line runs from the chain's leftmost to its rightmost column and
+                the TICKS identify membership: members are usually not adjacent
+                (Fri C2 … Sun C1 spans the Saturday columns), so crossing the
+                columns in between is expected, not a claim about them. Empty
+                when the site states no pattern. */}
+            {chains.map(chain => {
+              const ticks = new Set(chain.columnIndices);
+              const color = codeColor(chain.triggerCode);
+              return (
+                <tr key={`chain|${chain.key}`} title={chain.description}>
+                  <th className="cc-chain-label" style={{
+                    padding: '0 10px 1px', textAlign: 'right', whiteSpace: 'nowrap',
+                    fontSize: 9.5, fontWeight: 700, lineHeight: 1, color, cursor: 'help',
+                  }}>{chain.triggerLabel}</th>
+                  {columns.map((col, i) => {
+                    const inSpan = i >= chain.firstIndex && i <= chain.lastIndex;
+                    return (
+                      <th key={`chain|${chain.key}|${col.key}`} className="cc-chain-cell"
+                          style={{ padding: 0 }}>
+                        <div style={{ position: 'relative', height: CHAIN_ROW_H }}>
+                          {inSpan && (
+                            <div style={{
+                              position: 'absolute', top: CHAIN_LINE_TOP,
+                              // The line stops at the CENTRE of the end columns,
+                              // where their ticks are, and runs edge to edge
+                              // through the ones between (the cells carry no
+                              // padding, so the segments join into one line).
+                              left: i === chain.firstIndex ? '50%' : 0,
+                              right: i === chain.lastIndex ? '50%' : 0,
+                              borderTop: `2px solid ${color}`,
+                            }} />
+                          )}
+                          {ticks.has(i) && (
+                            <div style={{
+                              position: 'absolute', top: CHAIN_TICK_TOP, left: 'calc(50% - 1px)',
+                              height: CHAIN_TICK_H, borderLeft: `2px solid ${color}`,
+                            }} />
+                          )}
+                        </div>
+                      </th>
+                    );
+                  })}
+                  {/* Filler across the Extra Calls half and the trailing
+                      single-column headers — the band never spans those. */}
+                  <th colSpan={columns.length + TRAILING_HEADER_COLS} />
+                </tr>
+              );
+            })}
             <tr style={{ background: 'var(--bg)', color: 'var(--text-muted)' }}>
               <th rowSpan={2} style={{ padding: '6px 10px', textAlign: 'left', borderBottom: '1px solid var(--border)', fontWeight: 700 }}>Provider</th>
               {groups.map(g => (
