@@ -17,6 +17,14 @@ import {
   bucketDayCounts, daysOffFor, creditedWorkingDayTotals,
   weekendObligationUnits, weekendDutiesByProvider, requiredWeekendsFor,
 } from '@/lib/callCountDays';
+// Call Counts COLUMN SHAPE (2026-07-28): which (day bucket, call code) columns
+// this block actually has — derived from its slots, never hardcoded — and the
+// extras tally broken out by day type (the pickup rate depends on the day).
+// Both route the bucket through the engine's dayTypeBucketOn, so a holiday
+// folds onto its day of the week exactly as the quota that placed it did.
+import {
+  computeCallCountColumns, extraCallsByBucketCode, extraKey, BUCKET_LABELS,
+} from '@/lib/callCountColumns';
 // Type-only: the grid route parses the site's active pattern server-side and
 // ships the validated doc, so zod stays out of this client bundle.
 import type { CallPatternDoc } from '@/lib/rulesEngine/callPattern';
@@ -30,10 +38,9 @@ import { reasonCodeLabel } from '@/lib/validation/providers';
 // Pure row-level classifier for LIVE pto_sellback rows — the grid must agree
 // with the engine's date-level override (rulesEngine/shared.ts isDateBlocked)
 // about which dates a provider is working, so it imports the same predicate.
-// dayTypeBucketOn = the engine's DATE-AWARE fairness bucket. The Call Counts
-// columns must group calls exactly as the quota that placed them did, so a
-// holiday-dated call shows under the day of the week it falls on (2026-07-27).
-import { isActiveSellback, dayTypeBucketOn } from '@/lib/rulesEngine/shared';
+// (The Call Counts columns' date-aware bucket, dayTypeBucketOn, is reached
+// through lib/callCountColumns rather than imported here.)
+import { isActiveSellback } from '@/lib/rulesEngine/shared';
 // requiredWorkDaysWithLimit = the engine's per-provider requirement (round(FTE
 // × WD) − PTO, overridden by a stated Limits-tab workingDays/daysOff entry) —
 // the Call Counts "Working Days" column shows actual/required from the SAME
@@ -59,7 +66,7 @@ import { GRID_ZOOM_LEVELS, loadGridZoom, saveGridZoom, type GridZoomLevel } from
 // row cell (parent_call_code lookup — no new grid rows); weights fold under
 // the parent for the Call Counts modal via the single-homed callBurden math.
 import { isSegmentType, segmentKey, groupSegmentSlots, segmentTag } from './gridSegments';
-import { WEIGHT_EPSILON, callBurdenWeight, parentCallCodeOf, formatCallWeight } from '@/lib/callBurden';
+import { WEIGHT_EPSILON, formatCallWeight } from '@/lib/callBurden';
 // Block Targets (2026-07-27): the Pool modal's third tab writes
 // schedules.scenario_manifest — the per-provider, per-block call targets the
 // engine's scenario layer already honors. Derivation, resolution, the linkage
@@ -3862,23 +3869,21 @@ function CallCountsModal({ grid, onClose }: { grid: GridData; onClose: () => voi
   // dayTypeBucketOn) so per-day call burden is visible per provider. There is
   // no holiday column because the engine has no holiday bucket — a holiday
   // counts as the day of the week it falls on (Gabriel 2026-07-27).
-  const BUCKETS = [
-    { key: 'weekday',  label: 'M–Th' },
-    { key: 'friday',   label: 'Fri' },
-    { key: 'saturday', label: 'Sat' },
-    { key: 'sunday',   label: 'Sun' },
-  ] as const;
-  const CODES = ['C1', 'C2', 'C3'] as const;
+  //
+  // THE COLUMNS ARE DERIVED FROM THE BLOCK (2026-07-28) — lib/callCountColumns
+  // owns the rule and the arithmetic; this component only renders what it
+  // returns. A (bucket, code) column exists iff the block stands at least one
+  // slot for that pair, so Paoli's retired weekday/Friday C3 columns (patch38)
+  // disappear from new blocks while the older drafts that already materialized
+  // Friday C3 slots keep showing those real assigned calls, and a thinner site
+  // stops rendering permanently empty tiers. Nothing about the obligation /
+  // over-par math changes — this is display grouping only.
 
   // Types that count as "PTO days" in the tally column. Sick / jury_duty
   // are intentionally excluded — that's unplanned or administrative, not
   // vacation. Only the planned-leave types accrue here.
   const PTO_TYPES = new Set(['pto', 'fmla', 'parental_leave', 'military_leave']);
 
-  // Aggregate counts: counts[providerId][bucket|code] = n
-  const counts: Record<string, Record<string, number>> = {};
-  // Block totals per (bucket, code) — drives the FTE-weighted target math.
-  const blockTotals: Record<string, number> = {};
   const providerById: Record<string, Provider> = {};
   for (const p of grid.providers) providerById[p.id] = p;
 
@@ -3895,31 +3900,21 @@ function CallCountsModal({ grid, onClose }: { grid: GridData; onClose: () => voi
   const providersWithCalls = new Set<string>();
   for (const rec of census.callRecords) providersWithCalls.add(rec.provider_id);
 
-  // Call splits (2026-07-22): bucket columns aggregate SEGMENTS under their
-  // PARENT code by weight — a split Sat C1 with both halves filled shows
-  // 0.5 + 0.5 across its takers, and column totals still sum to the
-  // slot-weight total. Whole calls keep weight 1 / their own code.
-  for (const slot of grid.slots) {
-    const rawCode = slot.shift_types?.code;
-    if (!rawCode) continue;
-    const code = parentCallCodeOf(rawCode, slot.shift_types);
-    if (!CODES.includes(code as typeof CODES[number])) continue;
-    const weight = callBurdenWeight(slot.shift_types);
-    // The ENGINE's bucket (dayTypeBucketOn): a holiday-dated call lands in the
-    // column for the day of the week it falls on, so a Labor Day (Monday) call
-    // shows under M–Th instead of vanishing from every column. Anything the
-    // engine does not bucket into one of the four columns (an unknown day type)
-    // still has no column; the census above counts every call slot regardless.
-    const bucket = dayTypeBucketOn(slot.derived_day_type, slot.slot_date);
-    if (!BUCKETS.some(b => b.key === bucket)) continue;
-    const key = `${bucket}|${code}`;
-    blockTotals[key] = (blockTotals[key] || 0) + weight;
-    for (const a of slot.assignments || []) {
-      if (!a.provider_id) continue;
-      if (!counts[a.provider_id]) counts[a.provider_id] = {};
-      counts[a.provider_id][key] = (counts[a.provider_id][key] || 0) + weight;
-    }
-  }
+  // Which (bucket, code) columns this block HAS, plus the weighted block totals
+  // and per-provider counts behind them. Call splits (2026-07-22) aggregate
+  // SEGMENTS under their PARENT code by weight — a split Sat C1 with both
+  // halves filled shows 0.5 + 0.5 across its takers, and column totals still
+  // sum to the slot-weight total. The ENGINE's bucket (dayTypeBucketOn) puts a
+  // holiday-dated call in the column for the day of the week it falls on, so a
+  // Labor Day (Monday) call shows under M–Th; anything the engine does not fold
+  // into one of the four buckets has no column, and the census below still
+  // counts every call slot regardless.
+  const { columns, groups, blockTotals, counts } = computeCallCountColumns(grid.slots);
+  // Bucket-group dividers: a vertical rule at the first column of each group,
+  // which is NOT always C1 now that empty tiers are pruned.
+  const isGroupStart = (i: number) => i === 0 || columns[i].bucket !== columns[i - 1].bucket;
+  const codeColor = (code: string) =>
+    code === 'C1' ? '#0ea5e9' : code === 'C2' ? '#34d399' : '#a855f7';
 
   // PTO-days tally — approved planned-leave days overlapping the schedule
   // window, counted Mon-Fri only (weekends don't consume PTO).
@@ -3958,17 +3953,16 @@ function CallCountsModal({ grid, onClose }: { grid: GridData; onClose: () => voi
     .filter(Boolean)
     .sort((a, b) => a.short_display_name.localeCompare(b.short_display_name));
 
-  const getCount = (pid: string, bucket: string, code: string) =>
-    counts[pid]?.[`${bucket}|${code}`] || 0;
+  const getCount = (pid: string, key: string) => counts[pid]?.[key] || 0;
 
   // Call Total = EVERY call assignment (census), not just the bucketed C1–C3
   // columns — a call code outside C1–C3 counts here (and in the obligation
   // math) even though it has no bucket column of its own.
   const rowTotal = (pid: string) => census.actualCallsFor(pid);
 
-  const colTotal = (bucket: string, code: string) => {
+  const colTotal = (key: string) => {
     let t = 0;
-    for (const pid of providers.map(p => p.id)) t += getCount(pid, bucket, code);
+    for (const pid of providers.map(p => p.id)) t += getCount(pid, key);
     return t;
   };
 
@@ -4027,15 +4021,15 @@ function CallCountsModal({ grid, onClose }: { grid: GridData; onClose: () => voi
   // the working-days contract applies to everyone, day docs included.
   // 2026-07-27: the per-cell "(1.2)" parenthetical is gone at Gabriel's
   // request — expectedFor now feeds ONLY the Expected footer row.
-  const expectedFor = (pid: string, bucket: string, code: string) =>
-    fteWeightedTarget(blockTotals[`${bucket}|${code}`] || 0, census.effectivePar, census.poolFteFor(pid));
+  const expectedFor = (pid: string, key: string) =>
+    fteWeightedTarget(blockTotals[key] || 0, census.effectivePar, census.poolFteFor(pid));
   // TOTAL-level fractional expected — straight from the shared census (all
   // call slots ÷ effective par × FTE), NOT a sum of the display buckets: the
   // buckets cover only the C1–C3 codes, the obligation covers every call slot.
   const rowExpected = (pid: string) => census.totalExpectedFor(pid);
-  const colExpected = (bucket: string, code: string) => {
+  const colExpected = (key: string) => {
     let t = 0;
-    for (const p of providers) t += expectedFor(p.id, bucket, code);
+    for (const p of providers) t += expectedFor(p.id, key);
     return t;
   };
 
@@ -4071,30 +4065,29 @@ function CallCountsModal({ grid, onClose }: { grid: GridData; onClose: () => voi
   // obligation = round(total expected) — round-half-up. Extra Calls = only
   // their LAST N call assignments beyond that rounded obligation
   // (chronological, shift-code tiebreak; N = actual − obligation), grouped by
-  // code for the columns below. The over set comes straight from the shared
-  // census — the SAME set that paints the grid's red OVER cells, computed
-  // once from identical inputs, so the two views always agree. (An over call
-  // with a code outside C1–C3 counts in the math but has no Extra column —
-  // live call codes are only C1–C3 today.)
+  // (day bucket, code) for the columns below. The over set comes straight from
+  // the shared census — the SAME set that paints the grid's red OVER cells,
+  // computed once from identical inputs, so the two views always agree. (An
+  // over call with a code outside C1–C3 counts in the math but has no Extra
+  // column — live call codes are only C1–C3 today.)
   //
   // Deficit carry-forward is NOT included (we don't have historical data
   // here), so this can over-report for part-timers legitimately catching
   // up from a prior block. Documented in the column tooltip.
   const rowObligation = (pid: string) => roundedObligation(rowExpected(pid));
   const overIds = census.overParAssignmentIds;
-  // Extra columns group by the PARENT code at weight (census records carry
-  // both since the call-split change) — an over 0.5 segment shows as 0.5.
-  const overByPidCode: Record<string, number> = {};
-  for (const rec of census.callRecords) {
-    if (!overIds.has(rec.id)) continue;
-    const k = `${rec.provider_id}|${rec.parent_code ?? rec.shift_type_code}`;
-    overByPidCode[k] = (overByPidCode[k] || 0) + (rec.weight ?? 1);
-  }
-  const getExtra = (pid: string, code: string): number =>
-    overByPidCode[`${pid}|${code}`] || 0;
-  const colExtraTotal = (code: string) => {
+  // Extra calls BY DAY TYPE (Gabriel 2026-07-28): an extra is a paid pickup and
+  // the rate depends on the day, so a code-only tally was unbillable as shown.
+  // The grouping lives in lib/callCountColumns (which resolves each extra's
+  // bucket from its own slot, through the engine's dayTypeBucketOn — census
+  // records carry the date but no day type). WHAT counts as extra is untouched:
+  // this only regroups the ids the shared census selected.
+  const extrasByKey = extraCallsByBucketCode(grid.slots, census.callRecords, overIds);
+  const getExtra = (pid: string, bucket: string, code: string): number =>
+    extrasByKey[extraKey(pid, bucket, code)] || 0;
+  const colExtraTotal = (bucket: string, code: string) => {
     let t = 0;
-    for (const pid of providers.map(p => p.id)) t += getExtra(pid, code);
+    for (const pid of providers.map(p => p.id)) t += getExtra(pid, bucket, code);
     return t;
   };
   const fmtFte = (fte: number) => fte.toFixed(2).replace(/\.?0+$/, '');
@@ -4135,12 +4128,20 @@ function CallCountsModal({ grid, onClose }: { grid: GridData; onClose: () => voi
             hidden during print so Save as PDF captures just the table. */}
         <style>{`
           @media print {
+            /* LANDSCAPE + tight type (2026-07-28): breaking the extras out by
+               day type took the table from 22 columns to 2 × (bucket,code) + 7
+               — 27 at Paoli. The print area is position:fixed, so anything
+               wider than the page is CLIPPED rather than scrolled: the page
+               box has to be the wide one and the cells have to be small.
+               Measured with headless Chrome at letter landscape: the table
+               lays out at ~910px against ~1010px of printable width. */
+            @page { size: landscape; margin: 0.35in; }
             body * { visibility: hidden !important; }
             #call-counts-print, #call-counts-print * { visibility: visible !important; }
             #call-counts-print {
               position: fixed !important; inset: 0 !important;
               background: #fff !important; color: #000 !important;
-              padding: 0.4in !important; overflow: visible !important;
+              padding: 0 !important; overflow: visible !important;
               max-height: none !important; max-width: none !important;
               min-width: 0 !important;
               border: none !important;
@@ -4149,6 +4150,8 @@ function CallCountsModal({ grid, onClose }: { grid: GridData; onClose: () => voi
               color: #000 !important; border-color: #666 !important;
               background: #fff !important;
             }
+            #call-counts-print table { font-size: 7pt !important; width: 100% !important; }
+            #call-counts-print th, #call-counts-print td { padding: 2px 3px !important; }
             #call-counts-print .no-print { display: none !important; }
           }
         `}</style>
@@ -4187,25 +4190,30 @@ function CallCountsModal({ grid, onClose }: { grid: GridData; onClose: () => voi
           <thead>
             <tr style={{ background: 'var(--bg)', color: 'var(--text-muted)' }}>
               <th rowSpan={2} style={{ padding: '6px 10px', textAlign: 'left', borderBottom: '1px solid var(--border)', fontWeight: 700 }}>Provider</th>
-              {BUCKETS.map(b => (
-                <th key={b.key} colSpan={3} title={`${bucketDays[b.key]} ${b.label} day${bucketDays[b.key] === 1 ? '' : 's'} in this block — distinct slot dates in this bucket. Holidays are INCLUDED, counted as the day of the week they fall on: Labor Day is a Monday, so it is one of the M–Th days and its calls are M–Th calls.`} style={{
+              {groups.map(g => (
+                <th key={g.bucket} colSpan={g.codes.length} title={`${bucketDays[g.bucket]} ${g.label} day${bucketDays[g.bucket] === 1 ? '' : 's'} in this block — distinct slot dates in this bucket. Holidays are INCLUDED, counted as the day of the week they fall on: Labor Day is a Monday, so it is one of the M–Th days and its calls are M–Th calls. Only the call tiers this block actually stands get a column: a tier with no slot on these days (Paoli's retired Friday C3) has none, and a tier whose slots exist but went unfilled shows an empty one.`} style={{
                   padding: '6px 10px', textAlign: 'center', fontWeight: 700,
                   borderBottom: '1px solid var(--border)', borderLeft: '1px solid var(--border)',
                   color: 'var(--text-muted)', cursor: 'help',
+                  // A pruned group can be as narrow as one column; keep the
+                  // label from breaking mid-word ("M–" / "Th") in print.
+                  whiteSpace: 'nowrap',
                 }}>
-                  {b.label}
+                  {g.label}
                   <span style={{ fontSize: 10, fontWeight: 500, opacity: 0.7, marginLeft: 4 }}>
-                    {bucketDays[b.key]}d
+                    {bucketDays[g.bucket]}d
                   </span>
                 </th>
               ))}
-              <th colSpan={3} style={{
-                padding: '6px 10px', textAlign: 'center',
-                borderBottom: '1px solid var(--border)', borderLeft: '1px solid var(--border)',
-                color: '#ef4444',
-              }} title="Calls beyond the provider's ROUNDED total obligation — round(total call slots ÷ par × FTE). The stored call par level is the denominator (par-authoritative; never reduced to the pool's summed FTE) — the engine's obligatory-mode denominator. Every call slot counts — holiday-dated included. Only their LAST N calls (chronological) count as extra, N = actual − obligation; calls up to the obligation are never extra — extras are the paid-pickup layer. Same selection as the red grid cells. Deficit carry-forward is not included.">
-                Extra Calls
-              </th>
+              {columns.length > 0 && (
+                <th colSpan={columns.length} style={{
+                  padding: '6px 10px', textAlign: 'center',
+                  borderBottom: '1px solid var(--border)', borderLeft: '1px solid var(--border)',
+                  color: '#ef4444',
+                }} title="Calls beyond the provider's ROUNDED total obligation — round(total call slots ÷ par × FTE), BROKEN OUT BY DAY TYPE (2026-07-28) because the pickup rate depends on it: an extra Saturday C1 is not priced like an extra Wednesday C1. The stored call par level is the denominator (par-authoritative; never reduced to the pool's summed FTE) — the engine's obligatory-mode denominator. Every call slot counts — holiday-dated included, billed as the day of the week it fell on. Only their LAST N calls (chronological) count as extra, N = actual − obligation; calls up to the obligation are never extra — extras are the paid-pickup layer. Same selection as the red grid cells. Deficit carry-forward is not included.">
+                  Extra Calls <span style={{ fontSize: 10, fontWeight: 500, opacity: 0.8 }}>by day type</span>
+                </th>
+              )}
               <th rowSpan={2} style={{
                 padding: '6px 10px', textAlign: 'center', fontWeight: 700,
                 borderBottom: '1px solid var(--border)', borderLeft: '1px solid var(--border)',
@@ -4244,21 +4252,28 @@ function CallCountsModal({ grid, onClose }: { grid: GridData; onClose: () => voi
               </th>
             </tr>
             <tr style={{ background: 'var(--bg)', color: 'var(--text-muted)' }}>
-              {BUCKETS.map(b => CODES.map(c => (
-                <th key={`${b.key}|${c}`} style={{
+              {columns.map((col, i) => (
+                <th key={col.key} style={{
                   padding: '4px 8px', textAlign: 'center', fontWeight: 700,
                   borderBottom: '1px solid var(--border)',
-                  borderLeft: c === 'C1' ? '1px solid var(--border)' : 'none',
-                  color: c === 'C1' ? '#0ea5e9' : c === 'C2' ? '#34d399' : '#a855f7',
-                }}>{c}</th>
-              )))}
-              {CODES.map(c => (
-                <th key={`extra|${c}`} style={{
-                  padding: '4px 8px', textAlign: 'center', fontWeight: 700,
+                  borderLeft: isGroupStart(i) ? '1px solid var(--border)' : 'none',
+                  color: codeColor(col.code),
+                }}>{col.code}</th>
+              ))}
+              {/* Extra columns carry the day in their own header — no bucket
+                  group header sits above them to supply it. Stacked on two
+                  lines so 10 of them still fit a printed page. */}
+              {columns.map((col, i) => (
+                <th key={`extra|${col.key}`} title={col.label} style={{
+                  padding: '4px 6px', textAlign: 'center', fontWeight: 700,
                   borderBottom: '1px solid var(--border)',
-                  borderLeft: c === 'C1' ? '1px solid var(--border)' : 'none',
-                  color: c === 'C1' ? '#0ea5e9' : c === 'C2' ? '#34d399' : '#a855f7',
-                }}>{c}</th>
+                  borderLeft: isGroupStart(i) ? '1px solid var(--border)' : 'none',
+                  color: codeColor(col.code), whiteSpace: 'nowrap', lineHeight: 1.25,
+                }}>
+                  <span style={{ fontSize: 10, fontWeight: 600, opacity: 0.85, color: 'var(--text-muted)' }}>
+                    {BUCKET_LABELS[col.bucket]}
+                  </span><br/>{col.code}
+                </th>
               ))}
             </tr>
           </thead>
@@ -4273,28 +4288,30 @@ function CallCountsModal({ grid, onClose }: { grid: GridData; onClose: () => voi
                     </span>
                   )}
                 </td>
-                {BUCKETS.map(b => CODES.map(c => {
-                  const n = getCount(p.id, b.key, c);
+                {columns.map((col, i) => {
+                  const n = getCount(p.id, col.key);
                   return (
-                    <td key={`${b.key}|${c}`} style={{
+                    <td key={col.key} style={{
                       padding: '6px 8px', textAlign: 'center', whiteSpace: 'nowrap',
                       color: n === 0 ? 'var(--text-dim)' : 'var(--text)',
-                      borderLeft: c === 'C1' ? '1px solid var(--border)' : 'none',
+                      borderLeft: isGroupStart(i) ? '1px solid var(--border)' : 'none',
                       fontWeight: n > 0 ? 600 : 400,
                     }}>
                       {n ? formatCallWeight(n) : '—'}
                     </td>
                   );
-                }))}
-                {CODES.map(c => {
-                  const n = getExtra(p.id, c);
+                })}
+                {columns.map((col, i) => {
+                  const n = getExtra(p.id, col.bucket, col.code);
                   return (
-                    <td key={`extra|${c}`} style={{
-                      padding: '6px 8px', textAlign: 'center',
-                      color: n === 0 ? 'var(--text-dim)' : '#ef4444',
-                      borderLeft: c === 'C1' ? '1px solid var(--border)' : 'none',
-                      fontWeight: n > 0 ? 700 : 400,
-                    }}>{n ? formatCallWeight(n) : '—'}</td>
+                    <td key={`extra|${col.key}`}
+                      title={n ? `${formatCallWeight(n)} extra ${col.code} worked on ${BUCKET_LABELS[col.bucket]} — priced as a ${BUCKET_LABELS[col.bucket]} pickup` : undefined}
+                      style={{
+                        padding: '6px 8px', textAlign: 'center',
+                        color: n === 0 ? 'var(--text-dim)' : '#ef4444',
+                        borderLeft: isGroupStart(i) ? '1px solid var(--border)' : 'none',
+                        fontWeight: n > 0 ? 700 : 400,
+                      }}>{n ? formatCallWeight(n) : '—'}</td>
                   );
                 })}
                 <td
@@ -4350,22 +4367,22 @@ function CallCountsModal({ grid, onClose }: { grid: GridData; onClose: () => voi
             {/* Totals row */}
             <tr style={{ background: 'var(--bg)', fontWeight: 700, color: 'var(--text)' }}>
               <td style={{ padding: '8px 10px', borderTop: '2px solid var(--border)' }}>Total</td>
-              {BUCKETS.map(b => CODES.map(c => {
-                const t = colTotal(b.key, c);
+              {columns.map((col, i) => {
+                const t = colTotal(col.key);
                 return (
-                  <td key={`total-${b.key}|${c}`} style={{
+                  <td key={`total-${col.key}`} style={{
                     padding: '8px 10px', textAlign: 'center',
-                    borderLeft: c === 'C1' ? '1px solid var(--border)' : 'none',
+                    borderLeft: isGroupStart(i) ? '1px solid var(--border)' : 'none',
                     borderTop: '2px solid var(--border)',
                   }}>{t ? formatCallWeight(t) : '—'}</td>
                 );
-              }))}
-              {CODES.map(c => {
-                const t = colExtraTotal(c);
+              })}
+              {columns.map((col, i) => {
+                const t = colExtraTotal(col.bucket, col.code);
                 return (
-                  <td key={`total-extra|${c}`} style={{
+                  <td key={`total-extra|${col.key}`} style={{
                     padding: '8px 10px', textAlign: 'center',
-                    borderLeft: c === 'C1' ? '1px solid var(--border)' : 'none',
+                    borderLeft: isGroupStart(i) ? '1px solid var(--border)' : 'none',
                     borderTop: '2px solid var(--border)',
                     color: '#ef4444',
                   }}>{t ? formatCallWeight(t) : '—'}</td>
@@ -4410,21 +4427,21 @@ function CallCountsModal({ grid, onClose }: { grid: GridData; onClose: () => voi
                 ALSO legitimately means the paid-pickup layer: with the pool's ΣFTE
                 below the par, expected covers less than the slot count by design. */}
             <tr style={{ color: 'var(--text-dim)', fontWeight: 600 }}
-                title="Sum of each provider's FTE-weighted target: (bucket slot count ÷ par) × FTE, at the stored call par level (par-authoritative — never reduced to the pool's summed FTE). A gap versus Total legitimately means the paid-pickup layer (pool ΣFTE below the par under-covers by design), slots in that column are unfilled, a stored par above/below the pool, or calls on holiday dates (no bucket column) — check the coverage line in the header and the grid before concluding under-staffing.">
+                title="Sum of each provider's FTE-weighted target: (bucket slot count ÷ par) × FTE, at the stored call par level (par-authoritative — never reduced to the pool's summed FTE). A gap versus Total legitimately means the paid-pickup layer (pool ΣFTE below the par under-covers by design), slots in that column are unfilled, a stored par above/below the pool, or calls on a call code outside C1–C3 (which has no bucket column; holiday-dated calls DO have one — they count under the day of the week they fall on) — check the coverage line in the header and the grid before concluding under-staffing.">
               <td style={{ padding: '6px 10px' }}>Expected</td>
-              {BUCKETS.map(b => CODES.map(c => {
-                const exp = colExpected(b.key, c);
+              {columns.map((col, i) => {
+                const exp = colExpected(col.key);
                 return (
-                  <td key={`exp-${b.key}|${c}`} style={{
+                  <td key={`exp-${col.key}`} style={{
                     padding: '6px 8px', textAlign: 'center',
-                    borderLeft: c === 'C1' ? '1px solid var(--border)' : 'none',
+                    borderLeft: isGroupStart(i) ? '1px solid var(--border)' : 'none',
                   }}>{exp >= EXPECTED_DISPLAY_MIN ? exp.toFixed(1) : '—'}</td>
                 );
-              }))}
-              {CODES.map(c => (
-                <td key={`exp-extra|${c}`} style={{
+              })}
+              {columns.map((col, i) => (
+                <td key={`exp-extra|${col.key}`} style={{
                   padding: '6px 8px', textAlign: 'center',
-                  borderLeft: c === 'C1' ? '1px solid var(--border)' : 'none',
+                  borderLeft: isGroupStart(i) ? '1px solid var(--border)' : 'none',
                 }}>—</td>
               ))}
               <td
