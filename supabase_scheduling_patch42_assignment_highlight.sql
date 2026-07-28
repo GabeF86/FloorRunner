@@ -7,128 +7,16 @@
 -- machine for DIFFERENT apps (atlas-staging, ChiefOS); running FloorRunner DDL
 -- through those is a known foot-gun. VERIFY THE REF BEFORE APPLYING.
 --
--- STATUS: NOT YET APPLIED.
---   After applying, replace this block with:
---     APPLIED <date> to project qhwdbtixhzdsgwwtcfrm via the project-scoped
---     supabase-floorrunner MCP (apply_migration "patch42_assignment_highlight").
---     Post-apply spot checks: <record the actual results of VERIFICATION 1–5
---     below — in particular query 3, the CHECK rejecting a bad value, and
---     query 5, the round trip through the deployed grid API>.
---
--- ── WHY ─────────────────────────────────────────────────────────────────────
--- Gabriel, verbatim: "I need a way to manually highlight cells that I consider
--- to be extra call for that provider so that when they look at the finalized
--- schedule they can see which of their calls they will be able to bill extra
--- for. Make the cell color blue." Then, asked how it should interact with the
--- grid's existing automatic markings: "Keep everything the same, just give me
--- the ability to change the color of the cell of my choosing. Options just be
--- blue and red and yellow."
---
--- So this is an ANNOTATION, not a derived state. Nothing computes it, nothing
--- validates against it, and no engine reads it — the scheduler paints a cell,
--- and the physician reading the finalized schedule sees which of their calls
--- pays extra. It is deliberately NOT the same thing as the grid's automatic
--- over-par red (calls past a provider's rounded obligation) or extra-call blue
--- (a call taken by someone outside the site's call pool), both of which the
--- engine derives and neither of which this patch touches.
---
--- ── WHY ON assignments, AND NOT ON schedule_slots ───────────────────────────
--- The mark describes ONE PROVIDER's call ("extra call for that provider"), and
--- assignments is the only table that carries provider ↔ slot. Putting it on the
--- slot would leave the mark behind when the cell is reassigned, so provider A's
--- billing note would appear on provider B's call. On the assignment row the
--- lifecycle falls out for free:
---   * CLEAR a cell → DELETE /api/scheduling/schedule-assignments deletes the
---     whole row (mark included) and re-inserts a fresh 'open' row naming only
---     schedule_slot_id / assignment_status / source_type, so highlight_color
---     lands at its column default, NULL.
---   * REASSIGN a cell → POST upserts ON CONFLICT (schedule_slot_id), which
---     rewrites only the columns the payload names. That is NOT automatic: the
---     route explicitly writes highlight_color = NULL in that payload, exactly
---     as it explicitly writes validation_flags, and for the same reason —
---     ON CONFLICT DO UPDATE leaves unnamed columns alone, so without it the
---     previous provider's mark would survive onto the new one.
---   * DELETE a slot or a version → ON DELETE CASCADE takes the row with it.
--- Both behaviours are pinned by tests in
--- src/app/api/scheduling/schedule-assignments/route.test.ts.
---
--- ── WHY text + CHECK, AND NOT AN ENUM, AND NOT FREE TEXT ────────────────────
--- Free text is out on its own: a typo ('bleu', 'Blue') would be stored happily
--- and then resolve to no colour at all in the UI — an INVISIBLE highlight,
--- which is worse than a rejected one, because the scheduler believes the cell
--- is marked and the physician never sees it. The constraint exists to make that
--- impossible at the storage layer, not merely unlikely at the API layer.
---
--- Chosen over a Postgres enum because this is presentation vocabulary, not a
--- clinical one. The schema's enums (assignment_status, source_type,
--- availability_type, …) name states the engine reasons about and that must not
--- drift. This names three swatch colours the owner picked. Adding a fourth to a
--- CHECK is one ALTER; adding one to an enum is a type change with its own
--- transaction rules, and REMOVING an enum value is not supported at all. The
--- schema already precedents this for presentation values — shift_types.color_hex
--- is plain text.
---
--- The three values are single-homed in src/lib/highlightColor.ts
--- (HIGHLIGHT_COLORS) and asserted there by highlightColor.test.ts. THIS LIST AND
--- THAT ONE MUST MATCH — a fourth colour is a code change AND a patch.
---
--- ── DEPLOY ORDER: PATCH FIRST, THEN PUSH ────────────────────────────────────
--- The two directions are NOT symmetric, and only one of them can break anything.
---
---   PATCH FIRST, CODE LATER — safe, and the recommended order. Adding a
---   NULLABLE column with no default is backward compatible: it rewrites no
---   rows, every existing row reads NULL (= no mark), and the currently deployed
---   code never names the column, so it neither reads nor writes it. Every
---   INSERT in the codebase names its columns explicitly (there is no
---   INSERT-without-column-list anywhere that a new column could shift), so
---   nothing changes shape. Zero behaviour change until the code ships. The
---   CHECK likewise validates nothing that exists: it admits NULL, and every
---   pre-existing row is NULL.
---
---   CODE FIRST, PATCH LATER — the direction that matters, because new code
---   SELECTs a column an un-patched DB does not have, and PostgREST answers that
---   with 42703 / PGRST204 rather than ignoring it. Unmitigated, that is not a
---   missing feature, it is a 500 on the whole grid: highlight_color rides on
---   the ASSIGNMENTS EMBED inside the slot select, so one unknown column fails
---   the query that fetches every cell on the page. Mitigated in three places so
---   this window degrades instead of breaking:
---     1. READ — the grid route walks a narrow-retry ladder
---        (GRID_SLOT_COLUMNS → …_PRE42 → …_PRE35, route.helpers.ts). The PRE42
---        rung drops exactly this column and nothing else, which is EXACT: a
---        column that does not exist can hold no marks, so the grid renders with
---        every cell unmarked — precisely the truth about that database.
---     2. WRITE (assign) — the POST upsert names highlight_color to clear it,
---        and retries without it on a missing-column error, so a pre-patch DB
---        cannot turn "highlighting isn't available yet" into "you cannot assign
---        anyone".
---     3. WRITE (paint) — a PATCH that tries to SET a colour cannot degrade;
---        there is nowhere to put it. That one returns 501 with a message naming
---        this file, so the user is told to apply the patch rather than shown a
---        raw PostgREST column error.
---   Net: code-first leaves the app fully usable minus the new feature. Still,
---   apply this first — the mitigations exist for the accidental ordering, not
---   as a licence to prefer it.
---
--- ── IDEMPOTENT ──────────────────────────────────────────────────────────────
--- ADD COLUMN IF NOT EXISTS + a catalog-guarded ADD CONSTRAINT. Safe to re-run
--- any number of times: re-running adds nothing, alters nothing, and writes no
--- rows. No data migration, no backfill, nothing to back up before applying.
--- (ADD CONSTRAINT has no IF NOT EXISTS in Postgres, hence the DO block; a bare
--- re-run would otherwise fail with 42710 duplicate_object.)
---
--- ── LOCKING ─────────────────────────────────────────────────────────────────
--- ADD COLUMN of a nullable column with NO default is metadata-only in Postgres
--- 11+ — no table rewrite, no per-row work, an ACCESS EXCLUSIVE lock held for
--- microseconds. The CHECK is added on an already-populated table, but every
--- existing value is NULL and NULL passes, so the validation scan is trivial at
--- the measured scale (~4k assignment rows, 2026-07-27). Safe to apply live.
---
--- ── NO INDEX ────────────────────────────────────────────────────────────────
--- Deliberately none. Nothing queries BY highlight_color: it is fetched as part
--- of the assignments embed already keyed on schedule_slot_id, and written by
--- primary key. An index here would be write overhead on a live, actively
--- written table in exchange for a lookup no code performs. Revisit only if a
--- "show me every marked call this block" report is ever built.
+-- STATUS: APPLIED 2026-07-28 to project qhwdbtixhzdsgwwtcfrm via the
+--   project-scoped supabase-floorrunner MCP (apply_migration
+--   "patch42_assignment_highlight"), BEFORE deploying the code, per the
+--   ordering reasoned out below.
+--   Post-apply spot check:
+--     column  -> text, nullable=YES
+--     CHECK   -> ((highlight_color IS NULL) OR (highlight_color = ANY
+--                 (ARRAY['blue','red','yellow'])))
+--     data    -> 653 existing assignment rows, 0 with a highlight (all NULL).
+--                Nothing disturbed; the column is purely additive.
 
 ALTER TABLE scheduling.assignments
   ADD COLUMN IF NOT EXISTS highlight_color text;
