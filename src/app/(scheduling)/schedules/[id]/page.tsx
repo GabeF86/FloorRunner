@@ -54,6 +54,23 @@ import { GRID_ZOOM_LEVELS, loadGridZoom, saveGridZoom, type GridZoomLevel } from
 // the parent for the Call Counts modal via the single-homed callBurden math.
 import { isSegmentType, segmentKey, groupSegmentSlots, segmentTag } from './gridSegments';
 import { WEIGHT_EPSILON, callBurdenWeight, parentCallCodeOf, formatCallWeight } from '@/lib/callBurden';
+// Block Targets (2026-07-27): the Pool modal's third tab writes
+// schedules.scenario_manifest — the per-provider, per-block call targets the
+// engine's scenario layer already honors. Derivation, resolution, the linkage
+// grammar and the manifest build are single-homed in blockTargets.ts; the
+// panel's own view logic (columns, cell text, linkage application) sits in
+// blockTargetsPanel.ts with its test. NOTE: blockTargets imports BUCKET_KEYS
+// from paoliBlock/manifest, which pulls zod into this bundle — a cost its
+// header accepts to keep ONE list of bucket keys.
+import {
+  bucketSlotCounts, buildBlockManifest,
+  type BlockSlot, type DerivationBasis,
+} from '@/lib/blockTargets';
+import {
+  buildPanelRows, cellTextFromRows, invalidCellKeys, rowsWithCellText,
+  type PanelRow, type PoolMember,
+} from '@/lib/blockTargetsPanel';
+import { BlockTargetsTab } from './BlockTargetsTab';
 
 /* ── Interfaces ──────────────────────────────────────────────────────────── */
 
@@ -2522,6 +2539,14 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
           providers={grid.providers}
           profiles={grid.profiles}
           initialSelection={schedule.included_provider_ids}
+          // Block Targets inputs. call_par_level is AUTHORITATIVE (2026-07-24)
+          // and falls back to 12, the engine's own default, when the column is
+          // missing; the neuro bands come from the site's active pattern.
+          blockSlots={grid.slots}
+          parLevel={grid.schedule.sites?.call_par_level ?? 12}
+          neuroWeekend={grid.callPattern?.neuroWeekend ?? null}
+          scheduleLabel={grid.schedule.schedule_name}
+          blockStartYear={Number(grid.schedule.date_start.slice(0, 4))}
           onClose={() => setShowPoolModal(false)}
           onSaved={(next) => {
             setShowPoolModal(false);
@@ -2667,6 +2692,11 @@ function PoolSelectorModal({
   providers,
   profiles,
   initialSelection,
+  blockSlots,
+  parLevel,
+  neuroWeekend,
+  scheduleLabel,
+  blockStartYear,
   onClose,
   onSaved,
 }: {
@@ -2676,6 +2706,14 @@ function PoolSelectorModal({
   providers: Provider[];
   profiles: EmploymentProfile[];
   initialSelection: string[] | null;
+  // ── Block Targets tab inputs (the wiring the data layer specifies) ────────
+  // The stored manifest is NOT in the grid payload — it is fetched below off
+  // GET /schedules/:id, alongside provider_limits, in ONE request.
+  blockSlots: BlockSlot[];
+  parLevel: number;
+  neuroWeekend: NonNullable<CallPatternDoc['neuroWeekend']> | null;
+  scheduleLabel: string;
+  blockStartYear: number;
   onClose: () => void;
   onSaved: (next: string[] | null) => void;
 }) {
@@ -2693,13 +2731,28 @@ function PoolSelectorModal({
   // engine keeps its FTE-derived budget — Gabriel's verbatim rule). Stored on
   // the schedule row; fetched here lazily because the grid payload doesn't
   // carry the column (and pre-patch34 DBs simply omit the field — graceful).
-  const [tab, setTab] = useState<'pool' | 'limits'>('pool');
+  const [tab, setTab] = useState<'pool' | 'limits' | 'targets'>('pool');
   const [storedLimits, setStoredLimits] = useState<ProviderLimits>({});
   const [limitDrafts, setLimitDrafts] = useState<Record<string, LimitFields>>({});
   // 'loading' → inputs held; 'ready' → editable; 'failed' → tab shows the
   // error and SAVE OMITS the provider_limits key entirely (never clobber
   // stored limits with an empty map because a fetch failed).
   const [limitsState, setLimitsState] = useState<'loading' | 'ready' | 'failed'>('loading');
+
+  // ── Block Targets tab (2026-07-27, patch37 scenario_manifest) ─────────────
+  // Same load/save discipline as Limits: the stored artifact rides in on the
+  // SAME GET, and a failed fetch means the save OMITS the key entirely rather
+  // than clobbering a stored manifest with an empty one. Unlike Limits, the
+  // key is written only when he actually edited in this tab (`targetsDirty`):
+  // a manifest is a large artifact with real engine consequences, so changing
+  // the pool and pressing Save must never silently rewrite one.
+  const [manifestState, setManifestState] = useState<'loading' | 'ready' | 'failed'>('loading');
+  const [storedManifest, setStoredManifest] = useState<unknown>(null);
+  const [cellText, setCellText] = useState<Record<string, string>>({});
+  const [linkageEdits, setLinkageEdits] = useState<Record<string, PanelRow['linkages']>>({});
+  const [targetsDirty, setTargetsDirty] = useState(false);
+  const [importAcknowledged, setImportAcknowledged] = useState(false);
+  const [clearTargets, setClearTargets] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -2714,8 +2767,14 @@ function PoolSelectorModal({
         for (const [pid, entry] of Object.entries(lim)) drafts[pid] = fieldsFromEntry(entry);
         setLimitDrafts(drafts);
         setLimitsState('ready');
+        setStoredManifest((data as { scenario_manifest?: unknown })?.scenario_manifest ?? null);
+        setManifestState('ready');
       })
-      .catch(() => { if (!cancelled) setLimitsState('failed'); });
+      .catch(() => {
+        if (cancelled) return;
+        setLimitsState('failed');
+        setManifestState('failed');
+      });
     return () => { cancelled = true; };
   }, [scheduleId]);
 
@@ -2838,6 +2897,104 @@ function PoolSelectorModal({
   const resetToDefault = () => setChecked(new Set(defaultSelection));
   const clearAll = () => setChecked(new Set());
 
+  // ── Block Targets derived state ──────────────────────────────────────────
+  const profileByPid = useMemo(() => {
+    const m = new Map<string, EmploymentProfile>();
+    for (const p of profiles) m.set(p.provider_id, p);
+    return m;
+  }, [profiles]);
+
+  // The CALL pool, which is what block targets are about: the pool selection
+  // intersected with the call-taker criterion, exactly the way the engine
+  // narrows it (pool selection NARROWS, never widens — 2026-07-21). Day docs
+  // in the pool have no call targets and would only be noise here.
+  const callPool: PoolMember[] = useMemo(() => providers
+    .filter(p => checked.has(p.id))
+    .filter(p => {
+      const prof = profileByPid.get(p.id);
+      return !!(prof?.call_taker || prof?.partial_call_taker);
+    })
+    .sort((a, b) => a.last_name.localeCompare(b.last_name))
+    .map(p => ({
+      providerId: p.id,
+      displayName: p.last_name || p.short_display_name,
+      // genContext's coercion (`fte_value || 1`), NOT the page's display `?? 1`:
+      // this number is written as the manifest's scenarioFte, which OVERRIDES
+      // fte_value for the generation. Coercing differently here would let a 0
+      // or null profile FTE reach the engine as a real 0 and zero every target.
+      profileFte: profileByPid.get(p.id)?.fte_value || 1,
+    })), [providers, checked, profileByPid]);
+
+  // The wiring the data layer specifies: weighted per-bucket capacity from the
+  // block's own slots, the STORED par (authoritative — never clamped to the
+  // pool's ΣFTE), and the site pattern's neuro bands.
+  const targetsBasis: DerivationBasis = useMemo(() => ({
+    slotCounts: bucketSlotCounts(blockSlots),
+    parLevel,
+    neuro: neuroWeekend,
+  }), [blockSlots, parLevel, neuroWeekend]);
+
+  const panelRows = useMemo(() => buildPanelRows({
+    pool: callPool,
+    storedManifest,
+    nameFor: pid => {
+      const p = providers.find(x => x.id === pid);
+      return p ? (p.last_name || p.short_display_name) : null;
+    },
+  }), [callPool, storedManifest, providers]);
+
+  // Rows are DERIVED (pool + stored manifest + his linkage edits) rather than
+  // held in state, so toggling the pool on the Pool tab can never leave a
+  // stale row behind. cellText is keyed by provider id and survives on its own.
+  const targetRows: PanelRow[] = useMemo(
+    () => panelRows.rows.map(r => (linkageEdits[r.providerId]
+      ? { ...r, linkages: linkageEdits[r.providerId] }
+      : r)),
+    [panelRows, linkageEdits]);
+
+  const liveTargetRows = useMemo(
+    () => rowsWithCellText(targetRows, cellText), [targetRows, cellText]);
+
+  // Seed the typed cells ONCE, when the stored manifest lands. Re-seeding on
+  // every rebuild would overwrite whatever he is in the middle of typing.
+  const targetsSeeded = useRef(false);
+  useEffect(() => {
+    if (manifestState !== 'ready' || targetsSeeded.current) return;
+    targetsSeeded.current = true;
+    setCellText(cellTextFromRows(panelRows.rows));
+  }, [manifestState, panelRows]);
+
+  const invalidTargetCells = useMemo(() => invalidCellKeys(cellText), [cellText]);
+
+  // Built from exactly the rows the panel shows, so what he reviews is what
+  // gets written (only `generatedAt` is refreshed at save time).
+  const targetsManifestErrors = useMemo(() => {
+    if (manifestState !== 'ready' || clearTargets) return [];
+    return buildBlockManifest({
+      providers: liveTargetRows, basis: targetsBasis,
+      scheduleLabel, defaultYear: blockStartYear,
+    }).errors;
+  }, [manifestState, clearTargets, liveTargetRows, targetsBasis, scheduleLabel, blockStartYear]);
+
+  const wantsTargetWrite = targetsDirty || clearTargets;
+  const targetsBlocked = wantsTargetWrite && (
+    (panelRows.imported && !importAcknowledged)
+    || (!clearTargets && (invalidTargetCells.length > 0 || targetsManifestErrors.length > 0))
+  );
+
+  const commitTargetRows = (next: PanelRow[]) => {
+    const edits: Record<string, PanelRow['linkages']> = {};
+    for (const r of next) edits[r.providerId] = r.linkages ?? [];
+    setLinkageEdits(edits);
+    setClearTargets(false);
+    setTargetsDirty(true);
+  };
+  const editCellText = (next: Record<string, string>) => {
+    setCellText(next);
+    setClearTargets(false);
+    setTargetsDirty(true);
+  };
+
   const save = async (asDefault: boolean) => {
     setSaving(true); setError(null);
     try {
@@ -2861,6 +3018,18 @@ function PoolSelectorModal({
         if (limitsPayload !== null || Object.keys(storedLimits).length > 0) {
           body.provider_limits = limitsPayload;
         }
+      }
+      // Block targets ride along too, but ONLY when he edited them in the tab
+      // (or asked to clear them). A manifest steers the whole generation, so a
+      // pool-only save must leave a stored one exactly as it was. A failed
+      // fetch omits the key for the same reason the limits one does.
+      if (manifestState === 'ready' && wantsTargetWrite) {
+        body.scenario_manifest = clearTargets ? null : buildBlockManifest({
+          providers: liveTargetRows,
+          basis: targetsBasis,
+          scheduleLabel,
+          defaultYear: blockStartYear,
+        });
       }
       const res = await fetch(`/api/scheduling/schedules/${scheduleId}`, {
         method: 'PATCH',
@@ -2896,7 +3065,11 @@ function PoolSelectorModal({
         style={{
           background: 'var(--bg-surface)', border: '1px solid var(--border)', borderRadius: 12,
           boxShadow: '0 24px 60px rgba(0,0,0,0.5)',
-          padding: 24, width: 560, maxHeight: '85vh', display: 'flex', flexDirection: 'column',
+          padding: 24,
+          // The targets grid carries up to nine numeric columns plus a name —
+          // it cannot be read at the 560 the other two tabs use.
+          width: tab === 'targets' ? 'min(940px, 96vw)' : 560,
+          maxHeight: '85vh', display: 'flex', flexDirection: 'column',
         }}
       >
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
@@ -2913,9 +3086,11 @@ function PoolSelectorModal({
         </div>
 
         {/* Tabs: Pool (the existing checkbox roster) | Limits (per-provider
-            expected call counts + working days / days off for this block). */}
+            expected call counts + working days / days off for this block) |
+            Block Targets (per-provider, per-bucket call targets → the engine's
+            scenario manifest). */}
         <div style={{ display: 'flex', gap: 4, marginTop: 8, borderBottom: '1px solid var(--border)' }}>
-          {(['pool', 'limits'] as const).map(t => (
+          {(['pool', 'limits', 'targets'] as const).map(t => (
             <button
               key={t}
               onClick={() => setTab(t)}
@@ -2926,7 +3101,16 @@ function PoolSelectorModal({
                 color: tab === t ? 'var(--text-strong)' : 'var(--text-muted)',
               }}
             >
-              {t === 'pool' ? 'Pool' : 'Limits'}
+              {t === 'pool' ? 'Pool' : t === 'limits' ? 'Limits' : 'Block Targets'}
+              {t === 'targets' && targetsDirty && (
+                <span
+                  title="Unsaved block-target changes"
+                  style={{
+                    display: 'inline-block', width: 6, height: 6, borderRadius: 999,
+                    background: '#0ea5e9', marginLeft: 6, verticalAlign: 'middle',
+                  }}
+                />
+              )}
             </button>
           ))}
         </div>
@@ -2941,6 +3125,14 @@ function PoolSelectorModal({
           <div style={{ fontSize: 12, color: 'var(--text-muted)', margin: '10px 0 12px' }}>
             Expected maximums per provider for this block. Blank = no limit (the engine
             keeps its FTE-derived budget). Working Days and Days Off are mutually exclusive.
+          </div>
+        )}
+        {tab === 'targets' && (
+          <div style={{ fontSize: 12, color: 'var(--text-muted)', margin: '10px 0 10px' }}>
+            How many of each call each provider owes THIS block. Every cell shows the number
+            the engine will get; blank cells are the formula
+            (bucket slots ÷ par {parLevel} × FTE, neuro from the site pattern), and you only
+            type the ones you are changing.
           </div>
         )}
 
@@ -3142,14 +3334,38 @@ function PoolSelectorModal({
         </div>
         )}
 
+        {/* ── Block Targets tab: per-provider, per-bucket call targets for
+            THIS block, written to schedules.scenario_manifest. Blank = the
+            house formula; an either-or linkage owns the buckets it covers. ── */}
+        {tab === 'targets' && (
+          <BlockTargetsTab
+            liveRows={liveTargetRows}
+            rows={targetRows}
+            basis={targetsBasis}
+            cellText={cellText}
+            setCellText={editCellText}
+            commitRows={commitTargetRows}
+            state={manifestState}
+            imported={panelRows.imported}
+            importAcknowledged={importAcknowledged}
+            setImportAcknowledged={setImportAcknowledged}
+            droppedUnidentified={panelRows.droppedUnidentified}
+            hasStoredManifest={panelRows.hasStoredManifest}
+            dirty={targetsDirty}
+            clearRequested={clearTargets}
+            onClearAll={() => { setClearTargets(true); setTargetsDirty(true); }}
+            manifestErrors={targetsManifestErrors}
+          />
+        )}
+
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 14, gap: 8 }}>
           <button
             onClick={() => save(true)}
-            disabled={saving || hasInvalidLimit}
+            disabled={saving || hasInvalidLimit || targetsBlocked}
             style={{
               ...smallBtn,
-              opacity: (saving || hasInvalidLimit) ? 0.5 : 1,
-              cursor: (saving || hasInvalidLimit) ? 'not-allowed' : 'pointer',
+              opacity: (saving || hasInvalidLimit || targetsBlocked) ? 0.5 : 1,
+              cursor: (saving || hasInvalidLimit || targetsBlocked) ? 'not-allowed' : 'pointer',
             }}
             title="Revert to the default rule-based pool (home-site call-takers / day docs). Limits are kept."
           >
@@ -3161,17 +3377,27 @@ function PoolSelectorModal({
             </button>
             <button
               onClick={() => save(false)}
-              disabled={saving || totalSelected === 0 || hasInvalidLimit}
-              title={hasInvalidLimit ? 'Fix the highlighted limit values (whole numbers ≥ 0)' : undefined}
+              disabled={saving || totalSelected === 0 || hasInvalidLimit || targetsBlocked}
+              title={
+                hasInvalidLimit ? 'Fix the highlighted limit values (whole numbers ≥ 0)'
+                : invalidTargetCells.length > 0 ? 'Fix the highlighted block-target values (numbers ≥ 0)'
+                : targetsManifestErrors.length > 0 ? targetsManifestErrors[0]
+                : (panelRows.imported && !importAcknowledged && wantsTargetWrite)
+                  ? 'Acknowledge overwriting the imported manifest on the Block Targets tab first'
+                  : undefined}
               style={{
                 padding: '7px 16px', fontSize: 12.5, fontWeight: 700, border: 'none', borderRadius: 8,
                 background: 'linear-gradient(135deg,#0ea5e9,#6366f1)',
                 color: '#fff', boxShadow: '0 4px 14px rgba(56,130,246,0.35)',
-                opacity: (saving || totalSelected === 0 || hasInvalidLimit) ? 0.5 : 1,
-                cursor: (saving || totalSelected === 0 || hasInvalidLimit) ? 'not-allowed' : 'pointer',
+                opacity: (saving || totalSelected === 0 || hasInvalidLimit || targetsBlocked) ? 0.5 : 1,
+                cursor: (saving || totalSelected === 0 || hasInvalidLimit || targetsBlocked) ? 'not-allowed' : 'pointer',
               }}
             >
-              {saving ? 'Saving...' : `Save Pool (${totalSelected})`}
+              {saving
+                ? 'Saving...'
+                : wantsTargetWrite
+                  ? `Save Pool + Targets (${totalSelected})`
+                  : `Save Pool (${totalSelected})`}
             </button>
           </div>
         </div>
