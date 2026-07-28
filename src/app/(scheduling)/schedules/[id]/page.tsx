@@ -3878,6 +3878,14 @@ function CallCountsModal({ grid, onClose }: { grid: GridData; onClose: () => voi
   // Friday C3 slots keep showing those real assigned calls, and a thinner site
   // stops rendering permanently empty tiers. Nothing about the obligation /
   // over-par math changes — this is display grouping only.
+  //
+  // THE NEURO TIER IS ITS OWN GROUP (2026-07-28) — day-major everywhere except
+  // neuro, which is code-major with a sub-column per day it is stood:
+  // M–Th | Fri | Sat | Sun | Neuro Call (C3). The code comes from the site's
+  // stated CallPatternDoc.neuroWeekend.code (never hardcoded), the day
+  // sub-columns from the same slot-presence rule as every other column, and
+  // both halves of the table render from the one `columns` array so the
+  // regrouping reaches the Extra Calls side identically.
 
   // Types that count as "PTO days" in the tally column. Sick / jury_duty
   // are intentionally excluded — that's unplanned or administrative, not
@@ -3909,10 +3917,20 @@ function CallCountsModal({ grid, onClose }: { grid: GridData; onClose: () => voi
   // Labor Day (Monday) call shows under M–Th; anything the engine does not fold
   // into one of the four buckets has no column, and the census below still
   // counts every call slot regardless.
-  const { columns, groups, blockTotals, counts } = computeCallCountColumns(grid.slots);
-  // Bucket-group dividers: a vertical rule at the first column of each group,
-  // which is NOT always C1 now that empty tiers are pruned.
-  const isGroupStart = (i: number) => i === 0 || columns[i].bucket !== columns[i - 1].bucket;
+  //
+  // The site's stated neuro code (CallPatternDoc.neuroWeekend.code, parsed
+  // server-side by the grid route) — the SAME field the Obligatory Weekends
+  // column below reads. It lifts that tier into its own column group; a site
+  // that states none, or whose pattern failed to parse, gets the day-major
+  // shape untouched.
+  const neuroCode = grid.callPattern?.neuroWeekend?.code;
+  const { columns, groups, blockTotals, counts } =
+    computeCallCountColumns(grid.slots, { neuroCode });
+  // Group dividers: a vertical rule at the first column of each group. Keyed on
+  // groupKey, NOT the bucket — the neuro group's columns each carry a different
+  // bucket, and the Sun group is followed by a neuro column bucketed saturday.
+  const isGroupStart = (i: number) =>
+    i === 0 || columns[i].groupKey !== columns[i - 1].groupKey;
   const codeColor = (code: string) =>
     code === 'C1' ? '#0ea5e9' : code === 'C2' ? '#34d399' : '#a855f7';
 
@@ -4047,8 +4065,9 @@ function CallCountsModal({ grid, onClose }: { grid: GridData; onClose: () => voi
   // disagree about which slots are duties — the previous column's actual bug
   // (a widest-day denominator against an every-doc-who-worked numerator, which
   // painted everyone red).
-  // A site with no stated neuroWeekend simply has no neuro term.
-  const neuroCode = grid.callPattern?.neuroWeekend?.code;
+  // A site with no stated neuroWeekend simply has no neuro term. (neuroCode is
+  // resolved once at the top of this component — the column grouping reads the
+  // same field.)
   const weekendUnits = weekendObligationUnits(grid.slots, neuroCode);
   const weekendsByPid = weekendDutiesByProvider(grid.slots, neuroCode);
   const weekendsForPid = (pid: string) => weekendsByPid[pid] || 0;
@@ -4191,7 +4210,9 @@ function CallCountsModal({ grid, onClose }: { grid: GridData; onClose: () => voi
             <tr style={{ background: 'var(--bg)', color: 'var(--text-muted)' }}>
               <th rowSpan={2} style={{ padding: '6px 10px', textAlign: 'left', borderBottom: '1px solid var(--border)', fontWeight: 700 }}>Provider</th>
               {groups.map(g => (
-                <th key={g.bucket} colSpan={g.codes.length} title={`${bucketDays[g.bucket]} ${g.label} day${bucketDays[g.bucket] === 1 ? '' : 's'} in this block — distinct slot dates in this bucket. Holidays are INCLUDED, counted as the day of the week they fall on: Labor Day is a Monday, so it is one of the M–Th days and its calls are M–Th calls. Only the call tiers this block actually stands get a column: a tier with no slot on these days (Paoli's retired Friday C3) has none, and a tier whose slots exist but went unfilled shows an empty one.`} style={{
+                <th key={g.key} colSpan={g.columns.length} title={g.bucket
+                  ? `${bucketDays[g.bucket]} ${g.label} day${bucketDays[g.bucket] === 1 ? '' : 's'} in this block — distinct slot dates in this bucket. Holidays are INCLUDED, counted as the day of the week they fall on: Labor Day is a Monday, so it is one of the M–Th days and its calls are M–Th calls. Only the call tiers this block actually stands get a column: a tier with no slot on these days (Paoli's retired Friday C3) has none, and a tier whose slots exist but went unfilled shows an empty one.${neuroCode ? ` The ${neuroCode} neuro tier is NOT in this group — it has its own, at the end.` : ''}`
+                  : `The site's stated neuro weekend call (${neuroCode}), broken out of the day groups into its own — one sub-column per day the block actually stands it, so these are neuro calls counted by the day they fell on. Paoli stands neuro Sat + Sun (patch38 retired the Friday one); a block that still holds Friday neuro slots grows a Fri sub-column here automatically. The counts are unchanged — a Saturday neuro call is the same call it was under the Sat group, drawn in a different place.`} style={{
                   padding: '6px 10px', textAlign: 'center', fontWeight: 700,
                   borderBottom: '1px solid var(--border)', borderLeft: '1px solid var(--border)',
                   color: 'var(--text-muted)', cursor: 'help',
@@ -4200,9 +4221,11 @@ function CallCountsModal({ grid, onClose }: { grid: GridData; onClose: () => voi
                   whiteSpace: 'nowrap',
                 }}>
                   {g.label}
-                  <span style={{ fontSize: 10, fontWeight: 500, opacity: 0.7, marginLeft: 4 }}>
-                    {bucketDays[g.bucket]}d
-                  </span>
+                  {g.bucket && (
+                    <span style={{ fontSize: 10, fontWeight: 500, opacity: 0.7, marginLeft: 4 }}>
+                      {bucketDays[g.bucket]}d
+                    </span>
+                  )}
                 </th>
               ))}
               {columns.length > 0 && (
@@ -4210,7 +4233,7 @@ function CallCountsModal({ grid, onClose }: { grid: GridData; onClose: () => voi
                   padding: '6px 10px', textAlign: 'center',
                   borderBottom: '1px solid var(--border)', borderLeft: '1px solid var(--border)',
                   color: '#ef4444',
-                }} title="Calls beyond the provider's ROUNDED total obligation — round(total call slots ÷ par × FTE), BROKEN OUT BY DAY TYPE (2026-07-28) because the pickup rate depends on it: an extra Saturday C1 is not priced like an extra Wednesday C1. The stored call par level is the denominator (par-authoritative; never reduced to the pool's summed FTE) — the engine's obligatory-mode denominator. Every call slot counts — holiday-dated included, billed as the day of the week it fell on. Only their LAST N calls (chronological) count as extra, N = actual − obligation; calls up to the obligation are never extra — extras are the paid-pickup layer. Same selection as the red grid cells. Deficit carry-forward is not included.">
+                }} title="Calls beyond the provider's ROUNDED total obligation — round(total call slots ÷ par × FTE), BROKEN OUT BY DAY TYPE (2026-07-28) because the pickup rate depends on it: an extra Saturday C1 is not priced like an extra Wednesday C1. The stored call par level is the denominator (par-authoritative; never reduced to the pool's summed FTE) — the engine's obligatory-mode denominator. Every call slot counts — holiday-dated included, billed as the day of the week it fell on. Only their LAST N calls (chronological) count as extra, N = actual − obligation; calls up to the obligation are never extra — extras are the paid-pickup layer. Same selection as the red grid cells. Deficit carry-forward is not included. These columns are the SAME columns, in the same order, as the counts half on the left — including the neuro group at the end, whose extras stay split by day because a Saturday neuro pickup is not priced like a Sunday one.">
                   Extra Calls <span style={{ fontSize: 10, fontWeight: 500, opacity: 0.8 }}>by day type</span>
                 </th>
               )}
@@ -4252,17 +4275,21 @@ function CallCountsModal({ grid, onClose }: { grid: GridData; onClose: () => voi
               </th>
             </tr>
             <tr style={{ background: 'var(--bg)', color: 'var(--text-muted)' }}>
+              {/* Sub-header: the CODE under a day group, the DAY under the
+                  neuro group — the transposition, in one field. */}
               {columns.map((col, i) => (
                 <th key={col.key} style={{
                   padding: '4px 8px', textAlign: 'center', fontWeight: 700,
                   borderBottom: '1px solid var(--border)',
                   borderLeft: isGroupStart(i) ? '1px solid var(--border)' : 'none',
                   color: codeColor(col.code),
-                }}>{col.code}</th>
+                }}>{col.subLabel}</th>
               ))}
-              {/* Extra columns carry the day in their own header — no bucket
-                  group header sits above them to supply it. Stacked on two
-                  lines so 10 of them still fit a printed page. */}
+              {/* Extra columns carry BOTH labels in their own header — no group
+                  header sits above them to supply the first. Stacked on two
+                  lines so 10 of them still fit a printed page, and stacked
+                  group-over-sub so this half reads exactly like the counts half
+                  above: "Sat / C1" in a day group, "C3 / Sat" in the neuro one. */}
               {columns.map((col, i) => (
                 <th key={`extra|${col.key}`} title={col.label} style={{
                   padding: '4px 6px', textAlign: 'center', fontWeight: 700,
@@ -4271,8 +4298,8 @@ function CallCountsModal({ grid, onClose }: { grid: GridData; onClose: () => voi
                   color: codeColor(col.code), whiteSpace: 'nowrap', lineHeight: 1.25,
                 }}>
                   <span style={{ fontSize: 10, fontWeight: 600, opacity: 0.85, color: 'var(--text-muted)' }}>
-                    {BUCKET_LABELS[col.bucket]}
-                  </span><br/>{col.code}
+                    {col.groupLabel}
+                  </span><br/>{col.subLabel}
                 </th>
               ))}
             </tr>
