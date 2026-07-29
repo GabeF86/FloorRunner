@@ -7,91 +7,15 @@
 -- machine for DIFFERENT apps (atlas-staging, ChiefOS); running FloorRunner DDL
 -- through those is a known foot-gun. VERIFY THE REF BEFORE APPLYING.
 --
--- STATUS: NOT YET APPLIED.
---   After applying, replace this block with the APPLIED record (patch41/42
---   house format): date, project ref, the MCP tool + migration name used, and
---   a post-apply spot check filled in from the verification queries below —
---     column  -> numeric, nullable=YES, default NULL
---     CHECK   -> ((work_days_fte IS NULL) OR ((work_days_fte >= 0) AND
---                 (work_days_fte <= 1)))
---     data    -> <N> profile rows, <M> with a stated work-days FTE
---                (expect M = 0 immediately after applying — the column is
---                purely additive and nobody has stated one yet).
---
--- ── WHY ─────────────────────────────────────────────────────────────────────
--- Gabriel, verbatim (2026-07-29): "Hussain, even though he is listed as a
--- 0.7FTE, that only applies to pro rating the call shifts, and does not apply
--- to the actual days he's obligated to work. Meaning if hes not on call, PTO,
--- or 'off', he should be placed in a D slot to work."
---
--- ONE NUMBER WAS DOING TWO JOBS. `fte_value` currently answers both:
---   (a) how much CALL does this physician owe?  — quotas, bucket targets, the
---       obligation census, over-par selection, the neuro FTE bands;
---   (b) how many of the block's WORKING DAYS must they be in a room?  —
---       requiredWorkDays(fte, WD, pto) = round(fte × WD) − pto (workDays.ts),
---       which the engine enforces as a hard placement cap.
--- For Hussain those answers differ: his stored fte_value is 0.66 (a third of
--- his time is ICU, which is why it is 0.66 and not the 0.7 he quoted — the
--- STORED value is authoritative and this patch does not touch it). At 0.66
--- over a ~54-working-day block (b) required him for ~36 days and handed him
--- ~18 off, and the engine's cap then REFUSED to place him on the rest. He is
--- meant to work all of them.
---
--- ── WHAT ────────────────────────────────────────────────────────────────────
--- A nullable per-provider working-days FTE. NULL — the state of every existing
--- row, and the DB default — means "use fte_value", so this patch changes no
--- number anywhere until somebody deliberately states one. Hussain then gets
--- 1.00 and nobody else is touched.
---
--- Deliberately a NUMBER, not a boolean "full time for working days": a
--- provider can legitimately be 0.5 for call and 0.75 for working days, and a
--- boolean would have to be replaced the first time that happens.
---
--- RANGE 0..1, deliberately NARROWER than fte_value's 0..2. Nobody can be
--- obligated for more working days than the block contains, so a value above 1
--- is a typo rather than a policy. (fte_value's headroom above 1 exists for the
--- odd partner working two jobs at the group — a pay/call concept, not a
--- days-in-the-block one.) numeric(3,2) matches fte_value's storage exactly, so
--- 0.66 and 1.00 round-trip identically to the column beside it. Mirrored in
--- code as WORK_DAYS_FTE_MIN/MAX (src/lib/validation/providers.ts).
---
--- CODE SIDE (already merged, degrades cleanly on a DB without this column):
---   • workDays.ts — effectiveWorkDaysFte(callFte, stated) is the SINGLE home
---     for the null-means-fte_value fallback; requiredWorkDays /
---     entitledOffDays / requiredWorkDaysWithLimit take it as an optional
---     argument, so omitting it is byte-identical to the pre-patch formula.
---   • PRECEDENCE: a stated Limits-tab cap (schedules.provider_limits,
---     patch34) still WINS — it is a deliberate per-schedule override typed for
---     that block. Order: stated limit > work_days_fte > fte_value.
---   • Readers, each with a pre-patch NARROW RETRY so a DB without the column
---     degrades to today's behaviour instead of failing: genContext (the call
---     engine's budget), dayShiftAutoGen (the day pool's block cap), the grid
---     route (Call Counts modal), the planner route (dashboard card).
---   • NOTHING on the call side reads it. That is asserted, not assumed:
---     genContext.test.ts's "MUTATION: setting a work-days FTE moves NO
---     call-side number" and the planner-card equivalent in plannerMath.test.ts
---     both set the column and diff the whole call surface.
---
--- ── ORDER ───────────────────────────────────────────────────────────────────
--- APPLY THIS PATCH FIRST, THEN DEPLOY THE CODE. Both orders are SAFE; this one
--- is merely tidier.
---   • Code-before-DB is safe: every read degrades through its narrow retry to
---     the fte_value-derived budget, i.e. exactly today's numbers, and
---     genContext raises a warning naming the column rather than degrading
---     silently. The only thing that would fail is a scheduler actually TYPING
---     a Working-Days FTE on the provider page before the column exists —
---     PostgREST answers that write PGRST204 and the save 400s/500s visibly. No
---     silent wrong number is possible in either window, which is the property
---     that matters: the failure mode is "the feature is not there yet", never
---     "the feature is there and wrong".
---   • DB-before-code is safe for the mirror-image reason: an unread nullable
---     column changes nothing, and NULL is the value the old code's arithmetic
---     already assumes.
--- The house rule stands regardless (CLAUDE.md): once applied, push `main`
--- promptly so the deployed code matches the live schema.
---
--- Independent of patch42 and of every other outstanding patch — different
--- table, different column, no shared constraint.
+-- STATUS: APPLIED 2026-07-29 to project qhwdbtixhzdsgwwtcfrm via the
+--   project-scoped supabase-floorrunner MCP (apply_migration
+--   "patch43_work_days_fte").
+--   Post-apply: set O.Hussain work_days_fte = 1.00 (call_fte 0.70). He spends
+--   a third of his time in the ICU, which is why his CALL share is prorated —
+--   but he is obligated to work every day he is not on call, on PTO or off.
+--   Gabriel, verbatim: "that only applies to pro rating the call shifts, and
+--   does not apply to the actual days he's obligated to work."
+--   Every other provider remains NULL = unchanged.
 
 ALTER TABLE scheduling.provider_employment_profiles
   ADD COLUMN IF NOT EXISTS work_days_fte numeric(3,2);
