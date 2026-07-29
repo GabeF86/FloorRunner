@@ -219,6 +219,7 @@ export interface SlotCandidateInputs {
 export type CandidateBlockReason =
   | 'availability-blocked'
   | 'post-call'
+  | 'strands-post-call'
   | 'same-date'
   | 'cross-site'
   | 'credential'
@@ -236,6 +237,10 @@ export type CandidateSoftReason = 'no-call-request' | 'weekend-adjacent-pto';
 const BLOCK_ORDER: CandidateBlockReason[] = [
   'availability-blocked',
   'post-call',
+  // Immediately after its mirror image: both are invariant 1, and "this would
+  // cost them their rest day" is more explanatory than the same-date collision
+  // it usually accompanies.
+  'strands-post-call',
   'same-date',
   'cross-site',
   'credential',
@@ -338,6 +343,49 @@ export function sequenceOwnedDayCodes(doc: CallPatternDoc): Set<string> {
 // safety property, not the component.
 function isPersistedAssignmentId(id: string): boolean {
   return id.length > 0 && !id.startsWith('temp-');
+}
+
+/** Dates a call on `slotDate` makes the holder's POST-CALL REST day.
+ *
+ * ONE HOME for the rule, because it is now read from both directions:
+ *   • BACKWARD (the index build) — "this provider had a rest-requiring call, so
+ *     these later dates are their day off";
+ *   • FORWARD (the strands-post-call gate) — "if this provider took the slot
+ *     being picked, would the rest day it earns them already be spoken for?"
+ * Two copies would let the picker block on one direction and wave through the
+ * other, which is exactly the bug this closes (Gabriel 2026-08: Amusa offered
+ * for the open Sun 8/16 C1 while holding Mon 8/17 C1).
+ *
+ * `which` = 'pattern' keeps the index's UNION semantics (pattern blocks PLUS
+ * the requires_post_call_rule +1); the gate uses the same union. Both engines'
+ * rules are represented, per the note at the index call site.
+ *
+ * SEGMENT REST INHERITANCE (patch35 decision 3): an overnight segment with no
+ * chain data of its own rides its PARENT code's blocks. */
+function postCallRestDates(
+  doc: CallPatternDoc,
+  st: { code: string; parent_call_code?: string | null; requires_post_call_rule?: boolean | null },
+  slotDate: string,
+  derivedDayType: string,
+  _which: 'pattern',
+): string[] {
+  let blockCode = st.code;
+  if (st.parent_call_code && st.requires_post_call_rule
+    && dayChainsFor(doc, st.code, derivedDayType).length === 0) {
+    blockCode = st.parent_call_code;
+  }
+  const dates = new Set<string>();
+  for (const off of postCallBlockOffsets(doc, blockCode, derivedDayType)) {
+    dates.add(addDays(slotDate, off));
+  }
+  // The flag's unconditional +1 — the day-shift engine's home for invariant 1.
+  // Union, not replacement: where a site's pattern states no block for a code
+  // that still carries the flag, the flag wins.
+  if (st.requires_post_call_rule) dates.add(addDays(slotDate, 1));
+  // A "rest date" equal to the call's own date is meaningless; drop it so the
+  // forward gate can never read a slot as conflicting with itself.
+  dates.delete(slotDate);
+  return [...dates];
 }
 
 export interface CandidateIndex {
@@ -466,13 +514,8 @@ export function buildCandidateIndex(inputs: SlotCandidateInputs): CandidateIndex
       // C2's fill-don't-block) falls out of the doc rather than a hardcoded −1.
       // SEGMENT rest inheritance (patch35 decision 3): an overnight segment
       // with no chain data of its own rides its PARENT code's blocks.
-      let blockCode = st.code;
-      if (st.parent_call_code && st.requires_post_call_rule
-        && dayChainsFor(doc, st.code, slot.derived_day_type).length === 0) {
-        blockCode = st.parent_call_code;
-      }
-      for (const off of postCallBlockOffsets(doc, blockCode, slot.derived_day_type)) {
-        markPostCall(pid, addDays(slot.slot_date, off), `${st.code} on ${mmdd(slot.slot_date)}`);
+      for (const rest of postCallRestDates(doc, st, slot.slot_date, slot.derived_day_type, 'pattern')) {
+        markPostCall(pid, rest, `${st.code} on ${mmdd(slot.slot_date)}`);
       }
 
       // (b) requires_post_call_rule → the NEXT day, unconditionally. This is
@@ -545,6 +588,11 @@ export function candidatesForSlot(index: CandidateIndex, slotId: string): SlotCa
   // Non-null ⇒ the day-shift release is in play for this slot (call target +
   // parsed pattern). Hoisted so the per-provider loop is a set lookup.
   const sequenceOwned = isCallSlot ? index.sequenceOwned : null;
+  // Which dates a call in THIS slot would make the holder's rest day. Depends
+  // only on the target, so it is derived once rather than per provider.
+  const restDates = isCallSlot && st
+    ? postCallRestDates(index.doc, st, date, dayType, 'pattern')
+    : [];
 
   const available: SlotCandidate[] = [];
   const soft: SlotCandidate[] = [];
@@ -577,6 +625,30 @@ export function candidatesForSlot(index: CandidateIndex, slotId: string): SlotCa
     if (postCallSource) {
       hard.push('post-call');
       text['post-call'] = `Post-call after ${postCallSource}`;
+    }
+
+    // ── strands their own post-call rest day (Gabriel 2026-08) ──
+    // The mirror of the check above. `postCallByPid` answers "is this provider
+    // ALREADY post-call today"; nothing asked whether TAKING this slot would
+    // put their rest day on top of a call they already hold. Amusa was offered
+    // the open Sun 8/16 C1 while holding Mon 8/17 C1 — Sunday C1 earns Monday
+    // off, so that placement is an invariant-1 violation the moment it lands.
+    //
+    // CALLS ONLY. A day shift on the rest day is NOT a block: the engine's
+    // post-call sweep (passes/postCallRepair.ts' sibling in sequenceAutoFill,
+    // 2026-07-29) vacates it automatically when the call is placed. A CALL is
+    // never swept — that is deliberate, so hand-built weekends survive an edit
+    // — which is precisely why it has to be refused here instead.
+    if (isCallSlot && restDates.length > 0) {
+      for (const rest of restDates) {
+        const onRest = index.occupancyByDate.get(rest)?.get(p.id) ?? [];
+        const call = onRest.find(o => o.category === 'call');
+        if (!call) continue;
+        hard.push('strands-post-call');
+        text['strands-post-call'] =
+          `Would be post-call ${mmdd(rest)}, but holds ${call.code} that day`;
+        break;
+      }
     }
 
     // ── same-date occupancy (overlayMayCoexist, consumed literally) ──

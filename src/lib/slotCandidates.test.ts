@@ -15,7 +15,7 @@ import {
   type CandidateAvailabilityRow, type CandidateCredentialRow, type CandidateProviderRow,
   type CandidateSlotRow, type CrossSiteBookingRow, type SlotCandidateGroups,
 } from './slotCandidates';
-import { CLASSIC_PATTERN, type CallPatternDoc } from './rulesEngine/callPattern';
+import { CLASSIC_PATTERN, CallPatternDocSchema, type CallPatternDoc } from './rulesEngine/callPattern';
 import { WEEKEND_V2_PATTERN } from './rulesEngine/patterns/weekendV2';
 
 /* ── Fixtures ─────────────────────────────────────────────────────────────── */
@@ -950,5 +950,163 @@ describe('overrideConfirmMessage', () => {
   it('says nothing about a move when there is none', () => {
     const g = classify({ availability: [pto('p1', '2026-01-05', '2026-01-05')] });
     expect(overrideConfirmMessage(g.blocked[0])).not.toContain('will be moved');
+  });
+});
+
+/* ── strands their own post-call rest day ─────────────────────────────────── */
+// Gabriel, live board: "8/16 is open as a call slot, and when i click it to see
+// whose available, it shows Amusa is available even though hes already on call
+// on 8/17". Sunday C1 earns Monday off; Amusa held Monday C1. The picker only
+// ever looked BACKWARD ("is this provider already post-call today?"), so the
+// forward consequence of the placement was invisible.
+describe('strands their own post-call rest day', () => {
+  const SUN = '2026-08-16';
+  const MON = '2026-08-17';
+
+  // His actual dates and codes, on the live Paoli pattern (sunday C1 blocks +1).
+  const sunC1 = (): CandidateSlotRow => ({
+    id: 'sun-c1', slot_date: SUN, derived_day_type: 'sunday', provider_group: 'both',
+    shift_types: { code: 'C1', category: 'call', requires_post_call_rule: true },
+    assignments: [],
+  });
+  const monSlot = (code: string, category: string, over: Record<string, unknown> = {}): CandidateSlotRow => ({
+    id: `mon-${code}`, slot_date: MON, derived_day_type: 'weekday', provider_group: 'both',
+    shift_types: { code, category, requires_post_call_rule: category === 'call' && code === 'C1', ...over },
+    assignments: [{ id: `a-mon-${code}`, provider_id: 'amusa' }],
+  });
+  const pick = (mon: CandidateSlotRow) => classify({
+    providers: [provider('amusa')],
+    slots: [sunC1(), mon],
+    callPattern: WEEKEND_V2_PATTERN,
+  }, 'sun-c1');
+
+  it('refuses the Sunday C1 when the provider holds MONDAY CALL', () => {
+    const g = pick(monSlot('C1', 'call'));
+    expect(names(g.available)).toEqual([]);
+    expect(names(g.blocked)).toEqual(['amusa']);
+    const b = g.blocked[0];
+    expect(b.hard).toContain('strands-post-call');
+    expect(b.reasonTexts).toContain('Would be post-call 8/17, but holds C1 that day');
+  });
+
+  it('names the rest day and the call that occupies it, not a generic clash', () => {
+    const g = pick(monSlot('C2', 'call'));
+    expect(g.blocked[0].reasonTexts).toContain('Would be post-call 8/17, but holds C2 that day');
+  });
+
+  it('a DAY SHIFT on the rest day is NOT a block — the post-call sweep clears it', () => {
+    // Deliberate asymmetry (2026-07-29): sequenceAutoFill vacates a day shift
+    // on the blocked day automatically, but never a call. Blocking here would
+    // refuse a placement the app itself resolves cleanly.
+    const g = pick(monSlot('D4', 'regular'));
+    expect(names(g.available)).toEqual(['amusa']);
+    expect(g.blocked).toEqual([]);
+  });
+
+  it('is silent when the rest day is free', () => {
+    const g = classify({
+      providers: [provider('amusa')],
+      slots: [sunC1()],
+      callPattern: WEEKEND_V2_PATTERN,
+    }, 'sun-c1');
+    expect(names(g.available)).toEqual(['amusa']);
+  });
+
+  it('does not fire for a call that earns NO rest day', () => {
+    // Sunday C2 carries no post-call block (weekendV2 gives it a +1 D1 FILL,
+    // not a day off), so holding Monday call is no obstacle to taking it.
+    const sunC2: CandidateSlotRow = {
+      id: 'sun-c2', slot_date: SUN, derived_day_type: 'sunday', provider_group: 'both',
+      shift_types: { code: 'C2', category: 'call', requires_post_call_rule: false },
+      assignments: [],
+    };
+    const g = classify({
+      providers: [provider('amusa')],
+      slots: [sunC2, monSlot('C1', 'call')],
+      callPattern: WEEKEND_V2_PATTERN,
+    }, 'sun-c2');
+    expect(names(g.available)).toEqual(['amusa']);
+  });
+
+  it('never fires on a DAY-shift target — only a call earns a rest day', () => {
+    const monD6: CandidateSlotRow = {
+      id: 'mon-d6', slot_date: MON, derived_day_type: 'weekday', provider_group: 'both',
+      shift_types: { code: 'D6', category: 'regular', requires_post_call_rule: false },
+      assignments: [],
+    };
+    const tueC1: CandidateSlotRow = {
+      id: 'tue-c1', slot_date: '2026-08-18', derived_day_type: 'weekday', provider_group: 'both',
+      shift_types: { code: 'C1', category: 'call', requires_post_call_rule: true },
+      assignments: [{ id: 'a-tue', provider_id: 'amusa' }],
+    };
+    const g = classify({
+      providers: [provider('amusa')], slots: [monD6, tueC1], callPattern: WEEKEND_V2_PATTERN,
+    }, 'mon-d6');
+    expect(g.blocked.every(b => !b.hard.includes('strands-post-call'))).toBe(true);
+  });
+
+  it('the backward check still works — both directions now hold', () => {
+    // Amusa on SATURDAY C1 makes SUNDAY his rest day: the pre-existing gate.
+    const satC1: CandidateSlotRow = {
+      id: 'sat-c1', slot_date: '2026-08-15', derived_day_type: 'saturday', provider_group: 'both',
+      shift_types: { code: 'C1', category: 'call', requires_post_call_rule: true },
+      assignments: [{ id: 'a-sat', provider_id: 'amusa' }],
+    };
+    const g = classify({
+      providers: [provider('amusa')], slots: [satC1, sunC1()], callPattern: WEEKEND_V2_PATTERN,
+    }, 'sun-c1');
+    expect(g.blocked[0].hard).toContain('post-call');
+  });
+});
+
+/* ── the two union/guard paths no shipped pattern exercises ───────────────── */
+describe('strands-post-call — union and self-date guards', () => {
+  const synthetic = (blocks: Array<{ offset: number }> | undefined) =>
+    CallPatternDocSchema.parse({
+      version: 1, spans: [],
+      blocks: [],
+      dayChains: [{ trigger: 'CX', dayTypes: ['weekday'], ...(blocks ? { blocks } : {}) }],
+      placementPasses: [],
+      reliefPass: { enabled: false, dayTypes: ['weekday'] },
+      optimizerMovableDayTypes: [],
+    });
+
+  it('the requires_post_call_rule +1 still protects a code the PATTERN blocks nothing for', () => {
+    // UNION, not replacement. CX carries the flag but its dayChain states no
+    // `blocks`, so the pattern half contributes nothing — dropping the flag
+    // half would silently offer someone their own rest day.
+    const monCX: CandidateSlotRow = {
+      id: 'mon-cx', slot_date: '2026-08-17', derived_day_type: 'weekday', provider_group: 'both',
+      shift_types: { code: 'CX', category: 'call', requires_post_call_rule: true },
+      assignments: [],
+    };
+    const tueC1: CandidateSlotRow = {
+      id: 'tue-c1', slot_date: '2026-08-18', derived_day_type: 'weekday', provider_group: 'both',
+      shift_types: { code: 'C1', category: 'call', requires_post_call_rule: true },
+      assignments: [{ id: 'a-tue', provider_id: 'amusa' }],
+    };
+    const g = classify({
+      providers: [provider('amusa')], slots: [monCX, tueC1], callPattern: synthetic(undefined),
+    }, 'mon-cx');
+    expect(g.blocked[0]?.hard).toContain('strands-post-call');
+    expect(g.blocked[0]?.reasonTexts).toContain('Would be post-call 8/18, but holds C1 that day');
+  });
+
+  it('an offset-0 block cannot make a slot conflict with ITSELF', () => {
+    // A pattern may legally state blocks:[{offset:0}] (the schema allows −7..7).
+    // Without dropping the call's own date, the rest date IS the target date and
+    // the provider already sitting in this very cell would be refused — killing
+    // the documented "re-picking the current occupant is a no-op" behaviour.
+    const monCX: CandidateSlotRow = {
+      id: 'mon-cx', slot_date: '2026-08-17', derived_day_type: 'weekday', provider_group: 'both',
+      shift_types: { code: 'CX', category: 'call', requires_post_call_rule: false },
+      assignments: [{ id: 'a-mon', provider_id: 'amusa' }],
+    };
+    const g = classify({
+      providers: [provider('amusa')], slots: [monCX],
+      callPattern: synthetic([{ offset: 0 }]),
+    }, 'mon-cx');
+    expect(g.blocked.every(b => !b.hard.includes('strands-post-call'))).toBe(true);
+    expect(names(g.available)).toEqual(['amusa']);
   });
 });
