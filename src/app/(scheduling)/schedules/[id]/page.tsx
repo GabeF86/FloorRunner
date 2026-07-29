@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback, useRef, useMemo, Fragment } from 'react';
 import Link from 'next/link';
-import { gridTokens, cellBackground, cellOutline, manualHighlightTitle } from './gridTheme';
+import { gridTokens, cellBackground, cellOutline, cellOpacity, manualHighlightTitle } from './gridTheme';
 import {
   HIGHLIGHT_COLORS, normalizeHighlightColor, type HighlightColor,
 } from '@/lib/highlightColor';
@@ -110,6 +110,7 @@ import {
 import {
   buildAvailableCallList, bucketSummaryText, formatAvailableCallText, isUnfilledCallSlot,
 } from '@/lib/availableCalls';
+import { computeCoverageForecast, formatCalls } from '@/lib/coverageForecast';
 
 /* ── Interfaces ──────────────────────────────────────────────────────────── */
 
@@ -432,6 +433,10 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
   const [showCounts, setShowCounts] = useState(false);
   // Available Call List (2026-07-29) — sits with the other analysis views.
   const [showAvailableCalls, setShowAvailableCalls] = useState(false);
+  // PROVIDER FOCUS (Gabriel 2026-07-29): "highlight a specific provider so that
+  // I can easily see which days they are on call". View state only — nothing is
+  // written, so it costs nothing to leave on and clears on reload.
+  const [focusPid, setFocusPid] = useState<string | null>(null);
   const [showAssistant, setShowAssistant] = useState(false);
   // Inline rename (Gabriel 2026-07-22): the header pencil PATCHes
   // schedule_name (route-validated: trimmed, non-empty, ≤ 120). Local grid
@@ -812,6 +817,21 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
     () => buildAvailableCallList(grid?.slots ?? [], grid?.holidays ?? []),
     [grid],
   );
+
+  /* ── Provider focus (2026-07-29) ─────────────────────────────────────────
+   * Who the focus selector offers: providers who actually hold something in
+   * this block. Offering the whole roster would list people with nothing to
+   * find, and picking one would blank the grid — a control that can only
+   * disappoint. Sorted by display name so the list reads like the board. */
+  const focusableProviders = useMemo(() => {
+    const held = new Set<string>();
+    for (const slot of grid?.slots ?? []) {
+      for (const a of slot.assignments ?? []) if (a.provider_id) held.add(a.provider_id);
+    }
+    return (grid?.providers ?? [])
+      .filter(p => held.has(p.id))
+      .sort((a, b) => a.short_display_name.localeCompare(b.short_display_name));
+  }, [grid]);
 
   /* ── Per-date working roster + over-par detection ───────────────────────── */
 
@@ -1807,6 +1827,34 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
           Available Call{availableCalls.total > 0 ? ` (${availableCalls.total})` : ''}
         </Button>
 
+        {/* Focus a provider — rings their cells and fades the rest, so one
+            person's call days read straight off an 11-week grid. Lists only
+            providers who actually hold something in this block, newest state
+            wins; picking the blank option clears it. Tinted violet when on so
+            the control matches the ring it produces and it is obvious the grid
+            is filtered rather than broken. */}
+        <select
+          value={focusPid ?? ''}
+          onChange={e => setFocusPid(e.target.value || null)}
+          title={focusPid
+            ? 'Showing one provider — pick “Focus provider…” to clear'
+            : 'Highlight one provider’s days across the whole block'}
+          style={{
+            height: 30, borderRadius: 6, padding: '0 8px', fontSize: 13, fontWeight: 600,
+            cursor: 'pointer', maxWidth: 190,
+            background: focusPid
+              ? 'color-mix(in srgb, rgb(124,58,237) 15%, transparent)' : 'var(--surface)',
+            color: focusPid ? 'rgb(124,58,237)' : 'var(--text)',
+            border: `1px solid ${focusPid
+              ? 'color-mix(in srgb, rgb(124,58,237) 45%, transparent)' : 'var(--border)'}`,
+          }}
+        >
+          <option value="">Focus provider…</option>
+          {focusableProviders.map(p => (
+            <option key={p.id} value={p.id}>{p.short_display_name}</option>
+          ))}
+        </select>
+
         <Button
           variant="secondary"
           onClick={() => setShowAssistant(v => !v)}
@@ -2498,7 +2546,14 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
                 // and stay quiet on the grid.
                 const isUnfilledCall = !!slot && !isAssigned && isUnfilledCallSlot(slot);
 
-                const cellFlags = { isOverPar, isExtraCall, isHoliday, isWeekend, manualHighlight, isUnfilledCall };
+                const cellFlags = {
+                  isOverPar, isExtraCall, isHoliday, isWeekend, manualHighlight, isUnfilledCall,
+                  // Focus is keyed on the ASSIGNED provider, so an open cell is
+                  // never "theirs" and fades with the rest — which is right:
+                  // an empty slot is not one of this provider's days.
+                  focusActive: !!focusPid,
+                  focusMatch: !!focusPid && provider?.id === focusPid,
+                };
                 // The computed explanation still applies even when the manual
                 // colour out-ranks its wash, so the mark's tooltip is APPENDED
                 // rather than replacing it.
@@ -2555,6 +2610,7 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
                     style={{
                       background: cellBackground(cellFlags),
                       boxShadow: cellOutline(cellFlags),
+                      opacity: cellOpacity(cellFlags),
                       borderBottom: '1px solid ' + gridTokens.line,
                       borderRight: '1px solid ' + gridTokens.line,
                       borderLeft: isToday ? '2px solid ' + gridTokens.accentStrong : isSatBorder ? '2px solid #1e3a5f' : 'none',
@@ -3108,7 +3164,14 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
 
       {/* Call Counts Modal */}
       {showCounts && grid && (
-        <CallCountsModal grid={grid} onClose={() => setShowCounts(false)} />
+        <CallCountsModal
+          grid={grid}
+          onClose={() => setShowCounts(false)}
+          // Clicking a name here is the shortest path from "this person's
+          // numbers look wrong" to "show me their days": focus them and get
+          // out of the way, since the modal covers the grid it just filtered.
+          onFocusProvider={pid => { setFocusPid(pid); setShowCounts(false); }}
+        />
       )}
 
       {/* Available Call List */}
@@ -4143,7 +4206,10 @@ const smallBtn: React.CSSProperties = {
   border: '1px solid var(--border)', cursor: 'pointer',
 };
 
-function CallCountsModal({ grid, onClose }: { grid: GridData; onClose: () => void }) {
+function CallCountsModal(
+  { grid, onClose, onFocusProvider }:
+  { grid: GridData; onClose: () => void; onFocusProvider?: (pid: string) => void },
+) {
   // Bucket key = day_type group (weekday | friday | saturday | sunday).
   // Saturday and Sunday are SEPARATE fairness buckets (mirrors the engine's
   // dayTypeBucketOn) so per-day call burden is visible per provider. There is
@@ -4707,7 +4773,14 @@ function CallCountsModal({ grid, onClose }: { grid: GridData; onClose: () => voi
           <tbody>
             {providers.map(p => (
               <tr key={p.id} style={{ borderBottom: '1px solid var(--border)' }}>
-                <td style={{ padding: '6px 10px', color: 'var(--text)', fontWeight: 500 }}>
+                <td
+                  onClick={onFocusProvider ? () => onFocusProvider(p.id) : undefined}
+                  title={onFocusProvider ? `Highlight ${p.short_display_name}'s days on the grid` : undefined}
+                  style={{
+                    padding: '6px 10px', color: 'var(--text)', fontWeight: 500,
+                    cursor: onFocusProvider ? 'pointer' : undefined,
+                  }}
+                >
                   {p.short_display_name}
                   {fteByPid[p.id] != null && (
                     <span style={{ opacity: 0.7, fontSize: 11, marginLeft: 5 }}>
@@ -4914,6 +4987,81 @@ function CallCountsModal({ grid, onClose }: { grid: GridData; onClose: () => voi
             </tr>
           </tbody>
         </table>
+
+        {/* ── Coverage to find (Gabriel 2026-07-29) ──────────────────────────
+            "a count of the expected total number of each call I will need to
+            find coverage for based on the length of the block and the pool of
+            providers". Structural, not a read of the current draft: it is the
+            call NOBODY owes, computable before a single assignment exists.
+            Par-authoritative — a pool below the par under-covers by design and
+            the remainder is the paid-pickup layer. */}
+        {(() => {
+          const forecast = computeCoverageForecast(census, grid.providers.map(p => p.id));
+          const bucketLabel: Record<string, string> = {
+            weekday: 'M–Th', friday: 'Fri', saturday: 'Sat', sunday: 'Sun',
+          };
+          const pct = Math.round(forecast.uncoveredShare * 1000) / 10;
+          return (
+            <div style={{ marginTop: 22 }}>
+              <div style={{ fontSize: 14, fontWeight: 800, color: 'var(--text)', marginBottom: 4 }}>
+                Coverage to find
+              </div>
+              <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 10 }}>
+                {forecast.poolFte.toFixed(2)} pool FTE against a par of {forecast.par} —{' '}
+                {pct}% of every call has no one who owes it.{' '}
+                <strong style={{ color: 'var(--text)' }}>
+                  {forecast.obligationGap} call{forecast.obligationGap === 1 ? '' : 's'}
+                </strong>{' '}
+                to cover across the block once everyone has met their obligation.
+              </div>
+              {!forecast.bucketed ? (
+                <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                  Per-call breakdown unavailable — a call slot in this block has no day type.
+                </div>
+              ) : (
+                <table style={{ borderCollapse: 'collapse', fontSize: 12.5 }}>
+                  <thead>
+                    <tr style={{ color: 'var(--text-muted)', textAlign: 'left' }}>
+                      <th style={{ padding: '4px 12px 4px 0', fontWeight: 700 }}>Call</th>
+                      <th style={{ padding: '4px 12px', fontWeight: 700, textAlign: 'center' }}>In block</th>
+                      <th style={{ padding: '4px 12px', fontWeight: 700, textAlign: 'center' }}>Pool owes</th>
+                      <th style={{ padding: '4px 12px', fontWeight: 700, textAlign: 'center' }}>Need coverage</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {forecast.rows.map(r => (
+                      <tr key={`${r.bucket}|${r.code}`} style={{ borderTop: '1px solid var(--border)' }}>
+                        <td style={{ padding: '4px 12px 4px 0', fontWeight: 700, color: 'var(--text)' }}>
+                          {bucketLabel[r.bucket] ?? r.bucket} {r.code}
+                        </td>
+                        <td style={{ padding: '4px 12px', textAlign: 'center' }}>{formatCalls(r.slots)}</td>
+                        <td style={{ padding: '4px 12px', textAlign: 'center', color: 'var(--text-muted)' }}>
+                          {formatCalls(r.covered)}
+                        </td>
+                        <td style={{ padding: '4px 12px', textAlign: 'center', fontWeight: 800, color: gridTokens.openCall }}>
+                          {formatCalls(r.needCoverage)}
+                        </td>
+                      </tr>
+                    ))}
+                    <tr style={{ borderTop: '2px solid var(--border)', fontWeight: 800 }}>
+                      <td style={{ padding: '5px 12px 5px 0', color: 'var(--text)' }}>Total</td>
+                      <td style={{ padding: '5px 12px', textAlign: 'center' }}>{formatCalls(forecast.totals.slots)}</td>
+                      <td style={{ padding: '5px 12px', textAlign: 'center', color: 'var(--text-muted)' }}>
+                        {formatCalls(forecast.totals.covered)}
+                      </td>
+                      <td
+                        title={`Fractional total. Obligations round per provider, so the exact number obligatory generation leaves open is ${forecast.obligationGap}.`}
+                        style={{ padding: '5px 12px', textAlign: 'center', color: gridTokens.openCall, cursor: 'help' }}
+                      >
+                        {formatCalls(forecast.totals.needCoverage)}
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              )}
+            </div>
+          );
+        })()}
         </div>
       </div>
     </div>

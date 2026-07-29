@@ -431,6 +431,10 @@ export interface CallObligationCensus {
   effectivePar: number;
   totalCallSlots: number;
   callRecords: OverParCall[];
+  /** Slot weight per `overParBucketKey(bucket, parentCode)` — the block's call
+   *  slate. Null when a call slot could not be bucketed (same all-or-nothing
+   *  rule as bucketTargetFor). */
+  bucketSlotWeight: ReadonlyMap<string, number> | null;
   // Real FTE for ANY provider (profile value, engine coercion, `?? 1` when
   // unprofiled) — for workday math and display, which apply to everyone.
   fteFor: (providerId: string) => number;
@@ -550,6 +554,13 @@ export function computeCallObligationCensus(input: CallObligationCensusInput): C
     effectivePar,
     totalCallSlots,
     callRecords,
+    // Per-(bucket × parent code) slot weight, keyed by overParBucketKey — the
+    // SAME map bucketTargetFor divides, exposed so the coverage forecast reads
+    // the block's slate from this one pass instead of re-walking the slots and
+    // risking a different bucketing. Null under the same all-or-nothing rule
+    // as bucketTargetFor: one unbucketable call slot makes every bucket total
+    // suspect, and a silently-short denominator would understate the gap.
+    bucketSlotWeight: everySlotBucketed ? bucketSlotWeight : null,
     fteFor,
     poolFteFor,
     totalExpectedFor,

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { gridTokens, cellBackground, cellOutline, manualHighlightTitle } from './gridTheme';
+import { gridTokens, cellBackground, cellOutline, cellOpacity, manualHighlightTitle } from './gridTheme';
 import { HIGHLIGHT_COLORS, type HighlightColor } from '@/lib/highlightColor';
 
 describe('cellBackground precedence', () => {
@@ -218,5 +218,62 @@ describe('manualHighlightTitle', () => {
   it('names the colour and says how to change it', () => {
     expect(manualHighlightTitle('blue')).toBe(
       'Manually marked blue — billable extra call. Right-click to change or clear.');
+  });
+});
+
+// ── provider focus (Gabriel 2026-07-29) ────────────────────────────────────
+describe('provider focus', () => {
+  const base = { isOverPar: false, isExtraCall: false, isHoliday: false, isWeekend: false };
+
+  it('is completely inert until a provider is focused', () => {
+    // The whole grid must render byte-identically when nobody is focused —
+    // focusMatch on its own can never paint a ring or fade anything.
+    expect(cellOpacity(base)).toBe(1);
+    expect(cellOutline(base)).toBeUndefined();
+    expect(cellOpacity({ ...base, focusMatch: true })).toBe(1);
+    expect(cellOutline({ ...base, focusMatch: true })).toBeUndefined();
+  });
+
+  it('rings the focused provider’s cells and fades everything else', () => {
+    const mine = { ...base, focusActive: true, focusMatch: true };
+    const theirs = { ...base, focusActive: true, focusMatch: false };
+    expect(cellOutline(mine)).toBe(gridTokens.providerFocusOutline);
+    expect(cellOpacity(mine)).toBe(1);
+    expect(cellOutline(theirs)).toBeUndefined();
+    expect(cellOpacity(theirs)).toBe(gridTokens.providerFocusDim);
+  });
+
+  it('never changes a cell’s BACKGROUND — focus composes with every state', () => {
+    // The point of a ring + fade rather than a seventh wash: whatever the cell
+    // was already saying (over-par, open call, holiday…) it still says.
+    for (const extra of [{}, { isOverPar: true }, { isUnfilledCall: true },
+                         { isHoliday: true }, { isWeekend: true },
+                         { manualHighlight: 'red' as HighlightColor }]) {
+      const plain = { ...base, ...extra };
+      expect(cellBackground({ ...plain, focusActive: true, focusMatch: true }))
+        .toBe(cellBackground(plain));
+      expect(cellBackground({ ...plain, focusActive: true, focusMatch: false }))
+        .toBe(cellBackground(plain));
+    }
+  });
+
+  it('focus ring outranks the manual ring, and the manual COLOUR still shows', () => {
+    const marked = { ...base, manualHighlight: 'blue' as HighlightColor };
+    expect(cellOutline(marked)).toBe(gridTokens.manualHighlightOutline);
+    const focused = { ...marked, focusActive: true, focusMatch: true };
+    expect(cellOutline(focused)).toBe(gridTokens.providerFocusOutline);
+    // …and the billing mark is not lost: the background is still the manual one.
+    expect(cellBackground(focused)).toBe(gridTokens.manualHighlight.blue);
+  });
+
+  it('the manual ring returns as soon as focus clears', () => {
+    const marked = { ...base, manualHighlight: 'yellow' as HighlightColor, focusMatch: true };
+    expect(cellOutline({ ...marked, focusActive: true })).toBe(gridTokens.providerFocusOutline);
+    expect(cellOutline({ ...marked, focusActive: false })).toBe(gridTokens.manualHighlightOutline);
+  });
+
+  it('the dim keeps un-focused cells readable rather than hiding them', () => {
+    expect(gridTokens.providerFocusDim).toBeGreaterThan(0.2);
+    expect(gridTokens.providerFocusDim).toBeLessThan(0.6);
   });
 });

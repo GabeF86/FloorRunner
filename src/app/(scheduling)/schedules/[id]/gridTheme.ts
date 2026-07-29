@@ -97,6 +97,22 @@ export const gridTokens = {
     yellow: 'rgba(251,191,36,0.70)',
   } as Record<HighlightColor, string>,
   manualHighlightOutline: 'inset 0 0 0 2px rgba(15,23,42,0.55)',
+  // PROVIDER FOCUS (Gabriel 2026-07-29: "highlight a specific provider so that
+  // I can easily see which days they are on call"). A RING plus a dim, not a
+  // background: every background in cellBackground is already spoken for, and
+  // a seventh wash would both collide with the six and lose whatever state the
+  // cell was already showing. The ring composes with all of them, and fading
+  // the rest is what makes one provider's row of cells actually pop out of an
+  // 11-week grid.
+  //
+  // VIOLET is the free hue here — manual blue/red/yellow, over-par and open
+  // call red, holiday amber, weekend gray. It appears elsewhere only as the
+  // Post-Call category accent on a label border, which never sits on a data
+  // cell, so it cannot be confused with a state.
+  providerFocusOutline: 'inset 0 0 0 2px rgba(124,58,237,0.95)',
+  // How far un-focused cells fade. High enough to keep dates, names and the
+  // weekend/holiday washes legible as context — this is emphasis, not a filter.
+  providerFocusDim: 0.32,
   // virtual-row category accents (label border only)
   category: { Available: '#10b981', 'Post-Call': '#8b5cf6', Off: '#94a3b8', PTO: '#f59e0b' } as Record<string, string>,
 } as const;
@@ -120,6 +136,14 @@ export interface CellStateFlags {
    *  need an assignment to exist, this one needs there to be none. Optional so
    *  every pre-existing call site keeps compiling and behaving identically. */
   isUnfilledCall?: boolean;
+  /** A provider is currently focused anywhere on the grid (2026-07-29). Drives
+   *  the fade on every cell that is NOT theirs; absent/false = no focus, and
+   *  every cell renders exactly as it did before this existed. */
+  focusActive?: boolean;
+  /** THIS cell is held by the focused provider. Only meaningful with
+   *  `focusActive`; on its own it does nothing, so a stale flag cannot paint a
+   *  ring while no focus is set. */
+  focusMatch?: boolean;
 }
 
 /** Resolve a data-cell background. The *precedence* (highest first:
@@ -179,7 +203,21 @@ export function cellBackground(s: CellStateFlags, hover = false): string {
  *  it draws inside the cell's border box without disturbing the grid's 1px
  *  separators or the today/Saturday border-left accents). */
 export function cellOutline(s: CellStateFlags): string | undefined {
+  // PROVIDER FOCUS OUTRANKS THE MANUAL RING, and only while focus is on. Both
+  // are inset rings and a ~20px data cell has room for exactly one that stays
+  // legible; stacking a second at a larger inset reads as a smudge. Nothing is
+  // lost when they collide — the manual mark still shows through its
+  // BACKGROUND, which is the part that carries the colour meaning, while the
+  // ring is only its "a human painted this" marker. Focus is transient and
+  // deliberately requested; the manual ring returns the moment focus clears.
+  if (s.focusActive && s.focusMatch) return gridTokens.providerFocusOutline;
   return isHighlightColor(s.manualHighlight) ? gridTokens.manualHighlightOutline : undefined;
+}
+
+/** Cell opacity: everything that is NOT the focused provider's fades back.
+ *  1 whenever no provider is focused, so this is inert until asked for. */
+export function cellOpacity(s: CellStateFlags): number {
+  return s.focusActive && !s.focusMatch ? gridTokens.providerFocusDim : 1;
 }
 
 /** Tooltip line for a manually-marked cell, appended to whatever the cell's
