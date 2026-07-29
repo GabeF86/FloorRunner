@@ -1327,6 +1327,8 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
     // Which fill mode produced this result — drives the staged weekend
     // banner + Continue affordance below.
     fillMode: GenFillMode;
+    /** Non-null ⇒ this was a one-provider-at-a-time run, for these ids. */
+    targetedProviderIds: string[] | null;
     // Weekend-only runs only: call slots deliberately deferred to Continue
     // (NOT failures, NOT counted in `skipped`).
     awaitingContinue: { total: number; byDayType: Record<string, number> } | null;
@@ -1385,14 +1387,20 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
   // (always mode 'all' — the simplest correct choice: Continue finishes the
   // WHOLE schedule; the select stays available for anything more specific —
   // and no confirm: the banner it sits in already says exactly what it does).
-  const runGeneration = async (mode: GenFillMode) => {
+  // `providerIds` = a TARGETED run (Gabriel 2026-08, one provider at a time,
+  // most-constrained first). The route forces obligatory mode for those and
+  // echoes back what it actually ran, so the banner reports the real mode
+  // rather than the one this call asked for.
+  const runGeneration = async (mode: GenFillMode, providerIds?: string[]) => {
     setGenerating(true);
     setGenResult(null);
     try {
       const res = await fetch(`/api/scheduling/schedules/${id}/generate`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ fillMode: mode }),
+        body: JSON.stringify(providerIds?.length
+          ? { fillMode: mode, providerIds }
+          : { fillMode: mode }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Generation failed');
@@ -1405,7 +1413,10 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
         requestGrants: Array.isArray(data.requestGrants) ? data.requestGrants : [],
         callRequestGrants: Array.isArray(data.callRequestGrants) ? data.callRequestGrants : [],
         workDayReport: Array.isArray(data.workDayReport) ? data.workDayReport : [],
-        fillMode: mode,
+        // The ROUTE's mode, not the requested one — a targeted run is forced to
+        // obligatory and the banner must not claim otherwise.
+        fillMode: (data.fillMode as GenFillMode) ?? mode,
+        targetedProviderIds: Array.isArray(data.targetedProviderIds) ? data.targetedProviderIds : null,
         awaitingContinue: data.awaitingContinue && typeof data.awaitingContinue.total === 'number'
           ? data.awaitingContinue : null,
         providerCapSummary: data.providerCapSummary && Array.isArray(data.providerCapSummary.rows)
@@ -1423,6 +1434,24 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
     if (!grid) return;
     if (!confirm(CONFIRM_BY_MODE[genFillMode])) return;
     await runGeneration(genFillMode);
+  };
+
+  // ONE PROVIDER AT A TIME (Gabriel 2026-08). Reuses the focus selector's
+  // choice, so the flow is: focus the most-constrained provider → look at their
+  // constraints → generate just them → move to the next. Forced obligatory by
+  // the route; their stated Block Targets, if any, replace that ceiling and are
+  // filled even above their FTE share.
+  const generateForFocused = async () => {
+    if (!grid || generating || !focusPid) return;
+    const who = grid.providers.find(p => p.id === focusPid)?.short_display_name ?? 'this provider';
+    if (!confirm(
+      `Auto-generate for ${who} ONLY.\n\n`
+      + `They will be filled up to their Block Targets if you have entered any, otherwise to their `
+      + `call obligation. Everything already on the schedule is respected and nothing else is `
+      + `touched — other providers are not considered for any slot in this run.\n\n`
+      + `Generate the most-constrained providers first: whoever runs earlier gets first pick of the `
+      + `dates they can actually work.\n\nContinue?`)) return;
+    await runGeneration('obligatory', [focusPid]);
   };
 
   const continueGeneration = async () => {
@@ -1934,6 +1963,29 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
             >
               {generating ? 'Generating...' : 'Auto-Generate'}
             </Button>
+            {/* One-provider-at-a-time. Deliberately bound to the FOCUS
+                selector rather than owning a second provider dropdown: the
+                workflow is "look at this person, then generate this person",
+                and two independent pickers would let the grid highlight one
+                provider while the button generated another. Hidden until a
+                provider is focused, so it can never fire with no target. */}
+            {focusPid && (
+              <Button
+                variant="secondary"
+                onClick={generateForFocused}
+                disabled={generating}
+                title={`Fill only ${grid.providers.find(p => p.id === focusPid)?.short_display_name ?? 'this provider'}`}
+                style={{
+                  background: 'color-mix(in srgb, rgb(124,58,237) 15%, transparent)',
+                  color: 'rgb(124,58,237)',
+                  border: '1px solid color-mix(in srgb, rgb(124,58,237) 45%, transparent)',
+                }}
+              >
+                {generating
+                  ? 'Generating...'
+                  : `Generate ${grid.providers.find(p => p.id === focusPid)?.short_display_name ?? ''} only`}
+              </Button>
+            )}
           </>
         )}
 
@@ -1952,6 +2004,19 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
             tone={genResult.errors.length > 0 ? 'error' : 'success'}
             onDismiss={() => setGenResult(null)}
           >
+            {/* Targeted run: name who it was for and that the mode was forced.
+                Sits ABOVE the ordinary summary so "only 3 placed" is never read
+                as a failure of a whole-pool generation. */}
+            {genResult.targetedProviderIds && genResult.targetedProviderIds.length > 0 && (
+              <div style={{ fontWeight: 700, marginBottom: 4 }}>
+                One-provider run —{' '}
+                {genResult.targetedProviderIds
+                  .map(pid => grid?.providers.find(p => p.id === pid)?.short_display_name ?? pid)
+                  .join(', ')}
+                {' '}only. Obligatory mode (forced): filled to their Block Targets where stated,
+                otherwise to their call obligation. No other provider was considered.
+              </div>
+            )}
             {genResult.fillMode === 'weekend-only' ? (
               // Staged weekend fill: the deferred (awaiting-Continue) count is
               // NOT a failure and is kept visually separate from real unfilled

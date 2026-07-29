@@ -45,10 +45,34 @@ export async function POST(
 
   // Absent/invalid body (or an unknown fillMode value) degrades to 'all'.
   let bodyFillMode: unknown;
+  let bodyProviderIds: unknown;
   try {
-    bodyFillMode = ((await req.json()) as { fillMode?: unknown } | null)?.fillMode;
+    const body = (await req.json()) as { fillMode?: unknown; providerIds?: unknown } | null;
+    bodyFillMode = body?.fillMode;
+    bodyProviderIds = body?.providerIds;
   } catch { /* no JSON body — default */ }
-  const fillMode = resolveFillMode(bodyFillMode);
+
+  // TARGETED RUN (Gabriel 2026-08): "the ability to create a schedule one
+  // provider at a time ... autogenerate the havildar placements first since i
+  // know she has the most constraints". A per-REQUEST pool narrowing, kept
+  // separate from schedules.included_provider_ids so a targeted run never
+  // rewrites the saved pool. Empty/!array ⇒ absent ⇒ the ordinary whole-pool
+  // run, byte-identical to before.
+  const targetIds = Array.isArray(bodyProviderIds)
+    ? bodyProviderIds.filter((x: unknown): x is string => typeof x === 'string' && x.length > 0)
+    : [];
+  const targeted = targetIds.length > 0;
+
+  // A targeted run is FORCED to obligatory. The obligation ceiling is the only
+  // per-provider total cap the engine has, and it exists only in that mode
+  // (solveKernel: `run.obligatory && capRoom(...)`): a solo pool in 'all' mode
+  // would hand one provider every slot they are legally able to take, because
+  // quota relaxation waives quota unconditionally and nothing else bounds them.
+  // Providers with STATED block targets are exempt from that ceiling anyway
+  // (obligation.ts) and fill to their stated numbers even above their FTE
+  // share, which is the requested semantics; providers with none stop at their
+  // obligation. Reported on the response, never silently swapped.
+  const fillMode = targeted ? 'obligatory' : resolveFillMode(bodyFillMode);
 
   // Load the schedule to pick up an optional override pool, and to find the
   // latest version. Combining these into one load keeps the happy path to a
@@ -75,9 +99,16 @@ export async function POST(
   // rules. Filter out non-strings defensively in case the jsonb got hand-
   // edited.
   const rawOverride = scheduleRes.data?.included_provider_ids;
-  const overrideProviderIds: string[] | undefined = Array.isArray(rawOverride) && rawOverride.length > 0
+  const storedOverride: string[] | undefined = Array.isArray(rawOverride) && rawOverride.length > 0
     ? rawOverride.filter((x: unknown): x is string => typeof x === 'string')
     : undefined;
+  // A targeted run INTERSECTS the saved pool — it may never widen it. Passing
+  // the target list straight through would admit a provider the schedule
+  // deliberately excluded, which is the one thing every override path in this
+  // codebase promises not to do ("override narrows, never widens").
+  const overrideProviderIds: string[] | undefined = targeted
+    ? (storedOverride ? storedOverride.filter(id => targetIds.includes(id)) : targetIds)
+    : storedOverride;
 
   // version.id was selected by schedule_id, so scheduleId IS its parent —
   // passing it down saves each engine's schedule_versions parent lookup.
@@ -90,7 +121,7 @@ export async function POST(
   // trimmed to keep the payload proportional to what the UI shows.
   if (!result.ok) {
     return NextResponse.json(
-      { ...result, unfilled: trimUnfilled(result.unfilled) },
+      { ...result, unfilled: trimUnfilled(result.unfilled), fillMode, targetedProviderIds: targeted ? overrideProviderIds ?? [] : null },
       { status: statusForResult(result) },
     );
   }
@@ -101,7 +132,7 @@ export async function POST(
   // awaitingContinue for the UI's staged banner.
   if (fillMode === 'weekend-only') {
     return NextResponse.json(
-      { ...result, unfilled: trimUnfilled(result.unfilled) },
+      { ...result, unfilled: trimUnfilled(result.unfilled), fillMode, targetedProviderIds: null },
       { status: statusForResult(result) },
     );
   }
@@ -121,7 +152,14 @@ export async function POST(
   result.assignments.push(...dayResult.assignments);
 
   return NextResponse.json(
-    { ...result, unfilled: trimUnfilled(result.unfilled) },
+    {
+      ...result,
+      unfilled: trimUnfilled(result.unfilled),
+      // Echoed so the client can say WHICH mode ran and for whom — a forced
+      // mode the caller did not ask for must never be invisible.
+      fillMode,
+      targetedProviderIds: targeted ? overrideProviderIds ?? [] : null,
+    },
     { status: statusForResult(result) },
   );
 }

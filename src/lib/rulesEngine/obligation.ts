@@ -54,10 +54,33 @@ export function totalExpectedCalls(ctx: GenerationContext): Map<string, number> 
 
 // pid -> whole-number obligatory call count (round-half-up of the total
 // expected). Drives the obligatory fill-mode cap and the extra-call accounting.
+// STATED TARGETS REPLACE THE FTE OBLIGATION (Gabriel 2026-08, verbatim: "I
+// would like the ability to enter the block targets for that provider and have
+// the engine fill those even if its above obligation, but if not entered, the
+// engine should just fill to the obligation").
+//
+// A provider the scenario states targets for is EXEMPT from this ceiling —
+// their obligation is Infinity here — because their real ceiling is already
+// complete and tighter-grained: buildScenarioCallCaps gives them a ceil(target)
+// cap on EVERY bucket key (blockTargets fills every BUCKET_KEYS entry for a
+// written provider, typed or derived, so there is no uncapped key to leak
+// through), and those caps bind in every fill mode. Leaving the FTE obligation
+// in place on top of that made the LOWER of the two win, so stated numbers
+// above a provider's FTE share were silently unreachable — the trap this
+// closes.
+//
+// Inert for anyone the scenario says nothing about: no manifest, or a manifest
+// that omits them (the panel writes only providers with something stated), and
+// they keep the rounded FTE obligation exactly as before.
+function hasStatedTargets(ctx: GenerationContext, pid: string): boolean {
+  const sp = ctx.scenario?.providers.get(pid);
+  return !!sp && (sp.targets.size > 0 || sp.neuroTarget != null);
+}
+
 export function computeObligations(ctx: GenerationContext): Map<string, number> {
   const out = new Map<string, number>();
   for (const [pid, expected] of totalExpectedCalls(ctx)) {
-    out.set(pid, roundedObligation(expected));
+    out.set(pid, hasStatedTargets(ctx, pid) ? Infinity : roundedObligation(expected));
   }
   return out;
 }

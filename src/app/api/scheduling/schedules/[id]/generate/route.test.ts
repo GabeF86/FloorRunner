@@ -224,3 +224,60 @@ describe('POST /api/scheduling/schedules/:id/generate — fillMode param (2026-0
     });
   });
 });
+
+// ── targeted (one-provider-at-a-time) runs ──────────────────────────────────
+// Gabriel 2026-08: "the ability to create a schedule one provider at a time.
+// SO for example, if I want to autogenerate the havildar placements first since
+// i know she has the most constriants given her large amount of PTO and Off
+// days, and then move on to the next provider".
+describe('targeted provider runs', () => {
+  it('narrows the generation pool to the named providers', async () => {
+    await post({ providerIds: ['havildar'] });
+    expect(holder.genOptions[0]).toMatchObject({ overrideProviderIds: ['havildar'] });
+  });
+
+  it('FORCES obligatory mode and says so on the response', async () => {
+    // 'all' mode has no per-provider total ceiling, so a solo pool would take
+    // every slot it legally could. A forced mode must never be invisible.
+    const { json } = await post({ providerIds: ['havildar'], fillMode: 'all' });
+    expect(holder.genOptions[0]).toMatchObject({ fillMode: 'obligatory' });
+    expect(json.fillMode).toBe('obligatory');
+    expect(json.targetedProviderIds).toEqual(['havildar']);
+  });
+
+  it('INTERSECTS the saved pool — a targeted run can never widen it', async () => {
+    const { sb } = makeFakeSupabase({
+      tables: {
+        schedules: { data: { included_provider_ids: ['prov-a', 'prov-b'] }, error: null },
+        schedule_versions: { data: { id: 'ver-1' }, error: null },
+      },
+    });
+    holder.sb = sb;
+    // 'prov-z' is not in the schedule's pool: naming it must not admit them.
+    await post({ providerIds: ['prov-a', 'prov-z'] });
+    expect(holder.genOptions[0]).toMatchObject({ overrideProviderIds: ['prov-a'] });
+  });
+
+  it('threads the same narrowed pool into the day-shift pass', async () => {
+    // Each engine intersects its OWN role criterion, so a call-taker-only
+    // selection leaves the day pool empty and places nothing — no special
+    // casing needed, and targeting a day doc still fills their shifts.
+    await post({ providerIds: ['chamchad'] });
+    expect(holder.dayOptions[0]).toMatchObject({ overrideProviderIds: ['chamchad'] });
+  });
+
+  it('an ordinary run is untouched — no targeting, mode honoured, null echo', async () => {
+    const { json } = await post({ fillMode: 'obligatory' });
+    expect(holder.genOptions[0]).toMatchObject({ fillMode: 'obligatory' });
+    expect(json.targetedProviderIds).toBeNull();
+  });
+
+  it('ignores a providerIds that is not a non-empty string array', async () => {
+    for (const bad of [[], 'havildar', {}, [''], [123], null]) {
+      holder.genOptions = [];
+      const { json } = await post({ providerIds: bad, fillMode: 'all' });
+      expect(json.targetedProviderIds).toBeNull();
+      expect(holder.genOptions[0]).toMatchObject({ fillMode: 'all' });
+    }
+  });
+});
