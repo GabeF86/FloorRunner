@@ -1,4 +1,5 @@
 import { WEIGHT_EPSILON, callBurdenWeight, parentCallCodeOf } from './callBurden';
+import { dayTypeBucketOn } from './rulesEngine/shared';
 
 // The house FTE-weighted call-obligation formula (spec choice A):
 //   target = (slots in the bucket ÷ site call_par_level) × provider FTE.
@@ -48,6 +49,13 @@ export function extraCalls(actualCalls: number, totalExpected: number): number {
 // `parent_code` (2026-07-22, call splits): fractional call credit + the
 // parent grouping code — optional so pre-split callers (and their literals)
 // keep compiling; absent means weight 1 / parent = own code.
+//
+// `bucket` (2026-07-29, bucket fairness): the assignment's DAY-TYPE fairness
+// bucket — ALWAYS the engine's `dayTypeBucketOn(derived_day_type, slot_date)`
+// (rulesEngine/shared.ts), never a locally re-derived one, so a holiday-dated
+// call is charged to the day of the week it lands on. Optional: absent means
+// "this caller cannot say which bucket this call is in", and the bucket
+// preference below simply does not apply to it.
 export interface OverParCall {
   id: string;           // assignment id
   provider_id: string;
@@ -55,18 +63,41 @@ export interface OverParCall {
   shift_type_code: string;
   weight?: number;
   parent_code?: string;
+  bucket?: string;
 }
 
-// Per-slot OVER labeling (2026-07-17; WEIGHTED 2026-07-22; MINIMAL-COVER
-// 2026-07-29): when a provider's cumulative call WEIGHT exceeds their rounded
-// TOTAL obligation, the flagged set is the SMALLEST-TOTAL-WEIGHT set of their
-// assignments that brings the rest back to at most the obligation, ties broken
-// toward LATER dates. With every weight 1 this selects exactly the last
-// N = actual − obligation assignments — the pre-split behavior, byte for
-// byte. WEIGHT_EPSILON absorbs stored-fraction noise (3 × 0.3333 = 0.9999
-// is not "over" a 1-call obligation). `totalExpectedFor` returns the
-// provider's FRACTIONAL total expected calls (the caller computes it from
-// whatever slot totals it already has; the rounding lives here).
+/** The per-bucket target key: fairness bucket × PARENT call code (weekday|C1,
+ * saturday|C3…). Single home so the census that computes bucket slot totals
+ * and the selector that reads them can never key them differently. The code
+ * must already be folded to its parent (`parentCallCodeOf`) — a split segment
+ * counts under the call it is a piece of. */
+export function overParBucketKey(bucket: string, parentCode: string): string {
+  return `${bucket}|${parentCode}`;
+}
+
+// Per-slot OVER labeling (2026-07-17; WEIGHTED 2026-07-22; MINIMAL-COVER and
+// BUCKET-FAIR 2026-07-29). When a provider's cumulative call WEIGHT exceeds
+// their rounded TOTAL obligation, the flagged set is chosen by this rule, in
+// this order of precedence:
+//
+//   1. MINIMAL TOTAL WEIGHT — the smallest-total-weight set of their
+//      assignments that brings the rest back to at most the obligation.
+//   2. BUCKET FAIRNESS — among covers that tie on weight, the one that draws
+//      the least WEIGHT out of buckets the provider is at-or-under their
+//      per-bucket target in. Equivalently: blame the buckets they are actually
+//      over in. A "bucket" is (dayTypeBucketOn(day type, date) × parent call
+//      code) and its target is the same `fteWeightedTarget` the rest of the
+//      app uses — (bucket slot weight ÷ par) × FTE — supplied by the caller,
+//      which already has the slot totals (see computeCallObligationCensus).
+//   3. LATER DATES — the pre-existing tie-break, unchanged.
+//
+// WEIGHT_EPSILON absorbs stored-fraction noise (3 × 0.3333 = 0.9999 is not
+// "over" a 1-call obligation) on all three comparisons. `totalExpectedFor`
+// returns the provider's FRACTIONAL total expected calls (the caller computes
+// it from whatever slot totals it already has; the rounding lives here).
+// `bucketTargetFor` is OPTIONAL: without it (and for any call carrying no
+// `bucket`) every member weighs the same on rule 2, so the selection falls
+// through to rules 1 + 3 — the 2026-07-29 minimal-cover behavior verbatim.
 //
 // WHY MINIMAL WEIGHT, not the chronological tail (Gabriel 2026-07-29, live
 // case): Horan, 0.5 FTE at par 11 on a 176-weight block, owes 8 and holds 8.5
@@ -75,11 +106,36 @@ export interface OverParCall {
 // (a) flagged a call he is not over on — his 2 weekday C1s are exactly his
 // weekday-C1 target — and (b) overstated the overage, painting 1.0 red when
 // he is 0.5 over and leaving the remainder 0.5 UNDER. Minimal weight flags
-// the 0.5 split instead: 8.5 − 0.5 = 8.0, exactly the obligation. What is
-// flagged is now what actually caused the overage.
+// the 0.5 split instead: 8.5 − 0.5 = 8.0, exactly the obligation.
+//
+// WHY BUCKET FAIRNESS ON TOP (Gabriel 2026-07-29, same day, second report:
+// "she is listed as over on C1 weekday calls, she is supposed to have 3
+// weekday calls, why is it showing as over?"): Havildar, 0.75 FTE at par 11 on
+// the same 176-weight block, owes 12 and holds 13.5 — 1.5 over. Her weekday
+// targets are whole numbers (44 weekday C1 slots ÷ 11 × 0.75 = 3.00) and she
+// sits EXACTLY on them; every bit of her overage comes from the Friday/weekend
+// buckets, where a 0.75 target can only be met by taking a whole 1.0 call —
+// SEVEN such buckets over by 0.25 each, against the one Saturday C1 she holds
+// a 12h half of and is 0.25 UNDER in: 7 × 0.25 − 0.25 = exactly her 1.5
+// (the fteTarget.test.ts fixture asserts this table). Minimal weight alone
+// covered the 1.5 with {latest 1.0} + {the 0.5 split} and her latest 1.0 was a
+// weekday C1: a call she is not one minute over on. Rule 2 moves that 1.0 onto
+// a bucket she IS over in (her latest such), and the weekday row goes clean.
+//
+// RETIRED 2026-07-29 — the old byte-identical guarantee. This comment used to
+// promise: "With every weight 1 this selects exactly the last N = actual −
+// obligation assignments — the pre-split behavior, byte for byte." That no
+// longer holds and is not meant to: with bucket data present, bucket fairness
+// outranks recency, so an all-weight-1 provider who is over in weekend buckets
+// and on-target on weekdays now has WEEKEND calls flagged rather than their
+// chronologically last ones. Red cells move for providers across the whole
+// grid, deliberately. The last-N rule survives exactly where there is no
+// bucket data to reason with (no `bucketTargetFor`, or calls with no
+// `bucket`), which is the shape every pre-2026-07-29 caller has.
 export function selectOverParAssignmentIds(
   calls: OverParCall[],
   totalExpectedFor: (providerId: string) => number,
+  bucketTargetFor?: (providerId: string, bucketKey: string) => number,
 ): Set<string> {
   const byPid = new Map<string, OverParCall[]>();
   for (const c of calls) {
@@ -89,7 +145,8 @@ export function selectOverParAssignmentIds(
   const over = new Set<string>();
   for (const [pid, list] of byPid) {
     const obligation = roundedObligation(totalExpectedFor(pid));
-    for (const id of selectOverParCover(list, obligation).ids) over.add(id);
+    const bucketTarget = bucketTargetFor && ((key: string) => bucketTargetFor(pid, key));
+    for (const id of selectOverParCover(list, obligation, bucketTarget).ids) over.add(id);
   }
   return over;
 }
@@ -133,10 +190,16 @@ const chronoCompare = (a: OverParCall, b: OverParCall) =>
 
 /** Which of ONE provider's calls carry the OVER treatment against `obligation`
  * (already rounded). Exported for the census, and so tests can observe which
- * method fired. */
+ * method fired.
+ *
+ * `bucketTarget` (2026-07-29) is THIS provider's per-bucket target lookup,
+ * keyed by `overParBucketKey` — the caller has already bound the provider.
+ * Omit it and the bucket preference is inert (rule 2 above is a constant), so
+ * the selection is the plain minimal-weight-then-later-dates one. */
 export function selectOverParCover(
   calls: ReadonlyArray<OverParCall>,
   obligation: number,
+  bucketTarget?: (bucketKey: string) => number,
 ): OverParCover {
   const sorted = [...calls].sort(chronoCompare);
   const weights = sorted.map(c => callBurdenWeight({ call_burden_weight: c.weight }));
@@ -146,7 +209,8 @@ export function selectOverParCover(
     return { ids: [], coveredWeight: 0, method: 'minimal-weight' };
   }
   const needed = total - obligation;
-  const minimal = minimalWeightCover(sorted, weights, needed);
+  const minimal = minimalWeightCover(
+    sorted, weights, needed, overTargetBuckets(sorted, weights, bucketTarget));
   if (minimal) return minimal;
 
   // FALLBACK — the pre-2026-07-29 rule, verbatim: take whole assignments from
@@ -162,13 +226,41 @@ export function selectOverParCover(
   return { ids, coveredWeight, method: 'chronological-tail' };
 }
 
-/** Smallest-total-weight set covering `needed`, latest dates on a tie; null
- * when the enumeration would exceed MAX_COVER_COMBINATIONS (caller falls back).
- * `sorted` is chronological ascending and `weights` is parallel to it. */
+/** Per-call "is this provider OVER their target in this call's bucket?".
+ *
+ * Held weight per bucket comes from the provider's OWN records (this is their
+ * complete holding — the caller groups by provider before calling), so it can
+ * never disagree with the weights the cover search is spending; only the
+ * TARGET is external. A call with no `bucket`, or no target lookup at all,
+ * reports false: unknown is not "over", so it earns no preference and the
+ * selection degrades to weight-then-date. */
+function overTargetBuckets(
+  sorted: ReadonlyArray<OverParCall>,
+  weights: ReadonlyArray<number>,
+  bucketTarget?: (bucketKey: string) => number,
+): boolean[] {
+  if (!bucketTarget) return new Array<boolean>(sorted.length).fill(false);
+  const keys = sorted.map(c => (c.bucket
+    ? overParBucketKey(c.bucket, c.parent_code || c.shift_type_code)
+    : null));
+  const held = new Map<string, number>();
+  for (let i = 0; i < keys.length; i++) {
+    const k = keys[i];
+    if (k) held.set(k, (held.get(k) || 0) + weights[i]);
+  }
+  return keys.map(k => (k ? (held.get(k) || 0) > bucketTarget(k) + WEIGHT_EPSILON : false));
+}
+
+/** Smallest-total-weight set covering `needed`; among equal-weight covers the
+ * one drawing the least weight from buckets the provider is NOT over in; then
+ * latest dates. Null when the enumeration would exceed MAX_COVER_COMBINATIONS
+ * (caller falls back). `sorted` is chronological ascending; `weights` and
+ * `overBucket` are parallel to it. */
 function minimalWeightCover(
   sorted: ReadonlyArray<OverParCall>,
   weights: ReadonlyArray<number>,
   needed: number,
+  overBucket: ReadonlyArray<boolean>,
 ): OverParCover | null {
   // Group by exact stored weight — the indices of each class stay ascending.
   const classes = new Map<number, number[]>();
@@ -176,45 +268,69 @@ function minimalWeightCover(
     const list = classes.get(weights[i]);
     if (list) list.push(i); else classes.set(weights[i], [i]);
   }
-  const classList = Array.from(classes, ([weight, indices]) => ({ weight, indices }));
+  // Within a class every member costs the same weight, so which ones to take
+  // is decided entirely by the two lower-ranked rules: OVER-TARGET BUCKETS
+  // FIRST, later dates first inside each of those two groups. `order` is that
+  // preference order, so "take k of this class" is always its first k, and the
+  // members drawn from at-or-under buckets are exactly the overflow past
+  // `overCount`. That keeps the per-candidate cost O(classes) arithmetic.
+  const classList = Array.from(classes, ([weight, indices]) => ({
+    weight,
+    order: [...indices].sort((a, b) =>
+      (overBucket[a] ? 0 : 1) - (overBucket[b] ? 0 : 1) || b - a),
+    overCount: indices.reduce((n, i) => n + (overBucket[i] ? 1 : 0), 0),
+  }));
   let combinations = 1;
   for (const c of classList) {
-    combinations *= c.indices.length + 1;
+    combinations *= c.order.length + 1;
     if (combinations > MAX_COVER_COMBINATIONS) return null; // → observable fallback
   }
 
-  // Candidate = a count per weight class. Its BEST members are forced: taking
-  // the LATEST count_i of a class is pointwise later than any other choice with
-  // the same counts, so it wins the later-dates tie-break outright.
-  let best: { indices: number[]; total: number } | null = null;
+  // Candidate = a count per weight class; `penalty` = the weight it draws out
+  // of at-or-under buckets (rule 2 — lower is better, 0 = it blames only
+  // buckets the provider is genuinely over in).
+  const membersOf = (counts: ReadonlyArray<number>): number[] => {
+    const indices: number[] = [];
+    for (let g = 0; g < classList.length; g++) {
+      const src = classList[g].order;
+      for (let k = 0; k < counts[g]; k++) indices.push(src[k]);
+    }
+    return indices.sort((a, b) => b - a); // descending = latest first
+  };
+  let best: { indices: number[]; total: number; penalty: number } | null = null;
   const counts = new Array<number>(classList.length).fill(0);
   for (let n = 0; n < combinations; n++) {
     let rest = n;
     let total = 0;
+    let penalty = 0;
     for (let g = 0; g < classList.length; g++) {
-      const radix = classList[g].indices.length + 1;
+      const c = classList[g];
+      const radix = c.order.length + 1;
       counts[g] = rest % radix;
       rest = (rest - counts[g]) / radix;
-      total += counts[g] * classList[g].weight;
+      total += counts[g] * c.weight;
+      penalty += Math.max(0, counts[g] - c.overCount) * c.weight;
     }
     if (total < needed - WEIGHT_EPSILON) continue;              // does not cover
-    if (best && total > best.total + WEIGHT_EPSILON) continue;  // heavier than the best
-    const indices: number[] = [];
-    for (let g = 0; g < classList.length; g++) {
-      const src = classList[g].indices;
-      for (let k = src.length - counts[g]; k < src.length; k++) indices.push(src[k]);
+    if (best) {
+      if (total > best.total + WEIGHT_EPSILON) continue;        // heavier than the best
+      if (total > best.total - WEIGHT_EPSILON) {
+        // Tie on weight (inside the house tolerance). Keep the SMALLEST tied
+        // total/penalty as the yardstick so a chain of near-ties can never
+        // drift a comparison by more than one epsilon.
+        best.total = Math.min(best.total, total);
+        if (penalty > best.penalty + WEIGHT_EPSILON) continue;  // blames cleaner buckets
+        if (penalty > best.penalty - WEIGHT_EPSILON) {          // tie on the buckets too
+          best.penalty = Math.min(best.penalty, penalty);
+          const indices = membersOf(counts);
+          if (isLaterCover(indices, best.indices)) best.indices = indices; // later dates win
+          continue;
+        }
+        best = { indices: membersOf(counts), total: best.total, penalty };
+        continue;
+      }
     }
-    indices.sort((a, b) => b - a); // descending = latest first
-    if (!best || total < best.total - WEIGHT_EPSILON) {
-      best = { indices, total };
-    } else if (isLaterCover(indices, best.indices)) {
-      // Tie on weight (inside the house tolerance): later dates win. Keep the
-      // SMALLEST tied total as the yardstick so a chain of near-ties can never
-      // drift the comparison by more than one epsilon.
-      best = { indices, total: Math.min(total, best.total) };
-    } else {
-      best.total = Math.min(best.total, total);
-    }
+    best = { indices: membersOf(counts), total, penalty };      // first cover, or strictly lighter
   }
   if (!best) return null; // unreachable: the whole holding always covers
   return {
@@ -282,6 +398,14 @@ export interface CensusProfile {
 
 export interface CensusSlot {
   slot_date: string;
+  // schedule_slots.derived_day_type (2026-07-29, bucket fairness): the input
+  // to the engine's dayTypeBucketOn, which is what makes a per-bucket target
+  // computable. OPTIONAL, and the census is all-or-nothing about it — see
+  // `bucketTargetFor` below: one call slot without a day type disables the
+  // bucket preference for the whole census rather than silently deflating the
+  // bucket totals that slot belongs to. Every live grid payload carries it
+  // (all three narrow-retry rungs select it).
+  derived_day_type?: string | null;
   // call_burden_weight / parent_call_code (2026-07-22, call splits): optional
   // patch35 columns — absent (pre-patch payloads, unsplit schedules) means
   // weight 1 / parent = own code via the callBurden.ts defaults.
@@ -319,6 +443,15 @@ export interface CallObligationCensus {
   poolFteFor: (providerId: string) => number;
   totalExpectedFor: (providerId: string) => number;  // fractional — callers round via roundedObligation
   actualCallsFor: (providerId: string) => number;
+  // PER-BUCKET target (2026-07-29): (this bucket's slot weight ÷ effective par)
+  // × POOL fte — the same fteWeightedTarget as everything else, one rung down
+  // from totalExpectedFor. Keyed by `overParBucketKey(dayTypeBucketOn(...),
+  // parent code)`. NULL when the slot census could not bucket every call slot
+  // (a slot with no derived_day_type): partial bucket totals would understate
+  // targets and invent over-target buckets, so the over-par selection drops
+  // the bucket preference entirely instead. Exposed so that fallback is
+  // observable rather than silent.
+  bucketTargetFor: ((providerId: string, bucketKey: string) => number) | null;
   // FRACTIONAL overage: held call weight − rounded obligation, 0 when within
   // the house tolerance. This — NOT the flagged assignments' weight — is how
   // far over the provider actually is; the flagged cover may exceed it when no
@@ -354,20 +487,45 @@ export function computeCallObligationCensus(input: CallObligationCensusInput): C
   // a split call (0.5 + 0.5, or 3 × 0.3333) totals exactly ONE call across
   // obligation, actuals and the OVER selection. Records carry weight + the
   // parent grouping code for the modal's parent-code columns.
+  //
+  // PER-BUCKET SLOT WEIGHTS (2026-07-29) ride the same single pass: the same
+  // slot that adds its weight to the block total adds it to its (bucket ×
+  // parent code) total, so the two can never be computed off different slot
+  // sets. The bucket is the ENGINE's — dayTypeBucketOn(derived_day_type,
+  // slot_date), which charges a holiday-dated call to the day of the week it
+  // lands on — and the code is folded through parentCallCodeOf, so a split
+  // segment counts under the call it is a piece of. A call slot with no
+  // derived_day_type makes the whole map untrustworthy (its weight would be
+  // missing from a bucket whose target is then too small, inventing an
+  // over-target bucket), so it turns the bucket preference OFF for the census
+  // rather than half-on.
   let totalCallSlots = 0;
   const callRecords: OverParCall[] = [];
   const actualByPid = new Map<string, number>();
+  const bucketSlotWeight = new Map<string, number>();
+  let everySlotBucketed = true;
   for (const slot of input.slots) {
     if (slot.shift_types?.category !== 'call') continue;
     const weight = callBurdenWeight(slot.shift_types);
     totalCallSlots += weight;
+    const parentCode = parentCallCodeOf(slot.shift_types.code, slot.shift_types);
+    const dayType = slot.derived_day_type;
+    let bucket: string | undefined;
+    if (typeof dayType === 'string' && dayType.length > 0) {
+      bucket = dayTypeBucketOn(dayType, slot.slot_date);
+      const key = overParBucketKey(bucket, parentCode);
+      bucketSlotWeight.set(key, (bucketSlotWeight.get(key) || 0) + weight);
+    } else {
+      everySlotBucketed = false;
+    }
     for (const a of slot.assignments || []) {
       if (!a.provider_id) continue;
       callRecords.push({
         id: a.id, provider_id: a.provider_id,
         slot_date: slot.slot_date, shift_type_code: slot.shift_types.code,
         weight,
-        parent_code: parentCallCodeOf(slot.shift_types.code, slot.shift_types),
+        parent_code: parentCode,
+        bucket,
       });
       actualByPid.set(a.provider_id, (actualByPid.get(a.provider_id) || 0) + weight);
     }
@@ -380,6 +538,13 @@ export function computeCallObligationCensus(input: CallObligationCensusInput): C
   const poolFteFor = (pid: string) => (poolPids.has(pid) ? fteByPid.get(pid)! : 0);
   const totalExpectedFor = (pid: string) => fteWeightedTarget(totalCallSlots, effectivePar, poolFteFor(pid));
   const actualCallsFor = (pid: string) => actualByPid.get(pid) || 0;
+  // Same formula as totalExpectedFor, one rung down: this bucket's slots
+  // instead of all of them. Null (→ no bucket preference) when any call slot
+  // could not be bucketed, or when there are no call slots to bucket.
+  const bucketTargetFor = everySlotBucketed && bucketSlotWeight.size > 0
+    ? (pid: string, key: string) =>
+      fteWeightedTarget(bucketSlotWeight.get(key) || 0, effectivePar, poolFteFor(pid))
+    : null;
   return {
     poolFte,
     effectivePar,
@@ -389,8 +554,10 @@ export function computeCallObligationCensus(input: CallObligationCensusInput): C
     poolFteFor,
     totalExpectedFor,
     actualCallsFor,
+    bucketTargetFor,
     overageFor: pid =>
       callOverageWeight(actualCallsFor(pid), roundedObligation(totalExpectedFor(pid))),
-    overParAssignmentIds: selectOverParAssignmentIds(callRecords, totalExpectedFor),
+    overParAssignmentIds: selectOverParAssignmentIds(
+      callRecords, totalExpectedFor, bucketTargetFor ?? undefined),
   };
 }

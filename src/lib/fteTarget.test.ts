@@ -2,9 +2,10 @@ import { describe, it, expect } from 'vitest';
 import {
   fteWeightedTarget, roundedObligation, extraCalls, selectOverParAssignmentIds,
   selectOverParCover, callOverageWeight, MAX_COVER_COMBINATIONS,
-  computeCallObligationCensus,
+  computeCallObligationCensus, overParBucketKey,
   type CensusProfile, type CensusSlot, type OverParCall,
 } from './fteTarget';
+import { dayTypeBucketOn } from './rulesEngine/shared';
 
 describe('fteWeightedTarget', () => {
   it('is (bucketTotal / parLevel) × fte', () => {
@@ -65,7 +66,12 @@ describe('extraCalls — actual minus ROUNDED obligation, floored at 0', () => {
   });
 });
 
-describe('selectOverParAssignmentIds — only the LAST N calls carry the OVER treatment', () => {
+// WITHOUT BUCKET DATA (the shape every caller had before 2026-07-29, and the
+// shape the census degrades to when a call slot carries no derived_day_type):
+// the selection is minimal-weight-then-later-dates, which with uniform weights
+// is the last N. The bucket-fairness rule below RE-RANKS these same covers
+// when bucket targets are available — see the 'bucket fairness' describe.
+describe('selectOverParAssignmentIds — with NO bucket data, the LAST N calls carry the OVER treatment', () => {
   const call = (id: string, pid: string, date: string, code: string) =>
     ({ id, provider_id: pid, slot_date: date, shift_type_code: code });
 
@@ -117,12 +123,17 @@ describe('selectOverParAssignmentIds — only the LAST N calls carry the OVER tr
     expect(selectOverParAssignmentIds(calls, () => 1.2)).toEqual(new Set(['late']));
   });
 
-  // THE LOAD-BEARING PROPERTY. Minimal-weight cover (2026-07-29) must reproduce
-  // the pre-split rule exactly when nothing is split: all weights tie at 1, so
-  // the minimum-weight cover has exactly N members and the later-dates
-  // tie-break takes the last N. Pinned explicitly, for several N, so any future
-  // change to the search that breaks it fails here first.
-  it('ALL WEIGHT 1: exactly the last N = actual − obligation, for every N', () => {
+  // RE-SCOPED 2026-07-29 (bucket fairness). This used to be pinned as THE
+  // load-bearing property, unconditionally: "with every weight 1 this selects
+  // exactly the last N — the pre-split behavior, byte for byte". That
+  // guarantee is RETIRED. Bucket fairness now outranks recency, so with bucket
+  // targets available an all-weight-1 provider can have earlier calls flagged
+  // (see 'ALL WEIGHT 1 + buckets' below — the case Gabriel reported). What
+  // survives, and is what this test now pins, is the DEGRADED path: no bucket
+  // data (no `bucketTargetFor`, or calls carrying no `bucket`) → minimal
+  // weight + later dates → the last N, for every N. Assertions unchanged; only
+  // the claim they stand for is narrower.
+  it('ALL WEIGHT 1, no buckets: exactly the last N = actual − obligation, for every N', () => {
     const dates = Array.from({ length: 12 }, (_, i) =>
       `2026-03-${String(1 + i).padStart(2, '0')}`);
     const calls = dates.map((d, i) => call(`w${i}`, 'p1', d, 'C1'));
@@ -312,6 +323,426 @@ describe('selectOverParAssignmentIds — the flagged set is the MINIMAL cover of
         wcall(`t${i}`, `2026-03-${String(1 + i).padStart(2, '0')}`, 'C1D8', 0.3333)),
     ];
     expect(selectOverParCover(calls, 40).method).toBe('minimal-weight');
+  });
+});
+
+// ── Bucket fairness (Gabriel 2026-07-29, second report the same day) ─────────
+// "she is listed as over on C1 weekday calls, she is supposed to have 3 weekday
+// calls, why is it showing as over?" Among covers that TIE on weight, the one
+// drawing the least weight out of buckets the provider is at-or-under target
+// in wins — ranked ABOVE the later-dates tie-break and BELOW minimal weight.
+describe('selectOverParCover — bucket fairness re-ranks equal-weight covers', () => {
+  // A call that knows its fairness bucket. `bucket` is always what
+  // dayTypeBucketOn would return for the slot (weekday/friday/saturday/sunday).
+  const bcall = (
+    id: string, date: string, code: string, bucket: string, weight?: number,
+  ): OverParCall =>
+    ({ id, provider_id: 'p1', slot_date: date, shift_type_code: code, bucket, weight });
+  /** Targets stated per bucket key, defaulting to 0 (= "over on anything"). */
+  const targets = (t: Record<string, number>) => (key: string) => t[key] ?? 0;
+
+  it('OVER IN ONE BUCKET ONLY: the flag lands there, even though the on-target bucket holds the LATER calls', () => {
+    // 5 whole calls against obligation 4 → 1.0 over. Weekday C1 target 3.0 and
+    // she holds exactly 3; Saturday C1 target 1.0 and she holds 2. Every
+    // one-call cover ties on weight, so bucket fairness decides — and it must
+    // pick a Saturday even though all three weekday calls are chronologically
+    // later than both Saturdays. (Under the old rule this flagged w3.)
+    const calls = [
+      bcall('sat1', '2026-03-07', 'C1', 'saturday'),
+      bcall('sat2', '2026-03-14', 'C1', 'saturday'),
+      bcall('w1', '2026-03-16', 'C1', 'weekday'),
+      bcall('w2', '2026-03-17', 'C1', 'weekday'),
+      bcall('w3', '2026-03-18', 'C1', 'weekday'),
+    ];
+    const t = targets({ 'weekday|C1': 3, 'saturday|C1': 1 });
+    const cover = selectOverParCover(calls, 4, t);
+    expect(cover.ids).toEqual(['sat2']);       // the LATER of the two over-bucket calls
+    expect(cover.method).toBe('minimal-weight');
+    // Same holdings with no bucket data → the old answer, the last call.
+    expect(selectOverParCover(calls, 4).ids).toEqual(['w3']);
+  });
+
+  it('RANK: bucket fairness outranks the later-dates tie-break, but NOT minimal weight', () => {
+    // Over by 0.5. The only 0.5 he holds sits in a bucket he is UNDER in
+    // (0.5 held against a 0.75 target); every over-bucket call is a whole 1.0.
+    // Minimal weight still wins: flagging the 0.5 is the only cover that lands
+    // the remainder exactly on the obligation. Bucket fairness never gets to
+    // overrule that — it only reorders covers of EQUAL weight.
+    const calls: OverParCall[] = [
+      bcall('sun-c1', '2026-03-08', 'C1', 'sunday'),          // 1.0, over bucket
+      bcall('sun-c2', '2026-03-15', 'C2', 'sunday'),          // 1.0, over bucket
+      // The half folds to saturday|C1 through parent_code — WITHOUT that fold
+      // it would key on its segment code, find no target, and read as an
+      // over-target bucket, quietly inverting what this test is about.
+      { id: 'sat-half', provider_id: 'p1', slot_date: '2026-03-21', shift_type_code: 'C1N12', bucket: 'saturday', parent_code: 'C1', weight: 0.5 },
+    ];
+    const t = targets({ 'sunday|C1': 0.75, 'sunday|C2': 0.75, 'saturday|C1': 0.75 });
+    const cover = selectOverParCover(calls, 2, t);
+    expect(cover.ids).toEqual(['sat-half']);
+    expect(cover.coveredWeight).toBeCloseTo(0.5, 9);
+  });
+
+  it('RANK: two DIFFERENT covers of the same weight — the one blaming the over bucket wins, later dates or not', () => {
+    // Over by 1.0, and two covers weigh exactly 1.0: the single weekday call
+    // (bucket target 3, she holds 1 → she is UNDER there), or both Saturday
+    // halves (saturday|C1 target 0.5, she holds 1.0 → OVER). The weekday call
+    // is the LATEST assignment, so the date tie-break alone picks it; bucket
+    // fairness must overrule that and flag the two halves.
+    // This is the pair-of-count-vectors case: the two covers differ in how many
+    // members they take from each weight class, so the ORDERING inside a class
+    // cannot decide it — only the at-or-under weight each cover spends can.
+    const calls: OverParCall[] = [
+      { id: 'h1', provider_id: 'p1', slot_date: '2026-03-07', shift_type_code: 'C1D12', bucket: 'saturday', parent_code: 'C1', weight: 0.5 },
+      { id: 'h2', provider_id: 'p1', slot_date: '2026-03-14', shift_type_code: 'C1N12', bucket: 'saturday', parent_code: 'C1', weight: 0.5 },
+      { id: 'wk', provider_id: 'p1', slot_date: '2026-03-25', shift_type_code: 'C1', bucket: 'weekday', parent_code: 'C1' },
+    ];
+    const t = targets({ 'weekday|C1': 3, 'saturday|C1': 0.5 });
+    const cover = selectOverParCover(calls, 1, t);
+    expect(new Set(cover.ids)).toEqual(new Set(['h1', 'h2']));
+    expect(cover.coveredWeight).toBeCloseTo(1, 9);
+    // Without targets the later single call wins — the pre-bucket answer.
+    expect(selectOverParCover(calls, 1).ids).toEqual(['wk']);
+  });
+
+  it('DEGRADES: every bucket at-or-under target → the weight-then-date rule, unchanged', () => {
+    // Targets so generous that nothing is over: the preference is a constant
+    // and the selection is byte-identical to the no-bucket-data one.
+    const calls = [
+      bcall('a', '2026-03-01', 'C1', 'weekday'),
+      bcall('b', '2026-03-08', 'C1', 'saturday'),
+      bcall('c', '2026-03-15', 'C1', 'sunday'),
+    ];
+    const cover = selectOverParCover(calls, 2, () => 99);
+    expect(cover.ids).toEqual(['c']); // latest, exactly as with no targets
+    expect(cover.ids).toEqual(selectOverParCover(calls, 2).ids);
+  });
+
+  it('DEGRADES: calls carrying no bucket are never preferred, and never crash the search', () => {
+    // A mixed payload (some calls bucketed, some not). The unbucketed ones
+    // count as "not over" — unknown is not evidence — so the bucketed
+    // over-target call is flagged instead of the later unbucketed one.
+    const calls = [
+      bcall('sat', '2026-03-07', 'C1', 'saturday'),
+      { id: 'nob', provider_id: 'p1', slot_date: '2026-03-20', shift_type_code: 'C1' },
+      bcall('wk', '2026-03-25', 'C1', 'weekday'),
+    ];
+    const t = targets({ 'weekday|C1': 3, 'saturday|C1': 0.5 });
+    expect(selectOverParCover(calls, 2, t).ids).toEqual(['sat']);
+  });
+
+  it('SPLIT SEGMENTS fold into their PARENT code bucket (parent_code, never the code name)', () => {
+    // He holds BOTH halves of one Saturday C1 (0.5 + 0.5) and one Sunday C1.
+    // Folded to parents: saturday|C1 holds exactly its 1.0 target — ON target —
+    // while sunday|C1 holds 1.0 against 0.5 — over. Over by 1.0, and the two
+    // covers weighing 1.0 are {the Sunday call} and {both halves}. Fairness
+    // picks the Sunday one even though BOTH halves are chronologically later.
+    // Read on the SEGMENT codes instead, saturday|C1D12 and saturday|C1N12
+    // would each hold 0.5 against a target of nothing, both covers would look
+    // equally guilty, and the later halves would take the flag — which is the
+    // regression this pins.
+    const calls: OverParCall[] = [
+      { id: 'sun', provider_id: 'p1', slot_date: '2026-03-08', shift_type_code: 'C1', bucket: 'sunday', parent_code: 'C1' },
+      { id: 'h1', provider_id: 'p1', slot_date: '2026-03-14', shift_type_code: 'C1D12', bucket: 'saturday', parent_code: 'C1', weight: 0.5 },
+      { id: 'h2', provider_id: 'p1', slot_date: '2026-03-21', shift_type_code: 'C1N12', bucket: 'saturday', parent_code: 'C1', weight: 0.5 },
+    ];
+    const t = targets({ 'saturday|C1': 1, 'sunday|C1': 0.5 });
+    const cover = selectOverParCover(calls, 1, t);
+    expect(cover.ids).toEqual(['sun']);
+    expect(overParBucketKey('saturday', 'C1')).toBe('saturday|C1');
+  });
+
+  it('ALL WEIGHT 1 + buckets: the retired last-N guarantee — recency loses to fairness', () => {
+    // The property the doc comment used to promise unconditionally ("with every
+    // weight 1 this selects exactly the last N, byte for byte") is RETIRED as
+    // of 2026-07-29. Four whole calls, obligation 2 → 2 over. The last two
+    // chronologically are weekday C1s she is exactly on target for; the two
+    // weekend calls she is over on come first. Bucket fairness flags the
+    // WEEKEND pair; the old rule flagged the weekday pair.
+    const calls = [
+      bcall('sat', '2026-03-07', 'C1', 'saturday'),
+      bcall('sun', '2026-03-08', 'C1', 'sunday'),
+      bcall('wk1', '2026-03-16', 'C1', 'weekday'),
+      bcall('wk2', '2026-03-17', 'C1', 'weekday'),
+    ];
+    const t = targets({ 'weekday|C1': 2, 'saturday|C1': 0.5, 'sunday|C1': 0.5 });
+    expect(new Set(selectOverParCover(calls, 2, t).ids)).toEqual(new Set(['sat', 'sun']));
+    expect(new Set(selectOverParCover(calls, 2).ids)).toEqual(new Set(['wk1', 'wk2'])); // the retired answer
+  });
+
+  it('INVARIANT: the preference never changes HOW MUCH weight is flagged, only which calls carry it', () => {
+    // Rule 1 (minimal total weight) is untouched, so `coveredWeight` — and
+    // therefore the Over By / extras TOTALS — is identical with and without
+    // bucket targets, for every holding. What moves is the attribution: which
+    // cells go red, and which (bucket, code) column the extras land in. Swept
+    // over deterministic pseudo-random holdings so the claim is not pinned to
+    // one lucky fixture.
+    const BUCKETS = ['weekday', 'friday', 'saturday', 'sunday'];
+    const WEIGHTS = [1, 1, 1, 0.5, 0.3333];
+    // minstd (Lehmer): stays inside 2^53 at every step, so the stream is a real
+    // spread rather than float noise — a bigger multiplier silently degenerates
+    // here and would leave this sweep testing one repeated holding.
+    let seed = 20260729;
+    const rnd = (n: number) => {
+      seed = (seed * 48271) % 2147483647;
+      return seed % n;
+    };
+    let overTrials = 0;
+    let reordered = 0;
+    for (let trial = 0; trial < 400; trial++) {
+      const calls: OverParCall[] = Array.from({ length: 4 + rnd(9) }, (_, i) => ({
+        id: `c${i}`, provider_id: 'p1',
+        slot_date: `2026-0${1 + rnd(9)}-${String(1 + rnd(28)).padStart(2, '0')}`,
+        shift_type_code: `C${1 + rnd(3)}`,
+        bucket: BUCKETS[rnd(BUCKETS.length)],
+        weight: WEIGHTS[rnd(WEIGHTS.length)],
+      }));
+      const t = () => 0.75 * (1 + rnd(3)); // arbitrary per-bucket targets
+      const obligation = rnd(6);
+      const withBuckets = selectOverParCover(calls, obligation, t);
+      const without = selectOverParCover(calls, obligation);
+      expect(withBuckets.coveredWeight).toBeCloseTo(without.coveredWeight, 6);
+      expect(withBuckets.method).toBe(without.method);
+      if (withBuckets.ids.length > 0) overTrials++;
+      if (withBuckets.ids.join() !== without.ids.join()) reordered++;
+    }
+    // The sweep must actually exercise over-par holdings, and the preference
+    // must actually move some of them — otherwise this passes on vacuum.
+    expect(overTrials).toBeGreaterThan(100);
+    expect(reordered).toBeGreaterThan(10);
+  });
+
+  it('HORAN with buckets: unchanged — the 0.5 Saturday split is still the only flag', () => {
+    // Same live holdings as the minimal-cover describe, now with his real
+    // per-bucket targets at 0.5 FTE on the 176-weight block (weekday 44/11×0.5
+    // = 2.0, every Fri/Sat/Sun bucket 11/11×0.5 = 0.5). Bucket fairness cannot
+    // move this one: minimal weight already picks the only 0.5 he holds.
+    const horanBuckets: OverParCall[] = [
+      bcall('h-0905', '2026-09-05', 'C1', 'saturday'),
+      bcall('h-0906', '2026-09-06', 'C2', 'sunday'),
+      bcall('h-0909', '2026-09-09', 'C2', 'weekday'),
+      bcall('h-0919', '2026-09-19', 'C3', 'saturday'),
+      bcall('h-0920', '2026-09-20', 'C3', 'sunday'),
+      bcall('h-0923', '2026-09-23', 'C2', 'weekday'),
+      { id: 'h-1003', provider_id: 'p1', slot_date: '2026-10-03', shift_type_code: 'C1D12', bucket: 'saturday', parent_code: 'C1', weight: 0.5 },
+      bcall('h-1014', '2026-10-14', 'C1', 'weekday'),
+      bcall('h-1019', '2026-10-19', 'C1', 'weekday'),
+    ];
+    const t = (key: string) => {
+      const slots: Record<string, number> = {
+        'weekday|C1': 44, 'weekday|C2': 44,
+        'friday|C1': 11, 'friday|C2': 11,
+        'saturday|C1': 11, 'saturday|C2': 11, 'saturday|C3': 11,
+        'sunday|C1': 11, 'sunday|C2': 11, 'sunday|C3': 11,
+      };
+      return fteWeightedTarget(slots[key] ?? 0, 11, 0.5);
+    };
+    expect(t('weekday|C1')).toBe(2);
+    expect(t('saturday|C1')).toBe(0.5);
+    expect(selectOverParCover(horanBuckets, 8, t).ids).toEqual(['h-1003']);
+  });
+});
+
+// ── HAVILDAR, live block (Gabriel 2026-07-29) ────────────────────────────────
+// 0.75 FTE, site par 11, an 11-week block standing 176 weighted call slots:
+// 44 weekday dates × C1,C2 + 11 Fri × C1,C2 + 11 Sat × C1,C2,C3 + 11 Sun ×
+// C1,C2,C3. Obligation 176 ÷ 11 × 0.75 = 12.0 → 12; she holds 13.5.
+// Her per-bucket position (this is the table the fix was built from, asserted
+// below rather than trusted):
+//   weekday C1  3.00 target / 3   held   exactly on
+//   weekday C2  3.00 target / 3   held   exactly on
+//   friday C1   0.75 / 1   ·  friday C2   0.75 / 1     +0.25 each
+//   saturday C2 0.75 / 1   ·  saturday C3 0.75 / 1     +0.25 each
+//   sunday C1   0.75 / 1   ·  sunday C2   0.75 / 1     +0.25 each
+//   sunday C3   0.75 / 1                                +0.25
+//   saturday C1 0.75 / 0.5 (a 12h half)                 −0.25  (UNDER)
+// Seven buckets +0.25, one −0.25 → exactly her 1.5 overage, ALL of it in the
+// Friday/weekend buckets where a 0.75 target can only be met by a whole call.
+describe('computeCallObligationCensus — HAVILDAR: the flags follow the buckets she is over in', () => {
+  const iso = (ms: number) => new Date(ms).toISOString().slice(0, 10);
+  const dow = (d: string) => new Date(`${d}T00:00:00Z`).getUTCDay();
+  // 11 weeks, Monday 2026-08-24 → Sunday 2026-11-08: 44 Mon–Thu, 11 Fri/Sat/Sun.
+  const BLOCK = Array.from({ length: 77 }, (_, i) => iso(Date.UTC(2026, 7, 24) + i * 86400000));
+  // Two MONDAY holidays inside the block (the live ones). Their stored day type
+  // says nothing about the day of week — dayTypeBucketOn must still charge them
+  // to the weekday bucket, which is what keeps weekday|C1 at 44 slots and her
+  // weekday target at a whole 3.00.
+  const HOLIDAYS = new Set(['2026-09-07', '2026-10-12']);
+  const dayTypeOf = (d: string) => {
+    if (HOLIDAYS.has(d)) return 'federal_holiday';
+    const n = dow(d);
+    return n === 0 ? 'sunday' : n === 5 ? 'friday' : n === 6 ? 'saturday' : 'weekday';
+  };
+  const SPLIT_SAT = '2026-10-03'; // the Saturday whose C1 is stood as two 12h halves
+
+  // Her 14 assignments — 13.5 weighted.
+  const HELD: Array<[string, string]> = [
+    ['2026-09-01', 'C1'], ['2026-09-22', 'C1'], ['2026-10-06', 'C1'], // weekday C1 ×3 — ON target
+    ['2026-09-02', 'C2'], ['2026-09-16', 'C2'], ['2026-09-29', 'C2'], // weekday C2 ×3 — ON target
+    ['2026-08-28', 'C1'],                                             // friday C1
+    ['2026-09-11', 'C2'],                                             // friday C2
+    ['2026-09-05', 'C2'], ['2026-09-19', 'C3'],                       // saturday C2, C3
+    ['2026-09-06', 'C1'], ['2026-09-13', 'C2'],                       // sunday C1, C2
+    ['2026-09-27', 'C3'],                                             // sunday C3 — her LATEST over-bucket 1.0
+    [SPLIT_SAT, 'C1N12'],                                             // saturday C1 half (0.5) — UNDER there
+  ];
+  const heldKey = new Set(HELD.map(([d, c]) => `${d}|${c}`));
+  const havId = (d: string, c: string) => `hav-${d}-${c}`;
+
+  const slots: CensusSlot[] = [];
+  for (const date of BLOCK) {
+    const dayType = dayTypeOf(date);
+    const bucket = dayTypeBucketOn(dayType, date);
+    const codes = bucket === 'saturday' || bucket === 'sunday' ? ['C1', 'C2', 'C3'] : ['C1', 'C2'];
+    for (const code of codes) {
+      // The one split call in the block: Sat 10/03's C1 stands as a 12h day
+      // half + a 12h night half, so saturday|C1 still totals 11 across 11
+      // Saturdays and the block total still comes to 176.
+      const segments = date === SPLIT_SAT && code === 'C1'
+        ? [{ code: 'C1D12', weight: 0.5 }, { code: 'C1N12', weight: 0.5 }]
+        : [{ code, weight: 1 }];
+      for (const seg of segments) {
+        const held = heldKey.has(`${date}|${seg.code}`);
+        slots.push({
+          slot_date: date,
+          derived_day_type: dayType,
+          shift_types: {
+            category: 'call', code: seg.code,
+            call_burden_weight: seg.weight,
+            parent_call_code: seg.weight === 1 ? null : 'C1',
+          },
+          assignments: held ? [{ id: havId(date, seg.code), provider_id: 'hav' }] : [],
+        });
+      }
+    }
+  }
+  const profiles: CensusProfile[] = [
+    { provider_id: 'hav', home_site_id: 'site1', call_taker: true, partial_call_taker: false, fte_value: 0.75 },
+    { provider_id: 'other', home_site_id: 'site1', call_taker: true, partial_call_taker: false, fte_value: 1 },
+  ];
+  const census = () => computeCallObligationCensus({
+    storedParLevel: 11, siteId: 'site1', includedProviderIds: null, profiles, slots,
+  });
+
+  it('the block and her holdings are the live ones: 176 weighted slots, obligation 12, holds 13.5', () => {
+    const c = census();
+    expect(c.totalCallSlots).toBeCloseTo(176, 9);
+    expect(c.totalExpectedFor('hav')).toBeCloseTo(12, 9);
+    expect(roundedObligation(c.totalExpectedFor('hav'))).toBe(12);
+    expect(c.actualCallsFor('hav')).toBeCloseTo(13.5, 9);
+    expect(c.overageFor('hav')).toBeCloseTo(1.5, 9);
+    expect(HELD.length).toBe(14);
+  });
+
+  it('her per-bucket targets are the ones the fix was built from — weekday whole, weekend 0.75', () => {
+    const c = census();
+    const target = c.bucketTargetFor!;
+    // Whole-number weekday targets: 44 weekday slots (the two Monday holidays
+    // INCLUDED, via dayTypeBucketOn) ÷ 11 × 0.75 = 3.00 exactly.
+    expect(target('hav', 'weekday|C1')).toBeCloseTo(3, 9);
+    expect(target('hav', 'weekday|C2')).toBeCloseTo(3, 9);
+    // Fri/Sat/Sun: 11 slots ÷ 11 × 0.75 = 0.75 — unreachable with whole calls.
+    for (const key of ['friday|C1', 'friday|C2', 'saturday|C1', 'saturday|C2',
+      'saturday|C3', 'sunday|C1', 'sunday|C2', 'sunday|C3']) {
+      expect(target('hav', key)).toBeCloseTo(0.75, 9);
+    }
+    // No holiday bucket exists at all — a Monday holiday IS a weekday call.
+    expect(target('hav', 'holiday|C1')).toBe(0);
+    // She is over in seven buckets by 0.25 and UNDER saturday|C1 by 0.25.
+    expect(target('hav', 'saturday|C1') - 0.5).toBeCloseTo(0.25, 9);
+  });
+
+  it('FLAGS: the Saturday 12h half and her latest weekend whole call — no weekday call is red', () => {
+    const c = census();
+    expect(c.overParAssignmentIds).toEqual(new Set([
+      havId(SPLIT_SAT, 'C1N12'), // the forced 0.5 — the only one that exists
+      havId('2026-09-27', 'C3'), // her LATEST call in a bucket she is over in
+    ]));
+    // The call the weight-only rule blamed: her chronologically last whole
+    // call, a weekday C1 she is exactly on target for. This is the report.
+    expect(c.overParAssignmentIds.has(havId('2026-10-06', 'C1'))).toBe(false);
+    for (const [d, code] of HELD) {
+      if (dayTypeBucketOn(dayTypeOf(d), d) !== 'weekday') continue;
+      expect(c.overParAssignmentIds.has(havId(d, code))).toBe(false);
+    }
+    // And the remainder lands EXACTLY on her 12.0 obligation.
+    const flagged = [...c.overParAssignmentIds];
+    const flaggedWeight = c.callRecords
+      .filter(r => flagged.includes(r.id))
+      .reduce((s, r) => s + (r.weight ?? 1), 0);
+    expect(c.actualCallsFor('hav') - flaggedWeight).toBeCloseTo(12, 9);
+  });
+});
+
+describe('computeCallObligationCensus — bucket data is all-or-nothing', () => {
+  const profile = (pid: string, fte = 1): CensusProfile =>
+    ({ provider_id: pid, home_site_id: 'site1', call_taker: true, partial_call_taker: false, fte_value: fte });
+
+  it('one call slot with no derived_day_type turns the bucket preference OFF for the census', () => {
+    // Partial bucket totals would understate a bucket's target and invent an
+    // over-target bucket out of missing data, so the census reports
+    // bucketTargetFor: null and the selection degrades to weight-then-date.
+    const bucketed: CensusSlot = {
+      slot_date: '2026-03-07', derived_day_type: 'saturday',
+      shift_types: { category: 'call', code: 'C1' }, assignments: [],
+    };
+    const bare: CensusSlot = {
+      slot_date: '2026-03-08', shift_types: { category: 'call', code: 'C1' }, assignments: [],
+    };
+    expect(computeCallObligationCensus({
+      storedParLevel: 11, siteId: 'site1', profiles: [profile('p1')], slots: [bucketed],
+    }).bucketTargetFor).not.toBeNull();
+    expect(computeCallObligationCensus({
+      storedParLevel: 11, siteId: 'site1', profiles: [profile('p1')], slots: [bucketed, bare],
+    }).bucketTargetFor).toBeNull();
+    // No call slots at all → nothing to bucket → null (the planner's roster-only
+    // census, which never touches the over-par selection).
+    expect(computeCallObligationCensus({
+      storedParLevel: 11, siteId: 'site1', profiles: [profile('p1')], slots: [],
+    }).bucketTargetFor).toBeNull();
+  });
+
+  it('FALLBACK: every bucket at-or-under target yet the total is over (rounding) — weight rule, no crash', () => {
+    // Day types are stated by the fixture, not derived from the calendar — the
+    // census reads derived_day_type, and only holiday types consult the date.
+    // par 20, FTE 1. weekday|C1 = 41 slots → target 2.05, she holds 2.0 (UNDER);
+    // saturday|C1 = 7 wholes + 3 thirds = 7.9999 → target 0.39999, she holds one
+    // third 0.3333 (UNDER). Σ slots 48.9999 → expected 2.44999 → obligation 2,
+    // yet she holds 2.3333: the rounding-DOWN of the total is what puts her over
+    // while every bucket is clean. Nothing earns the bucket preference, so the
+    // minimal-weight rule alone answers: the 0.3333 third.
+    const slots: CensusSlot[] = [];
+    for (let i = 0; i < 41; i++) {
+      const date = `2026-04-${String(1 + (i % 30)).padStart(2, '0')}`;
+      slots.push({
+        slot_date: date, derived_day_type: 'weekday',
+        shift_types: { category: 'call', code: 'C1' },
+        assignments: i < 2 ? [{ id: `wk${i}`, provider_id: 'p1' }] : [],
+      });
+    }
+    for (let i = 0; i < 7; i++) {
+      slots.push({
+        slot_date: `2026-05-${String(1 + i).padStart(2, '0')}`, derived_day_type: 'saturday',
+        shift_types: { category: 'call', code: 'C1' }, assignments: [],
+      });
+    }
+    for (let i = 0; i < 3; i++) {
+      slots.push({
+        slot_date: `2026-05-${String(20 + i).padStart(2, '0')}`, derived_day_type: 'saturday',
+        shift_types: { category: 'call', code: `C1S${i}`, call_burden_weight: 0.3333, parent_call_code: 'C1' },
+        assignments: i === 0 ? [{ id: 'third', provider_id: 'p1' }] : [],
+      });
+    }
+    const c = computeCallObligationCensus({
+      storedParLevel: 20, siteId: 'site1', profiles: [profile('p1')], slots,
+    });
+    const target = c.bucketTargetFor!;
+    expect(target('p1', 'weekday|C1')).toBeCloseTo(2.05, 9);
+    expect(c.actualCallsFor('p1')).toBeCloseTo(2.3333, 9);
+    expect(roundedObligation(c.totalExpectedFor('p1'))).toBe(2);
+    // Both buckets at-or-under: 2.0 ≤ 2.05 and 0.3333 ≤ 0.39999.
+    expect(c.actualCallsFor('p1') - 0.3333).toBeLessThanOrEqual(target('p1', 'weekday|C1'));
+    expect(0.3333).toBeLessThanOrEqual(target('p1', 'saturday|C1'));
+    expect(c.overParAssignmentIds).toEqual(new Set(['third']));
   });
 });
 
