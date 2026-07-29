@@ -12,6 +12,7 @@ const holder = vi.hoisted(() => ({
   fill: {
     filledSlotIds: [] as string[],
     evictedSlotIds: [] as string[],
+    postCallClearedSlotIds: [] as string[],
     skips: [] as unknown[],
     patternWarnings: [] as string[],
   },
@@ -58,7 +59,9 @@ function fakeReq(body: Record<string, unknown>): NextRequest {
 
 beforeEach(() => {
   holder.sb = null;
-  holder.fill = { filledSlotIds: [], evictedSlotIds: [], skips: [], patternWarnings: [] };
+  holder.fill = {
+    filledSlotIds: [], evictedSlotIds: [], postCallClearedSlotIds: [], skips: [], patternWarnings: [],
+  };
   holder.cleanup = { clearedSlotIds: [], patternWarnings: [] };
 });
 
@@ -84,6 +87,10 @@ describe('POST /api/scheduling/schedule-assignments', () => {
     holder.fill = {
       filledSlotIds: ['slot-B'],
       evictedSlotIds: ['slot-C'],
+      // Post-call sweep (2026-07-29): a day shift vacated because this
+      // placement blocked the provider's next day. It must ride along in
+      // siblings or the grid keeps painting a name on a cleared cell.
+      postCallClearedSlotIds: ['slot-D'],
       skips: [{ date: '2026-01-06', code: 'D1', provider_id: 'p1', reason: 'pto' }],
       patternWarnings: ['w1'],
     };
@@ -91,6 +98,7 @@ describe('POST /api/scheduling/schedule-assignments', () => {
       joinedRow('slot-A', { validation_flags: [{ severity: 'warning' }] }),
       joinedRow('slot-B'),
       joinedRow('slot-C', { provider_id: null, assignment_status: 'open', providers: null }),
+      joinedRow('slot-D', { provider_id: null, assignment_status: 'open', providers: null }),
     ]);
 
     const res = await POST(fakeReq({ schedule_slot_id: 'slot-A', provider_id: 'p1' }));
@@ -102,18 +110,19 @@ describe('POST /api/scheduling/schedule-assignments', () => {
     expect(json.assignment.validation_summary).toEqual({ hard: 0, soft: 0, warning: 1 });
 
     // Every other affected cell rides along so the client can patch them.
-    expect(json.siblings.map((s: { schedule_slot_id: string }) => s.schedule_slot_id).sort()).toEqual(['slot-B', 'slot-C']);
+    expect(json.siblings.map((s: { schedule_slot_id: string }) => s.schedule_slot_id).sort()).toEqual(['slot-B', 'slot-C', 'slot-D']);
     expect(json.siblings.every((s: { validation_summary: unknown }) => s.validation_summary !== undefined)).toBe(true);
 
     // The re-select used the shared grid column shape over all affected slots.
     const reselect = callsFor(calls, 'assignments', 'select').find(c => c.args[0] === GRID_ASSIGNMENT_COLUMNS);
     expect(reselect).toBeDefined();
     const inCall = callsFor(calls, 'assignments', 'in').find(c => c.args[0] === 'schedule_slot_id');
-    expect((inCall?.args[1] as string[]).sort()).toEqual(['slot-A', 'slot-B', 'slot-C']);
+    expect((inCall?.args[1] as string[]).sort()).toEqual(['slot-A', 'slot-B', 'slot-C', 'slot-D']);
 
     // Task 10 fields stay backward compatible.
     expect(json.filledSlotIds).toEqual(['slot-B']);
     expect(json.evictedSlotIds).toEqual(['slot-C']);
+    expect(json.postCallClearedSlotIds).toEqual(['slot-D']);
     expect(json.skips).toEqual([{ date: '2026-01-06', code: 'D1', provider_id: 'p1', reason: 'pto' }]);
     expect(json.patternWarnings).toEqual(['w1']);
     expect(json.id).toBe('a-slot-A');

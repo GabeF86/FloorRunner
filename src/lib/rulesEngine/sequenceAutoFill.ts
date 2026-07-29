@@ -41,6 +41,12 @@ export interface SequenceAutoFillResult {
   // higher-precedence incoming fill — reported so an evict-then-decline
   // sequence is never silent.
   evictedSlotIds: string[];
+  // Slot ids vacated by the POST-CALL SWEEP (2026-07-29): day shifts the
+  // provider held on a day the pattern declares blocked by this placement.
+  // Separate from evictedSlotIds because the justification differs — eviction
+  // is precedence between derived fills, this is clinical invariant 1 — and
+  // callers repaint both.
+  postCallClearedSlotIds: string[];
   skips: SkippedDerived[];
   // Load problems, same convention as genContext warnings: call-pattern
   // issues (invalid doc / read error → classic fallback), pre-patch18 rank
@@ -382,7 +388,8 @@ export async function applySequenceAutoFill(
   } = {},
 ): Promise<SequenceAutoFillResult> {
   const result: SequenceAutoFillResult = {
-    filledSlotIds: [], evictedSlotIds: [], skips: [], patternWarnings: [],
+    filledSlotIds: [], evictedSlotIds: [], postCallClearedSlotIds: [],
+    skips: [], patternWarnings: [],
   };
   const skip = (date: string, code: string, reason: SkippedDerived['reason']) =>
     result.skips.push({ date, code, provider_id: providerId, reason });
@@ -402,13 +409,24 @@ export async function applySequenceAutoFill(
     pattern = loaded.doc;
     warn(loaded.warnings);
   }
-  const links = dayChainsFor(pattern, trigger.st.code!, trigger.derived_day_type)
-    .flatMap(c => c.links ?? []);
-  if (links.length === 0) return result;
+  const chains = dayChainsFor(pattern, trigger.st.code!, trigger.derived_day_type);
+  const links = chains.flatMap(c => c.links ?? []);
+  // `blocks` is the pattern's POST-CALL DAY OFF declaration — the same field
+  // solveKernel.applyDayChains turns into markBlocked during generation. The
+  // manual-edit path read only `links` until 2026-07-29, which is why a
+  // hand-placed 24h call left the provider's existing next-day day shift
+  // sitting on their mandated rest day (see the sweep below).
+  const blocks = chains.flatMap(c => c.blocks ?? []);
+  if (links.length === 0 && blocks.length === 0) return result;
 
-  // Window bounds: link offsets, the unlessCallWithinDays lookback, and the
-  // prior-day post-call-ownership/rest checks must all land inside the window.
-  const maxAbs = Math.max(...links.map(l => Math.abs(l.offset)));
+  // Window bounds: link offsets, BLOCK offsets, the unlessCallWithinDays
+  // lookback, and the prior-day post-call-ownership/rest checks must all land
+  // inside the window. Blocks belong here too — a swept day shift the window
+  // never loaded is a sweep that silently does nothing.
+  const maxAbs = Math.max(
+    ...links.map(l => Math.abs(l.offset)),
+    ...blocks.map(b => Math.abs(b.offset)),
+  );
   const maxUnless = Math.max(0, ...links.map(l => l.unlessCallWithinDays ?? 0));
   const windowStart = addDays(trigger.slot_date, -Math.max(maxAbs + 1, maxUnless));
   const windowEnd = addDays(trigger.slot_date, maxAbs);
@@ -597,6 +615,51 @@ export async function applySequenceAutoFill(
       }
     }
     result.filledSlotIds.push(chosen.id);
+  }
+
+  // ── Post-call sweep (clinical invariant 1, Gabriel 2026-07-29) ─────────────
+  // A dayChain `blocks` offset declares a POST-CALL DAY OFF. Generation has
+  // always honored it (solveKernel.applyDayChains → markBlocked); the
+  // manual-edit path never did, so hand-placing a rest-requiring call left any
+  // day shift the provider ALREADY held on that day exactly where it was. Two
+  // live violations had this shape (Havildar Tue C1 → Wed D7, Kalawadia Tue C1
+  // → Wed D5): the day shift predated the call by seconds and nothing swept it.
+  //
+  // REGULAR shifts only — a CALL on a blocked day is NEVER swept. That is a
+  // deliberate scheduling act (Paoli's Labor Day weekend is built on three of
+  // them and must survive an edit to any cell in it), and it already surfaces
+  // as a stored post-call violation for the scheduler to see and accept.
+  // Sweeping calls here would silently dismantle hand-built weekends, which is
+  // strictly worse than the flag it would replace.
+  //
+  // SOURCE-BLIND, unlike pre-fill eviction. Eviction reverts DERIVED rows the
+  // system placed itself, so it stays off manual ones (mayEvictPreFill). This
+  // enforces a clinical invariant instead, and no source_type exempts a
+  // provider from their earned rest. Every swept slot comes back in
+  // postCallClearedSlotIds and is repainted by the caller, so a manual row
+  // vanishing is visible in the UI rather than silent.
+  //
+  // Same schedule version only: another draft's rows are hypotheses, never
+  // ours to rewrite (invariant 3's draft isolation, mirrored from eviction).
+  const sweptIds = new Set<string>();
+  for (const block of blocks) {
+    // offset 0 would clear the trigger placement itself.
+    if (block.offset === 0) continue;
+    const blockedDate = addDays(trigger.slot_date, block.offset);
+    for (const a of windowAssignments) {
+      if (a.slot_date !== blockedDate) continue;
+      if (a.slot_id === trigger.id || sweptIds.has(a.id) || evictedIds.has(a.id)) continue;
+      if (a.schedule_version_id !== trigger.schedule_version_id) continue;
+      if (a.st?.category !== 'regular') continue;
+      // A fill this same invocation just made is this call's own sanctioned
+      // chain (a pattern with a link and a block on one date is contradictory,
+      // but the fill is the more specific instruction — don't undo it).
+      if (result.filledSlotIds.includes(a.slot_id)) continue;
+      if (await revertToOpen(sb, a.id)) {
+        sweptIds.add(a.id);
+        result.postCallClearedSlotIds.push(a.slot_id);
+      }
+    }
   }
 
   return result;

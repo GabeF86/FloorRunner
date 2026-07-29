@@ -1264,3 +1264,113 @@ describe('applySequenceAutoFill — call-split segments (patch35 doc)', () => {
     expect(result.filledSlotIds).toEqual(['slot-d1-tue']);
   });
 });
+
+// ── post-call sweep (clinical invariant 1, Gabriel 2026-07-29) ──────────────
+//
+// Placing a rest-requiring call by hand left the provider's EXISTING day shift
+// sitting on their mandated rest day: the module read the pattern's `links`
+// and ignored its `blocks`. Two live violations had exactly this shape
+// (Havildar Tue C1 → Wed D7, Kalawadia Tue C1 → Wed D5).
+//
+// SUN2 is the day after SAT — the saturday C1 chain in WEEKEND_V2 declares a
+// block and NO links, the case the old `links.length === 0` early return
+// skipped entirely.
+const SUN2 = '2026-03-08';
+
+const C1_ST = { category: 'call', call_rank: 0, requires_post_call_rule: true };
+const regular = (code: string) => ({ category: 'regular' as const, code });
+
+describe('applySequenceAutoFill — post-call sweep', () => {
+  it('weekday C1 vacates the day shift the provider already held the NEXT day', async () => {
+    const { sb, calls } = makeFakeSupabase({
+      tables: tables({
+        trigger: triggerSlot({ date: TUE, code: 'C1', stOpts: C1_ST }),
+        assignments: [winAssign({
+          id: 'a-d7', slotId: 'slot-d7-wed', date: WED, code: 'D7',
+          source: 'auto_generated', stOpts: regular('D7'),
+        })],
+      }),
+    });
+    const result = await applySequenceAutoFill(sb, 'trig', 'p1', WEEKEND_V2_PATTERN);
+
+    expect(result.postCallClearedSlotIds).toEqual(['slot-d7-wed']);
+    const cleared = updates(calls).filter(u => u.assignment_status === 'open');
+    expect(cleared).toHaveLength(1);
+    expect(cleared[0].provider_id).toBeNull();
+  });
+
+  it('a CALL on the blocked day is NEVER swept — hand-built weekends survive an edit', async () => {
+    // Paoli's Labor Day weekend is three of these on purpose (Gabriel
+    // 2026-07-29: "fill the labor day weekend ... as it was initially").
+    const { sb, calls } = makeFakeSupabase({
+      tables: tables({
+        trigger: triggerSlot({ date: TUE, code: 'C1', stOpts: C1_ST }),
+        assignments: [winAssign({
+          id: 'a-c2', slotId: 'slot-c2-wed', date: WED, code: 'C2',
+          stOpts: { category: 'call', call_rank: 1 },
+        })],
+      }),
+    });
+    const result = await applySequenceAutoFill(sb, 'trig', 'p1', WEEKEND_V2_PATTERN);
+
+    expect(result.postCallClearedSlotIds).toEqual([]);
+    expect(updates(calls).filter(u => u.assignment_status === 'open')).toHaveLength(0);
+  });
+
+  it('sweeps a MANUAL day shift too — no source_type exempts earned rest', async () => {
+    const { sb } = makeFakeSupabase({
+      tables: tables({
+        trigger: triggerSlot({ date: TUE, code: 'C1', stOpts: C1_ST }),
+        assignments: [winAssign({
+          id: 'a-d5', slotId: 'slot-d5-wed', date: WED, code: 'D5',
+          source: 'manual', stOpts: regular('D5'),
+        })],
+      }),
+    });
+    const result = await applySequenceAutoFill(sb, 'trig', 'p1', WEEKEND_V2_PATTERN);
+    expect(result.postCallClearedSlotIds).toEqual(['slot-d5-wed']);
+  });
+
+  it('saturday C1 sweeps even though that chain declares NO links (the old early return)', async () => {
+    const { sb } = makeFakeSupabase({
+      tables: tables({
+        trigger: triggerSlot({ date: SAT, code: 'C1', dayType: 'saturday', stOpts: C1_ST }),
+        assignments: [winAssign({
+          id: 'a-d4', slotId: 'slot-d4-sun', date: SUN2, code: 'D4',
+          source: 'auto_generated', stOpts: regular('D4'),
+        })],
+      }),
+    });
+    const result = await applySequenceAutoFill(sb, 'trig', 'p1', WEEKEND_V2_PATTERN);
+    expect(result.filledSlotIds).toEqual([]);          // no links on this chain
+    expect(result.postCallClearedSlotIds).toEqual(['slot-d4-sun']);
+  });
+
+  it('never touches another schedule version (draft isolation, invariant 3)', async () => {
+    const { sb } = makeFakeSupabase({
+      tables: tables({
+        trigger: triggerSlot({ date: TUE, code: 'C1', stOpts: C1_ST }),
+        assignments: [winAssign({
+          id: 'a-other', slotId: 'slot-other', date: WED, code: 'D6',
+          version: 'v9', status: 'published', site: 'siteB', stOpts: regular('D6'),
+        })],
+      }),
+    });
+    const result = await applySequenceAutoFill(sb, 'trig', 'p1', WEEKEND_V2_PATTERN);
+    expect(result.postCallClearedSlotIds).toEqual([]);
+  });
+
+  it('C2 declares no blocks — a next-day day shift is left alone (unchanged behavior)', async () => {
+    const { sb } = makeFakeSupabase({
+      tables: tables({
+        trigger: triggerSlot({ date: TUE, code: 'C2', stOpts: { category: 'call', call_rank: 1 } }),
+        slots: [slot({ id: 'slot-d1-wed', date: WED, code: 'D1', assignments: [openRow('o1')] })],
+        assignments: [winAssign({
+          id: 'a-d6', slotId: 'slot-d6-wed', date: WED, code: 'D6', stOpts: regular('D6'),
+        })],
+      }),
+    });
+    const result = await applySequenceAutoFill(sb, 'trig', 'p1', WEEKEND_V2_PATTERN);
+    expect(result.postCallClearedSlotIds).toEqual([]);
+  });
+});

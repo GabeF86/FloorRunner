@@ -122,6 +122,10 @@ export interface AssignOutcome {
   validation: { evaluated: boolean; hardCount: number; softCount: number; violations: unknown[] };
   filledSlotIds: string[];
   evictedSlotIds: string[];
+  // Day shifts vacated because this placement blocked the provider's next day
+  // (post-call sweep, invariant 1). Inside the version the snapshot captured,
+  // so the undo window still covers every row this write touched.
+  postCallClearedSlotIds: string[];
   skips: unknown[];
   patternWarnings: string[];
 }
@@ -175,6 +179,7 @@ export async function assignProviderToSlot(
     },
     filledSlotIds: fill.filledSlotIds,
     evictedSlotIds: fill.evictedSlotIds,
+    postCallClearedSlotIds: fill.postCallClearedSlotIds,
     skips: fill.skips,
     patternWarnings: fill.patternWarnings,
   };

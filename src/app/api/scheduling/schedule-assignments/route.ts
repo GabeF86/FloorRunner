@@ -154,7 +154,8 @@ export async function POST(req: NextRequest) {
   // introduced by this edit).
   const { assignment, siblings } = await selectAffectedRows(
     sb, body.schedule_slot_id,
-    [...fill.filledSlotIds, ...fill.evictedSlotIds, ...revalidatedSlotIds]);
+    [...fill.filledSlotIds, ...fill.evictedSlotIds, ...fill.postCallClearedSlotIds,
+     ...revalidatedSlotIds]);
   // Backward-compatible response: existing fields plus the auto-fill outcome
   // (skips use the SkippedDerived vocabulary — clinical invariant 4;
   // evictedSlotIds reports pre-fills reverted by a higher-precedence fill;
@@ -165,6 +166,9 @@ export async function POST(req: NextRequest) {
     validation: evalResult,
     filledSlotIds: fill.filledSlotIds,
     evictedSlotIds: fill.evictedSlotIds,
+    // Day shifts vacated by the post-call sweep — the client repaints these
+    // cells, so a row disappearing from the grid is always visible.
+    postCallClearedSlotIds: fill.postCallClearedSlotIds,
     skips: fill.skips,
     patternWarnings: fill.patternWarnings,
     assignment,
