@@ -1,8 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import {
   fteWeightedTarget, roundedObligation, extraCalls, selectOverParAssignmentIds,
+  selectOverParCover, callOverageWeight, MAX_COVER_COMBINATIONS,
   computeCallObligationCensus,
-  type CensusProfile, type CensusSlot,
+  type CensusProfile, type CensusSlot, type OverParCall,
 } from './fteTarget';
 
 describe('fteWeightedTarget', () => {
@@ -114,6 +115,216 @@ describe('selectOverParAssignmentIds — only the LAST N calls carry the OVER tr
       call('early', 'p1', '2026-01-02', 'C1'),
     ];
     expect(selectOverParAssignmentIds(calls, () => 1.2)).toEqual(new Set(['late']));
+  });
+
+  // THE LOAD-BEARING PROPERTY. Minimal-weight cover (2026-07-29) must reproduce
+  // the pre-split rule exactly when nothing is split: all weights tie at 1, so
+  // the minimum-weight cover has exactly N members and the later-dates
+  // tie-break takes the last N. Pinned explicitly, for several N, so any future
+  // change to the search that breaks it fails here first.
+  it('ALL WEIGHT 1: exactly the last N = actual − obligation, for every N', () => {
+    const dates = Array.from({ length: 12 }, (_, i) =>
+      `2026-03-${String(1 + i).padStart(2, '0')}`);
+    const calls = dates.map((d, i) => call(`w${i}`, 'p1', d, 'C1'));
+    for (let obligation = 0; obligation <= 12; obligation++) {
+      const n = 12 - obligation;
+      const expected = new Set(calls.slice(12 - n).map(c => c.id)); // the LAST n
+      expect(selectOverParAssignmentIds(calls, () => obligation)).toEqual(expected);
+    }
+  });
+
+  it('ALL WEIGHT 1: an explicit weight-1 field behaves as an absent one', () => {
+    const calls = [
+      { ...call('a1', 'p1', '2026-01-05', 'C1'), weight: 1 },
+      { ...call('a2', 'p1', '2026-01-12', 'C2'), weight: 1 },
+      { ...call('a3', 'p1', '2026-01-20', 'C1'), weight: 1 },
+    ];
+    expect(selectOverParAssignmentIds(calls, () => 2)).toEqual(new Set(['a3']));
+    expect(selectOverParAssignmentIds(calls, () => 1)).toEqual(new Set(['a2', 'a3']));
+  });
+});
+
+// ── Minimal-weight cover (Gabriel 2026-07-29) ────────────────────────────────
+// "I dont want the Weekday C1 flagged on the schedule as over, since he isnt
+// over his weekday c1 obligations. The 12 hr shift on the saturday should be
+// the one that is flagged." The flagged set is now the SMALLEST-total-weight
+// set of assignments that brings the remainder back to the obligation, later
+// dates winning a tie — so what is flagged is what caused the overage.
+describe('selectOverParAssignmentIds — the flagged set is the MINIMAL cover of the overage', () => {
+  const wcall = (id: string, date: string, code: string, weight?: number): OverParCall =>
+    ({ id, provider_id: 'p1', slot_date: date, shift_type_code: code, weight });
+
+  // Horan, live draft: 0.5 FTE, site par 11, block call weight 176 →
+  // 176 ÷ 11 × 0.5 = 8.0 → obligation 8. He holds 8.5 (eight whole calls plus
+  // one 12h Saturday half), so he is 0.5 over — and that 0.5 IS the split.
+  const horan: OverParCall[] = [
+    wcall('h-0905', '2026-09-05', 'C1'),          // Sat
+    wcall('h-0906', '2026-09-06', 'C2'),          // Sun
+    wcall('h-0909', '2026-09-09', 'C2'),          // Wed
+    wcall('h-0919', '2026-09-19', 'C3'),          // Sat
+    wcall('h-0920', '2026-09-20', 'C3'),          // Sun
+    wcall('h-0923', '2026-09-23', 'C2'),          // Wed
+    wcall('h-1003', '2026-10-03', 'C1D12', 0.5),  // Sat 12h split
+    wcall('h-1014', '2026-10-14', 'C1'),          // Wed
+    wcall('h-1019', '2026-10-19', 'C1'),          // Mon — chronologically LAST
+  ];
+  const horanExpected = () => (176 / 11) * 0.5; // 8.0
+
+  it('HORAN: the 0.5 Saturday split is the only flagged call — his weekday C1s are not', () => {
+    expect(roundedObligation(horanExpected())).toBe(8);
+    const over = selectOverParAssignmentIds(horan, horanExpected);
+    expect(over).toEqual(new Set(['h-1003']));
+    // The two weekday C1s (his weekday-C1 count is exactly his 2.0 target) and
+    // the chronologically last call the old rule flagged are all clean.
+    expect(over.has('h-1014')).toBe(false);
+    expect(over.has('h-1019')).toBe(false);
+  });
+
+  it('HORAN: the remainder lands EXACTLY on the obligation, not 0.5 under it', () => {
+    const over = selectOverParAssignmentIds(horan, horanExpected);
+    const remainder = horan
+      .filter(c => !over.has(c.id))
+      .reduce((s, c) => s + (c.weight ?? 1), 0);
+    expect(remainder).toBeCloseTo(8, 9);
+    const cover = selectOverParCover(horan, 8);
+    expect(cover.coveredWeight).toBeCloseTo(0.5, 9);
+    expect(cover.method).toBe('minimal-weight');
+  });
+
+  it('prefers a small combination over one whole call when it fits exactly', () => {
+    // Obligation 1, holdings 1.0 + 0.5 + 0.5 = 2.0 → 1.0 over. Two covers weigh
+    // 1.0: the single whole call, or both halves. The halves are LATER → they
+    // win the tie-break.
+    const calls = [
+      wcall('whole', '2026-01-05', 'C1'),
+      wcall('half-a', '2026-01-12', 'C1D12', 0.5),
+      wcall('half-b', '2026-01-19', 'C1N12', 0.5),
+    ];
+    expect(selectOverParAssignmentIds(calls, () => 1)).toEqual(new Set(['half-a', 'half-b']));
+  });
+
+  it('the later-dates tie-break survives when the whole call is the LATER one', () => {
+    // Same weights, whole call last → the single whole call now wins the tie.
+    const calls = [
+      wcall('half-a', '2026-01-05', 'C1D12', 0.5),
+      wcall('half-b', '2026-01-12', 'C1N12', 0.5),
+      wcall('whole', '2026-01-19', 'C1'),
+    ];
+    expect(selectOverParAssignmentIds(calls, () => 1)).toEqual(new Set(['whole']));
+  });
+
+  it('no exact cover: the minimal cover OVERSHOOTS, and the overage stays fractional', () => {
+    // Obligation 4, holdings 1.0 + 1.0 + 1.0 + 0.65 + 0.65 + 0.4 = 4.7 → 0.7
+    // over. The fractional weights are deliberately built so NO subset of them
+    // lands in [0.7, 1.0): 0.65 and 0.4 are each short, 0.65+0.4 = 1.05 and
+    // 0.65+0.65 = 1.3 both overshoot further. The cheapest cover is therefore
+    // one whole call — the LATEST one — even though he is only 0.7 over.
+    const calls = [
+      wcall('w1', '2026-01-05', 'C1'),
+      wcall('w2', '2026-01-12', 'C1'),
+      wcall('w3', '2026-01-19', 'C1'),
+      wcall('f1', '2026-01-06', 'CX', 0.65),
+      wcall('f2', '2026-01-13', 'CX', 0.65),
+      wcall('f3', '2026-01-20', 'CY', 0.4),
+    ];
+    const cover = selectOverParCover(calls, 4);
+    expect(cover.ids).toEqual(['w3']);
+    expect(cover.coveredWeight).toBeCloseTo(1.0, 9);
+    expect(cover.method).toBe('minimal-weight');
+    // The REPORTED overage is the real 0.7 — never the 1.0 that got flagged.
+    const held = calls.reduce((s, c) => s + (c.weight ?? 1), 0);
+    expect(callOverageWeight(held, 4)).toBeCloseTo(0.7, 9);
+  });
+
+  it('EPSILON: three 0.3333 thirds are not over a 1.0 obligation — nothing is flagged', () => {
+    const calls = [
+      wcall('t1', '2026-01-05', 'C1D8', 0.3333),
+      wcall('t2', '2026-01-06', 'C1E8', 0.3333),
+      wcall('t3', '2026-01-07', 'C1N8', 0.3333),
+    ];
+    expect(selectOverParAssignmentIds(calls, () => 1)).toEqual(new Set());
+    expect(selectOverParCover(calls, 1).ids).toEqual([]);
+    expect(callOverageWeight(0.9999, 1)).toBe(0);
+  });
+
+  it('EPSILON: stored-fraction noise must not push the cover past the exact one', () => {
+    // 1 + 1 + 0.5×4 + 0.3333 = 4.3333 against obligation 1 → 3.3333 over. The
+    // exact cover (1 whole + all four halves + the third = 3.3333) sums, in
+    // floating point, a hair BELOW the overage it is meant to clear
+    // (3.3333 vs 3.3333000000000004), so a zero-tolerance feasibility test
+    // rejects it and takes 3.5 instead — flagging 0.1667 of a call more than
+    // he is over and dropping the remainder UNDER the obligation. The house
+    // WEIGHT_EPSILON is what keeps the exact cover reachable.
+    const calls = [
+      wcall('w1', '2026-01-05', 'C1'),
+      wcall('w2', '2026-01-06', 'C1'),
+      wcall('h1', '2026-01-07', 'C1D12', 0.5),
+      wcall('h2', '2026-01-08', 'C1N12', 0.5),
+      wcall('h3', '2026-01-09', 'C1D12', 0.5),
+      wcall('h4', '2026-01-10', 'C1N12', 0.5),
+      wcall('t1', '2026-01-11', 'C1D8', 0.3333),
+    ];
+    const cover = selectOverParCover(calls, 1);
+    expect(cover.coveredWeight).toBeCloseTo(3.3333, 9);
+    expect(new Set(cover.ids)).toEqual(new Set(['w2', 'h1', 'h2', 'h3', 'h4', 't1']));
+    // The single unflagged call is exactly the 1.0 obligation.
+    const remainder = calls
+      .filter(c => !cover.ids.includes(c.id))
+      .reduce((s, c) => s + (c.weight ?? 1), 0);
+    expect(remainder).toBeCloseTo(1, 9);
+  });
+
+  it('EPSILON: a fourth third IS over, and only that third is flagged', () => {
+    const calls = [
+      wcall('t1', '2026-01-05', 'C1D8', 0.3333),
+      wcall('t2', '2026-01-06', 'C1E8', 0.3333),
+      wcall('t3', '2026-01-07', 'C1N8', 0.3333),
+      wcall('t4', '2026-01-08', 'C1D8', 0.3333),
+    ];
+    expect(selectOverParAssignmentIds(calls, () => 1)).toEqual(new Set(['t4']));
+  });
+
+  it('BOUNDED SEARCH: past MAX_COVER_COMBINATIONS it falls back to the chronological tail, observably', () => {
+    // 13 assignments, each a DIFFERENT stored weight → 2^13 = 8192 count
+    // vectors, past the 4096 cap. The fallback is the pre-2026-07-29 rule and
+    // says so in `method` rather than pretending it searched.
+    const calls = Array.from({ length: 13 }, (_, i) =>
+      wcall(`v${i}`, `2026-01-${String(1 + i).padStart(2, '0')}`, 'C1', 0.5 + i * 0.01));
+    // Σ(0.5 + 0.01i), i = 0…12 = 6.5 + 0.78 = 7.28; against obligation 6 that
+    // is 1.28 over, and the tail takes 0.62 + 0.61 + 0.60 = 1.83 to clear it.
+    const cover = selectOverParCover(calls, 6);
+    expect(cover.method).toBe('chronological-tail');
+    expect(cover.ids).toEqual(['v12', 'v11', 'v10']);
+    // Under the cap the same holdings would have been searched; the fallback is
+    // the ONLY reason this is a tail. (Not over at all → no search, no tail.)
+    expect(selectOverParCover(calls, 8).ids).toEqual([]);
+  });
+
+  it('BOUNDED SEARCH: the live weight vocabulary stays well inside the cap', () => {
+    // 40 whole + 8 halves + 6 thirds = 41 × 9 × 7 = 2583 count vectors.
+    expect(41 * 9 * 7).toBeLessThan(MAX_COVER_COMBINATIONS);
+    const calls = [
+      ...Array.from({ length: 40 }, (_, i) =>
+        wcall(`w${i}`, `2026-01-${String(1 + (i % 28)).padStart(2, '0')}`, 'C1')),
+      ...Array.from({ length: 8 }, (_, i) =>
+        wcall(`h${i}`, `2026-02-${String(1 + i).padStart(2, '0')}`, 'C1D12', 0.5)),
+      ...Array.from({ length: 6 }, (_, i) =>
+        wcall(`t${i}`, `2026-03-${String(1 + i).padStart(2, '0')}`, 'C1D8', 0.3333)),
+    ];
+    expect(selectOverParCover(calls, 40).method).toBe('minimal-weight');
+  });
+});
+
+describe('callOverageWeight — the FRACTIONAL size of the overage', () => {
+  it('is held weight minus the rounded obligation', () => {
+    expect(callOverageWeight(8.5, 8)).toBeCloseTo(0.5, 9);
+    expect(callOverageWeight(4.7, 4)).toBeCloseTo(0.7, 9);
+  });
+  it('is 0 at or under the obligation, and inside the house tolerance', () => {
+    expect(callOverageWeight(8, 8)).toBe(0);
+    expect(callOverageWeight(7.5, 8)).toBe(0);
+    expect(callOverageWeight(0.9999, 1)).toBe(0);
+    expect(callOverageWeight(1.005, 1)).toBe(0); // < WEIGHT_EPSILON
   });
 });
 

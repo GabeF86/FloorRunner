@@ -794,10 +794,13 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
   // verbatim — the SAME one the engine's obligatory-mode cap uses. With the
   // live shape (par 11, pool 8.75 FTE) obligations deliberately under-cover
   // the schedule; calls past someone's obligation are the paid-pickup layer
-  // and get the OVER treatment. When actual count exceeds the
-  // obligation, only the LAST N call assignments (chronological by slot_date,
-  // shift-code tiebreak) get the OVER treatment, N = actual − rounded
-  // obligation. Calls up to the rounded obligation are NEVER labeled extra.
+  // and get the OVER treatment. When the held call WEIGHT exceeds the
+  // obligation, the OVER treatment lands on the SMALLEST-total-weight set of
+  // the provider's assignments that brings the rest back to the obligation,
+  // later dates winning a tie (2026-07-29 — so a 12h 0.5 split is flagged
+  // ahead of a whole call when a half is all they are over by; with every
+  // weight 1 this is still exactly the last N = actual − obligation).
+  // Calls up to the rounded obligation are NEVER labeled extra.
   // Census + selection are single-homed in callCensusFromGrid /
   // computeCallObligationCensus (src/lib/fteTarget.ts) — the Call Counts
   // modal consumes the identical census, so grid and modal can't drift.
@@ -2368,10 +2371,11 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
                 // just flags that this person is picking up an extra.
                 const isCallShift = st.category === 'call';
                 const isExtraCall = isAssigned && isCallShift && !!provider && !callTakerIds.has(provider.id);
-                // Over-par (2026-07-17): this assignment is one of the
-                // provider's LAST N calls beyond their rounded TOTAL
-                // obligation (N = actual − round(total expected)). Calls up
-                // to the rounded obligation never carry the OVER treatment.
+                // Over-par (2026-07-17; minimal-cover 2026-07-29): this
+                // assignment is in the smallest-weight set of the provider's
+                // calls that covers their overage past the rounded TOTAL
+                // obligation. Calls up to the rounded obligation never carry
+                // the OVER treatment.
                 // Doesn't include deficit carry-forward — see useMemo notes.
                 const isOverPar = isAssigned && !!assignment && overParAssignmentIds.has(assignment.id);
                 // PTO sell-back: this provider has a live pto_sellback row
@@ -4068,11 +4072,11 @@ function CallCountsModal({ grid, onClose }: { grid: GridData; onClose: () => voi
   // and this table is printed to fill in by hand.
   const CHAIN_ROW_H = 11, CHAIN_LINE_TOP = 5, CHAIN_TICK_TOP = 1, CHAIN_TICK_H = 9;
   // Single-column headers trailing the (bucket, code) pairs, each rowSpan={2}:
-  // Obligation, Call Total, Obligatory Weekends, PTO Days, Days Off, Working
-  // Days. A band row is 1 label + columns.length ticks + a filler spanning the
-  // extras half and these, so it is exactly as wide as every other row
-  // (1 + 2 × columns.length + 6) and no colSpan can drift.
-  const TRAILING_HEADER_COLS = 6;
+  // Obligation, Call Total, Over By, Obligatory Weekends, PTO Days, Days Off,
+  // Working Days. A band row is 1 label + columns.length ticks + a filler
+  // spanning the extras half and these, so it is exactly as wide as every other
+  // row (1 + 2 × columns.length + 7) and no colSpan can drift.
+  const TRAILING_HEADER_COLS = 7;
 
   // PTO-days tally — approved planned-leave days overlapping the schedule
   // window, counted Mon-Fri only (weekends don't consume PTO).
@@ -4221,19 +4225,26 @@ function CallCountsModal({ grid, onClose }: { grid: GridData; onClose: () => voi
     weekendsForPid(pid) > requiredWeekendsForPid(pid) + WEIGHT_EPSILON;
 
   // Whole-number obligations, TOTAL level (2026-07-17): a provider's
-  // obligation = round(total expected) — round-half-up. Extra Calls = only
-  // their LAST N call assignments beyond that rounded obligation
-  // (chronological, shift-code tiebreak; N = actual − obligation), grouped by
-  // (day bucket, code) for the columns below. The over set comes straight from
-  // the shared census — the SAME set that paints the grid's red OVER cells,
-  // computed once from identical inputs, so the two views always agree. (An
-  // over call with a code outside C1–C3 counts in the math but has no Extra
-  // column — live call codes are only C1–C3 today.)
+  // obligation = round(total expected) — round-half-up. The calls tagged
+  // beyond it are the SMALLEST-total-weight set of their assignments that
+  // brings the rest back to the obligation, later dates winning a tie
+  // (2026-07-29), grouped by (day bucket, code) for the columns below. The
+  // over set comes straight from the shared census — the SAME set that paints
+  // the grid's red OVER cells, computed once from identical inputs, so the two
+  // views always agree. (An over call with a code outside C1–C3 counts in the
+  // math but has no Extra column — live call codes are only C1–C3 today.)
+  //
+  // The Over By column carries the FRACTIONAL overage (held weight − rounded
+  // obligation) beside it, because the tagged calls' weight can exceed it: a
+  // 1.0 call is the smallest cover for a 0.7 overage when nothing smaller
+  // fits, and a whole red call must never be read as a whole call's worth of
+  // excess. In Horan's live case they agree at 0.5 (the 12h split).
   //
   // Deficit carry-forward is NOT included (we don't have historical data
   // here), so this can over-report for part-timers legitimately catching
   // up from a prior block. Documented in the column tooltip.
   const rowObligation = (pid: string) => roundedObligation(rowExpected(pid));
+  const rowOverBy = (pid: string) => census.overageFor(pid);
   const overIds = census.overParAssignmentIds;
   // Extra calls BY DAY TYPE (Gabriel 2026-07-28): an extra is a paid pickup and
   // the rate depends on the day, so a code-only tally was unbillable as shown.
@@ -4436,8 +4447,11 @@ function CallCountsModal({ grid, onClose }: { grid: GridData; onClose: () => voi
                   padding: '6px 10px', textAlign: 'center',
                   borderBottom: '1px solid var(--border)', borderLeft: '1px solid var(--border)',
                   color: '#ef4444',
-                }} title="Calls beyond the provider's ROUNDED total obligation — round(total call slots ÷ par × FTE), BROKEN OUT BY DAY TYPE (2026-07-28) because the pickup rate depends on it: an extra Saturday C1 is not priced like an extra Wednesday C1. The stored call par level is the denominator (par-authoritative; never reduced to the pool's summed FTE) — the engine's obligatory-mode denominator. Every call slot counts — holiday-dated included, billed as the day of the week it fell on. Only their LAST N calls (chronological) count as extra, N = actual − obligation; calls up to the obligation are never extra — extras are the paid-pickup layer. Same selection as the red grid cells. Deficit carry-forward is not included. These columns are the SAME columns, in the same order, as the counts half on the left — including the neuro group at the end, whose extras stay split by day because a Saturday neuro pickup is not priced like a Sunday one.">
-                  Extra Calls <span style={{ fontSize: 10, fontWeight: 500, opacity: 0.8 }}>by day type</span>
+                }} title="Calls beyond the provider's TOTAL obligation — ONE ceiling, round(total call slots ÷ par × FTE), across every call code and every day type. The day-type split is for PRICING ONLY (2026-07-28): a pickup is paid by the day it fell on, so an extra Saturday C1 is not priced like an extra Wednesday C1. A number under M–Th C1 does NOT mean the provider is over any M–Th C1 limit — there is no per-day-type or per-code cap here, only the one total. WHICH calls are tagged (2026-07-29): the SMALLEST-weight set of their assignments that brings the rest back to the obligation, later dates winning a tie — so a 12h half (0.5) is tagged ahead of a whole call when a half is all they are over by. Read the size of the overage off the Over By column, NOT off these: a tagged whole call can weigh more than the overage when no smaller combination fits. The stored call par level is the denominator (par-authoritative; never reduced to the pool's summed FTE) — the engine's obligatory-mode denominator. Every call slot counts toward the obligation — holiday-dated included, billed as the day of the week it fell on. Calls up to the obligation are never extra — extras are the paid-pickup layer. Same selection as the red grid cells. Deficit carry-forward is not included. These columns are the SAME columns, in the same order, as the counts half on the left — including the neuro group at the end, whose extras stay split by day because a Saturday neuro pickup is not priced like a Sunday one.">
+                  Calls Beyond Total Obligation<br/>
+                  <span style={{ fontSize: 10, fontWeight: 500, opacity: 0.8 }}>
+                    tagged by day for pricing — not a per-day limit
+                  </span>
                 </th>
               )}
               <th rowSpan={2} style={{
@@ -4450,6 +4464,16 @@ function CallCountsModal({ grid, onClose }: { grid: GridData; onClose: () => voi
                 padding: '6px 10px', textAlign: 'center', fontWeight: 700,
                 borderBottom: '1px solid var(--border)', borderLeft: '1px solid var(--border)',
               }}>Call Total</th>
+              {/* The SIZE of the overage, beside the calls tagged for it. A
+                  tagged whole call is not a whole call's worth of excess —
+                  it is the smallest assignment that covers the gap. */}
+              <th rowSpan={2} style={{
+                padding: '6px 10px', textAlign: 'center', fontWeight: 700,
+                borderBottom: '1px solid var(--border)', borderLeft: '1px solid var(--border)',
+                color: '#ef4444', cursor: 'help',
+              }} title="How far past the obligation the provider actually is: Call Total − Obligation, in call units (a 12h split is 0.5, an 8h third 0.3333). THIS is the size of the overage. The tagged calls to the left are the smallest set of whole assignments that covers it, so their weight can be LARGER than this — 1.0 tagged against a 0.7 overage when no smaller combination fits. Blank at or under the obligation.">
+                Over By
+              </th>
               <th rowSpan={2} style={{
                 padding: '6px 10px', textAlign: 'center', fontWeight: 700,
                 borderBottom: '1px solid var(--border)', borderLeft: '1px solid var(--border)',
@@ -4557,6 +4581,17 @@ function CallCountsModal({ grid, onClose }: { grid: GridData; onClose: () => voi
                   borderLeft: '1px solid var(--border)', fontWeight: 700, color: 'var(--text)',
                 }}>{formatCallWeight(rowTotal(p.id))}</td>
                 <td
+                  title={rowOverBy(p.id) > 0
+                    ? `Over the obligation by ${formatCallWeight(rowOverBy(p.id))} of a call (${formatCallWeight(rowTotal(p.id))} held − ${rowObligation(p.id)} owed). The tagged calls on the left are the smallest set that covers it.`
+                    : undefined}
+                  style={{
+                    padding: '6px 10px', textAlign: 'center', fontWeight: 700,
+                    borderLeft: '1px solid var(--border)',
+                    color: rowOverBy(p.id) > 0 ? '#ef4444' : 'var(--text-dim)',
+                    cursor: rowOverBy(p.id) > 0 ? 'help' : undefined,
+                  }}
+                >{rowOverBy(p.id) > 0 ? formatCallWeight(rowOverBy(p.id)) : '—'}</td>
+                <td
                   title={`Held ${formatCallWeight(weekendsForPid(p.id))} of ${formatCallWeight(requiredWeekendsForPid(p.id))} obligatory weekend duties (unrounded requirement ${expectedWeekendsForPid(p.id).toFixed(2)}, taken DOWN to the nearest half). Actual = primary-call weekend days held (a 12h half counts 0.5) + neuro weekend units held (a Sat+Sun pair 1, a single neuro day 0.5).`}
                   style={{
                     padding: '6px 10px', textAlign: 'center', whiteSpace: 'nowrap',
@@ -4627,6 +4662,14 @@ function CallCountsModal({ grid, onClose }: { grid: GridData; onClose: () => voi
                 borderLeft: '1px solid var(--border)', borderTop: '2px solid var(--border)',
               }}>{formatCallWeight(providers.reduce((s, p) => s + rowTotal(p.id), 0))}</td>
               <td style={{
+                padding: '8px 10px', textAlign: 'center',
+                borderLeft: '1px solid var(--border)', borderTop: '2px solid var(--border)',
+                color: '#ef4444',
+              }}>{(() => {
+                const t = providers.reduce((s, p) => s + rowOverBy(p.id), 0);
+                return t > 0 ? formatCallWeight(t) : '—';
+              })()}</td>
+              <td style={{
                 padding: '8px 10px', textAlign: 'center', whiteSpace: 'nowrap',
                 borderLeft: '1px solid var(--border)', borderTop: '2px solid var(--border)',
               }}>{(() => {
@@ -4683,6 +4726,9 @@ function CallCountsModal({ grid, onClose }: { grid: GridData; onClose: () => voi
               <td style={{ padding: '6px 10px', textAlign: 'center', borderLeft: '1px solid var(--border)' }}>
                 {providers.reduce((s, p) => s + rowExpected(p.id), 0).toFixed(1)}
               </td>
+              {/* Over By has no "expected" — an overage is by definition the
+                  part with no expectation behind it. */}
+              <td style={{ padding: '6px 10px', textAlign: 'center', borderLeft: '1px solid var(--border)' }}>—</td>
               <td
                 title={`Sum of the fractional weekend obligations before rounding, out of ${formatCallWeight(weekendUnits)} weekend units in the block — a gap is the paid-pickup layer (pool ΣFTE below the par).`}
                 style={{ padding: '6px 10px', textAlign: 'center', borderLeft: '1px solid var(--border)', cursor: 'help' }}

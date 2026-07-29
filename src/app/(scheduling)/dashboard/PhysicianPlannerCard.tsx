@@ -291,7 +291,7 @@ function obligationTip(n: ProviderPlannerNumbers): string {
 }
 
 function extrasTip(): string {
-  return 'Calls past the rounded obligation. By the last-N convention the OVER labels land on the provider\'s LAST N call assignments in date order — earlier calls are always within obligation.';
+  return 'Call weight past the rounded obligation. On the schedule the OVER labels land on the smallest-weight set of the provider\'s calls that covers that overage (later dates first on a tie), so a flagged call can weigh more than the overage itself when no smaller combination fits.';
 }
 
 function requiredTip(n: ProviderPlannerNumbers): string {

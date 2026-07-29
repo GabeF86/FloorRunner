@@ -57,16 +57,26 @@ export interface OverParCall {
   parent_code?: string;
 }
 
-// Per-slot OVER labeling (2026-07-17; WEIGHTED 2026-07-22): when a provider's
-// cumulative call WEIGHT exceeds their rounded TOTAL obligation, whole
-// assignments are picked from the CHRONOLOGICAL END (slot_date, shift-code
-// tiebreak, then id) until the unpicked cumulative weight no longer exceeds
-// the obligation. With every weight 1 this selects exactly the last
+// Per-slot OVER labeling (2026-07-17; WEIGHTED 2026-07-22; MINIMAL-COVER
+// 2026-07-29): when a provider's cumulative call WEIGHT exceeds their rounded
+// TOTAL obligation, the flagged set is the SMALLEST-TOTAL-WEIGHT set of their
+// assignments that brings the rest back to at most the obligation, ties broken
+// toward LATER dates. With every weight 1 this selects exactly the last
 // N = actual − obligation assignments — the pre-split behavior, byte for
 // byte. WEIGHT_EPSILON absorbs stored-fraction noise (3 × 0.3333 = 0.9999
 // is not "over" a 1-call obligation). `totalExpectedFor` returns the
 // provider's FRACTIONAL total expected calls (the caller computes it from
 // whatever slot totals it already has; the rounding lives here).
+//
+// WHY MINIMAL WEIGHT, not the chronological tail (Gabriel 2026-07-29, live
+// case): Horan, 0.5 FTE at par 11 on a 176-weight block, owes 8 and holds 8.5
+// — eight whole calls plus one 12h Saturday half (C1D12, weight 0.5). The
+// chronological tail removed his LAST WHOLE call (a weekday C1), which
+// (a) flagged a call he is not over on — his 2 weekday C1s are exactly his
+// weekday-C1 target — and (b) overstated the overage, painting 1.0 red when
+// he is 0.5 over and leaving the remainder 0.5 UNDER. Minimal weight flags
+// the 0.5 split instead: 8.5 − 0.5 = 8.0, exactly the obligation. What is
+// flagged is now what actually caused the overage.
 export function selectOverParAssignmentIds(
   calls: OverParCall[],
   totalExpectedFor: (providerId: string) => number,
@@ -79,18 +89,161 @@ export function selectOverParAssignmentIds(
   const over = new Set<string>();
   for (const [pid, list] of byPid) {
     const obligation = roundedObligation(totalExpectedFor(pid));
-    let remaining = list.reduce((s, c) => s + callBurdenWeight({ call_burden_weight: c.weight }), 0);
-    if (remaining <= obligation + WEIGHT_EPSILON) continue;
-    list.sort((a, b) =>
-      a.slot_date.localeCompare(b.slot_date)
-      || a.shift_type_code.localeCompare(b.shift_type_code)
-      || a.id.localeCompare(b.id));
-    for (let i = list.length - 1; i >= 0 && remaining > obligation + WEIGHT_EPSILON; i--) {
-      over.add(list[i].id);
-      remaining -= callBurdenWeight({ call_burden_weight: list[i].weight });
-    }
+    for (const id of selectOverParCover(list, obligation).ids) over.add(id);
   }
   return over;
+}
+
+// ── The per-provider cover search ────────────────────────────────────────────
+
+/** How a provider's cover was chosen. Exported so the bounded search's
+ * fallback is OBSERVABLE (and testable) rather than silent. An empty cover
+ * (nobody is over) reports 'minimal-weight': the empty set IS the minimum. */
+export type OverParCoverMethod = 'minimal-weight' | 'chronological-tail';
+
+export interface OverParCover {
+  /** Assignment ids to flag, in the order the search picked them. */
+  ids: string[];
+  /** Σ weight of the flagged assignments — ≥ the overage, equal when an exact
+   * cover exists. The DISPLAYED overage is `callOverageWeight`, not this. */
+  coveredWeight: number;
+  method: OverParCoverMethod;
+}
+
+// SEARCH BOUND. Minimal-weight-subset is subset-sum in general, so the search
+// is NOT run over subsets: it enumerates COUNT VECTORS over the distinct stored
+// weights (how many weight-1 calls, how many 0.5 halves, how many 0.3333
+// thirds…), which is Π(count_i + 1) — polynomial in the holdings and tiny for
+// real data (the house weight set is {1, 0.5, 0.3333} and a provider holds a
+// few dozen calls, so a live provider costs on the order of 100 steps). For a
+// given count vector the best members are forced (the LATEST count_i of each
+// weight class — see below), so nothing is lost by not enumerating subsets.
+// 4096 is ~an order of magnitude above anything the live data can produce
+// (e.g. 40 whole calls + 8 halves + 6 thirds = 41×9×7 = 2583) while capping
+// the per-provider work at a few thousand cheap arithmetic steps on a render
+// path. Past the cap — only reachable with pathological weight variety — the
+// search bails and the ORIGINAL chronological-tail rule runs, reported as
+// method 'chronological-tail'.
+export const MAX_COVER_COMBINATIONS = 4096;
+
+const chronoCompare = (a: OverParCall, b: OverParCall) =>
+  a.slot_date.localeCompare(b.slot_date)
+  || a.shift_type_code.localeCompare(b.shift_type_code)
+  || a.id.localeCompare(b.id);
+
+/** Which of ONE provider's calls carry the OVER treatment against `obligation`
+ * (already rounded). Exported for the census, and so tests can observe which
+ * method fired. */
+export function selectOverParCover(
+  calls: ReadonlyArray<OverParCall>,
+  obligation: number,
+): OverParCover {
+  const sorted = [...calls].sort(chronoCompare);
+  const weights = sorted.map(c => callBurdenWeight({ call_burden_weight: c.weight }));
+  const total = weights.reduce((s, w) => s + w, 0);
+  // Not over (WEIGHT_EPSILON: three 0.3333 thirds are not over a 1.0 obligation).
+  if (total <= obligation + WEIGHT_EPSILON) {
+    return { ids: [], coveredWeight: 0, method: 'minimal-weight' };
+  }
+  const needed = total - obligation;
+  const minimal = minimalWeightCover(sorted, weights, needed);
+  if (minimal) return minimal;
+
+  // FALLBACK — the pre-2026-07-29 rule, verbatim: take whole assignments from
+  // the chronological END until the remainder no longer exceeds the obligation.
+  const ids: string[] = [];
+  let remaining = total;
+  let coveredWeight = 0;
+  for (let i = sorted.length - 1; i >= 0 && remaining > obligation + WEIGHT_EPSILON; i--) {
+    ids.push(sorted[i].id);
+    coveredWeight += weights[i];
+    remaining -= weights[i];
+  }
+  return { ids, coveredWeight, method: 'chronological-tail' };
+}
+
+/** Smallest-total-weight set covering `needed`, latest dates on a tie; null
+ * when the enumeration would exceed MAX_COVER_COMBINATIONS (caller falls back).
+ * `sorted` is chronological ascending and `weights` is parallel to it. */
+function minimalWeightCover(
+  sorted: ReadonlyArray<OverParCall>,
+  weights: ReadonlyArray<number>,
+  needed: number,
+): OverParCover | null {
+  // Group by exact stored weight — the indices of each class stay ascending.
+  const classes = new Map<number, number[]>();
+  for (let i = 0; i < weights.length; i++) {
+    const list = classes.get(weights[i]);
+    if (list) list.push(i); else classes.set(weights[i], [i]);
+  }
+  const classList = Array.from(classes, ([weight, indices]) => ({ weight, indices }));
+  let combinations = 1;
+  for (const c of classList) {
+    combinations *= c.indices.length + 1;
+    if (combinations > MAX_COVER_COMBINATIONS) return null; // → observable fallback
+  }
+
+  // Candidate = a count per weight class. Its BEST members are forced: taking
+  // the LATEST count_i of a class is pointwise later than any other choice with
+  // the same counts, so it wins the later-dates tie-break outright.
+  let best: { indices: number[]; total: number } | null = null;
+  const counts = new Array<number>(classList.length).fill(0);
+  for (let n = 0; n < combinations; n++) {
+    let rest = n;
+    let total = 0;
+    for (let g = 0; g < classList.length; g++) {
+      const radix = classList[g].indices.length + 1;
+      counts[g] = rest % radix;
+      rest = (rest - counts[g]) / radix;
+      total += counts[g] * classList[g].weight;
+    }
+    if (total < needed - WEIGHT_EPSILON) continue;              // does not cover
+    if (best && total > best.total + WEIGHT_EPSILON) continue;  // heavier than the best
+    const indices: number[] = [];
+    for (let g = 0; g < classList.length; g++) {
+      const src = classList[g].indices;
+      for (let k = src.length - counts[g]; k < src.length; k++) indices.push(src[k]);
+    }
+    indices.sort((a, b) => b - a); // descending = latest first
+    if (!best || total < best.total - WEIGHT_EPSILON) {
+      best = { indices, total };
+    } else if (isLaterCover(indices, best.indices)) {
+      // Tie on weight (inside the house tolerance): later dates win. Keep the
+      // SMALLEST tied total as the yardstick so a chain of near-ties can never
+      // drift the comparison by more than one epsilon.
+      best = { indices, total: Math.min(total, best.total) };
+    } else {
+      best.total = Math.min(best.total, total);
+    }
+  }
+  if (!best) return null; // unreachable: the whole holding always covers
+  return {
+    ids: best.indices.map(i => sorted[i].id),
+    coveredWeight: best.total,
+    method: 'minimal-weight',
+  };
+}
+
+/** Later-dates tie-break: both lists are DESCENDING chronological positions.
+ * The one holding the later assignment at the first difference wins; if one is
+ * a prefix of the other (only possible when the totals merely tie inside the
+ * epsilon, never when they are equal — weights are strictly positive), the
+ * shorter wins, flagging fewer calls for the same weight. */
+function isLaterCover(a: ReadonlyArray<number>, b: ReadonlyArray<number>): boolean {
+  const n = Math.min(a.length, b.length);
+  for (let i = 0; i < n; i++) {
+    if (a[i] !== b[i]) return a[i] > b[i];
+  }
+  return a.length < b.length;
+}
+
+/** Call weight held PAST the rounded obligation — the true size of the
+ * overage, which the flagged cover can legitimately EXCEED when no smaller
+ * combination of whole assignments fits (0.7 over, only 1.0 calls to flag).
+ * 0 inside the house tolerance. */
+export function callOverageWeight(actualWeight: number, obligation: number): number {
+  const over = actualWeight - obligation;
+  return over > WEIGHT_EPSILON ? over : 0;
 }
 
 // ── Shared grid/modal obligation census (2026-07-17) ─────────────────────────
@@ -166,6 +319,11 @@ export interface CallObligationCensus {
   poolFteFor: (providerId: string) => number;
   totalExpectedFor: (providerId: string) => number;  // fractional — callers round via roundedObligation
   actualCallsFor: (providerId: string) => number;
+  // FRACTIONAL overage: held call weight − rounded obligation, 0 when within
+  // the house tolerance. This — NOT the flagged assignments' weight — is how
+  // far over the provider actually is; the flagged cover may exceed it when no
+  // smaller combination of whole assignments closes the gap.
+  overageFor: (providerId: string) => number;
   overParAssignmentIds: Set<string>;
 }
 
@@ -221,6 +379,7 @@ export function computeCallObligationCensus(input: CallObligationCensusInput): C
   // hold is beyond obligation by definition (over-par selection sees it).
   const poolFteFor = (pid: string) => (poolPids.has(pid) ? fteByPid.get(pid)! : 0);
   const totalExpectedFor = (pid: string) => fteWeightedTarget(totalCallSlots, effectivePar, poolFteFor(pid));
+  const actualCallsFor = (pid: string) => actualByPid.get(pid) || 0;
   return {
     poolFte,
     effectivePar,
@@ -229,7 +388,9 @@ export function computeCallObligationCensus(input: CallObligationCensusInput): C
     fteFor,
     poolFteFor,
     totalExpectedFor,
-    actualCallsFor: pid => actualByPid.get(pid) || 0,
+    actualCallsFor,
+    overageFor: pid =>
+      callOverageWeight(actualCallsFor(pid), roundedObligation(totalExpectedFor(pid))),
     overParAssignmentIds: selectOverParAssignmentIds(callRecords, totalExpectedFor),
   };
 }
