@@ -286,6 +286,21 @@ export interface PlannedAssignment {
   explanation?: AssignmentExplanation;   // main-loop populates; structural omits
 }
 
+/** One post-call relocation (passes/postCallRepair.ts): the provider was
+ * sitting in `from_code` on `date` while the post-call slot their previous
+ * day's call declared (`to_code`) stood open, and was moved down into it.
+ * Lives here rather than in the pass so SolutionPlan does not import from
+ * passes/ (which imports this module). */
+export interface PostCallRepair {
+  date: string;
+  provider_id: string;
+  provider_name: string;
+  from_code: string;
+  to_code: string;
+  trigger_date: string;
+  trigger_code: string;
+}
+
 export interface UnfilledSlot {
   slot_id: string;
   slot_date: string;
@@ -365,6 +380,11 @@ export interface SolutionPlan {
   // call slots the main loop skipped, in slotsToFill order. Kept absent in
   // 'all'/'obligatory' so the fillAllPlan.golden.json JSON pin is untouched.
   awaitingContinue?: AwaitingContinueSlot[];
+  // Providers relocated within one date into the post-call day slot their
+  // previous day's call declared (passes/postCallRepair.ts, 2026-07-29).
+  // LAZILY materialized — absent when nothing was repaired, so every existing
+  // golden plan pin is untouched.
+  postCallRepairs?: PostCallRepair[];
   // Stale pre-fill seeds evicted in-plan (see EvictedSeed). LAZILY
   // materialized — absent unless an eviction actually happened, so seed-free
   // generations (the golden JSON pins included) are byte-identical.

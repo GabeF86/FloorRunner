@@ -19,6 +19,16 @@ import type { SolutionPlan } from './genTypes';
 // the bottom of this file. The base parity fixtures contain no pending PTO,
 // so the exact-equality nets below are unaffected by it.
 //
+// IF-6 (post-call repair, 2026-07-29 — passes/postCallRepair.ts) also
+// diverges, and only on the callOverrides fixture. It enforces the project's
+// OWN standing rule, which legacy violated: "the post-call fill OVERRIDES any
+// pre-call status" (preFillEviction.ts, 2026-07-19). Under the override, two
+// providers ended up in a pre-call D2 on the day after their C2 while that
+// day's D1 — the slot their own C2 declared — stood EMPTY. Legacy leaves them
+// in D2 and the D1 open; v2 moves them down and frees the D2. The divergence
+// is pinned exactly in that test: the two moves are asserted individually and
+// then replayed onto the legacy plan, so any OTHER drift still fails.
+//
 // Drop fields the pattern-interpreter refactor is allowed to add/change. Only
 // `explanation` (numeric decision detail), the additive `skippedDerived[]`
 // (IF-4), and the additive `UnfilledSlot.shift_type_category` stamp (frozen
@@ -42,12 +52,40 @@ describe('golden parity: v2 engine + classic pattern ≡ legacy engine', () => {
     expect(stripAdditive(solve(ctx))).toEqual(stripAdditive(solveLegacy(ctx)));
   });
 
-  it('parity holds under callOverrides (optimizer forcing seam)', () => {
+  it('parity holds under callOverrides (optimizer forcing seam), except IF-6', () => {
     const ctx = buildFixtureContext();
     const anyCallSlot = ctx.slotsToFill[0];
     const overrides = new Map([[anyCallSlot.slot_id, ctx.providers[3].id]]);
-    expect(stripAdditive(solve(ctx, { callOverrides: overrides })))
-      .toEqual(stripAdditive(solveLegacy(ctx, { callOverrides: overrides })));
+    const v2 = solve(ctx, { callOverrides: overrides });
+    const legacy = solveLegacy(ctx, { callOverrides: overrides });
+
+    // IF-6, stated exactly: two providers sat in the PRE-call D2 on the day
+    // after their own C2 while that day's POST-call D1 stood open. Asserting
+    // the list itself (not just a count) means a repair that fires on the
+    // wrong provider, date or code fails here rather than being absorbed by
+    // the replay below.
+    expect(v2.postCallRepairs).toEqual([
+      { date: '2026-01-15', provider_id: 'p02', provider_name: 'p02',
+        from_code: 'D2', to_code: 'D1', trigger_date: '2026-01-14', trigger_code: 'C2' },
+      { date: '2026-01-29', provider_id: 'p04', provider_name: 'p04',
+        from_code: 'D2', to_code: 'D1', trigger_date: '2026-01-28', trigger_code: 'C2' },
+    ]);
+
+    // Replay exactly those moves onto the legacy plan. Everything else — every
+    // other assignment's slot, provider and source, and the whole unfilled
+    // list — must still match byte for byte, so this cannot mask other drift.
+    const repaired: SolutionPlan = {
+      ...legacy,
+      assignments: legacy.assignments.map(a => {
+        const r = v2.postCallRepairs!.find(x =>
+          x.provider_id === a.provider_id && x.date === a.slot_date
+          && x.from_code === a.shift_type_code);
+        return r
+          ? { ...a, shift_type_code: r.to_code, slot_id: `${r.date}|${r.to_code}` }
+          : a;
+      }),
+    };
+    expect(stripAdditive(v2)).toEqual(stripAdditive(repaired));
   });
 });
 

@@ -161,10 +161,20 @@ describe('solve — seeds that must NOT be evicted', () => {
     })));
   });
 
-  it('an IN-PLAN same-run pre-fill is not a seed and is never evicted', () => {
+  it('an IN-PLAN same-run pre-fill is never EVICTED — the post-call repair RELOCATES instead', () => {
     // Single run, no seeds: C2 10/1 fills first and pre-fills 9/30 D3 in-plan;
-    // the later 9/29 C2's +1 D1 then finds 9/30 taken by the SAME RUN's D3 —
-    // that is a live placement, not a stale seed, and stays a recorded skip.
+    // the later 9/29 C2's +1 D1 then finds 9/30 taken by the SAME RUN's D3.
+    // The seed-eviction path still refuses — a live placement is not a stale
+    // seed, and nothing is evicted (plan.evictions stays undefined, and the
+    // skip is still recorded at placement time, invariant 4).
+    //
+    // UPDATED 2026-07-29. What the run no longer ENDS with is hussain in D3
+    // and D1 empty. That was the shape Gabriel reported on the live board
+    // ("if there are two linked D spots for one provider, obviously the lower
+    // one should have priority"), and it contradicted the project's own
+    // standing rule that a post-call fill overrides pre-call status. The
+    // post-call repair pass moves him — same provider, same date, same day's
+    // work — into the D1 his 9/29 C2 declared, and frees the D3.
     const slots = [
       callSlot('c2-1001', '2026-10-01', 'C2'),
       callSlot('c2-0929', '2026-09-29', 'C2'),
@@ -172,11 +182,19 @@ describe('solve — seeds that must NOT be evicted', () => {
       dSlot('d1-0930', '2026-09-30', 'D1'),
     ];
     const plan = solve(buildCtx(slots, [prov('hussain')], { shiftTypes: SHIFT_TYPES }));
+    // No EVICTION happened — that machinery is still seeds-only.
     expect(plan.evictions).toBeUndefined();
-    expect(plan.assignments.find(a => a.slot_id === 'd3-0930')?.provider_id).toBe('hussain');
-    expect(plan.assignments.some(a => a.slot_id === 'd1-0930')).toBe(false);
+    // The placement-time skip is still recorded.
     expect(plan.skippedDerived).toContainEqual(
       { date: '2026-09-30', code: 'D1', provider_id: 'hussain', reason: 'occupied' });
+    // …and the repair pass then put him where the pattern asked.
+    expect(plan.assignments.find(a => a.slot_id === 'd1-0930')?.provider_id).toBe('hussain');
+    expect(plan.assignments.some(a => a.slot_id === 'd3-0930')).toBe(false);
+    expect(plan.postCallRepairs).toEqual([{
+      date: '2026-09-30', provider_id: 'hussain', provider_name: 'hussain',
+      from_code: 'D3', to_code: 'D1',
+      trigger_date: '2026-09-29', trigger_code: 'C2',
+    }]);
   });
 });
 

@@ -21,6 +21,7 @@ import { runPrePtoPass } from './passes/prePto';
 import { runSpansPass } from './passes/spans';
 import { runReliefPass } from './passes/relief';
 import { runMopUpPass } from './passes/mopUp';
+import { runPostCallRepairPass } from './passes/postCallRepair';
 import type {
   GenerationContext, SolveState,
   SolutionPlan, CandidateRejection,
@@ -462,6 +463,13 @@ export function solve(ctx: GenerationContext, opts: SolveOptions = {}): Solution
   // haven't been attempted.
   if (!weekendOnly) {
     buildProviderCalls(run);
+
+    // Post-call repair (passes/postCallRepair.ts, 2026-07-29): a provider the
+    // weekend pass parked in a block-chain day slot gets moved DOWN into the
+    // post-call slot their previous day's call already asked for, when that
+    // slot is still open. Runs BEFORE relief/mop-up so the vacated slot is
+    // still available for them to hand to somebody else.
+    runPostCallRepairPass(run);
 
     // Relief pass (passes/relief.ts, §10 + IF-2 fixes), then the mop-up sweep
     // for orphaned call-engine-owned day slots (passes/mopUp.ts, §10.5 — incl.

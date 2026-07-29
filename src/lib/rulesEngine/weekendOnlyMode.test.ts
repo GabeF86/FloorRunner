@@ -265,14 +265,34 @@ function continueCtx(base: GenerationContext, stage1: SolutionPlan): GenerationC
         slot_date: a.slot_date, provider_id: a.provider_id,
         shift_type_code: a.shift_type_code, shift_type_category: a.shift_type_category,
         derived_day_type: a.derived_day_type,
+        // PROVENANCE (2026-07-29). genContext stamps all four on every real
+        // seed; without them mayEvictPreFill conservatively refuses, so a
+        // provenance-free fixture silently models a Continue run that can
+        // never evict a stale pre-fill — the opposite of production.
+        slot_id: a.slot_id, assignment_id: `a-${a.slot_id}`,
+        source_type: 'auto_generated', schedule_version_id: base.scheduleVersionId,
       })),
     ],
   };
 }
 
+// The staged union must ACCOUNT FOR EVICTIONS. A Continue run's post-call
+// link can evict a stale stage-1 pre-fill (preFillEviction.ts); commitPlan
+// executes those evictions against the DB, reverting the row to open. A union
+// that only adds assignments therefore models a state production never has —
+// it keeps showing a provider in a slot the same run just vacated. Subtracting
+// plan.evictions is what makes the union equal the real post-commit schedule.
 const assignmentMap = (...plans: SolutionPlan[]) => {
   const m = new Map<string, string>();
   for (const plan of plans) for (const a of plan.assignments) m.set(a.slot_id, a.provider_id);
+  // Keyed on the evicted PROVIDER, not just the slot: the row being evicted is
+  // by definition one an earlier plan in this union assigned, so "is this slot
+  // assigned anywhere?" is always true and would never subtract. If a later
+  // pass handed the vacated slot to somebody else, the map already holds THEM
+  // and the entry correctly survives.
+  for (const plan of plans) for (const e of plan.evictions ?? []) {
+    if (m.get(e.slot_id) === e.provider_id) m.delete(e.slot_id);
+  }
   return m;
 };
 
@@ -285,9 +305,26 @@ describe('staged equivalence — weekend-only then Continue-all vs one-shot all 
     const oneShot = solve(noPto());
     const stage1 = solve(noPto(), { fillMode: 'weekend-only' });
     // Every stage-1 assignment (weekend calls AND their chain fills, wherever
-    // they landed) appears in the one-shot plan byte for byte…
+    // they landed) appears in the one-shot plan byte for byte — EXCEPT a day
+    // fill the one-shot post-call repair relocated (2026-07-29). Stage 1
+    // cannot know about it: the trigger is a WEEKDAY call that stage 1 has not
+    // placed yet, so its pre-call day fill is provisional exactly the way
+    // relief and mop-up are, and the Continue run corrects it by evicting the
+    // same row (proven in (b) — the two paths land on the same schedule).
     const oneShotById = new Map(oneShot.assignments.map(a => [a.slot_id, a]));
+    const relocated = new Set((oneShot.postCallRepairs ?? [])
+      .map(r => `${r.provider_id}|${r.date}|${r.from_code}`));
     for (const a of stage1.assignments) {
+      if (relocated.has(`${a.provider_id}|${a.slot_date}|${a.shift_type_code}`)) {
+        // Must be relocated, not merely lost: one-shot has the provider in the
+        // post-call slot the repair named.
+        const r = oneShot.postCallRepairs!.find(x =>
+          x.provider_id === a.provider_id && x.date === a.slot_date);
+        expect(oneShot.assignments.some(x =>
+          x.provider_id === a.provider_id && x.slot_date === a.slot_date
+          && x.shift_type_code === r!.to_code)).toBe(true);
+        continue;
+      }
       expect(oneShotById.get(a.slot_id), `${a.slot_id} in one-shot`).toEqual(a);
     }
     // …and stage 1 is not MISSING any one-shot weekend-scope call placement.
@@ -427,13 +464,22 @@ describe('staged equivalence — weekend-only then Continue-all vs one-shot all 
     const one = assignmentMap(oneShot);
     const lost = [...one.keys()].filter(k => !union.has(k)).sort();
     const gained = [...union.keys()].filter(k => !one.has(k)).sort();
-    expect(lost).toEqual(['2026-01-08|D1', '2026-01-18|D2', '2026-01-20|D2', '2026-01-21|D2']);
+    // 2026-07-29: the one-shot's 01-08 loss moved from D1 to D2. The post-call
+    // repair pass puts that provider in the D1 their previous day's call
+    // declared, so one-shot now COVERS 01-08 D1 and leaves 01-08 D2 open —
+    // the slot the staged flow still fills. The cascade's shape is unchanged.
+    expect(lost).toEqual(['2026-01-08|D2', '2026-01-18|D2', '2026-01-20|D2', '2026-01-21|D2']);
     expect(gained).toEqual(['2026-01-18|D3', '2026-01-23|D2']);
     expect(union.size).toBe(one.size - 2); // coverage genuinely differs
 
     // Nothing is silent. Every lost slot is reported open by stage 2…
     const stage2Open = new Map(stage2.unfilled.map(u => [u.slot_id, u.reason]));
-    expect(stage2Open.get('2026-01-08|D1')).toBe('sequence-orphan: chain link severed');
+    // 01-08 D2 is reported through the OTHER channel: stage 2's post-call link
+    // EVICTED p05's stale pre-fill there (commitPlan reverts that row to open),
+    // so it is never in stage 2's unfilled list — plan.evictions is its report.
+    // Both channels count; what must not exist is a slot in neither.
+    expect((stage2.evictions ?? []).some(e => e.slot_id === '2026-01-08|D2')).toBe(true);
+    expect(stage2Open.has('2026-01-08|D2')).toBe(false);
     expect(stage2Open.get('2026-01-18|D2')).toBe('sequence-orphan: chain link severed');
     expect(stage2Open.get('2026-01-20|D2')).toBe('sequence-orphan: pre-call fill waived');
     expect(stage2Open.get('2026-01-21|D2')).toBe('sequence-orphan: pre-call fill waived');
@@ -441,7 +487,6 @@ describe('staged equivalence — weekend-only then Continue-all vs one-shot all 
     // (invariant 4; the waived pair is a by-design unlessCallWithinDays skip,
     // recorded via the mop-up reason above, not a suppression):
     const skips = new Map((stage2.skippedDerived ?? []).map(s => [`${s.date}|${s.code}`, s.reason]));
-    expect(skips.get('2026-01-08|D1')).toBe('occupied');
     expect(skips.get('2026-01-18|D2')).toBe('pto');
     // …and the gained slots are exactly slots ONE-SHOT itself reported open.
     const oneShotOpen = new Map(oneShot.unfilled.map(u => [u.slot_id, u.reason]));
