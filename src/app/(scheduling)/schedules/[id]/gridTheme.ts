@@ -26,6 +26,26 @@ export const gridTokens = {
   name: '#0f172a',
   open: '#dc2626',
   unassigned: '#cbd5e1',
+  // ── Unfilled call (2026-07-29) ────────────────────────────────────────────
+  // Gabriel: "for any unfilled call slot on the schedule, i want the cell to be
+  // red and 'open' should be listed in it". An unfilled call is a slot he has
+  // to list up for grabs as a paid pickup, so it must be unmissable — and
+  // unlike every other red on this grid it is not a warning ABOUT someone, it
+  // is a hole.
+  //
+  // WHY THIS ONE IS SOLID AND THE OTHERS ARE WASHES. Every other state here
+  // sits UNDER a provider's name and must stay legible through it, which is
+  // what caps over-par/extra-call/holiday at alpha 0.15–0.22 and the hand-set
+  // marks at 0.42–0.55. An unfilled cell has no name — it is empty by
+  // definition — so it can carry a solid fill nothing else on the grid can,
+  // and it is the ONLY cell that renders white-on-red. That makes it
+  // structurally impossible to confuse with the over-par wash (which always
+  // carries a name plus the OVER tag) at scan speed, without inventing a hue.
+  // Same #dc2626 the OPEN text has always used, so no new colour enters the
+  // vocabulary; the hover is the OVER tag's deeper red, likewise already here.
+  openCall: '#dc2626',
+  openCallHover: '#b91c1c',
+  openCallText: '#ffffff',
   statusName: '#475569',
   line: '#e8edf3',
   hard: '#ef4444',
@@ -95,10 +115,16 @@ export interface CellStateFlags {
   isWeekend: boolean;
   /** Hand-set billing mark (patch42). null/undefined = no manual mark. */
   manualHighlight?: HighlightColor | null;
+  /** Unfilled CALL slot (2026-07-29) — no assignment row fills it, so it has
+   *  to be listed up for grabs. The inverse of the three flags above: those
+   *  need an assignment to exist, this one needs there to be none. Optional so
+   *  every pre-existing call site keeps compiling and behaving identically. */
+  isUnfilledCall?: boolean;
 }
 
 /** Resolve a data-cell background. The *precedence* (highest first:
- *  MANUAL HIGHLIGHT › over-par › extra-call › holiday › weekend › base). The
+ *  MANUAL HIGHLIGHT › over-par › extra-call › UNFILLED CALL › holiday ›
+ *  weekend › base). The
  *  computed tail (over-par › extra-call › holiday › weekend › base)
  *  intentionally mirrors the pre-redesign inline logic so state priority can't
  *  silently shift. The color *values* are deliberately new for the redesign
@@ -114,7 +140,24 @@ export interface CellStateFlags {
  *  The isHighlightColor guard is deliberate: a value that is not one of the
  *  three (a pre-patch row, a hand-edited DB row, a future fourth colour served
  *  to old code) must fall through to the computed chain, never index the token
- *  map to `undefined` and blank the cell. */
+ *  map to `undefined` and blank the cell.
+ *
+ *  WHERE THE UNFILLED-CALL STATE SITS, AND WHY (2026-07-29). Directly above
+ *  holiday, i.e. it beats the two AMBIENT DATE WASHES and loses to the three
+ *  ASSIGNMENT-SCOPED states. That split is not a judgement call, it is what
+ *  can actually collide:
+ *    - manual highlight / over-par / extra-call all require an assignment to
+ *      exist (this file's own convention note, and the page gates all three on
+ *      isAssigned). An unfilled cell has none, so it can never be any of them
+ *      and their relative order is untouched — placing the new state below
+ *      them keeps the pinned computed tail byte-identical for every cell that
+ *      could reach it.
+ *    - holiday and weekend are properties of the DATE and co-occur with an
+ *      unfilled call constantly. They must lose: an open Saturday call, or an
+ *      open call on Thanksgiving, is the single most valuable thing on the
+ *      grid, and the amber/gray washes would bury it.
+ *  Sell-back is the fourth red and also cannot collide — it is drawn outside
+ *  this chain and needs a provider. */
 export function cellBackground(s: CellStateFlags, hover = false): string {
   if (isHighlightColor(s.manualHighlight)) {
     return hover
@@ -123,6 +166,7 @@ export function cellBackground(s: CellStateFlags, hover = false): string {
   }
   if (s.isOverPar) return hover ? gridTokens.overParHover : gridTokens.overPar;
   if (s.isExtraCall) return hover ? gridTokens.extraCallHover : gridTokens.extraCall;
+  if (s.isUnfilledCall) return hover ? gridTokens.openCallHover : gridTokens.openCall;
   if (s.isHoliday) return hover ? gridTokens.bodyHolidayHover : gridTokens.bodyHoliday;
   if (s.isWeekend) return hover ? gridTokens.bodyWeekendHover : gridTokens.bodyWeekend;
   return hover ? gridTokens.bodyCellHover : gridTokens.bodyCell;

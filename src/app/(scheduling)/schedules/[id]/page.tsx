@@ -102,6 +102,14 @@ import {
   type CandidateCredentialRow, type CrossSiteBookingRow, type DayShiftRelease,
   type SlotCandidate,
 } from '@/lib/slotCandidates';
+// Available Call (2026-07-29): every UNFILLED call slot — the grid's red-cell
+// predicate and the Available Call List are the SAME function, so a red cell
+// and a list row can never disagree. "Unfilled" is row-level (plannerMath's
+// assignmentFills), because clearing a cell leaves an OPEN PLACEHOLDER row
+// behind and a naive count(assignments) reports those slots as covered.
+import {
+  buildAvailableCallList, bucketSummaryText, formatAvailableCallText, isUnfilledCallSlot,
+} from '@/lib/availableCalls';
 
 /* ── Interfaces ──────────────────────────────────────────────────────────── */
 
@@ -422,6 +430,8 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
   // for anyone who looked away mid-click. It stays until dismissed.
   const [swapFailure, setSwapFailure] = useState<string | null>(null);
   const [showCounts, setShowCounts] = useState(false);
+  // Available Call List (2026-07-29) — sits with the other analysis views.
+  const [showAvailableCalls, setShowAvailableCalls] = useState(false);
   const [showAssistant, setShowAssistant] = useState(false);
   // Inline rename (Gabriel 2026-07-22): the header pencil PATCHes
   // schedule_name (route-validated: trimmed, non-empty, ≤ 120). Local grid
@@ -791,6 +801,17 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
 
     return { shiftTypes, allDates, slotMap, segmentsByParent, holidayMap, assignedOnDate, availableByDate, offByDate, offTitleByDate, ptoByDate, postCallByDate, maxAvailable, maxOff, maxPto, maxPostCall, callTakerIds, sellbackByDate };
   }, [grid]);
+
+  /* ── Available Call (2026-07-29) ─────────────────────────────────────────
+   * Every unfilled call slot in the block. Derived ONCE here and handed to
+   * both the toolbar badge and the modal, so the count on the button and the
+   * rows in the list are the same object — they cannot drift. Every rule
+   * (the open-placeholder-safe predicate, the day-type buckets, the
+   * consecutive-date clustering, the plain-text form) lives in the module. */
+  const availableCalls = useMemo(
+    () => buildAvailableCallList(grid?.slots ?? [], grid?.holidays ?? []),
+    [grid],
+  );
 
   /* ── Per-date working roster + over-par detection ───────────────────────── */
 
@@ -1761,6 +1782,31 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
           Call Counts
         </Button>
 
+        {/* Available Call — the unfilled-call worklist, next to Call Counts so
+            it sits with the other analysis views. The count rides on the
+            button because it is the number he checks constantly ("which calls
+            i need to list up for grabs"), and the button goes red the moment
+            the block has any; a fully covered block leaves it plain and
+            unnumbered, so "no badge" always means "nothing to post". */}
+        <Button
+          variant="secondary"
+          onClick={() => setShowAvailableCalls(true)}
+          title={availableCalls.total > 0
+            ? `${availableCalls.total} unfilled call slot${availableCalls.total === 1 ? '' : 's'} to list up for grabs`
+            : 'Every call slot in this block is filled'}
+          // Same tinted-Button idiom the Pool / Assistant buttons use, keyed to
+          // the grid's own open red rather than a --var: the design system has
+          // --blue and --indigo but no red token, and this button has to match
+          // the cells it is about.
+          style={availableCalls.total > 0 ? {
+            background: `color-mix(in srgb, ${gridTokens.openCall} 15%, transparent)`,
+            color: gridTokens.openCall,
+            border: `1px solid color-mix(in srgb, ${gridTokens.openCall} 45%, transparent)`,
+          } : undefined}
+        >
+          Available Call{availableCalls.total > 0 ? ` (${availableCalls.total})` : ''}
+        </Button>
+
         <Button
           variant="secondary"
           onClick={() => setShowAssistant(v => !v)}
@@ -2288,9 +2334,19 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
                         const segHighlight = segProvider
                           ? normalizeHighlightColor(segAssignment?.highlight_color)
                           : null;
+                        // A SEGMENT is a call slot in its own right (own slot,
+                        // own assignment, own burden weight), so an unfilled
+                        // one is an unfilled call and gets the same red cell +
+                        // "open" as a whole call — same predicate, so the
+                        // stacked cells and the Available Call List agree.
+                        // Without this the list would carry rows the grid
+                        // renders in a 0.05 near-white wash.
+                        const segUnfilled = !segProvider && isUnfilledCallSlot(seg);
                         const segBg = (hover: boolean) => segHighlight
                           ? (hover ? gridTokens.manualHighlightHover : gridTokens.manualHighlight)[segHighlight]
-                          : colorWithAlpha(seg.shift_types.color_hex, hover ? 0.26 : segProvider ? 0.14 : 0.05);
+                          : segUnfilled
+                            ? (hover ? gridTokens.openCallHover : gridTokens.openCall)
+                            : colorWithAlpha(seg.shift_types.color_hex, hover ? 0.26 : segProvider ? 0.14 : 0.05);
                         return (
                           <div
                             key={seg.id}
@@ -2330,7 +2386,11 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
                           >
                             <span style={{
                               fontSize: 7.5, fontWeight: 800, letterSpacing: '0.03em',
-                              color: gridTokens.chromeMuted, flexShrink: 0, minWidth: 16,
+                              // The muted slate tag is unreadable on the solid
+                              // open red; on an unfilled segment it goes white
+                              // like the rest of that mini-cell's ink.
+                              color: segUnfilled ? gridTokens.openCallText : gridTokens.chromeMuted,
+                              flexShrink: 0, minWidth: 16,
                             }}>{segmentTag(seg.shift_types.code, st.code)}</span>
                             {segProvider ? (
                               <span style={{
@@ -2338,7 +2398,10 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
                                 whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', flex: 1,
                               }}>{segProvider.short_display_name}</span>
                             ) : (
-                              <span style={{ fontSize: 8.5, fontWeight: 800, letterSpacing: '0.03em', color: gridTokens.open }}>OPEN</span>
+                              <span style={{
+                                fontSize: 8.5, fontWeight: 800, letterSpacing: '0.03em',
+                                color: segUnfilled ? gridTokens.openCallText : gridTokens.open,
+                              }}>open</span>
                             )}
                             {segOver ? (
                               <span aria-label="Over par for this shift" style={{
@@ -2413,8 +2476,29 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
                 const manualHighlight = isAssigned
                   ? normalizeHighlightColor(assignment?.highlight_color)
                   : null;
+                // Unfilled call (2026-07-29) — THE red cell Gabriel asked for:
+                // a call slot nobody is working, which he has to list up for
+                // grabs as a paid pickup. `isUnfilledCallSlot` is the SAME
+                // predicate the Available Call List is built from, so a red
+                // cell and a list row are the same fact rendered twice; it
+                // scans every assignment row through plannerMath's
+                // assignmentFills, so an OPEN PLACEHOLDER (the row the DELETE
+                // endpoint re-inserts with a null provider) reads as empty
+                // rather than as covered.
+                //
+                // Conjoined with !isAssigned deliberately. The cell's CONTENT
+                // branch keys off isAssigned (`!!assignment.providers`), and
+                // the two predicates differ on exactly one thing: a row with a
+                // provider whose status is canceled/declined fills nothing but
+                // still renders a name. The app writes only 'assigned' and
+                // 'open' so this cannot occur today, and the conjunction
+                // guarantees that if it ever did, the cell can never show a
+                // red "this is empty" wash underneath somebody's name — it
+                // would appear in the list (which is the more correct answer)
+                // and stay quiet on the grid.
+                const isUnfilledCall = !!slot && !isAssigned && isUnfilledCallSlot(slot);
 
-                const cellFlags = { isOverPar, isExtraCall, isHoliday, isWeekend, manualHighlight };
+                const cellFlags = { isOverPar, isExtraCall, isHoliday, isWeekend, manualHighlight, isUnfilledCall };
                 // The computed explanation still applies even when the manual
                 // colour out-ranks its wash, so the mark's tooltip is APPENDED
                 // rather than replacing it.
@@ -2425,7 +2509,11 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
                       ? `Provider picking up Extra call — ${provider.short_display_name} is not in the regular call pool at this site.`
                       : isSellback && provider
                         ? `${provider.short_display_name} is selling back PTO — working this date.`
-                        : undefined;
+                        : isUnfilledCall
+                          ? `${st.code} on ${formatMMDD(date)} is unfilled — ${isOpenCall
+                              ? 'already listed up for grabs.'
+                              : 'list it up for grabs. See Available Call.'}`
+                          : undefined;
                 const cellTitle = manualHighlight
                   ? [manualHighlightTitle(manualHighlight), computedTitle].filter(Boolean).join('\n')
                   : computedTitle;
@@ -2493,10 +2581,54 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
                       }}>
                         {provider!.short_display_name}
                       </span>
+                    ) : isUnfilledCall ? (
+                      /* Gabriel's words, verbatim: "'open' should be listed in
+                         it". Lower-case on purpose — this is the cell's
+                         CONTENT slot, the one that otherwise holds a
+                         provider's mixed-case name; the upper-case marks in
+                         this grid (OVER / EXTRA / SB) all live in the corners.
+                         White is the only white-on-red text on the grid. */
+                      <span style={{
+                        fontSize: viewMode === 'month' ? 10 : 11.5, fontWeight: 800,
+                        letterSpacing: '0.02em', color: gridTokens.openCallText,
+                      }}>open</span>
                     ) : isOpenCall ? (
+                      /* Unreachable for a call slot (an is_open_call row with
+                         no provider is by definition an unfilled call, handled
+                         above); retained for a non-call shift type that was
+                         somehow offered, whose prior treatment is unchanged. */
                       <span style={{ fontSize: 11, fontWeight: 800, letterSpacing: '0.03em', color: gridTokens.open }}>OPEN</span>
                     ) : (
                       <span style={{ fontSize: 13, color: gridTokens.unassigned }} aria-label="Unassigned">&mdash;</span>
+                    )}
+
+                    {/* ── Already listed up for grabs ──────────────────────
+                        THE distinction between the two open states, preserved
+                        rather than collapsed. `is_open_call` means an
+                        open_call_offer row exists — a human has already posted
+                        this call to the group — which is a strict SUBSET of
+                        unfilled, so both share the red cell (Gabriel asked for
+                        every unfilled call to be red) and the posted ones
+                        carry this mark on top.
+
+                        A dot, not a word: the corner tags this grid already
+                        uses (OVER/EXTRA/SB) are 2–5 characters and a legible
+                        word for "posted" is longer than a month-view cell is
+                        wide, whereas the 6px dot is the device the segment
+                        cells already use for their validation marks and stays
+                        readable at every zoom. Bottom-right is free on an
+                        unfilled cell by construction: OVER and EXTRA both
+                        require an assignment, SB requires a provider. */}
+                    {isUnfilledCall && isOpenCall && (
+                      <span
+                        aria-label="Already listed up for grabs"
+                        title="Already posted to the group for pickup."
+                        style={{
+                          position: 'absolute', bottom: 2, right: 3,
+                          width: 6, height: 6, borderRadius: 3, pointerEvents: 'none',
+                          background: gridTokens.openCallText,
+                        }}
+                      />
                     )}
 
                     {/* Bottom-right status tag — over-par wins over extra-call,
@@ -2977,6 +3109,15 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
       {/* Call Counts Modal */}
       {showCounts && grid && (
         <CallCountsModal grid={grid} onClose={() => setShowCounts(false)} />
+      )}
+
+      {/* Available Call List */}
+      {showAvailableCalls && grid && (
+        <AvailableCallsModal
+          list={availableCalls}
+          title={grid.schedule.schedule_name}
+          onClose={() => setShowAvailableCalls(false)}
+        />
       )}
 
       {/* Pool Selector Modal */}
@@ -4773,6 +4914,223 @@ function CallCountsModal({ grid, onClose }: { grid: GridData; onClose: () => voi
             </tr>
           </tbody>
         </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ── Available Call List ─────────────────────────────────────────────────────
+ * Gabriel: "I want you to create an 'Available Call List' that lists the
+ * day/date/type of call so that I know which calls i need to list up for
+ * grabs". Every unfilled call slot in the block — the same slots the grid now
+ * paints red, from the same predicate.
+ *
+ * SHAPE. A chronological worklist, because that is how it gets posted and
+ * worked down, grouped BY WEEKEND: one cluster per Fri/Sat/Sun, one per
+ * Mon–Thu date. A whole weekend standing open is one conversation with the
+ * group; four scattered Tuesdays are four. Above them sits the count he prices
+ * from: the per-DAY-TYPE breakdown (the engine's own fairness buckets, so a
+ * holiday-dated call is counted under the day of the week it lands on) and the
+ * per-CODE tally.
+ *
+ * OUTPUT. Print follows the Call Counts precedent exactly — a scoped
+ * @media print block that hides everything outside the print area and pins
+ * black-on-white — but PORTRAIT, since this is a narrow list rather than a
+ * 27-column table. Copy puts the same document on the clipboard as plain text
+ * (formatAvailableCallText), because posting it is a paste into an email or a
+ * text thread, not a PDF attachment.
+ *
+ * This component RENDERS ONLY. Membership, ordering, bucketing, clustering and
+ * the text form are all in lib/availableCalls.ts with its test — vitest runs
+ * with no jsdom, so no rule may live here.
+ * ───────────────────────────────────────────────────────────────────────── */
+function AvailableCallsModal({
+  list,
+  title,
+  onClose,
+}: {
+  list: ReturnType<typeof buildAvailableCallList>;
+  title: string;
+  onClose: () => void;
+}) {
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(formatAvailableCallText(list, title));
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      // Clipboard denied (insecure context / permission). The list is still on
+      // screen and selectable, and Print / Save PDF is right there — silently
+      // doing nothing is the honest outcome, but say so rather than pretend.
+      setCopied(false);
+      alert('Could not reach the clipboard. Select the list and copy it, or use Print / Save PDF.');
+    }
+  };
+
+  const summary = bucketSummaryText(list);
+
+  return (
+    <div
+      onClick={onClose}
+      style={{
+        position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.75)',
+        zIndex: 800, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20,
+      }}
+    >
+      <div
+        onClick={e => e.stopPropagation()}
+        style={{
+          background: 'var(--bg-deep)', borderRadius: 12, border: '1px solid var(--border)',
+          boxShadow: '0 24px 60px rgba(0,0,0,0.5)',
+          padding: 20, maxWidth: '95vw', maxHeight: '90vh', overflow: 'auto', minWidth: 560,
+        }}
+      >
+        {/* Scoped print stylesheet — the Call Counts pattern (everything
+            outside the print area hidden, the area pinned to the page box,
+            black on white because browsers drop background colour when
+            printing). PORTRAIT: this is a four-column list, not a wide table,
+            and it is meant to be handed round on paper. */}
+        <style>{`
+          @media print {
+            @page { size: portrait; margin: 0.5in; }
+            body * { visibility: hidden !important; }
+            #available-call-print, #available-call-print * { visibility: visible !important; }
+            #available-call-print {
+              position: fixed !important; inset: 0 !important;
+              background: #fff !important; color: #000 !important;
+              padding: 0 !important; overflow: visible !important;
+              max-height: none !important; max-width: none !important;
+              min-width: 0 !important; border: none !important;
+            }
+            #available-call-print table, #available-call-print th, #available-call-print td {
+              color: #000 !important; border-color: #666 !important;
+              background: #fff !important;
+            }
+            #available-call-print table { font-size: 9pt !important; width: 100% !important; }
+            #available-call-print th, #available-call-print td { padding: 2px 4px !important; }
+            /* A cluster must never be split across a page break — a weekend
+               that lands half on page 1 and half on page 2 reads as two
+               separate offers. */
+            #available-call-print .ac-cluster { break-inside: avoid; page-break-inside: avoid; }
+            /* The grid's "already posted" mark is a coloured dot, which print
+               drops; the list spells the word instead, so the paper copy says
+               which calls are already out with the group. */
+            #available-call-print .no-print { display: none !important; }
+          }
+        `}</style>
+
+        <div id="available-call-print">
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 14, gap: 16 }}>
+            <div>
+              <div style={{ fontSize: 16, fontWeight: 800, color: 'var(--text)' }}>Available Call</div>
+              <div style={{ fontSize: 12, color: 'var(--text-dim)', marginTop: 2 }}>
+                {title} — every unfilled call slot, to list up for grabs.
+              </div>
+              {list.total > 0 && (
+                <>
+                  <div style={{ fontSize: 12.5, color: 'var(--text-muted)', marginTop: 6, fontWeight: 700 }}>
+                    {list.total} open call slot{list.total === 1 ? '' : 's'}
+                    {list.postedCount > 0 && ` — ${list.postedCount} already posted`}
+                    {summary && <> · {summary}</>}
+                  </div>
+                  {list.byCode.length > 0 && (
+                    <div style={{ fontSize: 12, color: 'var(--text-dim)', marginTop: 3 }}>
+                      {list.byCode.map(c => `${c.code} ${c.count}`).join(' · ')}
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+            <div className="no-print" style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
+              {list.total > 0 && (
+                <button onClick={handleCopy} style={{
+                  padding: '7px 15px', fontSize: 12.5, fontWeight: 700, borderRadius: 8, cursor: 'pointer',
+                  background: 'transparent', border: '1px solid var(--border)', color: 'var(--text-muted)',
+                }}>{copied ? 'Copied ✓' : 'Copy'}</button>
+              )}
+              {list.total > 0 && (
+                <button onClick={() => window.print()} style={{
+                  padding: '7px 16px', fontSize: 12.5, fontWeight: 700, border: 'none', borderRadius: 8, cursor: 'pointer',
+                  background: 'linear-gradient(135deg,#0ea5e9,#6366f1)', color: '#fff', boxShadow: '0 4px 14px rgba(56,130,246,0.35)',
+                }}>Print / Save PDF</button>
+              )}
+              <button onClick={onClose} style={{
+                padding: '7px 15px', fontSize: 12.5, fontWeight: 700, borderRadius: 8, cursor: 'pointer',
+                background: 'transparent', border: '1px solid var(--border)', color: 'var(--text-muted)',
+              }}>Close</button>
+            </div>
+          </div>
+
+          {list.total === 0 ? (
+            <div style={{
+              padding: '22px 16px', textAlign: 'center', fontSize: 13, fontWeight: 600,
+              color: 'var(--text-dim)', border: '1px dashed var(--border)', borderRadius: 8,
+            }}>
+              No unfilled call slots — every call in this block is covered.
+            </div>
+          ) : (
+            list.clusters.map(cluster => (
+              <div key={cluster.key} className="ac-cluster" style={{ marginBottom: 14 }}>
+                <div style={{
+                  display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4,
+                  paddingBottom: 3, borderBottom: '1px solid var(--border)',
+                }}>
+                  <span style={{ fontSize: 13, fontWeight: 800, color: 'var(--text)' }}>{cluster.label}</span>
+                  <span style={{ fontSize: 11.5, fontWeight: 600, color: 'var(--text-dim)' }}>
+                    {cluster.rows.length} open
+                  </span>
+                  {/* The one annotation that changes what this cluster IS: a
+                      whole Fri/Sat/Sun standing open is a different offer from
+                      three unrelated days that happen to be adjacent. */}
+                  {cluster.wholeWeekend && (
+                    <span style={{
+                      fontSize: 9.5, fontWeight: 800, letterSpacing: '0.06em',
+                      padding: '1px 6px', borderRadius: 999,
+                      color: gridTokens.openCall,
+                      border: `1px solid ${gridTokens.openCall}`,
+                    }}>WHOLE WEEKEND</span>
+                  )}
+                </div>
+                <table style={{ borderCollapse: 'collapse', width: '100%', fontSize: 12.5 }}>
+                  <tbody>
+                    {cluster.rows.map(row => (
+                      <tr key={row.slotId}>
+                        <td style={{ padding: '3px 8px 3px 0', width: 34, fontWeight: 700, color: 'var(--text-muted)' }}>
+                          {row.dayName}
+                        </td>
+                        <td style={{ padding: '3px 10px 3px 0', width: 54, color: 'var(--text-muted)' }}>
+                          {row.dateShort}
+                        </td>
+                        <td style={{ padding: '3px 10px 3px 0', width: 62, fontWeight: 800, color: 'var(--text)' }}>
+                          {row.code}
+                        </td>
+                        <td style={{ padding: '3px 0', color: 'var(--text-dim)' }}>
+                          {row.name}
+                          {row.holidayName && (
+                            <span style={{ marginLeft: 6, fontWeight: 700, color: '#b45309' }}>
+                              ({row.holidayName})
+                            </span>
+                          )}
+                          {row.locked && <span style={{ marginLeft: 6 }} title="Locked slot">&#x1F512;</span>}
+                        </td>
+                        <td style={{ padding: '3px 0', width: 68, textAlign: 'right' }}>
+                          {row.posted && (
+                            <span
+                              title="Already posted to the group for pickup."
+                              style={{ fontSize: 10.5, fontWeight: 700, color: 'var(--text-dim)' }}
+                            >posted</span>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ))
+          )}
         </div>
       </div>
     </div>

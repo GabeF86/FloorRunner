@@ -43,6 +43,69 @@ describe('cellBackground precedence', () => {
     expect(cellBackground({ ...base, isWeekend: true, manualHighlight: undefined })).toBe(gridTokens.bodyWeekend);
     expect(cellBackground({ ...base, manualHighlight: null })).toBe(gridTokens.bodyCell);
   });
+
+  it('an absent / false unfilled-call flag changes nothing about the computed chain', () => {
+    expect(cellBackground({ ...base, isWeekend: true, isUnfilledCall: false })).toBe(gridTokens.bodyWeekend);
+    expect(cellBackground({ ...base, isHoliday: true, isUnfilledCall: undefined })).toBe(gridTokens.bodyHoliday);
+    expect(cellBackground({ ...base })).toBe(gridTokens.bodyCell);
+  });
+});
+
+// ── Unfilled call (2026-07-29) ───────────────────────────────────────────────
+// The new state beats the two AMBIENT DATE washes it can actually co-occur
+// with, and sits under the three assignment-scoped states it can never be.
+describe('cellBackground: an unfilled call slot', () => {
+  const base = { isOverPar: false, isExtraCall: false, isHoliday: false, isWeekend: false };
+
+  it('paints a plain cell the solid open red', () => {
+    expect(cellBackground({ ...base, isUnfilledCall: true })).toBe(gridTokens.openCall);
+    expect(cellBackground({ ...base, isUnfilledCall: true }, true)).toBe(gridTokens.openCallHover);
+  });
+
+  // THE MUTATION PROOF for the placement. Both ambient date washes are on at
+  // once — an open call on a holiday that falls on a weekend, the loudest cell
+  // on the grid. Delete the unfilled branch from cellBackground and this
+  // returns the holiday amber; move it below holiday and it returns the same.
+  it('beats the holiday amber AND the weekend gray', () => {
+    const flags = { ...base, isHoliday: true, isWeekend: true, isUnfilledCall: true };
+    expect(cellBackground(flags)).toBe(gridTokens.openCall);
+    expect(cellBackground(flags)).not.toBe(gridTokens.bodyHoliday);
+    expect(cellBackground(flags)).not.toBe(gridTokens.bodyWeekend);
+    expect(cellBackground(flags, true)).toBe(gridTokens.openCallHover);
+  });
+
+  // Assignment-scoped states can never co-occur with it (an unfilled cell has
+  // no assignment to be over-par on, pick up extra, or carry a hand-set mark),
+  // so the pinned computed tail keeps its documented order for every cell that
+  // can actually reach it.
+  it('loses to over-par, extra-call and a hand-set mark', () => {
+    expect(cellBackground({ ...base, isUnfilledCall: true, isOverPar: true })).toBe(gridTokens.overPar);
+    expect(cellBackground({ ...base, isUnfilledCall: true, isExtraCall: true })).toBe(gridTokens.extraCall);
+    expect(cellBackground({ ...base, isUnfilledCall: true, manualHighlight: 'red' }))
+      .toBe(gridTokens.manualHighlight.red);
+  });
+
+  // It is the only SOLID fill in the chain — every other state is a tint that
+  // has to stay legible under a provider's name. An unfilled cell has no name,
+  // which is exactly why it may be solid.
+  it('is a solid colour, unlike every rgba wash it shares the grid with', () => {
+    expect(gridTokens.openCall).toMatch(/^#[0-9a-f]{6}$/i);
+    expect(gridTokens.openCallHover).toMatch(/^#[0-9a-f]{6}$/i);
+    for (const wash of [
+      gridTokens.overPar, gridTokens.overParHover, gridTokens.extraCall,
+      gridTokens.bodyHoliday, gridTokens.sellback,
+      ...Object.values(gridTokens.manualHighlight),
+    ]) {
+      expect(gridTokens.openCall).not.toBe(wash);
+      expect(gridTokens.openCallHover).not.toBe(wash);
+    }
+  });
+
+  // No new hue enters the vocabulary: the fill is the red OPEN text has always
+  // used, and the hover is the OVER tag's deeper red.
+  it('reuses reds the grid already has', () => {
+    expect(gridTokens.openCall).toBe(gridTokens.open);
+  });
 });
 
 // ── Manual billing highlight (patch42) ───────────────────────────────────────
@@ -139,9 +202,11 @@ describe('cellOutline', () => {
     expect(cellOutline({ ...base, manualHighlight: color })).toBe(gridTokens.manualHighlightOutline);
   });
 
-  it('no computed state carries a ring — not even all four at once', () => {
+  it('no computed state carries a ring — not even all five at once', () => {
     expect(cellOutline(base)).toBeUndefined();
-    expect(cellOutline({ isOverPar: true, isExtraCall: true, isHoliday: true, isWeekend: true })).toBeUndefined();
+    expect(cellOutline({
+      isOverPar: true, isExtraCall: true, isHoliday: true, isWeekend: true, isUnfilledCall: true,
+    })).toBeUndefined();
   });
 
   it('the manual ring is distinct from the sell-back ring (different marks, different meanings)', () => {
