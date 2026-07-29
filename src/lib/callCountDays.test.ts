@@ -102,6 +102,28 @@ describe('daysOffFor', () => {
     }
   });
 
+  // patch43: the modal's Days Off column multiplies by the WORKING-DAYS FTE,
+  // so it stays the exact complement of the Required column in the same row.
+  it('a stated work-days FTE moves Days Off, and stays the complement of Required', () => {
+    // Hussain: 0.66 call FTE, 1.0 work-days FTE, 54 WD, 4 PTO weekdays.
+    expect(daysOffFor(0.66, 54, 4)).toBe(54 - 4 - requiredWorkDays(0.66, 54, 4)); // before
+    expect(daysOffFor(0.66, 54, 4, 1)).toBe(0);                                   // after
+    expect(requiredWorkDays(0.66, 54, 4, 1)).toBe(50);
+    // A middling one stays consistent too.
+    expect(daysOffFor(0.66, 54, 4, 0.75))
+      .toBe(54 - 4 - requiredWorkDays(0.66, 54, 4, 0.75));
+  });
+
+  it('null/omitted work-days FTE is byte-identical to the pre-patch43 column', () => {
+    const cases: Array<[number, number, number]> = [
+      [1, 54, 0], [0.8, 43, 5], [0.66, 54, 4], [0.5, 20, 0], [0.75, 54, 18],
+    ];
+    for (const [fte, wd, pto] of cases) {
+      expect(daysOffFor(fte, wd, pto, null)).toBe(daysOffFor(fte, wd, pto));
+      expect(daysOffFor(fte, wd, pto, undefined)).toBe(daysOffFor(fte, wd, pto));
+    }
+  });
+
   it('full-FTE providers compute to 0, with and without PTO (modal renders —)', () => {
     expect(daysOffFor(1, 54, 0)).toBe(0);
     expect(daysOffFor(1, 54, 5)).toBe(0);

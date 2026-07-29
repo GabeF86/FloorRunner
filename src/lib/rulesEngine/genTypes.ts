@@ -21,7 +21,15 @@ export interface CandidateProvider {
   id: string;
   provider_type: string;
   short_display_name: string;
+  // CALL FTE (provider_employment_profiles.fte_value) — quotas, bucket
+  // targets, obligation, fairness ratios, the neuro bands. Unchanged.
   fte_value: number;
+  // WORKING-DAYS FTE (provider_employment_profiles.work_days_fte, patch43):
+  // how many of the block's working days the provider owes, independent of
+  // how much call they owe. NULL/absent ⇒ "same as fte_value" (every provider
+  // before Hussain). Read ONLY by the workDays.ts contract — never by any
+  // call-side arithmetic.
+  work_days_fte?: number | null;
   home_site_id: string | null;
   // 7 booleans indexed Sun..Sat (matches JS Date.getDay).
   available_weekdays: boolean[];

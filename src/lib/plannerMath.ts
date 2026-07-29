@@ -28,6 +28,7 @@ import {
 } from './rulesEngine/shared';
 import {
   creditsAsWorkedAvailability,
+  effectiveWorkDaysFte,
   entitledOffDays,
   isWorkingDay,
   ptoWeekdaysCovered,
@@ -272,11 +273,15 @@ export interface PlannerAvailabilityRow {
 }
 
 export interface ProviderDayStats {
-  fte: number;
+  fte: number;           // CALL FTE — display + the call half of the card
+  // The WORKING-DAYS FTE the two numbers below were computed from (patch43):
+  // the provider's stated work_days_fte, else `fte`. Equal to `fte` for
+  // everyone who states none.
+  workDaysFte: number;
   workingDays: number;   // |workingDaySet| for the range
   ptoWeekdays: number;   // netting-leave weekdays (sell-back restores removed) ± what-if
-  required: number;      // requiredWorkDays(fte, WD, ptoWeekdays)
-  entitledOff: number;   // entitledOffDays(fte, WD)
+  required: number;      // requiredWorkDays(fte, WD, ptoWeekdays, workDaysFte)
+  entitledOff: number;   // entitledOffDays(fte, WD, workDaysFte)
 }
 
 // What-if variables (panel C). Hypothetical only — callers must render them
@@ -294,11 +299,14 @@ export interface DayStatsWhatIf {
 // via the engine's ptoWeekdaysCovered (pending included, denied/canceled
 // ignored, live sell-back restores removed), then the requiredWorkDays /
 // entitledOffDays arithmetic — all imported, none re-implemented.
+// `workDaysFte` (patch43) is the provider's STATED working-days FTE; null /
+// omitted ⇒ the days arithmetic multiplies by `fte`, exactly as before.
 export function providerDayStats(
   fte: number,
   workingDaySet: ReadonlySet<string>,
   availability: ReadonlyArray<PlannerAvailabilityRow>,
   whatIf?: DayStatsWhatIf,
+  workDaysFte?: number | null,
 ): ProviderDayStats {
   const workingDays = workingDaySet.size;
   const realPto = ptoWeekdaysCovered(availability, workingDaySet).size;
@@ -306,10 +314,11 @@ export function providerDayStats(
     0, realPto + (whatIf?.extraPtoWeekdays ?? 0) - (whatIf?.sellbackWeekdays ?? 0));
   return {
     fte,
+    workDaysFte: effectiveWorkDaysFte(fte, workDaysFte),
     workingDays,
     ptoWeekdays,
-    required: requiredWorkDays(fte, workingDays, ptoWeekdays),
-    entitledOff: entitledOffDays(fte, workingDays),
+    required: requiredWorkDays(fte, workingDays, ptoWeekdays, workDaysFte),
+    entitledOff: entitledOffDays(fte, workingDays, workDaysFte),
   };
 }
 
@@ -463,6 +472,10 @@ export interface PlannerPayloadSite {
 // Roster rows are structurally CensusProfile (fteTarget.ts) — the pool rule
 // and the `fte_value || 1` coercion apply to them without adaptation.
 export interface PlannerRosterEntry extends CensusProfile {
+  // Stated WORKING-DAYS FTE (patch43); null/absent ⇒ use fte_value. It rides
+  // the roster, NOT CensusProfile: the census is the CALL-obligation census
+  // and must never see this number.
+  work_days_fte?: number | null;
   first_name: string | null;
   last_name: string | null;
   short_display_name: string | null;
@@ -504,6 +517,9 @@ export interface PlannerContext {
   callEstimate: CallSlotEstimate;
   census: CallObligationCensus;
   availabilityByPid: Map<string, PlannerAvailabilityRow[]>;
+  /** pid → stated work_days_fte (patch43). Absent key / null ⇒ use fte_value.
+   *  Deliberately NOT on the census: the census owns the CALL side. */
+  workDaysFteByPid: Map<string, number | null>;
 }
 
 export function buildPlannerContext(payload: PlannerPayload): PlannerContext {
@@ -523,7 +539,9 @@ export function buildPlannerContext(payload: PlannerPayload): PlannerContext {
     if (list) list.push(row);
     else availabilityByPid.set(row.provider_id, [row]);
   }
-  return { payload, composition, callEstimate, census, availabilityByPid };
+  const workDaysFteByPid = new Map<string, number | null>(
+    payload.roster.map(r => [r.provider_id, r.work_days_fte ?? null]));
+  return { payload, composition, callEstimate, census, availabilityByPid, workDaysFteByPid };
 }
 
 // What-if variables (panel C). Hypothetical only — nothing here writes
@@ -618,8 +636,14 @@ export function providerPlannerNumbers(
     };
   });
 
+  // Days math (patch43): the STATED work-days FTE wins whenever the provider
+  // has one — that IS their working-days contract. A what-if `fte` therefore
+  // moves the CALL numbers above and moves the days numbers only for the
+  // providers whose days still derive from fte_value, which is the separation
+  // this column exists to express.
   const days = providerDayStats(
-    fte, ctx.composition.workingDaySet, ctx.availabilityByPid.get(providerId) ?? [], whatIf);
+    fte, ctx.composition.workingDaySet, ctx.availabilityByPid.get(providerId) ?? [], whatIf,
+    ctx.workDaysFteByPid.get(providerId) ?? null);
 
   const credited = actuals
     ? {

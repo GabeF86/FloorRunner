@@ -8,8 +8,7 @@ import type { CandidateCredentialRow, CrossSiteBookingRow } from '@/lib/slotCand
 import {
   GRID_CREDENTIAL_COLUMNS,
   GRID_CROSS_SITE_COLUMNS,
-  GRID_PROFILE_COLUMNS,
-  GRID_PROFILE_COLUMNS_NO_WEEKDAYS,
+  GRID_PROFILE_LADDER,
   GRID_SCHEDULE_COLUMNS,
   GRID_SLOT_COLUMNS,
   GRID_SLOT_COLUMNS_PRE35,
@@ -125,13 +124,18 @@ export async function GET(
   //    home-site (for Off rows) and their call-taker status. available_weekdays
   //    (2026-07-28) additionally powers the picker's weekday gate.
   //
-  //    NARROW RETRY: this read deliberately swallows its error (a profile
-  //    failure must not 500 the grid), which means a missing column would
-  //    blank EVERY profile and silently kill the Off/Available rows. So the
-  //    wide select falls back to the historical column list on a missing-column
-  //    error — an absent column can hold no weekday pattern, so the fallback is
-  //    exact (normalizeWeekdays coerces the absent value to all-true, i.e. "no
-  //    stated restriction", which is what a DB without the column means).
+  //    work_days_fte (patch43) additionally feeds the Call Counts modal's
+  //    Working Days / Days Off columns.
+  //
+  //    NARROW-RETRY LADDER: this read deliberately swallows its error (a
+  //    profile failure must not 500 the grid), which means a missing column
+  //    would blank EVERY profile and silently kill the Off/Available rows. So
+  //    the wide select walks GRID_PROFILE_LADDER down on a missing-column
+  //    error — an absent column can hold no value, so each rung is exact
+  //    (normalizeWeekdays coerces an absent weekday pattern to all-true, i.e.
+  //    "no stated restriction"; an absent work_days_fte means the working-days
+  //    contract derives from fte_value — both being what a DB without the
+  //    column means).
   const providerIds = (providers || []).map(p => p.id);
   const selectProfiles = (columns: string) => sb
     .from('provider_employment_profiles')
@@ -143,9 +147,9 @@ export async function GET(
   let profileRes: { data: unknown; error: { message: string; code?: string } | null } =
     { data: [], error: null };
   if (providerIds.length > 0) {
-    profileRes = await selectProfiles(GRID_PROFILE_COLUMNS);
-    if (profileRes.error && isMissingColumnErr(profileRes.error)) {
-      profileRes = await selectProfiles(GRID_PROFILE_COLUMNS_NO_WEEKDAYS);
+    for (const columns of GRID_PROFILE_LADDER) {
+      profileRes = await selectProfiles(columns);
+      if (!profileRes.error || !isMissingColumnErr(profileRes.error)) break;
     }
   }
   const profiles = profileRes.data as unknown[] | null;

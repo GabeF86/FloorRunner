@@ -9,6 +9,12 @@ import {
   AVAILABILITY_PATCH_FIELDS,
   AVAILABILITY_TYPES,
   AVAILABILITY_TYPE_LABELS,
+  validateAndSplitPatch,
+  PROFILE_COLUMNS,
+  PROVIDER_COLUMNS,
+  FTE_MAX,
+  WORK_DAYS_FTE_MIN,
+  WORK_DAYS_FTE_MAX,
 } from './providers';
 
 describe('validateAvailabilityPatch', () => {
@@ -110,5 +116,59 @@ describe('availability-type vocabulary (pto_sellback, patch31)', () => {
     expect([...AVAILABILITY_PATCH_FIELDS].sort()).toEqual(
       ['approval_status', 'availability_type', 'end_date', 'notes', 'start_date'],
     );
+  });
+});
+
+// ── work_days_fte, the WORKING-DAYS FTE (patch43) ───────────────────────────
+// The write gate for the second FTE. Two things must hold or the column is
+// dangerous: BLANK has to reach the DB as a real NULL ("same as FTE"), never
+// as 0 ("owes no working days"); and the range has to be 0..1, narrower than
+// fte_value's 0..2, because nobody can be obligated for more working days than
+// the block contains.
+describe('validateAndSplitPatch — work_days_fte', () => {
+  const split = (v: unknown) => validateAndSplitPatch({ work_days_fte: v });
+
+  it('routes to the employment profile, not the providers table', () => {
+    expect(PROFILE_COLUMNS as readonly string[]).toContain('work_days_fte');
+    expect(PROVIDER_COLUMNS as readonly string[]).not.toContain('work_days_fte');
+    const r = split(1);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.profileFields).toEqual({ work_days_fte: 1 });
+    expect(r.providerFields).toEqual({});
+  });
+
+  it('BLANK becomes NULL — the "same as FTE" state, never 0', () => {
+    for (const blank of ['', null]) {
+      const r = split(blank);
+      expect(r.ok).toBe(true);
+      if (!r.ok) return;
+      expect(r.profileFields.work_days_fte).toBeNull();
+      expect(r.profileFields.work_days_fte).not.toBe(0);
+    }
+  });
+
+  it('accepts the range 0..1 inclusive, coercing numeric strings', () => {
+    for (const v of [0, 0.5, 0.66, '0.75', 1, '1']) {
+      const r = split(v);
+      expect(r.ok, String(v)).toBe(true);
+      if (r.ok) expect(typeof r.profileFields.work_days_fte).toBe('number');
+    }
+  });
+
+  it('rejects above 1 — a working-days FTE over 1 is a typo, not a policy', () => {
+    // fte_value legitimately reaches 2 (the two-jobs partner); this must not.
+    expect(split(1.5).ok).toBe(false);
+    expect(split(2).ok).toBe(false);
+    expect(split(-0.1).ok).toBe(false);
+    expect(split('abc').ok).toBe(false);
+    const r = split(2);
+    if (!r.ok) expect(r.error).toContain('work_days_fte');
+  });
+
+  it('the range constants are the narrower 0..1, distinct from FTE_MIN/MAX', () => {
+    expect(WORK_DAYS_FTE_MIN).toBe(0);
+    expect(WORK_DAYS_FTE_MAX).toBe(1);
+    expect(FTE_MAX).toBe(2); // unchanged — the call FTE keeps its headroom
   });
 });

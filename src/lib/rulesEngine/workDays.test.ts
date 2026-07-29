@@ -4,6 +4,7 @@ import {
   workingDaysInRange,
   requiredWorkDays,
   entitledOffDays,
+  effectiveWorkDaysFte,
   ptoWeekdaysCovered,
   creditsAsWorkedAvailability,
   exceedsWorkDayCap,
@@ -86,6 +87,92 @@ describe('entitledOffDays — WD − round(FTE × WD) (independent of PTO)', () 
   });
   it('uses the same half-up rounding as required (0.5 × 21 = 10.5 → 11 → off 10)', () => {
     expect(entitledOffDays(0.5, 21)).toBe(10);
+  });
+});
+
+// ── The two-FTE split (2026-07-29, patch43) ─────────────────────────────────
+// The working-days contract multiplies by the WORKING-DAYS FTE, which is the
+// CALL FTE (fte_value) unless the provider states a separate work_days_fte.
+// The whole feature has to be a no-op when nothing is stated, and Hussain's
+// case has to come out at "every working day he isn't on call, PTO, or off".
+describe('effectiveWorkDaysFte — the single home for "null means use fte_value"', () => {
+  it('null / undefined fall back to the call FTE', () => {
+    expect(effectiveWorkDaysFte(0.66, null)).toBe(0.66);
+    expect(effectiveWorkDaysFte(0.66, undefined)).toBe(0.66);
+    expect(effectiveWorkDaysFte(1)).toBe(1);
+  });
+  it('a stated value wins, in both directions', () => {
+    expect(effectiveWorkDaysFte(0.66, 1)).toBe(1);    // Hussain
+    expect(effectiveWorkDaysFte(1, 0.75)).toBe(0.75); // the general case
+    expect(effectiveWorkDaysFte(0.5, 0.75)).toBe(0.75);
+  });
+  it('a stated ZERO is honored — it is a real contract, not a blank', () => {
+    // "Owes call, owes no working days." Blank is null, never 0; conflating
+    // them would silently zero somebody's obligation.
+    expect(effectiveWorkDaysFte(0.5, 0)).toBe(0);
+  });
+  it('garbage falls back to the call FTE rather than zeroing the obligation', () => {
+    expect(effectiveWorkDaysFte(0.8, Number.NaN)).toBe(0.8);
+    expect(effectiveWorkDaysFte(0.8, Number.POSITIVE_INFINITY)).toBe(0.8);
+    expect(effectiveWorkDaysFte(0.8, -1)).toBe(0.8);
+  });
+  it('accepts a numeric string (Postgres numeric arrives as one over PostgREST)', () => {
+    expect(effectiveWorkDaysFte(0.66, '1' as unknown as number)).toBe(1);
+  });
+});
+
+describe('requiredWorkDays / entitledOffDays with a stated work-days FTE', () => {
+  // The no-op proof: for a spread of FTEs and PTO counts, passing null (or
+  // nothing) must reproduce the pre-patch43 number EXACTLY.
+  it('a null work-days FTE reproduces the FTE-only formula for every FTE', () => {
+    const wd = 54;
+    for (const fte of [0.2, 0.33, 0.5, 0.66, 0.7, 0.75, 0.8, 0.9, 1.0]) {
+      for (const pto of [0, 1, 5, 12, 60]) {
+        const legacy = Math.max(0, Math.round(fte * wd) - pto);
+        expect(requiredWorkDays(fte, wd, pto)).toBe(legacy);
+        expect(requiredWorkDays(fte, wd, pto, null)).toBe(legacy);
+        expect(requiredWorkDays(fte, wd, pto, undefined)).toBe(legacy);
+      }
+      expect(entitledOffDays(fte, wd)).toBe(Math.max(0, wd - Math.round(fte * wd)));
+      expect(entitledOffDays(fte, wd, null)).toBe(entitledOffDays(fte, wd));
+    }
+  });
+
+  // HUSSAIN (Gabriel 2026-07-29): 0.66 FTE for CALL, full-time for WORKING
+  // DAYS. "if hes not on call, PTO, or 'off', he should be placed in a D slot
+  // to work." Not pinned to a specific block length — the working-day count is
+  // a parameter here precisely because deleting a holiday moves it.
+  it.each([53, 54, 55])(
+    'Hussain (call 0.66, work-days 1.0) is required for every non-PTO working day of a %i-day block',
+    (wd) => {
+      const pto = 7;
+      expect(requiredWorkDays(0.66, wd, pto, 1)).toBe(wd - pto);
+      // ...and he is entitled to ZERO off days, unlike a real 0.66.
+      expect(entitledOffDays(0.66, wd, 1)).toBe(0);
+      // Before: a third of the block off.
+      expect(requiredWorkDays(0.66, wd, pto)).toBe(Math.round(0.66 * wd) - pto);
+      expect(entitledOffDays(0.66, wd)).toBe(wd - Math.round(0.66 * wd));
+    },
+  );
+
+  it('the general case works too — 0.5 call, 0.75 working days (not a boolean flag)', () => {
+    // The reason this is a number and not a "full time for work days" flag.
+    expect(requiredWorkDays(0.5, 40, 0, 0.75)).toBe(30);
+    expect(entitledOffDays(0.5, 40, 0.75)).toBe(10);
+  });
+
+  it('PTO still nets 1:1 against the raised requirement, and the floor still holds', () => {
+    expect(requiredWorkDays(0.66, 54, 54, 1)).toBe(0);
+    expect(requiredWorkDays(0.66, 54, 99, 1)).toBe(0);
+  });
+
+  it('the entitledOff identity survives: WD − pto − required = entitledOff', () => {
+    // The identity workDays.ts documents, now on the WORK-DAYS FTE.
+    for (const [fte, workFte] of [[0.66, 1], [1, 0.5], [0.5, 0.75]] as const) {
+      const wd = 54, pto = 4;
+      expect(wd - pto - requiredWorkDays(fte, wd, pto, workFte))
+        .toBe(entitledOffDays(fte, wd, workFte));
+    }
   });
 });
 

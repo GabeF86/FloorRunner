@@ -14,7 +14,7 @@ import {
   GRID_CREDENTIAL_COLUMNS,
   GRID_CROSS_SITE_COLUMNS,
   GRID_PROFILE_COLUMNS,
-  GRID_PROFILE_COLUMNS_NO_WEEKDAYS,
+  GRID_PROFILE_LADDER,
   validationSummaryFor,
 } from './route.helpers';
 
@@ -486,8 +486,35 @@ describe('grid payload: picker eligibility inputs', () => {
     });
     const { res, json } = await get();
     expect(res.status).toBe(200);
+    // The whole ladder is walked: the fake refuses ANY select naming
+    // available_weekdays, so the wide rung and the pre-43 rung both fail and
+    // the no-weekdays rung serves it (patch43 added the middle rung).
     const selects = callsFor(calls, 'provider_employment_profiles', 'select').map(c => c.args[0]);
-    expect(selects).toEqual([GRID_PROFILE_COLUMNS, GRID_PROFILE_COLUMNS_NO_WEEKDAYS]);
+    expect(selects).toEqual([...GRID_PROFILE_LADDER]);
     expect(json.profiles).toEqual([{ provider_id: 'p1', home_site_id: 'site-1' }]);
+  });
+
+  // patch43: work_days_fte is the Call Counts modal's Working Days / Days Off
+  // multiplier. A DB without it must STOP at the pre-43 rung, keeping
+  // available_weekdays (which the picker's weekday gate needs) rather than
+  // falling all the way to the narrowest list.
+  it('a missing work_days_fte stops at the PRE43 rung — available_weekdays survives', async () => {
+    const { calls } = setupPicker({
+      provider_employment_profiles: (filters: { method: string; args: unknown[] }[]) => {
+        const sel = (filters.find(f => f.method === 'select')?.args[0] as string) ?? '';
+        if (sel.includes('work_days_fte')) {
+          return { data: null, error: { message: 'column work_days_fte does not exist', code: '42703' } };
+        }
+        return { data: [{ provider_id: 'p1', home_site_id: 'site-1', available_weekdays: null }], error: null };
+      },
+    });
+    const { res, json } = await get();
+    expect(res.status).toBe(200);
+    const selects = callsFor(calls, 'provider_employment_profiles', 'select').map(c => c.args[0]);
+    expect(selects).toEqual([GRID_PROFILE_LADDER[0], GRID_PROFILE_LADDER[1]]);
+    expect(selects[1]).toContain('available_weekdays');
+    expect(json.profiles).toEqual([
+      { provider_id: 'p1', home_site_id: 'site-1', available_weekdays: null },
+    ]);
   });
 });

@@ -17,10 +17,11 @@
 //      category), aggregated to slot counts per (day_type, shift_type) by
 //      aggregateTemplateSlotCounts. Retired templates (is_active false, e.g.
 //      D8/D9) never appear. count-0 rows are kept — Friday suppression.
-//   4. provider_employment_profiles — home_site_id = site_id (fte, call
-//      flags, is_day_doc, is_icu_doc). The roster is home-site providers
-//      with a profile; the client derives the call pool from the flags via
-//      the shared census helper.
+//   4. provider_employment_profiles — home_site_id = site_id (fte,
+//      work_days_fte, call flags, is_day_doc, is_icu_doc). The roster is
+//      home-site providers with a profile; the client derives the call pool
+//      from the flags via the shared census helper. work_days_fte (patch43)
+//      rides a pre-patch narrow retry.
 //   5. providers — active rows for those profile ids, ordered last_name
 //      (roster order for the picker).
 //   6. provider_availability — rows for roster providers overlapping the
@@ -47,6 +48,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { sbSchedulingServer } from '@/lib/supabaseScheduling';
 import { isValidDate } from '@/lib/validation/providers';
 import { DEFAULT_PAR_LEVEL } from '@/lib/rulesEngine/genContext';
+import { isMissingColumnError } from '@/lib/rulesEngine/shared';
 import {
   MAX_PLANNER_RANGE_DAYS,
   aggregateTemplateSlotCounts,
@@ -67,6 +69,25 @@ export const revalidate = 0;
 
 const SLOT_COLUMNS =
   'slot_date, derived_day_type, shift_types(code, category, requires_post_call_rule), assignments(provider_id, assignment_status)';
+
+// Profile select + its pre-patch43 rung. work_days_fte is the standing
+// per-provider WORKING-DAYS FTE (NULL ⇒ derive from fte_value), which the
+// card's Required / Days Off figures multiply by.
+const PLANNER_PROFILE_COLUMNS =
+  'provider_id, fte_value, work_days_fte, home_site_id, call_taker, partial_call_taker, is_day_doc, is_icu_doc';
+const PLANNER_PROFILE_COLUMNS_PRE43 =
+  'provider_id, fte_value, home_site_id, call_taker, partial_call_taker, is_day_doc, is_icu_doc';
+
+function selectPlannerProfiles(
+  sb: ReturnType<typeof sbSchedulingServer>, siteId: string, columns: string,
+) {
+  return sb
+    .from('provider_employment_profiles')
+    .select(columns)
+    .eq('home_site_id', siteId) as unknown as Promise<{
+      data: unknown; error: { message: string; code?: string } | null;
+    }>;
+}
 
 // Row-fetching selects carry a count guard (dashboard queries.ts convention):
 // PostgREST silently caps un-ranged selects at 1000 rows — a truncated read
@@ -133,10 +154,7 @@ export async function GET(req: NextRequest) {
       .select('day_type, shift_type_id, required_count, shift_types(code, category)')
       .eq('site_id', siteId)
       .eq('is_active', true),
-    sb
-      .from('provider_employment_profiles')
-      .select('provider_id, fte_value, home_site_id, call_taker, partial_call_taker, is_day_doc, is_icu_doc')
-      .eq('home_site_id', siteId),
+    selectPlannerProfiles(sb, siteId, PLANNER_PROFILE_COLUMNS),
     sb
       .from('schedules')
       .select('id, schedule_name, status, date_start, date_end, current_version_number')
@@ -149,7 +167,15 @@ export async function GET(req: NextRequest) {
   ]);
   if (holidaysRes.error) return NextResponse.json({ error: holidaysRes.error.message }, { status: 500 });
   if (templatesRes.error) return NextResponse.json({ error: templatesRes.error.message }, { status: 500 });
-  if (profilesRes.error) return NextResponse.json({ error: profilesRes.error.message }, { status: 500 });
+  // PRE-PATCH43 NARROW RETRY: unlike the grid's, this read HARD-FAILS on error
+  // (a 500), so without the retry a DB without work_days_fte would take the
+  // whole planner card down. The narrow rung is exact — an absent column can
+  // hold no stated working-days FTE, so every provider's days math falls back
+  // to fte_value, which is the pre-patch43 behaviour.
+  const profilesRetry = profilesRes.error && isMissingColumnError(profilesRes.error)
+    ? await selectPlannerProfiles(sb, siteId, PLANNER_PROFILE_COLUMNS_PRE43)
+    : profilesRes;
+  if (profilesRetry.error) return NextResponse.json({ error: profilesRetry.error.message }, { status: 500 });
   if (scheduleRes.error) return NextResponse.json({ error: scheduleRes.error.message }, { status: 500 });
 
   const holidays = (holidaysRes.data ?? []) as PlannerHoliday[];
@@ -158,9 +184,10 @@ export async function GET(req: NextRequest) {
   // precedent); normalize through unknown.
   const templates = aggregateTemplateSlotCounts(
     (templatesRes.data ?? []) as unknown as PlannerTemplateRow[]);
-  const profiles = (profilesRes.data ?? []) as Array<{
+  const profiles = (profilesRetry.data ?? []) as Array<{
     provider_id: string;
     fte_value: number | null;
+    work_days_fte?: number | null;
     home_site_id: string | null;
     call_taker: boolean;
     partial_call_taker: boolean;
@@ -212,6 +239,7 @@ export async function GET(req: NextRequest) {
       initials: p.initials,
       provider_type: p.provider_type,
       fte_value: prof.fte_value,
+      work_days_fte: prof.work_days_fte ?? null,
       home_site_id: prof.home_site_id,
       call_taker: prof.call_taker,
       partial_call_taker: prof.partial_call_taker,

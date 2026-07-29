@@ -4,6 +4,7 @@ import { loadGenerationContext, computeBucketTargets, floorBucketTargets } from 
 import { addDays, buildPrePtoByThursday, dayOfWeekUTC } from './shared';
 import { evaluateEligibility } from './eligibility';
 import { CLASSIC_PATTERN } from './callPattern';
+import { computeCallObligationCensus } from '@/lib/fteTarget';
 import type {
   CandidateProvider, AssignmentExplanation, CandidateRejection, SolutionMetrics,
   AvailabilityEntry, SlotToFill,
@@ -857,12 +858,14 @@ describe('loadGenerationContext — workDayBudget', () => {
     expect(b.workingDaySet.has('2026-05-23')).toBe(false); // Saturday
 
     // p1 (1.0): round(1×5) − 2 PTO = 3; entitledOff 5 − 5 = 0.
+    // workDaysFte mirrors fte for a provider who states no work_days_fte
+    // (patch43) — every provider on file before Hussain.
     expect(b.byProvider.get('p1')).toEqual({
-      fte: 1.0, workingDays: 5, ptoWeekdays: 2, required: 3, entitledOff: 0,
+      fte: 1.0, workDaysFte: 1.0, workingDays: 5, ptoWeekdays: 2, required: 3, entitledOff: 0,
     });
     // p2 (0.5): round(0.5×5)=round(2.5)=3; no PTO; entitledOff 5 − 3 = 2.
     expect(b.byProvider.get('p2')).toEqual({
-      fte: 0.5, workingDays: 5, ptoWeekdays: 0, required: 3, entitledOff: 2,
+      fte: 0.5, workDaysFte: 0.5, workingDays: 5, ptoWeekdays: 0, required: 3, entitledOff: 2,
     });
   });
 
@@ -886,6 +889,184 @@ describe('loadGenerationContext — workDayBudget', () => {
       ], error: null },
     });
     expect(res.ctx!.availByPid.get('p2')![0].reason_code).toBe('icu_week');
+  });
+});
+
+// ── work_days_fte: the WORKING-DAYS FTE (2026-07-29, patch43) ───────────────
+// Gabriel, on Hussain, verbatim: "even though he is listed as a 0.7FTE, that
+// only applies to pro rating the call shifts, and does not apply to the actual
+// days he's obligated to work. Meaning if hes not on call, PTO, or 'off', he
+// should be placed in a D slot to work." (Stored FTE is 0.66 — a third of his
+// time is ICU.) The column separates the two contracts; NOTHING on the call
+// side may move.
+describe('loadGenerationContext — work_days_fte', () => {
+  const callsFor = (calls: RecordedCall[], table: string, method: string) =>
+    calls.filter(c => c.table === table && c.method === method);
+
+  // Same May 2026 block as the workDayBudget suite: 5 working days (Fri 5/22,
+  // Tue–Thu 5/26–28, Fri 5/29 — weekends and MAJOR Memorial Day 5/25 out).
+  const wdSlots = [
+    rawSlot({ id: 'm22', date: '2026-05-22', code: 'C1', category: 'call', dayType: 'friday' }),
+    rawSlot({ id: 'm25', date: '2026-05-25', code: 'C1', category: 'call', dayType: 'major_holiday' }),
+    rawSlot({ id: 'm26', date: '2026-05-26', code: 'C1', category: 'call' }),
+    rawSlot({ id: 'm27', date: '2026-05-27', code: 'C1', category: 'call' }),
+    rawSlot({ id: 'm28', date: '2026-05-28', code: 'C1', category: 'call' }),
+    rawSlot({ id: 'm29', date: '2026-05-29', code: 'C1', category: 'call', dayType: 'friday' }),
+  ];
+  // p1 = a plain 1.0. p2 = HUSSAIN's shape: 0.66 call, work-days FTE varies.
+  const profiles = (workDaysFte: number | null | undefined) => [
+    { provider_id: 'p1', fte_value: 1.0, home_site_id: 'site1', call_taker: true, partial_call_taker: false, available_weekdays: null },
+    {
+      provider_id: 'p2', fte_value: 0.66, home_site_id: 'site1', call_taker: true,
+      partial_call_taker: false, available_weekdays: null,
+      ...(workDaysFte === undefined ? {} : { work_days_fte: workDaysFte }),
+    },
+  ];
+  const wdTables = (workDaysFte: number | null | undefined, over: Record<string, TableCfg> = {}) => ({
+    schedule_slots: { data: wdSlots, error: null },
+    sites: { data: { call_par_level: 1, organization_id: 'org1' }, error: null },
+    holiday_calendars: {
+      data: [{ holiday_date: '2026-05-25', holiday_name: 'Memorial Day', is_major_holiday: true }],
+      error: null,
+    },
+    provider_employment_profiles: { data: profiles(workDaysFte), error: null },
+    // p2 takes 1 PTO working day (Wed 5/27) — the requirement must net it 1:1
+    // exactly as it always has, on top of the raised base.
+    provider_availability: { data: [
+      { provider_id: 'p2', availability_type: 'pto', start_date: '2026-05-27', end_date: '2026-05-27', approval_status: 'approved' },
+    ], error: null },
+    ...over,
+  });
+  const runWd = (workDaysFte: number | null | undefined, over: Record<string, TableCfg> = {}) =>
+    run(wdTables(workDaysFte, over));
+
+  it('the column is selected (so a live DB actually supplies it)', async () => {
+    const { calls } = await runWd(null);
+    const sel = callsFor(calls, 'provider_employment_profiles', 'select')[0].args[0] as string;
+    expect(sel).toContain('work_days_fte');
+  });
+
+  it('NULL leaves the budget exactly where it was — 0.66 over 5 WD', async () => {
+    const b = (await runWd(null)).res.ctx!.workDayBudget!;
+    const p2 = b.byProvider.get('p2')!;
+    expect(b.workingDays).toBe(5);
+    expect(p2.fte).toBe(0.66);
+    expect(p2.workDaysFte).toBe(0.66);      // resolved = the call FTE
+    expect(p2.required).toBe(2);            // round(0.66×5)=3, − 1 PTO
+    expect(p2.entitledOff).toBe(2);         // 5 − 3
+  });
+
+  it('an ABSENT column (pre-patch43 row shape) behaves identically to NULL', async () => {
+    const absent = (await runWd(undefined)).res.ctx!.workDayBudget!.byProvider.get('p2')!;
+    const explicitNull = (await runWd(null)).res.ctx!.workDayBudget!.byProvider.get('p2')!;
+    expect(absent).toEqual(explicitNull);
+  });
+
+  it("HUSSAIN: work-days FTE 1.0 requires every working day he isn't on PTO", async () => {
+    const p2 = (await runWd(1)).res.ctx!.workDayBudget!.byProvider.get('p2')!;
+    expect(p2.fte).toBe(0.66);          // call FTE untouched
+    expect(p2.workDaysFte).toBe(1);
+    expect(p2.required).toBe(4);        // 5 working days − 1 PTO day
+    expect(p2.entitledOff).toBe(0);     // no inherent days off any more
+  });
+
+  it('is a NUMBER, not a flag — 0.75 work days against a 0.66 call FTE', async () => {
+    const p2 = (await runWd(0.75)).res.ctx!.workDayBudget!.byProvider.get('p2')!;
+    expect(p2.workDaysFte).toBe(0.75);
+    expect(p2.required).toBe(3);        // round(0.75×5)=4, − 1 PTO
+    expect(p2.entitledOff).toBe(1);     // 5 − 4
+  });
+
+  it('a co-worker who states none is completely unaffected', async () => {
+    const b = (await runWd(1)).res.ctx!.workDayBudget!;
+    expect(b.byProvider.get('p1')).toEqual(
+      (await runWd(null)).res.ctx!.workDayBudget!.byProvider.get('p1'));
+  });
+
+  // ── THE MUTATION PROOF ────────────────────────────────────────────────────
+  // Set a work-days FTE and confirm NO call number moves. This is the whole
+  // safety claim of the change, so it is asserted over the call-side surface
+  // as a WHOLE (targets, obligations, pool membership, par, the provider rows'
+  // fte_value) rather than by spot-checking fields — a future call-side
+  // consumer that starts reading the new column fails here.
+  it('MUTATION: setting a work-days FTE moves NO call-side number', async () => {
+    const callFacts = async (workDaysFte: number | null) => {
+      const ctx = (await runWd(workDaysFte)).res.ctx!;
+      return {
+        parLevel: ctx.parLevel,
+        // per-provider CALL FTE (quotas, fairness ratios, neuro bands)
+        fteValues: ctx.providers.map(p => [p.id, p.fte_value]),
+        poolIds: ctx.providers.map(p => p.id),
+        // the FTE-weighted per-(provider,bucket,code) quota targets
+        bucketTarget: [...ctx.bucketTarget.entries()].sort(),
+        bucketTotals: [...ctx.bucketTotals.entries()].sort(),
+        // what the solver will be asked to fill
+        slotsToFill: ctx.slotsToFill.map(s => `${s.slot_date}|${s.shift_type_code}`),
+        seeds: ctx.seedAssignments.length,
+      };
+    };
+    const before = await callFacts(null);
+    for (const stated of [1, 0.75, 0]) {
+      expect(await callFacts(stated)).toEqual(before);
+    }
+  });
+
+  it('and the obligation census math is identical too (fte_value is what it reads)', async () => {
+    // computeCallObligationCensus is the shared call-obligation home the modal,
+    // the planner card and the over-par selection all use. It takes
+    // CensusProfile — which has no work_days_fte field at all, by design.
+    const obligations = (workDaysFte: number | null) => computeCallObligationCensus({
+      storedParLevel: 11, siteId: 'site1',
+      profiles: profiles(workDaysFte).map(p => ({
+        provider_id: p.provider_id, home_site_id: p.home_site_id,
+        call_taker: p.call_taker, partial_call_taker: p.partial_call_taker,
+        fte_value: p.fte_value,
+      })),
+      slots: [],
+    });
+    const base = obligations(null);
+    const mutated = obligations(1);
+    expect(mutated.poolFte).toBe(base.poolFte);
+    expect(mutated.effectivePar).toBe(base.effectivePar);
+    for (const pid of ['p1', 'p2']) {
+      expect(mutated.fteFor(pid)).toBe(base.fteFor(pid));
+      expect(mutated.poolFteFor(pid)).toBe(base.poolFteFor(pid));
+      expect(mutated.totalExpectedFor(pid)).toBe(base.totalExpectedFor(pid));
+    }
+  });
+
+  // ── pre-patch43 degradation ───────────────────────────────────────────────
+  it('a missing work_days_fte column retries narrow and falls back to fte_value', async () => {
+    const { res, calls } = await run(wdTables(null, {
+      provider_employment_profiles: (filters: Array<{ method: string; args: unknown[] }>) => {
+        const sel = (filters.find(f => f.method === 'select')?.args[0] as string) ?? '';
+        if (sel.includes('work_days_fte')) {
+          return { data: null, error: { message: 'column provider_employment_profiles.work_days_fte does not exist', code: '42703' } };
+        }
+        return { data: profiles(undefined), error: null };
+      },
+    }));
+    // The load SURVIVES (pre-fix, an uncaptured error here meant "no call
+    // takers found" — a hard generation failure), with the pre-patch numbers.
+    expect(res.ctx).toBeTruthy();
+    expect(res.ctx!.providers.map(p => p.id)).toEqual(['p1', 'p2']);
+    const p2 = res.ctx!.workDayBudget!.byProvider.get('p2')!;
+    expect(p2.required).toBe(2);
+    expect(p2.workDaysFte).toBe(0.66);
+    // Both rungs were tried, wide first.
+    const selects = callsFor(calls, 'provider_employment_profiles', 'select').map(c => c.args[0] as string);
+    expect(selects).toHaveLength(2);
+    expect(selects[0]).toContain('work_days_fte');
+    expect(selects[1]).not.toContain('work_days_fte');
+    // ...and it says so, rather than degrading silently.
+    expect((res.ctx!.warnings ?? []).some(w => /work_days_fte/.test(w))).toBe(true);
+  });
+
+  it('a NON-column profiles failure is not retried (no pointless second round trip)', async () => {
+    const { calls } = await run(wdTables(null, {
+      provider_employment_profiles: { data: null, error: { message: 'connection reset', code: '08006' } },
+    }));
+    expect(callsFor(calls, 'provider_employment_profiles', 'select')).toHaveLength(1);
   });
 });
 

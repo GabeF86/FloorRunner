@@ -11,6 +11,7 @@ import {
   addDays,
   dayTypeBucket,
   dayTypeBucketOn,
+  isMissingColumnError,
   isMissingRelationError,
   normalizeWeekdays,
   buildPrePtoByThursday,
@@ -34,13 +35,22 @@ import { projectScenario, applyScenarioBucketTargets, type ScenarioDoc } from '.
 import { fetchCommittedAssignments, filterPublishedVersions } from './committedAssignments';
 import { embedArray } from '@/lib/embed';
 import { callBurdenWeight, parentCallCodeOf } from '@/lib/callBurden';
-import { isWorkingDay, ptoWeekdaysCovered, requiredWorkDaysWithLimit, entitledOffDays, loadMajorHolidayDates } from './workDays';
+import { isWorkingDay, ptoWeekdaysCovered, requiredWorkDaysWithLimit, entitledOffDays, effectiveWorkDaysFte, loadMajorHolidayDates } from './workDays';
 import { parseProviderLimits, type ProviderLimits } from '@/lib/providerLimits';
 
 // Fallback when site.call_par_level isn't set (or is 0/negative). Exported
 // (2026-07-20) so the planner API resolves the same default the engine does —
 // the schedule page's `?? 12` is this same convention.
 export const DEFAULT_PAR_LEVEL = 12;
+
+// The call-pool profile read's select list, and its pre-patch43 rung.
+// work_days_fte (patch43) is the standing per-provider WORKING-DAYS FTE; NULL
+// means "use fte_value", which is exactly what a DB without the column can
+// hold — so the narrow rung is an exact degradation, not an approximation.
+export const CALL_POOL_PROFILE_COLUMNS =
+  'provider_id, fte_value, work_days_fte, home_site_id, call_taker, partial_call_taker, available_weekdays';
+export const CALL_POOL_PROFILE_COLUMNS_PRE43 =
+  'provider_id, fte_value, home_site_id, call_taker, partial_call_taker, available_weekdays';
 
 // Missing-relation detection (pre-patch18 live DB) is the shared
 // isMissingRelationError; missing-COLUMN errors (patch18 partly applied) are
@@ -499,20 +509,40 @@ export async function loadGenerationContext(
     ? options.overrideProviderIds
     : null;
 
-  let profilesQuery = sb
-    .from('provider_employment_profiles')
-    .select('provider_id, fte_value, home_site_id, call_taker, partial_call_taker, available_weekdays');
-  if (override) {
-    profilesQuery = profilesQuery.in('provider_id', override);
-  } else {
-    profilesQuery = profilesQuery
-      .eq('home_site_id', siteId)
-      .or('call_taker.eq.true,partial_call_taker.eq.true')
-      .order('provider_id');
+  // work_days_fte (patch43) rides this select with a PRE-PATCH NARROW RETRY:
+  // an absent column can hold no stated working-days FTE, so dropping it is
+  // exact — every provider falls back to fte_value, i.e. the pre-patch43
+  // working-days budget, byte for byte. Without the retry a pre-patch43 DB
+  // would answer 42703 and the load would find zero call takers (this read's
+  // error was never captured), which is a hard generation failure.
+  const selectProfiles = (columns: string) => {
+    let q = sb.from('provider_employment_profiles').select(columns);
+    if (override) {
+      q = q.in('provider_id', override);
+    } else {
+      q = q
+        .eq('home_site_id', siteId)
+        .or('call_taker.eq.true,partial_call_taker.eq.true')
+        .order('provider_id');
+    }
+    return q as unknown as Promise<{ data: unknown; error: { message?: string; code?: string } | null }>;
+  };
+  let profilesRes = await selectProfiles(CALL_POOL_PROFILE_COLUMNS);
+  if (profilesRes.error && isMissingColumnError(profilesRes.error)) {
+    warnings.push(
+      'provider_employment_profiles.work_days_fte is missing (pre-patch43 DB) — '
+      + 'working-days budgets fall back to fte_value for every provider.');
+    countQ(); // the retry is a second real round trip
+    profilesRes = await selectProfiles(CALL_POOL_PROFILE_COLUMNS_PRE43);
   }
-  const { data: profiles } = await profilesQuery;
+  const profiles = profilesRes.data as Array<Record<string, unknown>> | null;
 
-  const profileByPid = new Map<string, { fte_value: number; home_site_id: string; available_weekdays: boolean[] }>();
+  const profileByPid = new Map<string, {
+    fte_value: number;
+    work_days_fte: number | null;
+    home_site_id: string;
+    available_weekdays: boolean[];
+  }>();
   const overrideNonCallTakers: string[] = [];
   for (const p of (profiles || []) as Array<Record<string, unknown>>) {
     // Role criterion, enforced in code for BOTH paths (the default path's SQL
@@ -524,6 +554,9 @@ export async function loadGenerationContext(
     }
     profileByPid.set(p.provider_id as string, {
       fte_value: (p.fte_value as number) || 1,
+      // NOT `|| null`: a stated 0 is a real (if unusual) working-days contract
+      // and must survive. Only null/undefined mean "use fte_value".
+      work_days_fte: p.work_days_fte == null ? null : Number(p.work_days_fte),
       home_site_id: p.home_site_id as string,
       available_weekdays: normalizeWeekdays(p.available_weekdays),
     });
@@ -619,6 +652,7 @@ export async function loadGenerationContext(
         provider_type: p.provider_type as string,
         short_display_name: p.short_display_name as string,
         fte_value: prof.fte_value,
+        work_days_fte: prof.work_days_fte,
         home_site_id: prof.home_site_id,
         available_weekdays: prof.available_weekdays,
       } as CandidateProvider;
@@ -1028,16 +1062,29 @@ export async function loadGenerationContext(
     // ptoWeekdaysCovered subtracts sell-back-covered weekdays (2026-07-20):
     // a sold-back day is owed again, so `required` rises back accordingly.
     const pto = ptoWeekdaysCovered(availByPid.get(p.id) ?? [], workingDaySet).size;
+    // WORKING-DAYS FTE (patch43): the stated work_days_fte when the provider
+    // has one, else fte_value — resolved once, through the single-homed
+    // effectiveWorkDaysFte, and recorded on the budget so the report can
+    // explain a `required` that does not follow from the call FTE.
+    //
+    // NOTE the interaction with a scenario FTE override (§ above): a scenario
+    // rewrites p.fte_value, the CALL weight. A provider with a stated
+    // work_days_fte has their working-days contract decoupled from fte_value
+    // BY DEFINITION, so a scenario's call what-if correctly no longer moves
+    // their working days.
+    const workFte = effectiveWorkDaysFte(p.fte_value, p.work_days_fte);
     byProvider.set(p.id, {
       fte: p.fte_value,
+      workDaysFte: workFte,
       workingDays,
       ptoWeekdays: pto,
       // Provider-limit override (patch34): a stated workingDays IS required;
       // a stated daysOff re-derives (WD − pto − daysOff) so future PTO edits
-      // keep shifting it. BLANK → the pre-limits round(FTE × WD) − PTO
-      // machinery, untouched (Gabriel's verbatim rule).
-      required: requiredWorkDaysWithLimit(p.fte_value, workingDays, pto, providerLimits?.[p.id]),
-      entitledOff: entitledOffDays(p.fte_value, workingDays),
+      // keep shifting it. BLANK → the round(workFTE × WD) − PTO machinery
+      // (Gabriel's verbatim rule). Stated limit > work_days_fte > fte_value.
+      required: requiredWorkDaysWithLimit(
+        p.fte_value, workingDays, pto, providerLimits?.[p.id], p.work_days_fte),
+      entitledOff: entitledOffDays(p.fte_value, workingDays, p.work_days_fte),
     });
   }
   const workDayBudget: WorkDayBudget = { workingDays, workingDaySet, majorHolidayDates, byProvider };

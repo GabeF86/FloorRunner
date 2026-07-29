@@ -141,12 +141,14 @@ describe('GET /api/scheduling/planner — payload', () => {
     expect(json.roster).toEqual([
       {
         provider_id: 'p1', first_name: 'Ada', last_name: 'Lovelace', short_display_name: 'Lovelace A',
-        initials: 'AL', provider_type: 'physician', fte_value: 0.8, home_site_id: 'site-1',
+        initials: 'AL', provider_type: 'physician', fte_value: 0.8, work_days_fte: null,
+        home_site_id: 'site-1',
         call_taker: true, partial_call_taker: false, is_day_doc: false, is_icu_doc: true,
       },
       {
         provider_id: 'p2', first_name: 'Mary', last_name: 'Shelley', short_display_name: 'Shelley M',
-        initials: 'MS', provider_type: 'physician', fte_value: 1, home_site_id: 'site-1',
+        initials: 'MS', provider_type: 'physician', fte_value: 1, work_days_fte: null,
+        home_site_id: 'site-1',
         call_taker: false, partial_call_taker: false, is_day_doc: true, is_icu_doc: false,
       },
     ]);
@@ -203,6 +205,49 @@ describe('GET /api/scheduling/planner — payload', () => {
     expect(json.availability).toEqual([]);
     expect(fromCount(calls, 'providers')).toBe(0);
     expect(fromCount(calls, 'provider_availability')).toBe(0);
+  });
+
+  // patch43 — work_days_fte (the WORKING-DAYS FTE) rides the profiles read.
+  // This route HARD-FAILS on a profiles error, so without the narrow retry a
+  // DB predating the column would 500 the whole planner card.
+  it('carries work_days_fte onto the roster', async () => {
+    setup({ provider_employment_profiles: { data: [
+      { ...PROFILES[0], work_days_fte: 1 },
+      { ...PROFILES[1], work_days_fte: null },
+    ], error: null } });
+    const json = await (await GET(fakeReq())).json();
+    expect(json.roster.map((r: { work_days_fte: number | null }) => r.work_days_fte))
+      .toEqual([1, null]);
+  });
+
+  it('a missing work_days_fte column retries narrow instead of 500ing the card', async () => {
+    const { calls } = setup({
+      provider_employment_profiles: (filters: { method: string; args: unknown[] }[]) => {
+        const sel = (filters.find(f => f.method === 'select')?.args[0] as string) ?? '';
+        if (sel.includes('work_days_fte')) {
+          return { data: null, error: { message: 'column work_days_fte does not exist', code: '42703' } };
+        }
+        return { data: PROFILES, error: null };
+      },
+    });
+    const res = await GET(fakeReq());
+    const json = await res.json();
+    expect(res.status).toBe(200);
+    // Roster survives, with every provider back on the fte_value contract.
+    expect(json.roster.map((r: { provider_id: string }) => r.provider_id)).toEqual(['p1', 'p2']);
+    expect(json.roster.every((r: { work_days_fte: number | null }) => r.work_days_fte === null)).toBe(true);
+    const selects = callsFor(calls, 'provider_employment_profiles', 'select').map(c => c.args[0] as string);
+    expect(selects).toHaveLength(2);
+    expect(selects[0]).toContain('work_days_fte');
+    expect(selects[1]).not.toContain('work_days_fte');
+  });
+
+  it('a NON-column profiles failure still 500s (no pointless retry, no silent partial payload)', async () => {
+    const { calls } = setup({
+      provider_employment_profiles: { data: null, error: { message: 'connection reset', code: '08006' } },
+    });
+    expect((await GET(fakeReq())).status).toBe(500);
+    expect(callsFor(calls, 'provider_employment_profiles', 'select')).toHaveLength(1);
   });
 
   it('providers absent from the active-providers read (inactive) drop out of the roster', async () => {

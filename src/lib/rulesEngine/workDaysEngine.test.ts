@@ -3,6 +3,7 @@ import { solve } from './solve';
 import { evaluateEligibility } from './eligibility';
 import { emptySolveState } from './genTypes';
 import { computeWorkDayReport } from './workDayReport';
+import { requiredWorkDays, effectiveWorkDaysFte } from './workDays';
 import { buildCtx, prov, callSlot, dSlot, shiftInfo } from './__fixtures__/buildContext';
 import type { WorkDayBudget, ShiftTypeInfo, AvailabilityEntry } from './genTypes';
 import type { CallPatternDoc } from './callPattern';
@@ -38,6 +39,56 @@ function mkBudget(
     byProvider,
   };
 }
+
+// ── the work-days FTE reaches placement (2026-07-29, patch43) ───────────────
+// The chain this proves end to end: work_days_fte → requiredWorkDays →
+// budget.required → the cap → how many days the engine actually places. Built
+// through the REAL contract function, not a hand-typed `required`, so the test
+// fails if the resolution stops happening at the arithmetic layer.
+describe('solve — a stated work-days FTE raises how many days get placed', () => {
+  // A Mon–Fri week of day-shift slots, one provider, no PTO. Hussain's shape:
+  // 0.66 FTE for CALL, 1.0 for WORKING DAYS.
+  const WEEK = ['2026-01-05', '2026-01-06', '2026-01-07', '2026-01-08', '2026-01-09'];
+  const slots = WEEK.map((d, i) => callSlot(`c${i}`, d, 'C1'));
+
+  const budgetFor = (workDaysFte: number | null): WorkDayBudget => {
+    const required = requiredWorkDays(0.66, WEEK.length, 0, workDaysFte);
+    const b = mkBudget(WEEK, { p1: required });
+    b.byProvider.get('p1')!.fte = 0.66;
+    b.byProvider.get('p1')!.workDaysFte = effectiveWorkDaysFte(0.66, workDaysFte);
+    return b;
+  };
+
+  it('without one, the 0.66 call FTE caps him at round(0.66 × 5) = 3 days', () => {
+    const ctx = buildCtx(slots, [prov('p1', 0.66)], {
+      callPattern: MINIMAL_PATTERN, workDayBudget: budgetFor(null),
+    });
+    const plan = solve(ctx);
+    expect(plan.assignments.filter(a => a.provider_id === 'p1')).toHaveLength(3);
+    expect(plan.unfilled.filter(u => u.reason === 'workdays-cap')).toHaveLength(2);
+  });
+
+  it('with work-days FTE 1.0 he works EVERY working day — no cap rejection', () => {
+    const ctx = buildCtx(slots, [prov('p1', 0.66)], {
+      callPattern: MINIMAL_PATTERN, workDayBudget: budgetFor(1),
+    });
+    const plan = solve(ctx);
+    expect(plan.assignments.filter(a => a.provider_id === 'p1').map(a => a.slot_date).sort())
+      .toEqual(WEEK);
+    expect(plan.unfilled.filter(u => u.reason === 'workdays-cap')).toHaveLength(0);
+  });
+
+  it('the report explains the raised requirement with BOTH FTEs', () => {
+    const ctx = buildCtx(slots, [prov('p1', 0.66)], {
+      callPattern: MINIMAL_PATTERN, workDayBudget: budgetFor(1),
+    });
+    const row = computeWorkDayReport(ctx, solve(ctx)).find(r => r.provider_id === 'p1')!;
+    expect(row.fte).toBe(0.66);        // call FTE, untouched
+    expect(row.workDaysFte).toBe(1);   // what `required` was computed from
+    expect(row.required).toBe(5);
+    expect(row.delta).toBe(0);         // at required, not over
+  });
+});
 
 // ── eligibility: the 'workdays-cap' gate ─────────────────────────────────────
 describe('evaluateEligibility — workdays-cap gate', () => {

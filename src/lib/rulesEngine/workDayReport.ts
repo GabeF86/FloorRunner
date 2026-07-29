@@ -43,7 +43,11 @@ export interface WorkDayShortfall {
 export interface WorkDayReportRow {
   provider_id: string;
   provider_name: string;
-  fte: number;
+  fte: number;         // CALL FTE (fte_value)
+  // WORKING-DAYS FTE (patch43) — what `required` was actually computed from.
+  // Equal to `fte` for everyone who states no work_days_fte; present so a row
+  // reading "FTE 0.66 … 54 required" is explicable instead of looking wrong.
+  workDaysFte: number;
   workingDays: number;
   ptoDays: number;    // PTO-netting working days (reduced `required` 1:1)
   required: number;
@@ -179,6 +183,7 @@ export function computeWorkDayReport(ctx: GenerationContext, plan: SolutionPlan)
       provider_id: p.id,
       provider_name: p.short_display_name,
       fte: b.fte,
+      workDaysFte: b.workDaysFte ?? b.fte,
       workingDays: b.workingDays,
       ptoDays: b.ptoWeekdays,
       required: b.required,

@@ -375,6 +375,30 @@ describe('statedWorkingDaysCap / requiredWorkDaysWithLimit', () => {
     expect(requiredWorkDaysWithLimit(1, 20, 3, undefined)).toBe(17); // round(1×20) − 3
     expect(requiredWorkDaysWithLimit(0.5, 20, 0, {})).toBe(10);
   });
+
+  // PRECEDENCE (patch43): stated limit > work_days_fte > fte_value. The
+  // Limits tab is a deliberate per-SCHEDULE override typed for this block; the
+  // work-days FTE is the standing contract the formula falls back to. A
+  // work-days FTE must NOT be able to quietly out-rank what the scheduler
+  // typed for the block in front of them.
+  it('a stated Limits-tab cap still BEATS the work-days FTE', () => {
+    // Hussain's shape: call 0.66, work-days 1.0, 20 WD, 3 PTO.
+    // Work-days FTE alone would require 17.
+    expect(requiredWorkDaysWithLimit(0.66, 20, 3, undefined, 1)).toBe(17);
+    // A typed workingDays cap wins outright...
+    expect(requiredWorkDaysWithLimit(0.66, 20, 3, { workingDays: 12 }, 1)).toBe(12);
+    // ...and so does a typed daysOff (20 − 3 − 4 = 13).
+    expect(requiredWorkDaysWithLimit(0.66, 20, 3, { daysOff: 4 }, 1)).toBe(13);
+    // A BLANK limit object does not out-rank it — blank means "use the formula".
+    expect(requiredWorkDaysWithLimit(0.66, 20, 3, {}, 1)).toBe(17);
+  });
+
+  it('omitting the work-days FTE leaves requiredWorkDaysWithLimit byte-identical', () => {
+    for (const limit of [undefined, {}, { workingDays: 12 }, { daysOff: 4 }]) {
+      expect(requiredWorkDaysWithLimit(0.66, 20, 3, limit))
+        .toBe(requiredWorkDaysWithLimit(0.66, 20, 3, limit, null));
+    }
+  });
 });
 
 // ── genContext loads limits + applies the workday override ───────────────────

@@ -74,8 +74,16 @@ export function bucketDayCounts(
 // `ptoWeekdays` is INTENTIONALLY caller-supplied: the modal passes its
 // already-computed PTO Days tally so the two columns can never disagree on
 // what counted as a PTO weekday.
-export function daysOffFor(fte: number, workingDays: number, ptoWeekdays: number): number {
-  const required = requiredWorkDays(fte, workingDays, ptoWeekdays);
+//
+// `workDaysFte` (patch43) is the provider's stated WORKING-DAYS FTE; null /
+// omitted ⇒ the call FTE, i.e. the pre-patch43 number exactly. It must be
+// threaded here because Days Off is the complement of Required in the SAME
+// row — a work-days FTE that lifted Required without lowering Days Off would
+// make the modal contradict itself.
+export function daysOffFor(
+  fte: number, workingDays: number, ptoWeekdays: number, workDaysFte?: number | null,
+): number {
+  const required = requiredWorkDays(fte, workingDays, ptoWeekdays, workDaysFte);
   return Math.max(0, workingDays - ptoWeekdays - required);
 }
 

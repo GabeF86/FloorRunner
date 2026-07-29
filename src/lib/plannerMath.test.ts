@@ -307,6 +307,21 @@ describe('providerDayStats', () => {
     expect(stats.entitledOff).toBe(entitledOffDays(0.8, comp.workingDays));
   });
 
+  // patch43 — the working-days FTE, separate from the call FTE.
+  it('a stated work-days FTE drives required/entitledOff; null is byte-identical', () => {
+    const base = providerDayStats(0.66, comp.workingDaySet, rows);
+    expect(providerDayStats(0.66, comp.workingDaySet, rows, undefined, null)).toEqual(base);
+    expect(base.workDaysFte).toBe(0.66); // resolved = the call FTE
+
+    // Hussain: full-time working days on a 0.66 call FTE.
+    const split = providerDayStats(0.66, comp.workingDaySet, rows, undefined, 1);
+    expect(split.fte).toBe(0.66);        // the CALL FTE is reported unchanged
+    expect(split.workDaysFte).toBe(1);
+    expect(split.required).toBe(comp.workingDays - split.ptoWeekdays);
+    expect(split.entitledOff).toBe(0);
+    expect(split.ptoWeekdays).toBe(base.ptoWeekdays); // PTO netting untouched
+  });
+
   it('what-if extra PTO and hypothetical sell-back adjust the netted count (floored at 0)', () => {
     const base = providerDayStats(0.8, comp.workingDaySet, rows);
     const extra = providerDayStats(0.8, comp.workingDaySet, rows, { extraPtoWeekdays: 2 });
@@ -568,6 +583,58 @@ describe('buildPlannerContext + providerPlannerNumbers', () => {
     // Hypothetical sell-back removes netted days (floored at 0 upstream).
     const sold = providerPlannerNumbers(ctx, 'b', { sellbackWeekdays: 5 });
     expect(sold.days.ptoWeekdays).toBe(0);
+  });
+
+  // ── patch43: the working-days FTE on the planner card ─────────────────────
+  // MUTATION PROOF at the card level: set a work-days FTE on one roster entry
+  // and confirm every CALL number the card renders is bit-for-bit the same,
+  // while the DAYS numbers move. The card renders only what these functions
+  // return (its TSX does no arithmetic), so this covers the surface.
+  describe('a stated work-days FTE moves the days side and nothing else', () => {
+    // 'b': 0.6 call FTE, 5 PTO weekdays, now contracted for FULL working days.
+    const splitPayload: PlannerPayload = {
+      ...payload,
+      roster: payload.roster.map(r =>
+        r.provider_id === 'b' ? { ...r, work_days_fte: 1 } : r),
+    };
+    const sctx = buildPlannerContext(splitPayload);
+    const base = providerPlannerNumbers(ctx, 'b');
+    const split = providerPlannerNumbers(sctx, 'b');
+
+    it('MUTATION: no call number moves', () => {
+      expect(split.fte).toBe(base.fte);
+      expect(split.poolFte).toBe(base.poolFte);
+      expect(split.parLevel).toBe(base.parLevel);
+      expect(split.totalCallSlots).toBe(base.totalCallSlots);
+      expect(split.totalExpected).toBe(base.totalExpected);
+      expect(split.obligation).toBe(base.obligation);
+      expect(split.buckets).toEqual(base.buckets);
+      expect(split.assignedCalls).toBe(base.assignedCalls);
+      expect(split.remainingCalls).toBe(base.remainingCalls);
+      expect(split.extra).toBe(base.extra);
+    });
+
+    it('the days side moves: full working-days contract, no entitled off', () => {
+      expect(split.days.ptoWeekdays).toBe(base.days.ptoWeekdays); // 5, untouched
+      expect(split.days.workDaysFte).toBe(1);
+      expect(base.days.workDaysFte).toBe(0.6);
+      expect(split.days.required).toBe(ctx.composition.workingDays - 5);
+      expect(split.days.required).toBeGreaterThan(base.days.required);
+      expect(split.days.entitledOff).toBe(0);
+    });
+
+    it('every OTHER provider on the roster is untouched, days included', () => {
+      for (const pid of ['a', 'c', 'e']) {
+        expect(providerPlannerNumbers(sctx, pid)).toEqual(providerPlannerNumbers(ctx, pid));
+      }
+    });
+
+    it('a roster with no work_days_fte at all reproduces the old context exactly', () => {
+      for (const pid of ['a', 'b', 'c', 'e']) {
+        expect(providerPlannerNumbers(buildPlannerContext(payload), pid))
+          .toEqual(providerPlannerNumbers(ctx, pid));
+      }
+    });
   });
 
   it('census fte coercion applies (null fte → 1), matching the engine profile load', () => {

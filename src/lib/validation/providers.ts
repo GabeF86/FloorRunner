@@ -64,6 +64,19 @@ export function reasonCodeLabel(code: string | null | undefined): string | null 
 export const FTE_MIN = 0;
 export const FTE_MAX = 2;
 
+// work_days_fte (patch43) — the WORKING-DAYS FTE, a SEPARATE contract from the
+// call FTE above: how many of a block's working days the provider owes, vs.
+// how much call they owe. BLANK/NULL means "same as fte_value" (the state of
+// every provider until someone states otherwise).
+//
+// Range is 0..1, deliberately NARROWER than FTE_MAX: nobody can be obligated
+// for more working days than the block HAS, so a value above 1 is a typo, not
+// a policy — and the DB CHECK says the same thing. (fte_value's headroom above
+// 1 exists for the two-jobs case, which is a pay/call concept, not a
+// days-in-the-block one.) Mirrored in supabase_scheduling_patch43.
+export const WORK_DAYS_FTE_MIN = 0;
+export const WORK_DAYS_FTE_MAX = 1;
+
 // Columns that live on the `providers` table (vs. the employment profile).
 // Used by PATCH to route updates to the right table.
 export const PROVIDER_COLUMNS = [
@@ -78,7 +91,7 @@ export const PROVIDER_COLUMNS = [
 // silently INSERTed by Supabase — this prevents typos from quietly creating
 // garbage columns via upsert.
 export const PROFILE_COLUMNS = [
-  'employment_status', 'fte_value', 'is_shareholder', 'is_partner_track',
+  'employment_status', 'fte_value', 'work_days_fte', 'is_shareholder', 'is_partner_track',
   'is_day_doc', 'is_icu_doc',
   'pto_weeks', 'max_weekly_hours', 'max_monthly_calls',
   'call_taker', 'partial_call_taker', 'holiday_call_eligible',
@@ -300,6 +313,24 @@ export function validateAndSplitPatch(body: Record<string, unknown>): PatchValid
         const n = Number(val);
         if (!Number.isFinite(n) || n < FTE_MIN || n > FTE_MAX) {
           return { ok: false, error: `fte_value must be between ${FTE_MIN} and ${FTE_MAX}`, providerFields, profileFields };
+        }
+        val = n;
+      }
+    } else if (key === 'work_days_fte') {
+      // BLANK IS MEANINGFUL and must reach the DB as a real NULL: it is the
+      // "same as FTE" state, the same blank-means-formula convention the
+      // Limits tab uses. Storing 0 instead would silently obligate the
+      // provider to ZERO working days.
+      if (val === '' || val === null) {
+        val = null;
+      } else {
+        const n = Number(val);
+        if (!Number.isFinite(n) || n < WORK_DAYS_FTE_MIN || n > WORK_DAYS_FTE_MAX) {
+          return {
+            ok: false,
+            error: `work_days_fte must be between ${WORK_DAYS_FTE_MIN} and ${WORK_DAYS_FTE_MAX} (or blank for "same as FTE")`,
+            providerFields, profileFields,
+          };
         }
         val = n;
       }

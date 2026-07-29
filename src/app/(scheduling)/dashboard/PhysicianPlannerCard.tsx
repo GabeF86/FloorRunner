@@ -294,8 +294,15 @@ function extrasTip(): string {
   return 'Call weight past the rounded obligation. On the schedule the OVER labels land on the smallest-weight set of the provider\'s calls that covers that overage (later dates first on a tie), so a flagged call can weigh more than the overage itself when no smaller combination fits.';
 }
 
+// The multiplier is the WORKING-DAYS FTE (patch43), which is the call FTE for
+// everyone who states no work_days_fte. When the two differ the tip names both
+// so the number is explicable — a 0.66-call physician required for every
+// working day is the contract working, not a bug.
 function requiredTip(n: ProviderPlannerNumbers): string {
-  return `round(FTE ${fmtFte(n.fte)} × ${n.days.workingDays} working days) − ${n.days.ptoWeekdays} netted PTO weekdays, floored at 0. Working days = weekdays minus MAJOR holidays (minor federal holidays are worked).`;
+  const split = n.days.workDaysFte !== n.fte
+    ? ` Working-days FTE ${fmtFte(n.days.workDaysFte)} is stated separately from the call FTE ${fmtFte(n.fte)} — the call FTE pro-rates CALL only.`
+    : '';
+  return `round(FTE ${fmtFte(n.days.workDaysFte)} × ${n.days.workingDays} working days) − ${n.days.ptoWeekdays} netted PTO weekdays, floored at 0. Working days = weekdays minus MAJOR holidays (minor federal holidays are worked).${split}`;
 }
 
 function ptoNettedTip(): string {
@@ -303,7 +310,7 @@ function ptoNettedTip(): string {
 }
 
 function entitledTip(): string {
-  return 'Working days − round(FTE × working days): the partial-FTE physician\'s inherent unassigned-days entitlement for the range, independent of PTO.';
+  return 'Working days − round(working-days FTE × working days): the partial-FTE physician\'s inherent unassigned-days entitlement for the range, independent of PTO. A physician whose working-days FTE is stated separately from their call FTE is entitled to off days by the WORKING-DAYS figure — a full-time working-days contract earns none, however little call they take.';
 }
 
 function yearCountersTip(year: number): string {

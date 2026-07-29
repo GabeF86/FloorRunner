@@ -17,6 +17,8 @@ interface Provider {
   provider_employment_profiles: {
     employment_status: string;
     fte_value: number;
+    // Stated WORKING-DAYS FTE (patch43); null ⇒ same as fte_value.
+    work_days_fte: number | null;
     call_taker: boolean;
     partial_call_taker: boolean;
     is_shareholder: boolean;
@@ -233,7 +235,21 @@ export default function ProvidersPage() {
               }}>{tc.label}</span>,
               <Badge key="status" tone={STATUS_TONES[p.status] || 'neutral'}>{p.status.replace('_', ' ')}</Badge>,
               EMPLOYMENT_OPTIONS.find(o => o.value === prof?.employment_status)?.label || prof?.employment_status?.replace(/_/g, ' ') || '—',
-              prof?.fte_value != null ? Number(prof.fte_value).toFixed(2) : '—',
+              /* FTE cell. When a separate WORKING-DAYS FTE is stated (patch43)
+                 the cell shows "call / work-days" so the roster never reads as
+                 though a 0.66-call physician also works 0.66 of the days. */
+              prof?.fte_value == null ? '—' : prof.work_days_fte == null
+                ? Number(prof.fte_value).toFixed(2)
+                : (
+                  <span
+                    key="fte"
+                    title={`Call FTE ${Number(prof.fte_value).toFixed(2)} (pro-rates call) · Working-days FTE ${Number(prof.work_days_fte).toFixed(2)} (share of working days they must be scheduled)`}
+                  >
+                    {Number(prof.fte_value).toFixed(2)}
+                    <span style={{ color: 'var(--text-dim)' }}>{' / '}</span>
+                    {Number(prof.work_days_fte).toFixed(2)}
+                  </span>
+                ),
               siteName(prof?.home_site_id ?? null),
               prof?.call_taker ? (
                 <Badge key="ct" tone="ok">Yes</Badge>

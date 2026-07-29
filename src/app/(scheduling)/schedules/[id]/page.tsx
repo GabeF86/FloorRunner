@@ -47,10 +47,12 @@ import { reasonCodeLabel } from '@/lib/validation/providers';
 // (The Call Counts columns' date-aware bucket, dayTypeBucketOn, is reached
 // through lib/callCountColumns rather than imported here.)
 import { isActiveSellback } from '@/lib/rulesEngine/shared';
-// requiredWorkDaysWithLimit = the engine's per-provider requirement (round(FTE
-// × WD) − PTO, overridden by a stated Limits-tab workingDays/daysOff entry) —
-// the Call Counts "Working Days" column shows actual/required from the SAME
-// function the generation cap uses.
+// requiredWorkDaysWithLimit = the engine's per-provider requirement
+// (round(work-days FTE × WD) − PTO, overridden by a stated Limits-tab
+// workingDays/daysOff entry) — the Call Counts "Working Days" column shows
+// actual/required from the SAME function the generation cap uses. The
+// work-days FTE (patch43) is the provider's stated work_days_fte, else their
+// call fte_value; precedence is Limits tab > work_days_fte > fte_value.
 import { requiredWorkDaysWithLimit } from '@/lib/rulesEngine/workDays';
 // Pure, client-safe helper shared with the grid API route — one bucket rule
 // (hard / soft / warning-never-soft) for both server and client counting.
@@ -143,6 +145,11 @@ interface EmploymentProfile {
   call_taker: boolean;
   partial_call_taker: boolean;
   fte_value: number | null;
+  // Stated WORKING-DAYS FTE (patch43) — the Working Days / Days Off columns'
+  // multiplier. Absent on a payload whose profiles read fell to the pre-43
+  // rung, and null for every provider who states none; both mean "use
+  // fte_value", which is what the contract's fallback does.
+  work_days_fte?: number | null;
   employment_status: string | null;
   // Sun..Sat jsonb — the engine's weekday-availability gate, consumed by the
   // cell picker through slotCandidates. Absent on a payload whose profiles read
@@ -1263,7 +1270,12 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
     // over/under highlighted.
     workDayReport: Array<{
       provider_id: string; provider_name: string;
-      fte: number; workingDays: number; ptoDays: number; required: number;
+      fte: number;
+      // The WORKING-DAYS FTE `required` was computed from (patch43). Equal to
+      // `fte` for everyone who states no work_days_fte; optional so a payload
+      // from an older deploy still parses.
+      workDaysFte?: number;
+      workingDays: number; ptoDays: number; required: number;
       credited: { assignments: number; postCall: number; icu: number; total: number };
       entitledOff: number; delta: number;
       // Completeness check (work-to-required): present ONLY when credited <
@@ -1969,7 +1981,7 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
               </div>
             )}
             {/* FTE working-days report: per call-taker, credited days vs the
-                round(FTE × workingDays) − PTO obligation. Over/under flagged so
+                round(work-days FTE × workingDays) − PTO obligation. Over/under flagged so
                 the scheduler can rebalance. Hidden when the engine produced no
                 budget (e.g. pre-holiday-data blocks). */}
             {genResult.workDayReport.length > 0 && (() => {
@@ -1989,7 +2001,13 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
                         .sort((a, b) => b.delta - a.delta)
                         .map(r => (
                           <li key={r.provider_id}>
-                            {r.provider_name} (FTE {r.fte}): worked {r.credited.total} of {r.required} required{' '}
+                            {/* Show BOTH FTEs when they differ (patch43) —
+                                otherwise "FTE 0.66 … 54 required" reads as a
+                                bug rather than as the split it is. */}
+                            {r.provider_name} (FTE {r.fte}
+                            {r.workDaysFte != null && r.workDaysFte !== r.fte
+                              ? `, work-days FTE ${r.workDaysFte}` : ''}
+                            ): worked {r.credited.total} of {r.required} required{' '}
                             ({r.credited.assignments} assigned + {r.credited.postCall} post-call + {r.credited.icu} ICU),{' '}
                             entitled off {r.entitledOff} —{' '}
                             <b style={{ color: r.delta > 0 ? 'var(--danger, #c0392b)' : 'var(--warn, #b8860b)' }}>
@@ -3695,7 +3713,9 @@ function PoolSelectorModal({
         {tab === 'limits' && (
           <div style={{ fontSize: 12, color: 'var(--text-muted)', margin: '10px 0 12px' }}>
             Expected maximums per provider for this block. Blank = no limit (the engine
-            keeps its FTE-derived budget). Working Days and Days Off are mutually exclusive.
+            keeps its FTE-derived budget — the provider&rsquo;s working-days FTE, or their call
+            FTE when they state none). A value here overrides that for this block only.
+            Working Days and Days Off are mutually exclusive.
           </div>
         )}
         {tab === 'targets' && (
@@ -4133,9 +4153,16 @@ function CallCountsModal({ grid, onClose }: { grid: GridData; onClose: () => voi
   // FTE display beside the provider name only — every calculation below goes
   // through census.fteFor (engine coercion) so display quirks can't skew math.
   const fteByPid: Record<string, number> = {};
+  // Stated WORKING-DAYS FTE per provider (patch43). Null / no profile / a
+  // pre-43 payload all resolve to "use the call FTE" inside the contract
+  // (effectiveWorkDaysFte) — this map only carries what was actually stated,
+  // it never invents a fallback of its own.
+  const workDaysFteByPid: Record<string, number | null> = {};
   for (const p of grid.profiles || []) {
     fteByPid[p.provider_id] = p.fte_value ?? 1;
+    workDaysFteByPid[p.provider_id] = p.work_days_fte ?? null;
   }
+  const workDaysFteForPid = (pid: string) => workDaysFteByPid[pid] ?? null;
 
   // Days-in-block per bucket header — DISTINCT stored slot dates per
   // derived_day_type, the same exact-match keys the bucket columns aggregate
@@ -4156,19 +4183,24 @@ function CallCountsModal({ grid, onClose }: { grid: GridData; onClose: () => voi
   const workingDaysForPid = (pid: string) => creditedByPid[pid] || 0;
 
   // Days Off = block working days − PTO weekdays − required, where required
-  // routes through the single-homed workDays contract (round(FTE × WD) − PTO).
-  // PTO weekdays here are the SAME tally the PTO Days column shows
-  // (ptoDaysForPid) so the two columns can never disagree. Full FTE → 0 → "—".
+  // routes through the single-homed workDays contract (round(workFTE × WD) −
+  // PTO). PTO weekdays here are the SAME tally the PTO Days column shows
+  // (ptoDaysForPid) so the two columns can never disagree. A full WORKING-DAYS
+  // FTE → 0 → "—", whatever the call FTE is (patch43: a 0.66-call / 1.0-days
+  // provider owes every working day and is entitled to no days off).
   const daysOffForPid = (pid: string) =>
-    daysOffFor(census.fteFor(pid), composition.workingDays, ptoDaysForPid(pid));
+    daysOffFor(census.fteFor(pid), composition.workingDays, ptoDaysForPid(pid),
+      workDaysFteForPid(pid));
 
   // Required working days — the engine's own contract, incl. a stated
   // Limits-tab override when one exists (blank limit → the FTE formula,
   // Gabriel's verbatim fallback rule). Rendered as "actual / required".
+  // Precedence is the contract's: Limits tab > work_days_fte > fte_value.
   const limitsParse = parseProviderLimits(grid.schedule.provider_limits);
   const statedLimits = limitsParse.ok ? limitsParse.value : null;
   const requiredForPid = (pid: string) => requiredWorkDaysWithLimit(
-    census.fteFor(pid), composition.workingDays, ptoDaysForPid(pid), statedLimits?.[pid] ?? undefined);
+    census.fteFor(pid), composition.workingDays, ptoDaysForPid(pid),
+    statedLimits?.[pid] ?? undefined, workDaysFteForPid(pid));
 
   // Expected = FTE-weighted base target per (provider, bucket, code) —
   // (block_total_in_bucket / par) × POOL fte (census.poolFteFor: a
@@ -4490,14 +4522,14 @@ function CallCountsModal({ grid, onClose }: { grid: GridData; onClose: () => voi
                 padding: '6px 10px', textAlign: 'center', fontWeight: 700,
                 borderBottom: '1px solid var(--border)', borderLeft: '1px solid var(--border)',
                 cursor: 'help',
-              }} title={`Entitled weekday days off this block from the FTE fraction: block working days (M–F minus major holidays, ${composition.workingDays} this block) − PTO days − required, where required = round(FTE × working days) − PTO days (the engine's working-days contract). PTO days = the PTO Days column's tally. Full-FTE providers compute to 0 (—).`}>
+              }} title={`Entitled weekday days off this block from the WORKING-DAYS FTE fraction: block working days (M–F minus major holidays, ${composition.workingDays} this block) − PTO days − required, where required = round(working-days FTE × working days) − PTO days (the engine's working-days contract). The working-days FTE is the provider's call FTE unless a separate one is stated on their profile — the call FTE pro-rates CALL only. PTO days = the PTO Days column's tally. A full working-days contract computes to 0 (—).`}>
                 Days Off
               </th>
               <th rowSpan={2} style={{
                 padding: '6px 10px', textAlign: 'center', fontWeight: 700,
                 borderBottom: '1px solid var(--border)', borderLeft: '1px solid var(--border)',
                 cursor: 'help',
-              }} title="actual / required. Actual = credited M–F working days scheduled on this draft: distinct working days (weekdays minus major holidays) with any assignment, plus post-call rest days credited as worked, plus ICU rotation weekdays — the generation banner's working-days credit. Required = the engine's obligation: round(FTE × block working days) − PTO days, or the stated Limits-tab working-days/days-off override when one is set. Red = scheduled past the requirement.">
+              }} title="actual / required. Actual = credited M–F working days scheduled on this draft: distinct working days (weekdays minus major holidays) with any assignment, plus post-call rest days credited as worked, plus ICU rotation weekdays — the generation banner's working-days credit. Required = the engine's obligation: round(working-days FTE × block working days) − PTO days, or the stated Limits-tab working-days/days-off override when one is set. The working-days FTE is the provider's call FTE unless a separate one is stated on their profile (Providers → Scheduling → Employment) — the call FTE pro-rates CALL only. Red = scheduled past the requirement.">
                 Working Days<br/><span style={{ fontSize: 10, fontWeight: 500, opacity: 0.7 }}>actual / required</span>
               </th>
             </tr>

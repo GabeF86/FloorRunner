@@ -6,6 +6,8 @@ import {
   EMPLOYMENT_STATUSES,
   FTE_MAX,
   FTE_MIN,
+  WORK_DAYS_FTE_MAX,
+  WORK_DAYS_FTE_MIN,
   PROVIDER_STATUSES,
   PROVIDER_TYPES,
   isValidEmail,
@@ -71,6 +73,10 @@ interface ProviderDetail {
 interface EmploymentProfile {
   employment_status: string;
   fte_value: number;
+  // WORKING-DAYS FTE (patch43) — a SEPARATE contract from fte_value: fte_value
+  // pro-rates CALL, this pro-rates the days the provider must be in a D slot.
+  // NULL = "same as FTE" (every provider until one is stated).
+  work_days_fte: number | null;
   is_shareholder: boolean;
   is_partner_track: boolean;
   is_day_doc: boolean;
@@ -153,6 +159,7 @@ const TYPE_COLORS: Record<string, { color: string; bg: string; label: string }> 
 const EMPTY_PROFILE: EmploymentProfile = {
   employment_status: 'full_time',
   fte_value: 1.0,
+  work_days_fte: null,
   is_shareholder: false,
   is_partner_track: false,
   is_day_doc: false,
@@ -644,6 +651,11 @@ function ProfileTab({ provider, saveState, onSave }: { provider: ProviderDetail;
 function SchedulingTab({ profile, sites, saveState, onSave }: { profile: EmploymentProfile; sites: Array<{ id: string; name: string; short_name: string | null }>; saveState: 'idle' | 'saving' | 'saved'; onSave: (u: Record<string, unknown>) => void }) {
   const [empStatus, setEmpStatus] = useState(profile.employment_status);
   const [fte, setFte] = useState(String(profile.fte_value));
+  // Blank string = "same as FTE" (stored NULL). Never pre-filled with the FTE:
+  // the field must LOOK empty when nothing is stated, or a later FTE change
+  // would silently leave a stale frozen copy behind.
+  const [workDaysFte, setWorkDaysFte] = useState(
+    profile.work_days_fte == null ? '' : String(profile.work_days_fte));
   const [ptoWeeks, setPtoWeeks] = useState(String(profile.pto_weeks ?? 0));
   const [maxWeeklyHours, setMaxWeeklyHours] = useState(profile.max_weekly_hours == null ? '' : String(profile.max_weekly_hours));
   const [isPartner, setIsPartner] = useState(profile.is_shareholder);
@@ -683,6 +695,7 @@ function SchedulingTab({ profile, sites, saveState, onSave }: { profile: Employm
   useEffect(() => {
     setEmpStatus(profile.employment_status);
     setFte(String(profile.fte_value));
+    setWorkDaysFte(profile.work_days_fte == null ? '' : String(profile.work_days_fte));
     setPtoWeeks(String(profile.pto_weeks ?? 0));
     setMaxWeeklyHours(profile.max_weekly_hours == null ? '' : String(profile.max_weekly_hours));
     setIsPartner(profile.is_shareholder);
@@ -721,6 +734,13 @@ function SchedulingTab({ profile, sites, saveState, onSave }: { profile: Employm
   if (fte.trim() === '' || !Number.isFinite(fteNum) || fteNum < FTE_MIN || fteNum > FTE_MAX) {
     errors.fte = `Must be between ${FTE_MIN} and ${FTE_MAX}`;
   }
+  // Blank is VALID here — it is the "same as FTE" state, not a missing answer.
+  const workDaysFteNum = Number(workDaysFte);
+  if (workDaysFte.trim() !== ''
+      && (!Number.isFinite(workDaysFteNum)
+        || workDaysFteNum < WORK_DAYS_FTE_MIN || workDaysFteNum > WORK_DAYS_FTE_MAX)) {
+    errors.workDaysFte = `Must be between ${WORK_DAYS_FTE_MIN} and ${WORK_DAYS_FTE_MAX}, or blank`;
+  }
   const checkInt = (s: string, key: string) => {
     if (!s) return;
     const n = Number(s);
@@ -758,6 +778,10 @@ function SchedulingTab({ profile, sites, saveState, onSave }: { profile: Employm
     onSave({
       employment_status: empStatus,
       fte_value: fteNum,
+      // Blank → real NULL ("same as FTE"), never 0 (which would mean "owes no
+      // working days at all"). Same blank-means-formula convention as the
+      // Limits tab.
+      work_days_fte: workDaysFte.trim() === '' ? null : workDaysFteNum,
       pto_weeks: ptoWeeks === '' ? 0 : parseInt(ptoWeeks, 10),
       max_weekly_hours: maxWeeklyHours === '' ? null : parseInt(maxWeeklyHours, 10),
       is_shareholder: isPartner, is_partner_track: isPartnerTrack,
@@ -801,10 +825,25 @@ function SchedulingTab({ profile, sites, saveState, onSave }: { profile: Employm
             ))}
           </select>
         </div>
-        <Field label="FTE" value={fte} onChange={setFte} error={errors.fte} hint={`${FTE_MIN}\u2013${FTE_MAX}`} />
+        <Field
+          label="FTE (call share)"
+          value={fte} onChange={setFte} error={errors.fte}
+          hint={`${FTE_MIN}\u2013${FTE_MAX} \u00b7 pro-rates how much CALL they owe`}
+        />
+        {/* The second contract (patch43). Sits beside the call FTE because the
+            pair is only comprehensible together: one pro-rates call, the other
+            pro-rates the days they must be IN a room. Blank is the norm and
+            means "same as FTE" \u2014 the blank-means-formula convention used by
+            the Limits tab. Hussain is the case that forced the split: 0.66 for
+            call (a third of his time is ICU), 1.0 for working days. */}
+        <Field
+          label="Working-Days FTE"
+          value={workDaysFte} onChange={setWorkDaysFte} error={errors.workDaysFte}
+          hint={'Blank = same as FTE \u00b7 share of working days they must be scheduled'}
+        />
         <Field label="PTO Weeks" value={ptoWeeks} onChange={setPtoWeeks} error={errors.ptoWeeks} />
         <Field label="Max Weekly Hours" value={maxWeeklyHours} onChange={setMaxWeeklyHours} error={errors.maxWeeklyHours} />
-        <div style={{ gridColumn: '2 / -1' }}>
+        <div style={{ gridColumn: '1 / -1' }}>
           <label style={fieldLabelStyle}>Home Hospital / Surgery Center</label>
           <select value={homeSite} onChange={e => setHomeSite(e.target.value)} style={fieldInputStyle}>
             <option value="">— None —</option>

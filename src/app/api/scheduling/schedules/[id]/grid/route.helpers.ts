@@ -92,14 +92,31 @@ export const GRID_CROSS_SITE_COLUMNS =
   'provider_id, schedule_slots!inner(slot_date, site_id, schedule_versions!inner(schedule_id, version_status), shift_types(requires_post_call_rule))';
 
 // available_weekdays (Sun..Sat jsonb) is the engine's weekday-availability
-// gate. It rides the existing profiles read with its own narrow retry: the
-// profiles query captures no error today, so a missing column would blank
-// EVERY profile and silently break the home-site/call-taker virtual rows.
+// gate. work_days_fte (patch43) is the standing per-provider WORKING-DAYS FTE
+// the Call Counts modal's Working Days / Days Off columns need. Both ride the
+// profiles read with a narrow-retry LADDER: the profiles query captures no
+// error today, so a missing column would blank EVERY profile and silently
+// break the home-site/call-taker virtual rows.
+//
+// The ladder is tried top-down and each rung is an EXACT degradation — an
+// absent column can hold no value, and both fields' absent-meaning is their
+// permissive default (all weekdays available; working days derive from
+// fte_value). Ordered widest-first so a fully-patched DB never pays for a rung
+// it does not need.
 export const GRID_PROFILE_COLUMNS =
+  'provider_id, home_site_id, call_taker, partial_call_taker, fte_value, work_days_fte, employment_status, available_weekdays';
+
+export const GRID_PROFILE_COLUMNS_PRE43 =
   'provider_id, home_site_id, call_taker, partial_call_taker, fte_value, employment_status, available_weekdays';
 
 export const GRID_PROFILE_COLUMNS_NO_WEEKDAYS =
   'provider_id, home_site_id, call_taker, partial_call_taker, fte_value, employment_status';
+
+export const GRID_PROFILE_LADDER = [
+  GRID_PROFILE_COLUMNS,
+  GRID_PROFILE_COLUMNS_PRE43,
+  GRID_PROFILE_COLUMNS_NO_WEEKDAYS,
+] as const;
 
 // Missing-column detection for the pre-patch35 / pre-patch42 retries (42703 or
 // a message naming a column) — mirrors the engine's posture. PostgREST answers
