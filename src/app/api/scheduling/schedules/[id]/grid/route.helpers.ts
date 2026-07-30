@@ -104,13 +104,13 @@ export const GRID_CROSS_SITE_COLUMNS =
 // fte_value). Ordered widest-first so a fully-patched DB never pays for a rung
 // it does not need.
 export const GRID_PROFILE_COLUMNS =
-  'provider_id, home_site_id, call_taker, partial_call_taker, fte_value, work_days_fte, employment_status, available_weekdays';
+  'provider_id, home_site_id, call_taker, partial_call_taker, is_day_doc, fte_value, work_days_fte, employment_status, available_weekdays';
 
 export const GRID_PROFILE_COLUMNS_PRE43 =
-  'provider_id, home_site_id, call_taker, partial_call_taker, fte_value, employment_status, available_weekdays';
+  'provider_id, home_site_id, call_taker, partial_call_taker, is_day_doc, fte_value, employment_status, available_weekdays';
 
 export const GRID_PROFILE_COLUMNS_NO_WEEKDAYS =
-  'provider_id, home_site_id, call_taker, partial_call_taker, fte_value, employment_status';
+  'provider_id, home_site_id, call_taker, partial_call_taker, is_day_doc, fte_value, employment_status';
 
 export const GRID_PROFILE_LADDER = [
   GRID_PROFILE_COLUMNS,

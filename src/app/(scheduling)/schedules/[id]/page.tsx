@@ -111,6 +111,7 @@ import {
   buildAvailableCallList, bucketSummaryText, formatAvailableCallText, isUnfilledCallSlot,
 } from '@/lib/availableCalls';
 import { computeCoverageForecast, formatCalls } from '@/lib/coverageForecast';
+import { buildProviderFocusList } from '@/lib/providerFocusList';
 
 /* ── Interfaces ──────────────────────────────────────────────────────────── */
 
@@ -153,6 +154,8 @@ interface EmploymentProfile {
   home_site_id: string | null;
   call_taker: boolean;
   partial_call_taker: boolean;
+  /** Day Doc role flag — the criterion day-shift generation intersects. */
+  is_day_doc?: boolean | null;
   fte_value: number | null;
   // Stated WORKING-DAYS FTE (patch43) — the Working Days / Days Off columns'
   // multiplier. Absent on a payload whose profiles read fell to the pre-43
@@ -823,15 +826,15 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
    * this block. Offering the whole roster would list people with nothing to
    * find, and picking one would blank the grid — a control that can only
    * disappoint. Sorted by display name so the list reads like the board. */
-  const focusableProviders = useMemo(() => {
-    const held = new Set<string>();
-    for (const slot of grid?.slots ?? []) {
-      for (const a of slot.assignments ?? []) if (a.provider_id) held.add(a.provider_id);
-    }
-    return (grid?.providers ?? [])
-      .filter(p => held.has(p.id))
-      .sort((a, b) => a.short_display_name.localeCompare(b.short_display_name));
-  }, [grid]);
+  // Who the focus selector offers — buildProviderFocusList owns the rule and
+  // its tests (the empty-fresh-schedule case regressed once already).
+  const focusableProviders = useMemo(() => (grid ? buildProviderFocusList({
+    providers: grid.providers,
+    profiles: grid.profiles,
+    slots: grid.slots,
+    siteId: grid.schedule.site_id,
+    includedProviderIds: grid.schedule.included_provider_ids,
+  }) : []), [grid]);
 
   /* ── Per-date working roster + over-par detection ───────────────────────── */
 
@@ -1880,7 +1883,9 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
         >
           <option value="">Focus provider…</option>
           {focusableProviders.map(p => (
-            <option key={p.id} value={p.id}>{p.short_display_name}</option>
+            <option key={p.id} value={p.id}>
+              {p.short_display_name}{p.holdsWork ? '' : ' — none yet'}
+            </option>
           ))}
         </select>
 
