@@ -48,13 +48,22 @@ export async function POST(
   let bodyFillMode: unknown;
   let bodyProviderIds: unknown;
   let bodyCallsOnly: unknown;
+  let bodyDayScope: unknown;
   try {
     const body = (await req.json()) as
-      { fillMode?: unknown; providerIds?: unknown; callsOnly?: unknown } | null;
+      { fillMode?: unknown; providerIds?: unknown; callsOnly?: unknown; dayScope?: unknown } | null;
     bodyFillMode = body?.fillMode;
     bodyProviderIds = body?.providerIds;
     bodyCallsOnly = body?.callsOnly;
+    bodyDayScope = body?.dayScope;
   } catch { /* no JSON body — default */ }
+
+  // DAY SCOPE (Gabriel 2026-07-30: "Is there a way to autofill only the weekday
+  // calls?"). Composes with any fill mode — obligatory + weekday is the useful
+  // combination, which a fourth FillMode value could not have expressed.
+  // Anything but the two known values is the whole block.
+  const dayScope: 'weekday' | 'weekend' | undefined =
+    bodyDayScope === 'weekday' || bodyDayScope === 'weekend' ? bodyDayScope : undefined;
 
   // CALLS ONLY (Gabriel 2026-08). Skips the relief/mop-up day passes AND the
   // day-shift pass; the call slots and their structurally chained day slots
@@ -146,7 +155,7 @@ export async function POST(
   // version.id was selected by schedule_id, so scheduleId IS its parent —
   // passing it down saves each engine's schedule_versions parent lookup.
   const result = await autoGenerate(sb, version.id, {
-    overrideProviderIds, fillMode, callsOnly, parentScheduleId: scheduleId,
+    overrideProviderIds, fillMode, callsOnly, dayScope, parentScheduleId: scheduleId,
   });
   // Call-gen hard-failed: surface immediately; don't run day-shift gen on a
   // context that couldn't even load. The result already carries warnings,
@@ -154,7 +163,7 @@ export async function POST(
   // trimmed to keep the payload proportional to what the UI shows.
   if (!result.ok) {
     return NextResponse.json(
-      { ...result, unfilled: trimUnfilled(result.unfilled), fillMode, undoActionId, targetedProviderIds: targeted ? overrideProviderIds ?? [] : null },
+      { ...result, unfilled: trimUnfilled(result.unfilled), fillMode, dayScope: dayScope ?? null, undoActionId, targetedProviderIds: targeted ? overrideProviderIds ?? [] : null },
       { status: statusForResult(result) },
     );
   }
@@ -163,11 +172,13 @@ export async function POST(
   // the Continue run (it would otherwise fill weekday day slots around a call
   // schedule that hasn't been attempted yet). The result already carries
   // awaitingContinue for the UI's staged banner.
-  // A calls-only run stops here for the same reason weekend-only does: the
-  // day-shift pass fills 7-3/7-5, which are day slots by definition.
-  if (fillMode === 'weekend-only' || callsOnly) {
+  // Stops before the day-shift pass for the same reason weekend-only does:
+  // 7-3/7-5 are WEEKDAY day slots, so a calls-only or weekend-scoped run has no
+  // business filling them. A WEEKDAY-scoped run does — that pass is exactly
+  // what it is for.
+  if (fillMode === 'weekend-only' || callsOnly || dayScope === 'weekend') {
     return NextResponse.json(
-      { ...result, unfilled: trimUnfilled(result.unfilled), fillMode, callsOnly, undoActionId, targetedProviderIds: targeted ? overrideProviderIds ?? [] : null },
+      { ...result, unfilled: trimUnfilled(result.unfilled), fillMode, callsOnly, dayScope: dayScope ?? null, undoActionId, targetedProviderIds: targeted ? overrideProviderIds ?? [] : null },
       { status: statusForResult(result) },
     );
   }
@@ -194,6 +205,7 @@ export async function POST(
       // mode the caller did not ask for must never be invisible.
       fillMode,
       callsOnly,
+      dayScope: dayScope ?? null,
       undoActionId,
       targetedProviderIds: targeted ? overrideProviderIds ?? [] : null,
     },

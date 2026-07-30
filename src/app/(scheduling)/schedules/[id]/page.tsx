@@ -445,6 +445,10 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
   // produces contiguous same-code blocks. Unchecking is available for a
   // deliberate full single-provider run.
   const [targetedCallsOnly, setTargetedCallsOnly] = useState(true);
+  // Which call slots a run attempts. Orthogonal to the fill mode, so
+  // "obligatory + weekday only" is expressible — the combination Gabriel wants
+  // after entering the weekend schedule by hand.
+  const [dayScope, setDayScope] = useState<'' | 'weekday' | 'weekend'>('');
   const [showAssistant, setShowAssistant] = useState(false);
   // Inline rename (Gabriel 2026-07-22): the header pencil PATCHes
   // schedule_name (route-validated: trimmed, non-empty, ≤ 120). Local grid
@@ -1341,6 +1345,8 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
     callsOnly: boolean;
     /** Snapshot taken immediately BEFORE this run; null ⇒ no undo available. */
     undoActionId: string | null;
+    /** Which call slots this run attempted; null = the whole block. */
+    dayScope: 'weekday' | 'weekend' | null;
     // Weekend-only runs only: call slots deliberately deferred to Continue
     // (NOT failures, NOT counted in `skipped`).
     awaitingContinue: { total: number; byDayType: Record<string, number> } | null;
@@ -1406,6 +1412,7 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
   const runGeneration = async (
     mode: GenFillMode, providerIds?: string[], callsOnly?: boolean,
   ) => {
+    const scope = dayScope || undefined;
     setGenerating(true);
     setGenResult(null);
     try {
@@ -1416,6 +1423,7 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
           fillMode: mode,
           ...(providerIds?.length ? { providerIds } : {}),
           ...(callsOnly ? { callsOnly: true } : {}),
+          ...(scope ? { dayScope: scope } : {}),
         }),
       });
       const data = await res.json();
@@ -1434,6 +1442,7 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
         fillMode: (data.fillMode as GenFillMode) ?? mode,
         targetedProviderIds: Array.isArray(data.targetedProviderIds) ? data.targetedProviderIds : null,
         callsOnly: data.callsOnly === true,
+        dayScope: data.dayScope === 'weekday' || data.dayScope === 'weekend' ? data.dayScope : null,
         undoActionId: typeof data.undoActionId === 'string' ? data.undoActionId : null,
         awaitingContinue: data.awaitingContinue && typeof data.awaitingContinue.total === 'number'
           ? data.awaitingContinue : null,
@@ -2010,6 +2019,36 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
               <option value="obligatory">Obligatory only</option>
               <option value="weekend-only">Weekend call only</option>
             </select>
+            {/* Day scope — SEPARATE from the fill mode because scope and cap are
+                orthogonal: "Obligatory only" + "Weekday calls" is the useful
+                combination after entering the weekend schedule by hand, and a
+                fourth fill-mode value could not have expressed it. Inert at
+                "Whole block", which is the pre-existing behaviour. */}
+            <select
+              value={dayScope}
+              onChange={e => setDayScope(
+                e.target.value === 'weekday' || e.target.value === 'weekend' ? e.target.value : '')}
+              disabled={generating || genFillMode === 'weekend-only'}
+              aria-label="Which call slots to attempt"
+              title={genFillMode === 'weekend-only'
+                ? 'Weekend call only already scopes the run.'
+                : dayScope === 'weekday'
+                  ? 'Attempt only M–Th call slots (holidays included). Fri/Sat/Sun are left untouched for a later run.'
+                  : dayScope === 'weekend'
+                    ? 'Attempt only Fri/Sat/Sun call slots. Weekdays are left for a later run.'
+                    : 'Attempt every call slot in the block (default).'}
+              style={{
+                padding: '7px 10px', fontSize: 12.5, fontWeight: 600, borderRadius: 8,
+                background: 'var(--bg)', color: 'var(--text-muted)',
+                border: '1px solid var(--border)',
+                cursor: generating || genFillMode === 'weekend-only' ? 'not-allowed' : 'pointer',
+                opacity: genFillMode === 'weekend-only' ? 0.5 : 1,
+              }}
+            >
+              <option value="">Whole block</option>
+              <option value="weekday">Weekday calls (M–Th)</option>
+              <option value="weekend">Weekend calls (Fri–Sun)</option>
+            </select>
             <Button
               variant="secondary"
               onClick={autoGenerateSchedule}
@@ -2305,6 +2344,17 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
                     open at a stated maximum (reason: provider-cap) — fill manually or raise the limit.
                   </div>
                 )}
+              </div>
+            )}
+            {genResult.dayScope && (
+              <div style={{ marginTop: 6, fontSize: 12.5 }}>
+                Scope: {genResult.dayScope === 'weekday'
+                  ? 'weekday calls (M–Th, holidays included)'
+                  : 'weekend calls (Fri–Sun)'} only
+                {genResult.awaitingContinue && genResult.awaitingContinue.total > 0
+                  ? ` — ${genResult.awaitingContinue.total} out-of-scope call slot${
+                      genResult.awaitingContinue.total === 1 ? '' : 's'} left untouched for a later run.`
+                  : '.'}
               </div>
             )}
             {/* Undo sits LAST — under the report it acts on. Absent (not

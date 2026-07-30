@@ -458,4 +458,21 @@ export interface SolveOptions {
   // the same code (live: four straight D6s, four straight D7s). Sequence the
   // CALL schedule per provider, then fill day slots once across the pool.
   callsOnly?: boolean;
+  // DAY SCOPE (Gabriel 2026-07-30: "Is there a way to autofill only the weekday
+  // calls?"). Which call slots the main loop attempts; absent = the whole
+  // block, byte-identical to before.
+  //
+  // Deliberately SEPARATE from fillMode rather than a fourth FillMode value:
+  // scope and CAP are orthogonal. 'weekday-only' as a mode would have forced a
+  // choice between uncapped (everyone past their obligation into the pickup
+  // layer) and capped, when the useful combination is obligatory + weekday.
+  // fillMode 'weekend-only' predates this and keeps its own gate — it is a
+  // STAGED mode with a Continue affordance, not just a scope.
+  //
+  // HOLIDAYS: 'weekday' is the exact complement of the weekend-only day-type
+  // set, so a holiday of either type is IN weekday scope regardless of the day
+  // it lands on. That matches where weekend-only already leaves them (it
+  // excludes holidays deliberately), and makes the two scopes a clean
+  // partition — weekend then weekday attempts every call slot exactly once.
+  dayScope?: 'weekday' | 'weekend';
 }

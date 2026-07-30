@@ -28,6 +28,8 @@ export interface AutoGenerateOptions {
   /** Calls only — skip the relief and mop-up day-slot passes (genTypes
    *  SolveOptions.callsOnly states the rule and why the line falls there). */
   callsOnly?: boolean;
+  /** Restrict the main loop to weekday or weekend call slots. */
+  dayScope?: 'weekday' | 'weekend';
   // The version's parent schedule id, when the caller already holds it (the
   // generate route's path param). Threaded to loadGenerationContext to skip
   // its redundant schedule_versions round trip; absent → looked up as before.
@@ -216,6 +218,7 @@ export async function autoGenerate(
         k: options.multiStartK,
         fillMode,
         callsOnly: options.callsOnly,
+        dayScope: options.dayScope,
         optimizeEnabled: resolveOptimizeEnabled(options.optimize),
         wallClockMs: resolveWallClockMs(options.wallClockMs, process.env.SCHEDULING_OPTIMIZE_WALL_MS),
       });
@@ -223,7 +226,7 @@ export async function autoGenerate(
       seedMetrics = multiStart.seedMetrics;
       if (multiStart.optimizeStats) result.optimizeStats = multiStart.optimizeStats;
     } else {
-      const seedPlan = solve(ctx, { fillMode, callsOnly: options.callsOnly });
+      const seedPlan = solve(ctx, { fillMode, callsOnly: options.callsOnly, dayScope: options.dayScope });
       seedMetrics = scoreSolution(seedPlan, ctx);
       // Only 'all' optimizes. Obligatory and weekend-only both return the
       // deterministic greedy plan — see the AutoGenerateOptions.fillMode note
@@ -231,6 +234,7 @@ export async function autoGenerate(
       if (fillMode === 'all' && resolveOptimizeEnabled(options.optimize)) {
         const optimized = optimize(ctx, {
           callsOnly: options.callsOnly,
+          dayScope: options.dayScope,
           wallClockMs: resolveWallClockMs(options.wallClockMs, process.env.SCHEDULING_OPTIMIZE_WALL_MS),
         });
         plan = optimized.plan;

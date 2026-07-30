@@ -25,6 +25,8 @@ export interface OptimizeOptions {
   /** Calls-only: threaded into the seed solve AND every trial re-solve, so the
    *  optimizer never compares a relief-filled trial against a calls-only seed. */
   callsOnly?: boolean;
+  /** Day scope — rides into the seed solve and every trial re-solve. */
+  dayScope?: 'weekday' | 'weekend';
   maxIterations?: number;
   maxResolves?: number;
   wallClockMs?: number;
@@ -110,8 +112,9 @@ export function filledSlotIds(plan: SolutionPlan): Set<string> {
 function evaluate(
   ctx: GenerationContext, callAssign: Map<string, string>,
   fillMode?: FillMode, tieBreakSeed?: number, callsOnly?: boolean,
+  dayScope?: 'weekday' | 'weekend',
 ): { plan: SolutionPlan; metrics: SolutionMetrics } {
-  const plan = solve(ctx, { callOverrides: callAssign, fillMode, tieBreakSeed, callsOnly });
+  const plan = solve(ctx, { callOverrides: callAssign, fillMode, tieBreakSeed, callsOnly, dayScope });
   return { plan, metrics: scoreSolution(plan, ctx) };
 }
 
@@ -130,6 +133,7 @@ export function optimize(ctx: GenerationContext, opts: OptimizeOptions = {}): Op
   // Rides into EVERY trial re-solve: a trial that filled relief slots the seed
   // plan does not have would be scored against an unlike plan.
   const callsOnly = opts.callsOnly;
+  const dayScope = opts.dayScope;
   const doc = ctx.callPattern ?? CLASSIC_PATTERN;
   const providerIds = ctx.providers.map(p => p.id).sort();
   const providerById = ctx.providerById ?? new Map(ctx.providers.map(p => [p.id, p]));
@@ -140,7 +144,7 @@ export function optimize(ctx: GenerationContext, opts: OptimizeOptions = {}): Op
   const isCallUnfilled = (u: UnfilledSlot): boolean =>
     (u.shift_type_category ?? ctx.shiftTypes?.get(u.shift_type_code)?.category) === 'call';
 
-  let best = solve(ctx, { fillMode, tieBreakSeed, callsOnly });
+  let best = solve(ctx, { fillMode, tieBreakSeed, callsOnly, dayScope });
   let bestMetrics = scoreSolution(best, ctx);
   let bestAssign = extractCallAssignment(best);
   let bestFilled = filledSlotIds(best);
@@ -271,7 +275,7 @@ export function optimize(ctx: GenerationContext, opts: OptimizeOptions = {}): Op
             trial.set(uId, pid);   // P fills the gap
             trial.set(sId, qid);   // Q takes P's vacated slot
             resolvesUsed++;
-            const { plan, metrics } = evaluate(ctx, trial, fillMode, tieBreakSeed, callsOnly);
+            const { plan, metrics } = evaluate(ctx, trial, fillMode, tieBreakSeed, callsOnly, dayScope);
             if (keepsEveryIncumbentFill(plan) && withinCallCaps(plan)
               && withinObligations(plan)
               && compareMetrics(metrics, bestMetrics) < 0) {
@@ -303,7 +307,7 @@ export function optimize(ctx: GenerationContext, opts: OptimizeOptions = {}): Op
         const trial = new Map(bestAssign);
         trial.set(sId, pid);
         resolvesUsed++;
-        const { plan, metrics } = evaluate(ctx, trial, fillMode, tieBreakSeed, callsOnly);
+        const { plan, metrics } = evaluate(ctx, trial, fillMode, tieBreakSeed, callsOnly, dayScope);
         if (keepsEveryIncumbentFill(plan) && withinCallCaps(plan)
           && withinObligations(plan)
           && compareMetrics(metrics, bestMetrics) < 0) {

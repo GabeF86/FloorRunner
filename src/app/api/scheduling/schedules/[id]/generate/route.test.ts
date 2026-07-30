@@ -369,3 +369,31 @@ describe('generation undo point', () => {
     expect(json.undoActionId).toBeNull();
   });
 });
+
+// ── day scope ───────────────────────────────────────────────────────────────
+describe('dayScope', () => {
+  it('threads weekday scope through and echoes it', async () => {
+    const { json } = await post({ fillMode: 'obligatory', dayScope: 'weekday' });
+    expect(holder.genOptions[0]).toMatchObject({ dayScope: 'weekday', fillMode: 'obligatory' });
+    expect(json.dayScope).toBe('weekday');
+  });
+
+  it('a WEEKDAY-scoped run STILL runs the day-shift pass — 7-3/7-5 are weekday slots', async () => {
+    await post({ dayScope: 'weekday' });
+    expect(holder.dayOptions).toHaveLength(1);
+  });
+
+  it('a WEEKEND-scoped run skips it', async () => {
+    await post({ dayScope: 'weekend' });
+    expect(holder.dayOptions).toHaveLength(0);
+  });
+
+  it('ignores an unknown scope', async () => {
+    for (const bad of ['weekdays', '', 1, null, {}]) {
+      holder.genOptions = [];
+      const { json } = await post({ dayScope: bad });
+      expect(holder.genOptions[0]).toMatchObject({ dayScope: undefined });
+      expect(json.dayScope).toBeNull();
+    }
+  });
+});

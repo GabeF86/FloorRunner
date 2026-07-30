@@ -218,7 +218,18 @@ export function solve(ctx: GenerationContext, opts: SolveOptions = {}): Solution
   // JSON pin (fillAllPlan.golden.json) stays byte-identical.
   const weekendOnly = opts.fillMode === 'weekend-only';
   const callsOnly = opts.callsOnly === true;
-  const awaitingContinue: AwaitingContinueSlot[] | null = weekendOnly ? [] : null;
+  const dayScope = opts.dayScope;
+  // In-scope predicate for the main loop. weekend-only keeps its own gate
+  // (staged mode); dayScope is the general one and composes with any fillMode.
+  const inDayScope = (dt: string): boolean =>
+    dayScope === 'weekend' ? WEEKEND_ONLY_DAY_TYPES.has(dt)
+      : dayScope === 'weekday' ? !WEEKEND_ONLY_DAY_TYPES.has(dt)
+        : true;
+  // Slots deliberately deferred (out of scope), NOT failures. Populated for
+  // weekend-only staging and for any dayScope run, so the banner can report
+  // "N left for a later run" instead of silently doing less than asked.
+  const awaitingContinue: AwaitingContinueSlot[] | null =
+    weekendOnly || dayScope ? [] : null;
   if (awaitingContinue) plan.awaitingContinue = awaitingContinue;
   const obligationByPid = obligatory ? computeObligations(ctx) : null;
   // Segment seeds (call splits, 2026-07-22) consume the obligation cap and the
@@ -302,7 +313,10 @@ export function solve(ctx: GenerationContext, opts: SolveOptions = {}): Solution
     // override resolution (overrides are an optimizer seam; the optimizer
     // never runs in weekend-only mode). Deferred slots are counted, never
     // reported as unfilled failures.
-    if (awaitingContinue && !WEEKEND_ONLY_DAY_TYPES.has(slot.derived_day_type)) {
+    const outOfScope = weekendOnly
+      ? !WEEKEND_ONLY_DAY_TYPES.has(slot.derived_day_type)
+      : !inDayScope(slot.derived_day_type);
+    if (awaitingContinue && outOfScope) {
       awaitingContinue.push({
         slot_id: slot.slot_id, slot_date: slot.slot_date,
         shift_type_code: slot.shift_type_code, derived_day_type: slot.derived_day_type,
