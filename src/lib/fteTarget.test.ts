@@ -1104,3 +1104,70 @@ describe('computeCallObligationCensus — ONE obligation input set for grid and 
     expect(census.overParAssignmentIds.has('a1')).toBe(false); // pool member within obligation
   });
 });
+
+// ── per-bucket blame is QUANTITY-capped (Gabriel 2026-07-30) ────────────────
+// "can you tell me why the call count isnt showing the additional sunday C1
+// that jones is taking" — it was: the sunday|C1 COLUMN read 2. What was wrong
+// was the EXTRA-CALL attribution, which priced all three of his extras as
+// weekday. Day type is exactly what that breakout exists to report.
+describe('over-par selection — a bucket absorbs only its own overage', () => {
+  // Jones's live shape on "Final Weekends": 19 calls against an obligation of
+  // 16, exactly 1 over in each of THREE buckets.
+  const HELD: Array<[string, string, string]> = [
+    // weekday|C1 — 5 held vs target 4
+    ['2026-08-12', 'C1', 'weekday'], ['2026-09-02', 'C1', 'weekday'],
+    ['2026-09-22', 'C1', 'weekday'], ['2026-10-06', 'C1', 'weekday'],
+    ['2026-10-22', 'C1', 'weekday'],
+    // weekday|C2 — 5 held vs target 4
+    ['2026-08-19', 'C2', 'weekday'], ['2026-09-09', 'C2', 'weekday'],
+    ['2026-09-30', 'C2', 'weekday'], ['2026-10-13', 'C2', 'weekday'],
+    ['2026-09-07', 'C2', 'weekday'],
+    // sunday|C1 — 2 held vs target 1  ← the one that was never blamed
+    ['2026-08-23', 'C1', 'sunday'], ['2026-09-06', 'C1', 'sunday'],
+    // exactly on target everywhere else
+    ['2026-08-28', 'C1', 'friday'], ['2026-08-21', 'C2', 'friday'],
+    ['2026-09-26', 'C1', 'saturday'], ['2026-09-05', 'C2', 'saturday'],
+    ['2026-09-19', 'C3', 'saturday'],
+    ['2026-08-30', 'C2', 'sunday'], ['2026-09-20', 'C3', 'sunday'],
+  ];
+  const calls = HELD.map(([d, code, bucket]) => ({
+    id: `${d}|${code}`, provider_id: 'jones', slot_date: d,
+    shift_type_code: code, parent_code: code, bucket, weight: 1,
+  }));
+  const TARGET: Record<string, number> = {
+    'weekday|C1': 4, 'weekday|C2': 4,
+    'friday|C1': 1, 'friday|C2': 1,
+    'saturday|C1': 1, 'saturday|C2': 1, 'saturday|C3': 1,
+    'sunday|C1': 1, 'sunday|C2': 1, 'sunday|C3': 1,
+  };
+
+  const cover = () => selectOverParCover(calls, 16, key => TARGET[key] ?? 0);
+
+  it('flags exactly one call from each over-target bucket', () => {
+    const flagged = cover().ids.map(id => id.split('|')[0]).sort();
+    // Latest in each: weekday|C1 → 10/22, weekday|C2 → 10/13, sunday|C1 → 9/06.
+    expect(flagged).toEqual(['2026-09-06', '2026-10-13', '2026-10-22']);
+  });
+
+  it('the extra SUNDAY C1 is among them — it is priced as a Sunday', () => {
+    expect(cover().ids).toContain('2026-09-06|C1');
+  });
+
+  it('no bucket is blamed more than it is over', () => {
+    const byBucket = new Map<string, number>();
+    for (const id of cover().ids) {
+      const c = calls.find(x => x.id === id)!;
+      const key = `${c.bucket}|${c.parent_code}`;
+      byBucket.set(key, (byBucket.get(key) ?? 0) + 1);
+    }
+    for (const [key, n] of byBucket) {
+      const heldN = calls.filter(c => `${c.bucket}|${c.parent_code}` === key).length;
+      expect(n).toBeLessThanOrEqual(heldN - TARGET[key]);
+    }
+  });
+
+  it('still covers the whole overage — three flags for three over', () => {
+    expect(cover().ids).toHaveLength(3);
+    expect(cover().method).toBe('minimal-weight');
+  });
+});

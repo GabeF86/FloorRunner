@@ -85,10 +85,13 @@ export function overParBucketKey(bucket: string, parentCode: string): string {
 //   2. BUCKET FAIRNESS — among covers that tie on weight, the one that draws
 //      the least WEIGHT out of buckets the provider is at-or-under their
 //      per-bucket target in. Equivalently: blame the buckets they are actually
-//      over in. A "bucket" is (dayTypeBucketOn(day type, date) × parent call
-//      code) and its target is the same `fteWeightedTarget` the rest of the
-//      app uses — (bucket slot weight ÷ par) × FTE — supplied by the caller,
-//      which already has the slot totals (see computeCallObligationCensus).
+//      over in, EACH ONLY AS FAR AS IT IS OVER (2026-07-30 — see
+//      overTargetBuckets for the Jones case that forced the quantity cap; a
+//      bucket 1 over may absorb 1 flag, not 3). A "bucket" is
+//      (dayTypeBucketOn(day type, date) × parent call code) and its target is
+//      the same `fteWeightedTarget` the rest of the app uses — (bucket slot
+//      weight ÷ par) × FTE — supplied by the caller, which already has the
+//      slot totals (see computeCallObligationCensus).
 //   3. LATER DATES — the pre-existing tie-break, unchanged.
 //
 // WEIGHT_EPSILON absorbs stored-fraction noise (3 × 0.3333 = 0.9999 is not
@@ -226,20 +229,38 @@ export function selectOverParCover(
   return { ids, coveredWeight, method: 'chronological-tail' };
 }
 
-/** Per-call "is this provider OVER their target in this call's bucket?".
+/** Per-call blame budget: may THIS call be charged to the provider's overage,
+ *  given how far over their target that call's bucket actually is?
+ *
+ * QUANTITY-AWARE, not a yes/no (Gabriel 2026-07-30, live case). It used to
+ * return a boolean per call — "is this bucket over target?" — with no cap on
+ * how many calls one bucket could contribute. Jones held 19 calls against an
+ * obligation of 16, exactly 1 over in each of THREE buckets (weekday|C1 5 vs 4,
+ * weekday|C2 5 vs 4, sunday|C1 2 vs 1). All three buckets answered "true", the
+ * date tie-break then took his three LATEST calls — 10/06 C1, 10/13 C2, 10/22
+ * C1, every one a weekday — and weekday|C1 was blamed TWICE while being 1 over,
+ * with the extra Sunday C1 blamed not at all. The Sunday C1 was in the count
+ * all along; it was the EXTRA-CALL attribution that mispriced it, and day type
+ * is exactly what that column exists to report ("each one has a different
+ * price", 2026-07-29).
+ *
+ * So each bucket may contribute at most its OWN overage, latest dates first.
+ * Jones now flags one weekday C1, one weekday C2 and one Sunday C1 — the
+ * per-bucket table read back exactly.
  *
  * Held weight per bucket comes from the provider's OWN records (this is their
  * complete holding — the caller groups by provider before calling), so it can
  * never disagree with the weights the cover search is spending; only the
- * TARGET is external. A call with no `bucket`, or no target lookup at all,
- * reports false: unknown is not "over", so it earns no preference and the
- * selection degrades to weight-then-date. */
+ * TARGET is external. A call with no `bucket`, or no target lookup at all, is
+ * never preferred: unknown is not "over", so the selection degrades to
+ * weight-then-date exactly as before. */
 function overTargetBuckets(
   sorted: ReadonlyArray<OverParCall>,
   weights: ReadonlyArray<number>,
   bucketTarget?: (bucketKey: string) => number,
 ): boolean[] {
-  if (!bucketTarget) return new Array<boolean>(sorted.length).fill(false);
+  const preferred = new Array<boolean>(sorted.length).fill(false);
+  if (!bucketTarget) return preferred;
   const keys = sorted.map(c => (c.bucket
     ? overParBucketKey(c.bucket, c.parent_code || c.shift_type_code)
     : null));
@@ -248,7 +269,24 @@ function overTargetBuckets(
     const k = keys[i];
     if (k) held.set(k, (held.get(k) || 0) + weights[i]);
   }
-  return keys.map(k => (k ? (held.get(k) || 0) > bucketTarget(k) + WEIGHT_EPSILON : false));
+  // Remaining blame each bucket can absorb = held − target, only where over.
+  const budget = new Map<string, number>();
+  for (const [k, h] of held) {
+    const over = h - bucketTarget(k);
+    if (over > WEIGHT_EPSILON) budget.set(k, over);
+  }
+  // Spend it LATEST-FIRST, matching the date tie-break that ranks within the
+  // preferred group — so the calls marked here are the ones that group would
+  // have chosen anyway, just capped per bucket.
+  for (let i = sorted.length - 1; i >= 0; i--) {
+    const k = keys[i];
+    if (!k) continue;
+    const left = budget.get(k);
+    if (left == null || left <= WEIGHT_EPSILON) continue;
+    preferred[i] = true;
+    budget.set(k, left - weights[i]);
+  }
+  return preferred;
 }
 
 /** Smallest-total-weight set covering `needed`; among equal-weight covers the
