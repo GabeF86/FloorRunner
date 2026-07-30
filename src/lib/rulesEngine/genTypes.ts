@@ -445,4 +445,17 @@ export interface SolveOptions {
   // 0 / absent = the identity order, byte-identical to the pre-seed engine
   // (pinned). Same seed ⇒ same plan, always.
   tieBreakSeed?: number;
+  // CALLS ONLY (Gabriel 2026-08). Skips the RELIEF and MOP-UP passes, so the
+  // run places call slots and the day slots STRUCTURALLY chained to them
+  // (a C2's +1 D1, a weekend anchor's −1 D4) and nothing else.
+  //
+  // Why the line falls there: a chained day slot belongs to the call that
+  // earned it — dropping it would sever the sequence. The relief/mop-up passes
+  // are the opposite kind of work: they DISTRIBUTE the remaining day slots by
+  // ranking the pool, which is a whole-pool decision. Running them inside a
+  // one-provider-at-a-time flow makes that provider the only candidate for
+  // every open relief slot on every date, so they collect contiguous blocks of
+  // the same code (live: four straight D6s, four straight D7s). Sequence the
+  // CALL schedule per provider, then fill day slots once across the pool.
+  callsOnly?: boolean;
 }

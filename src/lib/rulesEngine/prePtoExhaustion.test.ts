@@ -129,3 +129,74 @@ describe('pre-PTO Thursday exhausts its candidates', () => {
     expect(c1?.source).not.toBe('pre-pto-thursday');
   });
 });
+
+// ── calls-only mode ─────────────────────────────────────────────────────────
+// Gabriel 2026-08: "will the slots rearrange ?" — no, committed work is frozen,
+// so a per-provider run that fills relief slots leaves that doc a contiguous
+// block of the same code permanently. Calls-only defers those to a whole-pool
+// run while KEEPING the day slots structurally chained to each call.
+describe('callsOnly', () => {
+  const MON = '2026-08-10';
+  const TUE = '2026-08-11';
+  // The orphan relief slot lives on a date p1 has NO call on: same-date
+  // occupancy would otherwise block it and the fixture would prove nothing.
+  const WED = '2026-08-12';
+
+  // A weekday C2 chains +1 D1 (classic); D5 is a RELIEF code (relief_rank), so
+  // only the relief pass can place it.
+  const board = () => buildCtx(
+    [callSlot('mon-c2', MON, 'C2')],
+    [prov('p1')],
+    {
+      parLevel: 1,
+      shiftTypes: new Map([
+        ['C2', { code: 'C2', category: 'call', call_rank: 1, relief_rank: null,
+                 is_overlay: false, generation_engine: 'call' as const,
+                 requires_post_call_rule: false, call_coverage_type: null,
+                 manual_only: false, call_burden_weight: 1, parent_call_code: null }],
+        ['D1', { code: 'D1', category: 'regular', call_rank: null, relief_rank: null,
+                 is_overlay: false, generation_engine: 'call' as const,
+                 requires_post_call_rule: false, call_coverage_type: null,
+                 manual_only: false, call_burden_weight: 1, parent_call_code: null }],
+        ['D5', { code: 'D5', category: 'regular', call_rank: null, relief_rank: 2,
+                 is_overlay: false, generation_engine: 'call' as const,
+                 requires_post_call_rule: false, call_coverage_type: null,
+                 manual_only: false, call_burden_weight: 1, parent_call_code: null }],
+      ]),
+    },
+  );
+
+  // The D1/D5 slots have to exist in slotIndex for either path to reach them.
+  const withDaySlots = () => {
+    const ctx = board();
+    for (const [date, code, id] of [[TUE, 'D1', 'tue-d1'], [WED, 'D5', 'wed-d5']] as const) {
+      const slot = { slot_id: id, slot_date: date, shift_type_id: `st-${code}`,
+        shift_type_code: code, shift_type_category: 'regular',
+        derived_day_type: 'weekday', provider_group: 'physician' as const,
+        required_count: 1, existing_assignment_id: null };
+      if (!ctx.slotIndex.has(date)) ctx.slotIndex.set(date, new Map());
+      ctx.slotIndex.get(date)!.set(code, slot);
+    }
+    return ctx;
+  };
+
+  it('keeps the CHAINED day slot — it belongs to the call that earned it', () => {
+    const plan = solve(withDaySlots(), { callsOnly: true });
+    expect(plan.assignments.find(a => a.slot_id === 'tue-d1')?.provider_id).toBe('p1');
+  });
+
+  it('skips the RELIEF day slot', () => {
+    const plan = solve(withDaySlots(), { callsOnly: true });
+    expect(plan.assignments.some(a => a.slot_id === 'wed-d5')).toBe(false);
+  });
+
+  it('a full run DOES place the relief slot — the flag is what differs', () => {
+    const plan = solve(withDaySlots());
+    expect(plan.assignments.find(a => a.slot_id === 'wed-d5')?.provider_id).toBe('p1');
+  });
+
+  it('still places the call itself', () => {
+    const plan = solve(withDaySlots(), { callsOnly: true });
+    expect(plan.assignments.find(a => a.slot_id === 'mon-c2')?.provider_id).toBe('p1');
+  });
+});

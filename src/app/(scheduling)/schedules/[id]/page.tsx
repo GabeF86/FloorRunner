@@ -440,6 +440,11 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
   // I can easily see which days they are on call". View state only — nothing is
   // written, so it costs nothing to leave on and clears on reload.
   const [focusPid, setFocusPid] = useState<string | null>(null);
+  // Calls-only for TARGETED runs, default ON — relief day slots are a
+  // whole-pool distribution decision and doing them one provider at a time
+  // produces contiguous same-code blocks. Unchecking is available for a
+  // deliberate full single-provider run.
+  const [targetedCallsOnly, setTargetedCallsOnly] = useState(true);
   const [showAssistant, setShowAssistant] = useState(false);
   // Inline rename (Gabriel 2026-07-22): the header pencil PATCHes
   // schedule_name (route-validated: trimmed, non-empty, ≤ 120). Local grid
@@ -1332,6 +1337,8 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
     fillMode: GenFillMode;
     /** Non-null ⇒ this was a one-provider-at-a-time run, for these ids. */
     targetedProviderIds: string[] | null;
+    /** True ⇒ relief/mop-up/day-shift passes were skipped. */
+    callsOnly: boolean;
     // Weekend-only runs only: call slots deliberately deferred to Continue
     // (NOT failures, NOT counted in `skipped`).
     awaitingContinue: { total: number; byDayType: Record<string, number> } | null;
@@ -1394,16 +1401,20 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
   // most-constrained first). The route forces obligatory mode for those and
   // echoes back what it actually ran, so the banner reports the real mode
   // rather than the one this call asked for.
-  const runGeneration = async (mode: GenFillMode, providerIds?: string[]) => {
+  const runGeneration = async (
+    mode: GenFillMode, providerIds?: string[], callsOnly?: boolean,
+  ) => {
     setGenerating(true);
     setGenResult(null);
     try {
       const res = await fetch(`/api/scheduling/schedules/${id}/generate`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(providerIds?.length
-          ? { fillMode: mode, providerIds }
-          : { fillMode: mode }),
+        body: JSON.stringify({
+          fillMode: mode,
+          ...(providerIds?.length ? { providerIds } : {}),
+          ...(callsOnly ? { callsOnly: true } : {}),
+        }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Generation failed');
@@ -1420,6 +1431,7 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
         // obligatory and the banner must not claim otherwise.
         fillMode: (data.fillMode as GenFillMode) ?? mode,
         targetedProviderIds: Array.isArray(data.targetedProviderIds) ? data.targetedProviderIds : null,
+        callsOnly: data.callsOnly === true,
         awaitingContinue: data.awaitingContinue && typeof data.awaitingContinue.total === 'number'
           ? data.awaitingContinue : null,
         providerCapSummary: data.providerCapSummary && Array.isArray(data.providerCapSummary.rows)
@@ -1452,9 +1464,16 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
       + `They will be filled up to their Block Targets if you have entered any, otherwise to their `
       + `call obligation. Everything already on the schedule is respected and nothing else is `
       + `touched — other providers are not considered for any slot in this run.\n\n`
+      + (targetedCallsOnly
+        ? `CALLS ONLY: their call slots and the day slots chained to them. The relief day slots `
+          + `(D4 and up) are left for one whole-pool run at the end — filling those one provider `
+          + `at a time hands the first doc a contiguous block of the same code.\n\n`
+        : `FULL RUN: relief day slots included. One provider at a time, they will be the only `
+          + `candidate for every open relief slot, so expect contiguous blocks of the same D `
+          + `code.\n\n`)
       + `Generate the most-constrained providers first: whoever runs earlier gets first pick of the `
       + `dates they can actually work.\n\nContinue?`)) return;
-    await runGeneration('obligatory', [focusPid]);
+    await runGeneration('obligatory', [focusPid], targetedCallsOnly);
   };
 
   const continueGeneration = async () => {
@@ -1991,6 +2010,28 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
                   : `Generate ${grid.providers.find(p => p.id === focusPid)?.short_display_name ?? ''} only`}
               </Button>
             )}
+            {focusPid && (
+              <label
+                title={'Calls and the day slots chained to them (a C2\u2019s next-day D1, a weekend '
+                  + 'anchor\u2019s Friday D4). Leaves the relief day slots (D4 and up) for one '
+                  + 'whole-pool run at the end \u2014 filling those per provider gives the first '
+                  + 'doc a contiguous block of the same code.'}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 5, fontSize: 12,
+                  fontWeight: 600, color: 'var(--text-muted)', cursor: 'pointer',
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                <input
+                  type="checkbox"
+                  checked={targetedCallsOnly}
+                  disabled={generating}
+                  onChange={e => setTargetedCallsOnly(e.target.checked)}
+                  style={{ cursor: 'pointer' }}
+                />
+                calls only
+              </label>
+            )}
           </>
         )}
 
@@ -2020,6 +2061,9 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
                   .join(', ')}
                 {' '}only. Obligatory mode (forced): filled to their Block Targets where stated,
                 otherwise to their call obligation. No other provider was considered.
+                {genResult.callsOnly
+                  ? ' Calls only — relief day slots (D4 and up) were left for a whole-pool run.'
+                  : ''}
               </div>
             )}
             {genResult.fillMode === 'weekend-only' ? (

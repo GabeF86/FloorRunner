@@ -217,6 +217,7 @@ export function solve(ctx: GenerationContext, opts: SolveOptions = {}): Solution
   // plan.awaitingContinue is only materialized here so the fill-all golden
   // JSON pin (fillAllPlan.golden.json) stays byte-identical.
   const weekendOnly = opts.fillMode === 'weekend-only';
+  const callsOnly = opts.callsOnly === true;
   const awaitingContinue: AwaitingContinueSlot[] | null = weekendOnly ? [] : null;
   if (awaitingContinue) plan.awaitingContinue = awaitingContinue;
   const obligationByPid = obligatory ? computeObligations(ctx) : null;
@@ -474,8 +475,13 @@ export function solve(ctx: GenerationContext, opts: SolveOptions = {}): Solution
     // Relief pass (passes/relief.ts, §10 + IF-2 fixes), then the mop-up sweep
     // for orphaned call-engine-owned day slots (passes/mopUp.ts, §10.5 — incl.
     // the sequence-orphan reporting).
-    runReliefPass(run, scheduleDates);
-    runMopUpPass(run, scheduleDates);
+    // Skipped in calls-only mode: these two DISTRIBUTE day slots across the
+    // pool, which a single-provider run cannot do meaningfully. The post-call
+    // repair above still runs — it only ever relocates within one date.
+    if (!callsOnly) {
+      runReliefPass(run, scheduleDates);
+      runMopUpPass(run, scheduleDates);
+    }
   }
 
   return plan;

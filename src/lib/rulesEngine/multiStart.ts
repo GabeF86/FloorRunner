@@ -15,6 +15,8 @@ import type { GenerationContext, SolutionPlan, SolutionMetrics, FillMode } from 
 export const DEFAULT_MULTI_START_K = 8;
 
 export interface MultiStartOptions {
+  /** Calls only — rides into every start's solve and optimize. */
+  callsOnly?: boolean;
   k?: number;                // number of starts (seeds 0..k-1); default 8
   fillMode?: FillMode;
   // Run the bounded hill-climb per start (fill-all only — the same rule as
@@ -56,13 +58,13 @@ export function solveMultiStart(
   const startScores: StartScore[] = [];
 
   for (let seed = 0; seed < k; seed++) {
-    const greedy = solve(ctx, { fillMode, tieBreakSeed: seed });
+    const greedy = solve(ctx, { fillMode, tieBreakSeed: seed, callsOnly: opts.callsOnly });
     const seedMetrics = scoreSolution(greedy, ctx);
     let plan = greedy;
     let optimizeStats: OptimizeStats | undefined;
     if (optimizeEnabled) {
       const optimized = optimize(ctx, {
-        fillMode, tieBreakSeed: seed,
+        fillMode, tieBreakSeed: seed, callsOnly: opts.callsOnly,
         wallClockMs: opts.wallClockMs, maxResolves: opts.maxResolves,
       });
       plan = optimized.plan;

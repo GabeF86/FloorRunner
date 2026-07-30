@@ -281,3 +281,43 @@ describe('targeted provider runs', () => {
     }
   });
 });
+
+// ── calls-only ──────────────────────────────────────────────────────────────
+// Gabriel 2026-08: relief day slots are a whole-pool distribution decision, and
+// committed work never rearranges — so a per-provider run that fills them
+// leaves that doc a permanent contiguous block of one code.
+describe('callsOnly', () => {
+  it('threads the flag into generation and echoes it back', async () => {
+    const { json } = await post({ providerIds: ['havildar'], callsOnly: true });
+    expect(holder.genOptions[0]).toMatchObject({ callsOnly: true });
+    expect(json.callsOnly).toBe(true);
+  });
+
+  it('SKIPS the day-shift pass — 7-3/7-5 are day slots by definition', async () => {
+    await post({ providerIds: ['havildar'], callsOnly: true });
+    expect(holder.dayOptions).toHaveLength(0);
+  });
+
+  it('a full run still runs the day-shift pass', async () => {
+    const { json } = await post({ providerIds: ['havildar'] });
+    expect(holder.genOptions[0]).toMatchObject({ callsOnly: false });
+    expect(holder.dayOptions).toHaveLength(1);
+    expect(json.callsOnly).toBe(false);
+  });
+
+  it('only literal true counts', async () => {
+    for (const bad of ['true', 1, {}, null]) {
+      holder.genOptions = []; holder.dayOptions = [];
+      await post({ callsOnly: bad });
+      expect(holder.genOptions[0]).toMatchObject({ callsOnly: false });
+      expect(holder.dayOptions).toHaveLength(1);
+    }
+  });
+
+  it('works on a whole-pool run too, not just targeted ones', async () => {
+    const { json } = await post({ fillMode: 'all', callsOnly: true });
+    expect(json.targetedProviderIds).toBeNull();
+    expect(json.callsOnly).toBe(true);
+    expect(holder.dayOptions).toHaveLength(0);
+  });
+});

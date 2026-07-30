@@ -46,11 +46,19 @@ export async function POST(
   // Absent/invalid body (or an unknown fillMode value) degrades to 'all'.
   let bodyFillMode: unknown;
   let bodyProviderIds: unknown;
+  let bodyCallsOnly: unknown;
   try {
-    const body = (await req.json()) as { fillMode?: unknown; providerIds?: unknown } | null;
+    const body = (await req.json()) as
+      { fillMode?: unknown; providerIds?: unknown; callsOnly?: unknown } | null;
     bodyFillMode = body?.fillMode;
     bodyProviderIds = body?.providerIds;
+    bodyCallsOnly = body?.callsOnly;
   } catch { /* no JSON body — default */ }
+
+  // CALLS ONLY (Gabriel 2026-08). Skips the relief/mop-up day passes AND the
+  // day-shift pass; the call slots and their structurally chained day slots
+  // still fill. Only `true` counts — anything else is the ordinary full run.
+  const callsOnly = bodyCallsOnly === true;
 
   // TARGETED RUN (Gabriel 2026-08): "the ability to create a schedule one
   // provider at a time ... autogenerate the havildar placements first since i
@@ -113,7 +121,7 @@ export async function POST(
   // version.id was selected by schedule_id, so scheduleId IS its parent —
   // passing it down saves each engine's schedule_versions parent lookup.
   const result = await autoGenerate(sb, version.id, {
-    overrideProviderIds, fillMode, parentScheduleId: scheduleId,
+    overrideProviderIds, fillMode, callsOnly, parentScheduleId: scheduleId,
   });
   // Call-gen hard-failed: surface immediately; don't run day-shift gen on a
   // context that couldn't even load. The result already carries warnings,
@@ -130,9 +138,11 @@ export async function POST(
   // the Continue run (it would otherwise fill weekday day slots around a call
   // schedule that hasn't been attempted yet). The result already carries
   // awaitingContinue for the UI's staged banner.
-  if (fillMode === 'weekend-only') {
+  // A calls-only run stops here for the same reason weekend-only does: the
+  // day-shift pass fills 7-3/7-5, which are day slots by definition.
+  if (fillMode === 'weekend-only' || callsOnly) {
     return NextResponse.json(
-      { ...result, unfilled: trimUnfilled(result.unfilled), fillMode, targetedProviderIds: null },
+      { ...result, unfilled: trimUnfilled(result.unfilled), fillMode, callsOnly, targetedProviderIds: targeted ? overrideProviderIds ?? [] : null },
       { status: statusForResult(result) },
     );
   }
@@ -158,6 +168,7 @@ export async function POST(
       // Echoed so the client can say WHICH mode ran and for whom — a forced
       // mode the caller did not ask for must never be invisible.
       fillMode,
+      callsOnly,
       targetedProviderIds: targeted ? overrideProviderIds ?? [] : null,
     },
     { status: statusForResult(result) },
