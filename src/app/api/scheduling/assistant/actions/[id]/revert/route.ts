@@ -11,14 +11,23 @@ export const dynamic = 'force-dynamic';
 export const maxDuration = 300;
 
 export async function POST(
-  _req: NextRequest,
+  req: NextRequest,
   { params }: { params: Promise<{ id: string }> },
 ) {
   const { id } = await params;
   const sb = sbSchedulingServer();
 
+  // scope 'assignments' restores ONLY the version's assignments (the
+  // generation-undo case). Absent/anything else = 'all', the assistant's
+  // pre-existing semantics byte for byte.
+  let scope: 'all' | 'assignments' = 'all';
   try {
-    const result = await revertAction(sb, id);
+    const body = (await req.json()) as { scope?: unknown } | null;
+    if (body?.scope === 'assignments') scope = 'assignments';
+  } catch { /* no body — assistant default */ }
+
+  try {
+    const result = await revertAction(sb, id, { scope });
     if (result.notFound) {
       return NextResponse.json({ error: result.errors.join('; ') }, { status: 404 });
     }

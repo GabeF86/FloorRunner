@@ -236,7 +236,24 @@ export interface RevertResult {
   validationErrors: string[];
 }
 
-export async function revertAction(sb: SchedulingClient, actionId: string): Promise<RevertResult> {
+/** How much of the snapshot to put back.
+ *
+ *  'all' (default) — the ASSISTANT's semantics, unchanged: call pattern, shift
+ *  types, rule definitions, availability, employment profiles, credentials AND
+ *  assignments. Right there, because an assistant turn can change any of them.
+ *
+ *  'assignments' — assignments only (Gabriel 2026-07-30: "I just want the
+ *  ability to revert back after doing an autofill ... anything that was already
+ *  in place prior to the autofill I want to revert back to"). Generation writes
+ *  NOTHING ELSE, so restoring config on a generation-undo could only ever undo
+ *  edits the run never made — silently rolling back a PTO or FTE change the
+ *  scheduler made after the snapshot. Narrow scope is the honest one here. */
+export type RevertScope = 'all' | 'assignments';
+
+export async function revertAction(
+  sb: SchedulingClient, actionId: string, opts: { scope?: RevertScope } = {},
+): Promise<RevertResult> {
+  const scope: RevertScope = opts.scope ?? 'all';
   const errors: string[] = [];
   const validationErrors: string[] = [];
 
@@ -274,6 +291,8 @@ export async function revertAction(sb: SchedulingClient, actionId: string): Prom
     };
   }
 
+  // ── 1-3d. CONFIG restore — skipped entirely under scope 'assignments' ─────
+  if (scope === 'all') {
   // ── 1. Restore the call pattern ────────────────────────────────────────────
   if (config?.call_pattern) {
     const { error } = await replaceActivePattern(sb, meta.siteId, config.call_pattern.definition, {
@@ -369,6 +388,8 @@ export async function revertAction(sb: SchedulingClient, actionId: string): Prom
       for (const e of w.rowErrors) errors.push(`site credential restore failed: ${e.message}`);
     }
   }
+
+  } // end config restore (scope === 'all')
 
   // ── 4. Restore assignments (upsert on UNIQUE(schedule_slot_id)) ────────────
   const aRows = assignmentsBefore.map(a => ({

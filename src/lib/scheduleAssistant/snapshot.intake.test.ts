@@ -125,3 +125,66 @@ describe('intake snapshot round-trip', () => {
     expect(dump('assistant_actions').find(r => r.id === 'legacy-1')!.reverted_at).toBeTruthy();
   });
 });
+
+// ── revert scope (Gabriel 2026-07-30) ───────────────────────────────────────
+// "I just want the ability to revert back after doing an autofill ... anything
+// that was already in place prior to the autofill I want to revert back to."
+// Generation writes ONLY assignments, so a generation-undo must restore only
+// assignments — a wider restore could roll back an availability or FTE edit the
+// run never made.
+describe('revertAction scope', () => {
+  it("scope 'assignments' leaves availability and profiles ALONE", async () => {
+    const { sb, dump } = makeStatefulSupabase(seed());
+    const execs = createToolExecutors();
+
+    const actionId = await takeSnapshot(sb as never, 'sched-1', null, 'Before auto-generation', null);
+
+    // Simulate the scheduler editing intake AFTER the snapshot — the edits an
+    // undo of a GENERATION must not touch.
+    await execs.record_availability(sb as never, ctx, {
+      provider_id: 'p1', availability_type: 'pto', start_date: '2026-01-20', end_date: '2026-01-21',
+    });
+    await execs.update_provider_profile(sb as never, ctx, { provider_id: 'p1', fte_value: 0.6 });
+    expect(dump('provider_availability')).toHaveLength(2);
+    expect(fteOf(dump)).toBe(0.6);
+
+    const revert = await revertAction(sb as never, actionId, { scope: 'assignments' });
+    expect(revert.ok).toBe(true);
+    expect(revert.errors).toEqual([]);
+
+    // Both survive — this is the whole point of the narrow scope.
+    expect(dump('provider_availability')).toHaveLength(2);
+    expect(fteOf(dump)).toBe(0.6);
+  });
+
+  it("default scope still restores config — the assistant's semantics are unchanged", async () => {
+    const { sb, dump } = makeStatefulSupabase(seed());
+    const execs = createToolExecutors();
+    const actionId = await takeSnapshot(sb as never, 'sched-1', null, 'Assistant: intake', null);
+
+    await execs.update_provider_profile(sb as never, ctx, { provider_id: 'p1', fte_value: 0.6 });
+    expect(fteOf(dump)).toBe(0.6);
+
+    const revert = await revertAction(sb as never, actionId);   // no scope ⇒ 'all'
+    expect(revert.ok).toBe(true);
+    expect(fteOf(dump)).toBe(1);
+  });
+
+  it("an explicit 'all' is the same as omitting it", async () => {
+    const { sb, dump } = makeStatefulSupabase(seed());
+    const execs = createToolExecutors();
+    const actionId = await takeSnapshot(sb as never, 'sched-1', null, 'Assistant: intake', null);
+    await execs.update_provider_profile(sb as never, ctx, { provider_id: 'p1', fte_value: 0.6 });
+
+    await revertAction(sb as never, actionId, { scope: 'all' });
+    expect(fteOf(dump)).toBe(1);
+  });
+
+  it("scope 'assignments' still captures an undo-of-undo target", async () => {
+    // The redo path must survive the narrower scope.
+    const { sb } = makeStatefulSupabase(seed());
+    const actionId = await takeSnapshot(sb as never, 'sched-1', null, 'Before auto-generation', null);
+    const revert = await revertAction(sb as never, actionId, { scope: 'assignments' });
+    expect(revert.revertActionId).toBeTruthy();
+  });
+});

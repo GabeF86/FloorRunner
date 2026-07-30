@@ -1339,6 +1339,8 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
     targetedProviderIds: string[] | null;
     /** True ⇒ relief/mop-up/day-shift passes were skipped. */
     callsOnly: boolean;
+    /** Snapshot taken immediately BEFORE this run; null ⇒ no undo available. */
+    undoActionId: string | null;
     // Weekend-only runs only: call slots deliberately deferred to Continue
     // (NOT failures, NOT counted in `skipped`).
     awaitingContinue: { total: number; byDayType: Record<string, number> } | null;
@@ -1432,6 +1434,7 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
         fillMode: (data.fillMode as GenFillMode) ?? mode,
         targetedProviderIds: Array.isArray(data.targetedProviderIds) ? data.targetedProviderIds : null,
         callsOnly: data.callsOnly === true,
+        undoActionId: typeof data.undoActionId === 'string' ? data.undoActionId : null,
         awaitingContinue: data.awaitingContinue && typeof data.awaitingContinue.total === 'number'
           ? data.awaitingContinue : null,
         providerCapSummary: data.providerCapSummary && Array.isArray(data.providerCapSummary.rows)
@@ -1474,6 +1477,38 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
       + `Generate the most-constrained providers first: whoever runs earlier gets first pick of the `
       + `dates they can actually work.\n\nContinue?`)) return;
     await runGeneration('obligatory', [focusPid], targetedCallsOnly);
+  };
+
+  // Undo the generation the banner is reporting: restore the version's
+  // assignments to the snapshot taken just before it ran. ASSIGNMENTS ONLY —
+  // generation writes nothing else, so a wider restore could only roll back
+  // edits (PTO, FTE, targets) the run never made.
+  const [undoing, setUndoing] = useState(false);
+  const undoGeneration = async () => {
+    const actionId = genResult?.undoActionId;
+    if (!actionId || undoing) return;
+    if (!confirm(
+      'Undo this generation?\n\nEvery call and day assignment goes back to exactly what it was '
+      + 'immediately before the run — including anything you had entered by hand.\n\n'
+      + 'Availability, FTEs and block targets are NOT touched.')) return;
+    setUndoing(true);
+    try {
+      const res = await fetch(`/api/scheduling/assistant/actions/${actionId}/revert`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ scope: 'assignments' }),
+      });
+      const data = await res.json();
+      if (!res.ok || data.ok === false) {
+        throw new Error((data.errors ?? []).join('; ') || data.error || 'Undo failed');
+      }
+      setGenResult(null);
+      await loadGrid();
+    } catch (e) {
+      setActionError(e instanceof Error ? e.message : 'Undo failed');
+    } finally {
+      setUndoing(false);
+    }
   };
 
   const continueGeneration = async () => {
@@ -2270,6 +2305,27 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
                     open at a stated maximum (reason: provider-cap) — fill manually or raise the limit.
                   </div>
                 )}
+              </div>
+            )}
+            {/* Undo sits LAST — under the report it acts on. Absent (not
+                disabled) when no snapshot was taken, so the button can never
+                be present and do nothing. */}
+            {genResult.undoActionId ? (
+              <div style={{ marginTop: 10 }}>
+                <Button
+                  variant="secondary"
+                  onClick={undoGeneration}
+                  disabled={undoing}
+                  title={'Put every assignment back exactly as it was immediately before this '
+                    + 'generation, including anything entered by hand. Availability, FTEs and '
+                    + 'block targets are not touched.'}
+                >
+                  {undoing ? 'Undoing…' : '↶ Undo this generation'}
+                </Button>
+              </div>
+            ) : (
+              <div style={{ marginTop: 8, fontSize: 12, opacity: 0.8 }}>
+                Undo unavailable for this run — the pre-generation snapshot could not be taken.
               </div>
             )}
           </Banner>
