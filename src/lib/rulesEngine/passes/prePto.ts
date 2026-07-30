@@ -46,9 +46,29 @@ export function runPrePtoPass(run: SolverRun): void {
         .filter((p): p is CandidateProvider => !!p);
       // Each PTO-bound provider (up to maxProviders) takes the first available
       // pass code (classic: C1 preferred, else C2). See ALGORITHM.md §7.
-      for (const p of ranked.slice(0, pass.maxProviders)) {
+      //
+      // maxProviders caps PLACEMENTS, not ATTEMPTS (Gabriel 2026-08: "the
+      // engine is giving thursday calls to people that arent on pto the
+      // following week, that should not happen").
+      //
+      // It used to slice the candidate list to maxProviders BEFORE testing
+      // anything, and tryPlacePrePto is best-effort — it silently declines on
+      // the obligation cap, a stated provider cap, or any eligibility gate. So
+      // if one of the two sliced candidates could not take the slot, the pass
+      // gave up and the Thursday fell to the main loop, where ANY provider
+      // could take it — while other PTO-bound docs that week were still
+      // available and untried. On the live Paoli block every leaking Thursday
+      // had 2–5 pre-PTO docs to choose from, so this was never a supply
+      // problem: it was the slice discarding candidates before asking them.
+      //
+      // Ordering is unchanged (provider-id sort — deterministic, and the
+      // candidates are peers here), so a Thursday whose first candidates DO
+      // succeed places exactly who it placed before.
+      let placed = 0;
+      for (const p of ranked) {
+        if (placed >= pass.maxProviders) break;
         for (const code of pass.codes) {
-          if (tryPlacePrePto(codeMap.get(code), p)) break;
+          if (tryPlacePrePto(codeMap.get(code), p)) { placed++; break; }
         }
       }
     }
