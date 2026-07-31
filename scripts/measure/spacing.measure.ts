@@ -4,14 +4,14 @@
 import { describe, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { sbSchedulingServer } from '@/lib/supabaseScheduling';
-import { loadGenerationContext } from '../genContext';
-import { solve } from '../solve';
-import { optimize } from '../optimize';
-import { solveMultiStart } from '../multiStart';
-import { spacingScore } from '../spacingScore';
-import { computeObligations } from '../obligation';
-import { dayTypeBucketOn } from '../shared';
-import type { GenerationContext, SlotToFill, SolutionPlan } from '../genTypes';
+import { loadGenerationContext } from '@/lib/rulesEngine/genContext';
+import { solve } from '@/lib/rulesEngine/solve';
+import { optimize } from '@/lib/rulesEngine/optimize';
+import { solveMultiStart } from '@/lib/rulesEngine/multiStart';
+import { spacingScore } from '@/lib/rulesEngine/spacingScore';
+import { computeObligations } from '@/lib/rulesEngine/obligation';
+import { dayTypeBucketOn } from '@/lib/rulesEngine/shared';
+import type { GenerationContext, SlotToFill, SolutionPlan } from '@/lib/rulesEngine/genTypes';
 
 for (const line of readFileSync('.env.local', 'utf8').split('\n')) {
   const m = /^([A-Z0-9_]+)=(.*)$/.exec(line.trim());

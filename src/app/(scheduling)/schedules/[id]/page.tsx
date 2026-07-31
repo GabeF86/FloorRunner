@@ -112,6 +112,7 @@ import {
 } from '@/lib/availableCalls';
 import { computeCoverageForecast, formatCalls } from '@/lib/coverageForecast';
 import { buildProviderFocusList } from '@/lib/providerFocusList';
+import { observanceNotesByDate, observanceLabelFor } from '@/lib/observanceNotes';
 import {
   reviewTightPairs, callsByProvider, gapHistogram, rankSwapCandidates,
 } from '@/lib/callSpacing';
@@ -837,6 +838,11 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
     () => buildAvailableCallList(grid?.slots ?? [], grid?.holidays ?? []),
     [grid],
   );
+
+  // Observance captions (2026-07-31). Labels ONLY — no cell tint, and
+  // deliberately not holiday_calendars rows, so nothing about templates,
+  // day-type buckets or the pattern chains changes.
+  const observanceByDate = useMemo(() => observanceNotesByDate(), []);
 
   /* ── Call spacing (2026-07-31) ───────────────────────────────────────────
    * Tight FIRST-CALL adjacencies. Scoped to the primary call code (call_rank 0,
@@ -2555,6 +2561,22 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
                 {holiday && (
                   <div style={{ fontSize: 9, color: '#fbbf24', fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                     {holiday.holiday_name}
+                  </div>
+                )}
+                {/* Observance caption. Deliberately the MUTED chrome colour,
+                    not the holiday amber: amber means "this date is a
+                    scheduling holiday" (different templates, different bucket)
+                    and these are notes that change nothing. Same reason the
+                    cell background is untouched. */}
+                {observanceLabelFor(date, observanceByDate) && (
+                  <div
+                    title={observanceLabelFor(date, observanceByDate)!}
+                    style={{
+                      fontSize: 9, fontWeight: 500, color: gridTokens.chromeMuted,
+                      overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                    }}
+                  >
+                    {observanceLabelFor(date, observanceByDate)}
                   </div>
                 )}
                 {(mdCount > 0 || crnaCount > 0) && (
