@@ -19,11 +19,32 @@
 // already makes gap 1 impossible for a rest-requiring code, so the interesting
 // range starts at 2 — which is exactly what the live Paoli block shows (four
 // C1 pairs at 2 days, three at 3, none at 1).
+//
+// ONLY A WEEKDAY CALL IS SWAPPABLE (Gabriel 2026-07-31: "i cant swap weekday
+// calls because they are fixed chains, I want to focus only on Weekday C1
+// calls that are too close in proximity to either weekend C1's or other
+// weekday C1's"). Every weekend-bucket C1 is chain-locked by the pattern: a
+// Friday C1 anchors the Sunday C2 two days later, and the Sat/Sun C1s ride the
+// weekend block chains that bundle a whole weekend onto one doc. Reassigning
+// one severs a designed pairing, so it is not a real option and offering it
+// wastes the reviewer's time. A WEEKDAY C1 carries no call chain — only a −1
+// D2 pre-fill and its post-call rest day, both of which the ordinary
+// assignment path already rewrites — so it is the one end that can actually
+// move.
+//
+// The BUCKET is the engine's own (dayTypeBucketOn), so a holiday counts as the
+// day of the week it falls on and Friday is correctly weekend-side rather than
+// lumped in with M–Th.
+
+import { dayTypeBucketOn } from './rulesEngine/shared';
 
 /** Grid-shaped slot. Structural subset of the schedule page's Slot. */
 export interface SpacingSlot {
   id: string;
   slot_date: string;
+  /** schedule_slots.derived_day_type — folded through the engine's
+   *  dayTypeBucketOn so a holiday lands on its real day of the week. */
+  derived_day_type?: string | null;
   shift_types: {
     code: string;
     category: string;
@@ -42,7 +63,13 @@ export interface CallHeld {
   assignmentId: string | null;
   /** The code actually stored (a segment keeps its own code for display). */
   code: string;
+  /** Engine fairness bucket: weekday | friday | saturday | sunday. */
+  bucket: string;
 }
+
+/** The one bucket whose calls carry no pattern call-chain, and so are the only
+ *  ones a swap can actually move. See the header. */
+export const SWAPPABLE_BUCKET = 'weekday';
 
 /** Two consecutive same-code calls closer together than the threshold. */
 export interface TightPair {
@@ -51,6 +78,10 @@ export interface TightPair {
   later: CallHeld;
   /** Calendar days between them. */
   gap: number;
+  /** The member(s) that can actually be reassigned — weekday-bucket only.
+   *  Never empty in a returned pair: a pair with no swappable end is not
+   *  reported at all (see findTightPairs). */
+  swappable: CallHeld[];
 }
 
 const DAY_MS = 86_400_000;
@@ -80,6 +111,7 @@ export function callsByProvider(
       list.push({
         date: slot.slot_date, slotId: slot.id,
         assignmentId: a.id ?? null, code: st.code,
+        bucket: dayTypeBucketOn(slot.derived_day_type ?? '', slot.slot_date),
       });
       out.set(a.provider_id, list);
     }
@@ -89,19 +121,46 @@ export function callsByProvider(
 }
 
 /** Consecutive same-code pairs at or under `maxGap` days, tightest first.
+ *
+ *  ONLY pairs with at least one WEEKDAY-bucket member are returned — the rest
+ *  are chain-locked on both ends and nothing can be done about them, so
+ *  listing them is noise. `excludedChainLocked` on the result of
+ *  `reviewTightPairs` reports how many were dropped, so the omission is
+ *  visible rather than silent.
+ *
  *  A provider with three calls two days apart yields TWO pairs — each is a
  *  separately fixable adjacency, and collapsing them would hide one. */
 export function findTightPairs(
   slots: readonly SpacingSlot[], code: string, maxGap: number,
 ): TightPair[] {
+  return reviewTightPairs(slots, code, maxGap).pairs;
+}
+
+export interface TightPairReview {
+  pairs: TightPair[];
+  /** Pairs inside the threshold whose BOTH ends are weekend-bucket, so no
+   *  swap is possible. Counted, never listed. */
+  excludedChainLocked: number;
+}
+
+export function reviewTightPairs(
+  slots: readonly SpacingSlot[], code: string, maxGap: number,
+): TightPairReview {
   const pairs: TightPair[] = [];
+  let excludedChainLocked = 0;
   for (const [providerId, held] of callsByProvider(slots, code)) {
     for (let i = 1; i < held.length; i++) {
-      const gap = daysBetweenDates(held[i - 1].date, held[i].date);
-      if (gap <= maxGap) pairs.push({ providerId, earlier: held[i - 1], later: held[i], gap });
+      const earlier = held[i - 1];
+      const later = held[i];
+      const gap = daysBetweenDates(earlier.date, later.date);
+      if (gap > maxGap) continue;
+      const swappable = [earlier, later].filter(c => c.bucket === SWAPPABLE_BUCKET);
+      if (swappable.length === 0) { excludedChainLocked++; continue; }
+      pairs.push({ providerId, earlier, later, gap, swappable });
     }
   }
-  return pairs.sort((a, b) => a.gap - b.gap || a.later.date.localeCompare(b.later.date));
+  pairs.sort((a, b) => a.gap - b.gap || a.later.date.localeCompare(b.later.date));
+  return { pairs, excludedChainLocked };
 }
 
 /** How the gap distribution looks, so a threshold can be chosen from the

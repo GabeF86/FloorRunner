@@ -113,7 +113,7 @@ import {
 import { computeCoverageForecast, formatCalls } from '@/lib/coverageForecast';
 import { buildProviderFocusList } from '@/lib/providerFocusList';
 import {
-  findTightPairs, callsByProvider, gapHistogram, rankSwapCandidates,
+  reviewTightPairs, callsByProvider, gapHistogram, rankSwapCandidates,
 } from '@/lib/callSpacing';
 
 /* ── Interfaces ──────────────────────────────────────────────────────────── */
@@ -850,11 +850,13 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
     return st?.parent_call_code || st?.code || 'C1';
   }, [grid]);
 
-  const spacingPairs = useMemo(
-    () => (grid ? findTightPairs(grid.slots, primaryCallCode, spacingMaxGap) : []),
+  const spacingReview = useMemo(
+    () => (grid
+      ? reviewTightPairs(grid.slots, primaryCallCode, spacingMaxGap)
+      : { pairs: [], excludedChainLocked: 0 }),
     [grid, primaryCallCode, spacingMaxGap],
   );
-  const spacingTightCount = spacingPairs.length;
+  const spacingTightCount = spacingReview.pairs.length;
 
   /* ── Provider focus (2026-07-29) ─────────────────────────────────────────
    * Who the focus selector offers: providers who actually hold something in
@@ -3436,7 +3438,7 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
           code={primaryCallCode}
           maxGap={spacingMaxGap}
           setMaxGap={setSpacingMaxGap}
-          pairs={spacingPairs}
+          review={spacingReview}
           candidateIndex={candidateIndex}
           onClose={() => setShowSpacing(false)}
           onSwap={(slotId, providerId) => assignProvider(slotId, providerId)}
@@ -5867,13 +5869,13 @@ function useMemoMonths(allDates: string[]): Array<{ year: number; month: number 
  * cell picker would refuse. This component only renders and dispatches.
  */
 function SpacingModal({
-  grid, code, maxGap, setMaxGap, pairs, candidateIndex, onClose, onSwap,
+  grid, code, maxGap, setMaxGap, review, candidateIndex, onClose, onSwap,
 }: {
   grid: GridData;
   code: string;
   maxGap: number;
   setMaxGap: (n: number) => void;
-  pairs: ReturnType<typeof findTightPairs>;
+  review: ReturnType<typeof reviewTightPairs>;
   candidateIndex: ReturnType<typeof buildCandidateIndex> | null;
   onClose: () => void;
   onSwap: (slotId: string, providerId: string) => void;
@@ -5911,13 +5913,20 @@ function SpacingModal({
         </div>
 
         <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12 }}>
-          Consecutive {code} calls held by the same provider, {maxGap} days apart or less.{' '}
-          Different codes are never paired — a Saturday C2 into a Sunday C1 is one day apart
-          by design.
+          Consecutive {code} calls held by the same provider, {maxGap} days apart or less.
+          Only a <strong style={{ color: 'var(--text)' }}>weekday</strong> {code} can be moved:
+          every Fri/Sat/Sun {code} is chain-locked by the pattern (a Friday {code} anchors the
+          Sunday C2; the weekend {code}s ride the weekend block chains), so those ends are shown
+          for context but never offered. Different codes are never paired — a Saturday C2 into a
+          Sunday C1 is one day apart by design.
           <div style={{ marginTop: 6 }}>
             Whole block:{' '}
             {[...histogram].sort((a, b) => a[0] - b[0])
               .map(([gap, n]) => `${n} at ${gap}d`).join(' · ') || 'nothing under 8 days'}
+            {review.excludedChainLocked > 0 && (
+              <> · {review.excludedChainLocked} weekend-to-weekend pair
+                {review.excludedChainLocked === 1 ? '' : 's'} not listed (both ends chain-locked)</>
+            )}
           </div>
         </div>
 
@@ -5936,22 +5945,15 @@ function SpacingModal({
           or less
         </label>
 
-        {pairs.length === 0 ? (
+        {review.pairs.length === 0 ? (
           <div style={{ marginTop: 16, fontSize: 13, color: 'var(--text-muted)' }}>
             No {code} calls are within {maxGap} days of each other.
           </div>
         ) : (
           <div style={{ marginTop: 14 }}>
-            {pairs.map(pair => {
-              const key = `${pair.providerId}|${pair.later.slotId}`;
+            {review.pairs.map(pair => {
+              const key = `${pair.providerId}|${pair.earlier.slotId}|${pair.later.slotId}`;
               const isOpen = openPair === key;
-              // Swap the LATER call: it is the one that closed the gap.
-              const groups = candidateIndex
-                ? candidatesForSlot(candidateIndex, pair.later.slotId)
-                : null;
-              const eligible = (groups?.available ?? []).map(c => c.provider.id)
-                .filter(pid => pid !== pair.providerId);
-              const ranked = rankSwapCandidates(eligible, held, pair.later.date, pair.gap);
               return (
                 <div key={key} style={{ borderTop: '1px solid var(--border)', padding: '10px 0' }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
@@ -5972,7 +5974,9 @@ function SpacingModal({
                       onClick={() => setOpenPair(isOpen ? null : key)}
                       style={{ ...smallBtn, marginLeft: 'auto', padding: '4px 10px' }}
                     >
-                      {isOpen ? 'Hide' : `Swap ${formatMMDD(pair.later.date)}`}
+                      {isOpen
+                        ? 'Hide'
+                        : `Swap ${pair.swappable.map(c => formatMMDD(c.date)).join(' or ')}`}
                     </button>
                   </div>
 
@@ -5982,36 +5986,49 @@ function SpacingModal({
                         <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
                           Eligibility unavailable — reload the grid.
                         </div>
-                      ) : ranked.length === 0 ? (
-                        <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-                          Nobody else is available for {formatMMDD(pair.later.date)} {pair.later.code}.
-                          {(groups?.blocked.length ?? 0) > 0
-                            && ` ${groups!.blocked.length} provider(s) blocked — see the cell picker for why.`}
-                        </div>
-                      ) : (
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                          {ranked.map(c => (
-                            <div key={c.providerId}
-                              style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 12.5 }}>
-                              <span style={{ fontWeight: 700, color: 'var(--text)', minWidth: 110 }}>
-                                {nameOf(c.providerId)}
-                              </span>
-                              <span style={{ color: c.improves ? 'var(--ok)' : gridTokens.openCall }}>
-                                {Number.isFinite(c.resultingGap)
-                                  ? `would sit ${c.resultingGap}d from their nearest ${code}`
-                                  : `has no other ${code}`}
-                                {c.improves ? '' : ' — no better'}
-                              </span>
-                              <button
-                                onClick={() => { onSwap(pair.later.slotId, c.providerId); onClose(); }}
-                                style={{ ...smallBtn, marginLeft: 'auto', padding: '3px 10px' }}
-                              >
-                                Give it to them
-                              </button>
+                      ) : pair.swappable.map(target => {
+                        const groups = candidatesForSlot(candidateIndex, target.slotId);
+                        const eligible = groups.available.map(c => c.provider.id)
+                          .filter(pid => pid !== pair.providerId);
+                        const ranked = rankSwapCandidates(eligible, held, target.date, pair.gap);
+                        return (
+                          <div key={target.slotId} style={{ marginBottom: 10 }}>
+                            <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text-muted)', marginBottom: 3 }}>
+                              Move {formatMMDD(target.date)} {target.code} to:
                             </div>
-                          ))}
-                        </div>
-                      )}
+                            {ranked.length === 0 ? (
+                              <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                                Nobody else is available.
+                                {groups.blocked.length > 0
+                                  && ` ${groups.blocked.length} provider(s) blocked — the cell picker says why.`}
+                              </div>
+                            ) : (
+                              <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                                {ranked.map(c => (
+                                  <div key={c.providerId}
+                                    style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 12.5 }}>
+                                    <span style={{ fontWeight: 700, color: 'var(--text)', minWidth: 110 }}>
+                                      {nameOf(c.providerId)}
+                                    </span>
+                                    <span style={{ color: c.improves ? 'var(--ok)' : gridTokens.openCall }}>
+                                      {Number.isFinite(c.resultingGap)
+                                        ? `would sit ${c.resultingGap}d from their nearest ${code}`
+                                        : `has no other ${code}`}
+                                      {c.improves ? '' : ' — no better'}
+                                    </span>
+                                    <button
+                                      onClick={() => { onSwap(target.slotId, c.providerId); onClose(); }}
+                                      style={{ ...smallBtn, marginLeft: 'auto', padding: '3px 10px' }}
+                                    >
+                                      Give it to them
+                                    </button>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
                     </div>
                   )}
                 </div>
