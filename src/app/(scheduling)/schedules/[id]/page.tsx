@@ -112,6 +112,9 @@ import {
 } from '@/lib/availableCalls';
 import { computeCoverageForecast, formatCalls } from '@/lib/coverageForecast';
 import { buildProviderFocusList } from '@/lib/providerFocusList';
+import {
+  findTightPairs, callsByProvider, gapHistogram, rankSwapCandidates,
+} from '@/lib/callSpacing';
 
 /* ── Interfaces ──────────────────────────────────────────────────────────── */
 
@@ -436,6 +439,11 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
   const [showCounts, setShowCounts] = useState(false);
   // Available Call List (2026-07-29) — sits with the other analysis views.
   const [showAvailableCalls, setShowAvailableCalls] = useState(false);
+  const [showSpacing, setShowSpacing] = useState(false);
+  // Threshold in DAYS for "too close". A control rather than a constant: what
+  // counts as tight is a judgement about this practice, and the histogram in
+  // the panel shows the distribution so it can be set from the board.
+  const [spacingMaxGap, setSpacingMaxGap] = useState(3);
   // PROVIDER FOCUS (Gabriel 2026-07-29): "highlight a specific provider so that
   // I can easily see which days they are on call". View state only — nothing is
   // written, so it costs nothing to leave on and clears on reload.
@@ -829,6 +837,24 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
     () => buildAvailableCallList(grid?.slots ?? [], grid?.holidays ?? []),
     [grid],
   );
+
+  /* ── Call spacing (2026-07-31) ───────────────────────────────────────────
+   * Tight FIRST-CALL adjacencies. Scoped to the primary call code (call_rank 0,
+   * never a code literal) because that is the burden Gabriel asked about and
+   * because same-code pairs have no structural excuse — a Sat C2 → Sun C1 is
+   * one day apart by design. */
+  const primaryCallCode = useMemo(() => {
+    const st = (grid?.slots ?? [])
+      .map(s => s.shift_types)
+      .find(t => t?.category === 'call' && t?.call_rank === 0);
+    return st?.parent_call_code || st?.code || 'C1';
+  }, [grid]);
+
+  const spacingPairs = useMemo(
+    () => (grid ? findTightPairs(grid.slots, primaryCallCode, spacingMaxGap) : []),
+    [grid, primaryCallCode, spacingMaxGap],
+  );
+  const spacingTightCount = spacingPairs.length;
 
   /* ── Provider focus (2026-07-29) ─────────────────────────────────────────
    * Who the focus selector offers: providers who actually hold something in
@@ -1920,6 +1946,15 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
           } : undefined}
         >
           Available Call{availableCalls.total > 0 ? ` (${availableCalls.total})` : ''}
+        </Button>
+
+        {/* Call spacing review — sits with the other analysis views. */}
+        <Button
+          variant="secondary"
+          onClick={() => setShowSpacing(true)}
+          title="Find providers whose first-call assignments sit too close together, and who could take one instead"
+        >
+          Spacing{spacingTightCount > 0 ? ` (${spacingTightCount})` : ''}
         </Button>
 
         {/* Focus a provider — rings their cells and fades the rest, so one
@@ -3395,6 +3430,18 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
       )}
 
       {/* Available Call List */}
+      {showSpacing && grid && (
+        <SpacingModal
+          grid={grid}
+          code={primaryCallCode}
+          maxGap={spacingMaxGap}
+          setMaxGap={setSpacingMaxGap}
+          pairs={spacingPairs}
+          candidateIndex={candidateIndex}
+          onClose={() => setShowSpacing(false)}
+          onSwap={(slotId, providerId) => assignProvider(slotId, providerId)}
+        />
+      )}
       {showAvailableCalls && grid && (
         <AvailableCallsModal
           list={availableCalls}
@@ -5809,4 +5856,170 @@ function useMemoMonths(allDates: string[]): Array<{ year: number; month: number 
     }
     return out;
   }, [allDates]);
+}
+
+/* ── Call spacing review (Gabriel 2026-07-31) ──────────────────────────────
+ * "identify providers with C1 calls that are spaced too close together and
+ * options to swap with them other call takers that are available."
+ *
+ * The arithmetic is lib/callSpacing.ts; eligibility is the PICKER's own
+ * decision (slotCandidates) so a suggestion here can never offer someone the
+ * cell picker would refuse. This component only renders and dispatches.
+ */
+function SpacingModal({
+  grid, code, maxGap, setMaxGap, pairs, candidateIndex, onClose, onSwap,
+}: {
+  grid: GridData;
+  code: string;
+  maxGap: number;
+  setMaxGap: (n: number) => void;
+  pairs: ReturnType<typeof findTightPairs>;
+  candidateIndex: ReturnType<typeof buildCandidateIndex> | null;
+  onClose: () => void;
+  onSwap: (slotId: string, providerId: string) => void;
+}) {
+  const [openPair, setOpenPair] = useState<string | null>(null);
+  const nameOf = (pid: string) =>
+    grid.providers.find(p => p.id === pid)?.short_display_name ?? pid;
+  const held = useMemo(() => callsByProvider(grid.slots, code), [grid, code]);
+  // Distribution up to a week, so the threshold is chosen from the board.
+  const histogram = useMemo(() => gapHistogram(grid.slots, code, 7), [grid, code]);
+
+  return (
+    <div
+      onClick={onClose}
+      style={{
+        position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.75)', zIndex: 800,
+        display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20,
+      }}
+    >
+      <div
+        onClick={e => e.stopPropagation()}
+        style={{
+          background: 'var(--bg-deep)', borderRadius: 12, border: '1px solid var(--border)',
+          boxShadow: '0 24px 60px rgba(0,0,0,0.5)', padding: 20,
+          maxWidth: 780, width: '100%', maxHeight: '85vh', overflow: 'auto',
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 4 }}>
+          <div style={{ fontSize: 16, fontWeight: 800, color: 'var(--text)' }}>
+            {code} spacing
+          </div>
+          <div style={{ marginLeft: 'auto' }}>
+            <button onClick={onClose} style={smallBtn}>Close</button>
+          </div>
+        </div>
+
+        <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12 }}>
+          Consecutive {code} calls held by the same provider, {maxGap} days apart or less.{' '}
+          Different codes are never paired — a Saturday C2 into a Sunday C1 is one day apart
+          by design.
+          <div style={{ marginTop: 6 }}>
+            Whole block:{' '}
+            {[...histogram].sort((a, b) => a[0] - b[0])
+              .map(([gap, n]) => `${n} at ${gap}d`).join(' · ') || 'nothing under 8 days'}
+          </div>
+        </div>
+
+        <label style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--text-muted)' }}>
+          Flag gaps of{' '}
+          <select
+            value={maxGap}
+            onChange={e => setMaxGap(Number(e.target.value))}
+            style={{
+              padding: '4px 8px', borderRadius: 6, fontWeight: 700,
+              background: 'var(--bg)', color: 'var(--text)', border: '1px solid var(--border)',
+            }}
+          >
+            {[2, 3, 4, 5, 6, 7].map(n => <option key={n} value={n}>{n} days</option>)}
+          </select>{' '}
+          or less
+        </label>
+
+        {pairs.length === 0 ? (
+          <div style={{ marginTop: 16, fontSize: 13, color: 'var(--text-muted)' }}>
+            No {code} calls are within {maxGap} days of each other.
+          </div>
+        ) : (
+          <div style={{ marginTop: 14 }}>
+            {pairs.map(pair => {
+              const key = `${pair.providerId}|${pair.later.slotId}`;
+              const isOpen = openPair === key;
+              // Swap the LATER call: it is the one that closed the gap.
+              const groups = candidateIndex
+                ? candidatesForSlot(candidateIndex, pair.later.slotId)
+                : null;
+              const eligible = (groups?.available ?? []).map(c => c.provider.id)
+                .filter(pid => pid !== pair.providerId);
+              const ranked = rankSwapCandidates(eligible, held, pair.later.date, pair.gap);
+              return (
+                <div key={key} style={{ borderTop: '1px solid var(--border)', padding: '10px 0' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                    <span style={{
+                      fontWeight: 800,
+                      color: pair.gap <= 2 ? gridTokens.openCall : 'var(--text)',
+                      minWidth: 44,
+                    }}>
+                      {pair.gap}d
+                    </span>
+                    <span style={{ fontWeight: 700, color: 'var(--text)' }}>{nameOf(pair.providerId)}</span>
+                    <span style={{ fontSize: 12.5, color: 'var(--text-muted)' }}>
+                      {formatMMDD(pair.earlier.date)} {pair.earlier.code}
+                      {'  →  '}
+                      {formatMMDD(pair.later.date)} {pair.later.code}
+                    </span>
+                    <button
+                      onClick={() => setOpenPair(isOpen ? null : key)}
+                      style={{ ...smallBtn, marginLeft: 'auto', padding: '4px 10px' }}
+                    >
+                      {isOpen ? 'Hide' : `Swap ${formatMMDD(pair.later.date)}`}
+                    </button>
+                  </div>
+
+                  {isOpen && (
+                    <div style={{ marginTop: 8, paddingLeft: 54 }}>
+                      {!candidateIndex ? (
+                        <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                          Eligibility unavailable — reload the grid.
+                        </div>
+                      ) : ranked.length === 0 ? (
+                        <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                          Nobody else is available for {formatMMDD(pair.later.date)} {pair.later.code}.
+                          {(groups?.blocked.length ?? 0) > 0
+                            && ` ${groups!.blocked.length} provider(s) blocked — see the cell picker for why.`}
+                        </div>
+                      ) : (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                          {ranked.map(c => (
+                            <div key={c.providerId}
+                              style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 12.5 }}>
+                              <span style={{ fontWeight: 700, color: 'var(--text)', minWidth: 110 }}>
+                                {nameOf(c.providerId)}
+                              </span>
+                              <span style={{ color: c.improves ? 'var(--ok)' : gridTokens.openCall }}>
+                                {Number.isFinite(c.resultingGap)
+                                  ? `would sit ${c.resultingGap}d from their nearest ${code}`
+                                  : `has no other ${code}`}
+                                {c.improves ? '' : ' — no better'}
+                              </span>
+                              <button
+                                onClick={() => { onSwap(pair.later.slotId, c.providerId); onClose(); }}
+                                style={{ ...smallBtn, marginLeft: 'auto', padding: '3px 10px' }}
+                              >
+                                Give it to them
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    </div>
+  );
 }
