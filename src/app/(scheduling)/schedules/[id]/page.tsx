@@ -448,6 +448,14 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
   // Available Call List (2026-07-29) — sits with the other analysis views.
   const [showAvailableCalls, setShowAvailableCalls] = useState(false);
   const [showSpacing, setShowSpacing] = useState(false);
+  // The schedule print area is mounted ONLY while printing it (2026-08-02
+  // regression fix). It used to be mounted whenever the grid existed, and its
+  // stylesheet hides `body *` then un-hides its own root — so every OTHER
+  // print surface (Call Counts, Available Call, Check D) un-hid its root while
+  // this one un-hid the schedule, and both printed. Mounting on demand removes
+  // the collision structurally rather than asking each modal to remember to
+  // suppress this one.
+  const [printingSchedule, setPrintingSchedule] = useState(false);
   const [showDAudit, setShowDAudit] = useState(false);
   const [applyingD, setApplyingD] = useState(false);
   // Threshold in DAYS for "too close". A control rather than a constant: what
@@ -880,6 +888,21 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
       : { findings: [], placements: [] }),
     [grid],
   );
+
+  // Print the schedule: mount the print area, let React paint it, then open
+  // the dialog. Reset on `afterprint` rather than straight after print() —
+  // print() does not block in every browser, and unmounting mid-print would
+  // hand the printer a blank page.
+  useEffect(() => {
+    if (!printingSchedule) return;
+    const done = () => setPrintingSchedule(false);
+    window.addEventListener('afterprint', done);
+    const raf = requestAnimationFrame(() => window.print());
+    return () => {
+      window.removeEventListener('afterprint', done);
+      cancelAnimationFrame(raf);
+    };
+  }, [printingSchedule]);
 
   // Observance captions (2026-07-31). Labels ONLY — no cell tint, and
   // deliberately not holiday_calendars rows, so nothing about templates,
@@ -2072,7 +2095,7 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
 
         <Button
           variant="secondary"
-          onClick={() => window.print()}
+          onClick={() => setPrintingSchedule(true)}
           title="Print the whole block — one week per landscape page. Save as PDF to send."
         >
           Print
@@ -3630,7 +3653,7 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
       )}
 
       {/* Available Call List */}
-      {grid && (
+      {grid && printingSchedule && (
         <PrintableSchedule
           grid={grid}
           slotMap={slotMap}
@@ -5010,6 +5033,7 @@ function CallCountsModal(
 
   return (
     <div
+      className="fr-print-overlay"
       onClick={onClose}
       style={{
         position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.75)',
@@ -5017,6 +5041,7 @@ function CallCountsModal(
       }}
     >
       <div
+        className="fr-print-panel"
         onClick={e => e.stopPropagation()}
         style={{
           background: 'var(--bg-deep)', borderRadius: 12, border: '1px solid var(--border)',
@@ -5030,7 +5055,7 @@ function CallCountsModal(
           @media print {
             /* LANDSCAPE + tight type (2026-07-28): breaking the extras out by
                day type took the table from 22 columns to 2 × (bucket,code) + 7
-               — 27 at Paoli. The print area is position:fixed, so anything
+               — 27 at Paoli. Print has no horizontal pagination, so anything
                wider than the page is CLIPPED rather than scrolled: the page
                box has to be the wide one and the cells have to be small.
                Measured with headless Chrome at letter landscape: the table
@@ -5038,8 +5063,27 @@ function CallCountsModal(
             @page { size: landscape; margin: 0.35in; }
             body * { visibility: hidden !important; }
             #call-counts-print, #call-counts-print * { visibility: visible !important; }
+            /* PAGINATION (2026-08-02). The print root used to be
+               'position: fixed; inset: 0' to escape the modal's own
+               'overflow: auto' clipping — but a FIXED element does not
+               fragment: Chrome renders it on page one and CLIPS the rest.
+               Measured at letter portrait: 15 rows → 1 page and 120 rows →
+               still 1 page, i.e. 105 rows silently dropped. (The
+               'break-inside: avoid' rule in the Available Call sheet was
+               dead for the same reason — nothing to break.) Absolute
+               positioning fragments correctly (120 rows → 3 pages), but only
+               once the modal chrome stops being a clipping/positioned
+               ancestor — hence neutralising the shell here. */
+            .fr-print-overlay, .fr-print-panel {
+              position: static !important; overflow: visible !important;
+              max-height: none !important; max-width: none !important;
+              min-width: 0 !important; padding: 0 !important; margin: 0 !important;
+              background: #fff !important; border: none !important;
+              box-shadow: none !important; display: block !important;
+            }
             #call-counts-print {
-              position: fixed !important; inset: 0 !important;
+              position: absolute !important; inset: auto !important;
+              left: 0 !important; top: 0 !important; width: 100% !important;
               background: #fff !important; color: #000 !important;
               padding: 0 !important; overflow: visible !important;
               max-height: none !important; max-width: none !important;
@@ -5613,6 +5657,7 @@ function AvailableCallsModal({
 
   return (
     <div
+      className="fr-print-overlay"
       onClick={onClose}
       style={{
         position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.75)',
@@ -5620,6 +5665,7 @@ function AvailableCallsModal({
       }}
     >
       <div
+        className="fr-print-panel"
         onClick={e => e.stopPropagation()}
         style={{
           background: 'var(--bg-deep)', borderRadius: 12, border: '1px solid var(--border)',
@@ -5637,8 +5683,27 @@ function AvailableCallsModal({
             @page { size: portrait; margin: 0.5in; }
             body * { visibility: hidden !important; }
             #available-call-print, #available-call-print * { visibility: visible !important; }
+            /* PAGINATION (2026-08-02). The print root used to be
+               'position: fixed; inset: 0' to escape the modal's own
+               'overflow: auto' clipping — but a FIXED element does not
+               fragment: Chrome renders it on page one and CLIPS the rest.
+               Measured at letter portrait: 15 rows → 1 page and 120 rows →
+               still 1 page, i.e. 105 rows silently dropped. (The
+               'break-inside: avoid' rule in the Available Call sheet was
+               dead for the same reason — nothing to break.) Absolute
+               positioning fragments correctly (120 rows → 3 pages), but only
+               once the modal chrome stops being a clipping/positioned
+               ancestor — hence neutralising the shell here. */
+            .fr-print-overlay, .fr-print-panel {
+              position: static !important; overflow: visible !important;
+              max-height: none !important; max-width: none !important;
+              min-width: 0 !important; padding: 0 !important; margin: 0 !important;
+              background: #fff !important; border: none !important;
+              box-shadow: none !important; display: block !important;
+            }
             #available-call-print {
-              position: fixed !important; inset: 0 !important;
+              position: absolute !important; inset: auto !important;
+              left: 0 !important; top: 0 !important; width: 100% !important;
               background: #fff !important; color: #000 !important;
               padding: 0 !important; overflow: visible !important;
               max-height: none !important; max-width: none !important;
@@ -6302,6 +6367,7 @@ function DAuditModal({
 
   return (
     <div
+      className="fr-print-overlay"
       onClick={onClose}
       style={{
         position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.75)', zIndex: 800,
@@ -6309,6 +6375,7 @@ function DAuditModal({
       }}
     >
       <div
+        className="fr-print-panel"
         onClick={e => e.stopPropagation()}
         style={{
           background: 'var(--bg-deep)', borderRadius: 12, border: '1px solid var(--border)',
@@ -6324,8 +6391,27 @@ function DAuditModal({
             @page { size: portrait; margin: 0.5in; }
             body * { visibility: hidden !important; }
             #d-audit-print, #d-audit-print * { visibility: visible !important; }
+            /* PAGINATION (2026-08-02). The print root used to be
+               'position: fixed; inset: 0' to escape the modal's own
+               'overflow: auto' clipping — but a FIXED element does not
+               fragment: Chrome renders it on page one and CLIPS the rest.
+               Measured at letter portrait: 15 rows → 1 page and 120 rows →
+               still 1 page, i.e. 105 rows silently dropped. (The
+               'break-inside: avoid' rule in the Available Call sheet was
+               dead for the same reason — nothing to break.) Absolute
+               positioning fragments correctly (120 rows → 3 pages), but only
+               once the modal chrome stops being a clipping/positioned
+               ancestor — hence neutralising the shell here. */
+            .fr-print-overlay, .fr-print-panel {
+              position: static !important; overflow: visible !important;
+              max-height: none !important; max-width: none !important;
+              min-width: 0 !important; padding: 0 !important; margin: 0 !important;
+              background: #fff !important; border: none !important;
+              box-shadow: none !important; display: block !important;
+            }
             #d-audit-print {
-              position: fixed !important; inset: 0 !important;
+              position: absolute !important; inset: auto !important;
+              left: 0 !important; top: 0 !important; width: 100% !important;
               background: #fff !important; color: #000 !important;
               padding: 0 !important; overflow: visible !important;
               max-height: none !important; max-width: none !important;
