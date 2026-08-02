@@ -1,6 +1,6 @@
 // D-assignment audit — Gabriel 2026-08-02.
 import { describe, it, expect } from 'vitest';
-import { auditDAssignments, type AuditSlot, type AuditShiftType } from './dAssignmentAudit';
+import { auditDAssignments, placementsFor, type AuditSlot, type AuditShiftType } from './dAssignmentAudit';
 import { WEEKEND_V2_PATTERN } from './rulesEngine/patterns/weekendV2';
 import { CallPatternDocSchema } from './rulesEngine/callPattern';
 
@@ -179,5 +179,102 @@ describe('a dayChain link to a CALL code is never a D claim', () => {
       [slot(MON, 'C1', 'p1'), slot(TUE, 'C2', null)], doc);
     expect(r.findings).toEqual([]);
     expect(r.placements).toEqual([]);
+  });
+});
+
+describe('finding keys and subset payloads (dismissal support)', () => {
+  const board = () => [
+    slot(MON, 'C2', 'p1'), slot(TUE, 'D1', null), slot(TUE, 'D3', 'p1'),
+    slot(TUE, 'D4', 'p2'), slot(TUE, 'D5', 'p3'),
+    slot(WED, 'C1', 'p3'), slot('2026-08-24', 'C1', 'p2'),
+  ];
+
+  it('every finding carries a distinct, stable key', () => {
+    const a = audit(board()).findings.map(f => f.key);
+    const b = audit(board()).findings.map(f => f.key);
+    expect(a).toEqual(b);                       // stable across runs
+    expect(new Set(a).size).toBe(a.length);     // distinct
+  });
+
+  it('the key changes when the PROPOSED CHANGE changes', () => {
+    // A dismissal must not outlive the situation it was about. This case is
+    // deliberately constructed so date, KIND and provider are all IDENTICAL and
+    // only the target slot moves — an earlier version of this test also changed
+    // the kind, so it passed even with the change omitted from the key.
+    //
+    // A: Mon C2 ⇒ owed Tue D1 (weekday C2 → +1 D1)
+    // B: Wed C2 ⇒ owed Tue D3 (weekday C2 → −1 D3)
+    const common = [slot(TUE, 'D1', null), slot(TUE, 'D3', null)];
+    const a = audit([slot(MON, 'C2', 'p1'), ...common]).findings
+      .find(f => f.date === TUE && f.providerIds[0] === 'p1')!;
+    const b = audit([slot(WED, 'C2', 'p1'), ...common]).findings
+      .find(f => f.date === TUE && f.providerIds[0] === 'p1')!;
+
+    expect(a.kind).toBe(b.kind);                       // same kind…
+    expect(a.providerIds).toEqual(b.providerIds);      // …same provider, same date
+    expect(a.placements).not.toEqual(b.placements);    // …different fix
+    expect(a.key).not.toBe(b.key);                     // ⇒ different key
+  });
+
+  it('placementsFor(subset) omits a dismissed finding entirely', () => {
+    const { findings } = audit(board());
+    const kept = findings.filter(f => f.kind !== 'ladder-order');
+    const dropped = findings.filter(f => f.kind === 'ladder-order');
+    const slots = new Set(placementsFor(kept).map(p => p.slotId));
+    for (const f of dropped) {
+      for (const p of f.placements) expect(slots.has(p.slotId)).toBe(false);
+    }
+  });
+
+  it('placementsFor(all) equals the audit’s own payload — one dedupe, not two', () => {
+    const r = audit(board());
+    expect(placementsFor(r.findings)).toEqual(r.placements);
+  });
+
+  it('dismissing everything leaves nothing to write', () => {
+    expect(placementsFor([])).toEqual([]);
+  });
+});
+
+describe('post-call suppresses D claims', () => {
+  // Gabriel 2026-08-02: "if someone is post call, they dont get a D spot, so if
+  // someone was on call sunday, but C1 on Tuesday, that shouldnt be picked up
+  // as missing D spot."
+  const SUN = '2026-08-16', MONDAY = '2026-08-17', TUESDAY = '2026-08-18';
+
+  it('HIS CASE: Sunday C1 then Tuesday C1 — Monday is rest, not a missing D2', () => {
+    // weekendV2: sunday C1 blocks +1 (Monday). The Tuesday C1's −1 D2 claim
+    // lands on that rest day and must be dropped.
+    const r = audit([
+      slot(SUN, 'C1', 'p1', 'sunday'),
+      slot(TUESDAY, 'C1', 'p1'),
+      slot(MONDAY, 'D2', null),
+    ]);
+    expect(r.findings).toEqual([]);
+    expect(r.placements).toEqual([]);
+  });
+
+  it('a Sunday C2 still earns its Monday D1 — a FILL is not a block', () => {
+    // The distinction is the pattern's: sunday C2 carries a +1 D1 link and no
+    // blocks, so its holder is not resting.
+    const r = audit([slot(SUN, 'C2', 'p1', 'sunday'), slot(MONDAY, 'D1', null)]);
+    expect(r.placements).toEqual([{ slotId: `${MONDAY}|D1`, providerId: 'p1' }]);
+  });
+
+  it('a weekday C1 rests the next day too', () => {
+    // Mon C1 blocks Tue; a Wed C1 would otherwise claim Tue D2.
+    const r = audit([
+      slot(MON, 'C1', 'p1'), slot(WED, 'C1', 'p1'), slot(TUE, 'D2', null),
+    ]);
+    expect(r.findings).toEqual([]);
+  });
+
+  it('rest only suppresses the RESTING provider', () => {
+    const r = audit([
+      slot(SUN, 'C1', 'p1', 'sunday'),
+      slot(TUESDAY, 'C1', 'p2'),          // p2 is not post-call
+      slot(MONDAY, 'D2', null),
+    ]);
+    expect(r.placements).toEqual([{ slotId: `${MONDAY}|D2`, providerId: 'p2' }]);
   });
 });

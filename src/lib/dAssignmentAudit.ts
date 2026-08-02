@@ -32,7 +32,7 @@
 //   • the ladder is exactly the codes carrying a `relief_rank`; the sequence
 //     codes carry none. A site that renames its codes keeps working.
 
-import { dayChainsFor, type CallPatternDoc } from './rulesEngine/callPattern';
+import { dayChainsFor, postCallBlockOffsets, type CallPatternDoc } from './rulesEngine/callPattern';
 
 export interface AuditShiftType {
   code: string;
@@ -61,6 +61,11 @@ export interface DPlacement {
 export type DFindingKind = 'wrong-sequence-code' | 'missing-sequence-code' | 'ladder-order';
 
 export interface DFinding {
+  /** Stable identity for dismissal. Includes the PROPOSED CHANGE, not just the
+   *  date and provider, so a finding whose situation has moved on gets a new
+   *  key and reappears rather than staying silently dismissed under a stale
+   *  one. */
+  key: string;
   kind: DFindingKind;
   date: string;
   /** Human-facing sentence; the UI renders this verbatim. */
@@ -113,6 +118,32 @@ function index(slots: readonly AuditSlot[]): Indexed {
   return { byDate, callsByPid };
 }
 
+/** `pid|date` for every POST-CALL rest day — the pattern's `blocks` offsets.
+ *  Gabriel 2026-08-02: "if someone is post call, they dont get a D spot, so if
+ *  someone was on call sunday, but C1 on Tuesday, that shouldnt be picked up as
+ *  missing D spot." A rest day outranks any claim landing on it: the Tuesday
+ *  C1's −1 D2 claim on Monday is real arithmetic, but Monday is the Sunday
+ *  call's earned day off and the answer is "nothing", not "D2".
+ *
+ *  Read from `blocks`, the same field solveKernel.applyDayChains turns into
+ *  markBlocked, so this cannot disagree with the engine about which days are
+ *  rest. Note it is the BLOCK that suppresses, not "held a call yesterday" — a
+ *  Sunday C2 carries a +1 D1 FILL and no block, so its holder still gets their
+ *  Monday D1. Only codes the pattern actually rests suppress. */
+function postCallDays(slots: readonly AuditSlot[], doc: CallPatternDoc): Set<string> {
+  const out = new Set<string>();
+  for (const slot of slots) {
+    if (!isCall(slot.shift_types)) continue;
+    const pid = holderOf(slot);
+    if (!pid) continue;
+    for (const off of postCallBlockOffsets(doc, slot.shift_types!.code, slot.derived_day_type ?? '')) {
+      if (off === 0) continue;
+      out.add(`${pid}|${addDays(slot.slot_date, off)}`);
+    }
+  }
+  return out;
+}
+
 /** Every day-code the pattern claims for a provider, keyed `pid|date`.
  *  A provider can collect more than one claim on a date — post-call from
  *  yesterday AND pre-call for tomorrow — which is precisely the case Gabriel's
@@ -149,6 +180,20 @@ export interface DAuditResult {
   placements: DPlacement[];
 }
 
+/** The write payload for a SUBSET of findings, de-duplicated by slot.
+ *  Single-homed so the UI's "fix all, minus the ones I deleted" and the audit's
+ *  own `placements` can never dedupe differently — a second copy is how a
+ *  dismissed finding would leak back into the batch. */
+export function placementsFor(findings: readonly DFinding[]): DPlacement[] {
+  const bySlot = new Map<string, DPlacement>();
+  for (const f of findings) for (const p of f.placements) bySlot.set(p.slotId, p);
+  return [...bySlot.values()];
+}
+
+const findingKey = (f: Omit<DFinding, 'key'>): string =>
+  [f.date, f.kind, f.providerIds.join(','),
+   f.placements.map(p => `${p.slotId}:${p.providerId ?? '-'}`).join(',')].join('|');
+
 export function auditDAssignments(
   slots: readonly AuditSlot[], doc: CallPatternDoc,
 ): DAuditResult {
@@ -156,10 +201,14 @@ export function auditDAssignments(
   for (const s of slots) if (s.shift_types) stByCode.set(s.shift_types.code, s.shift_types);
   const { byDate, callsByPid } = index(slots);
   const claims = sequenceClaims(slots, doc, stByCode);
-  const findings: DFinding[] = [];
+  const resting = postCallDays(slots, doc);
+  const findings: Array<Omit<DFinding, 'key'>> = [];
 
   // ── 1. SEQUENCE: the lowest-ordered claim wins ────────────────────────────
   for (const [key, codes] of claims) {
+    // Post-call outranks every claim on that date — they get NOTHING, which is
+    // not the same as "missing a D".
+    if (resting.has(key)) continue;
     const [pid, date] = key.split('|');
     const want = [...codes].sort((a, b) =>
       order(stByCode.get(a) ?? null) - order(stByCode.get(b) ?? null))[0];
@@ -242,7 +291,6 @@ export function auditDAssignments(
   }
 
   findings.sort((a, b) => a.date.localeCompare(b.date) || a.kind.localeCompare(b.kind));
-  const bySlot = new Map<string, DPlacement>();
-  for (const f of findings) for (const p of f.placements) bySlot.set(p.slotId, p);
-  return { findings, placements: [...bySlot.values()] };
+  const keyed = findings.map(f => ({ ...f, key: findingKey(f) }));
+  return { findings: keyed, placements: placementsFor(keyed) };
 }

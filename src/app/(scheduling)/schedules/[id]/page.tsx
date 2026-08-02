@@ -113,7 +113,7 @@ import {
 import { computeCoverageForecast, formatCalls } from '@/lib/coverageForecast';
 import { buildProviderFocusList } from '@/lib/providerFocusList';
 import { observanceNotesByDate, observanceLabelFor } from '@/lib/observanceNotes';
-import { auditDAssignments } from '@/lib/dAssignmentAudit';
+import { auditDAssignments, placementsFor } from '@/lib/dAssignmentAudit';
 import {
   reviewTightPairs, callsByProvider, gapHistogram, rankSwapCandidates,
 } from '@/lib/callSpacing';
@@ -1590,19 +1590,19 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
     }
   };
 
-  const applyDRepair = async () => {
-    if (!grid || applyingD || dAudit.placements.length === 0) return;
+  // `placements` comes from the modal so DELETED findings are already gone —
+  // never dAudit.placements, which is the unfiltered set.
+  const applyDRepair = async (placements: Array<{ slotId: string; providerId: string | null }>) => {
+    if (!grid || applyingD || placements.length === 0) return;
     if (!confirm(
-      `Apply ${dAudit.findings.length} D-assignment fix`
-      + `${dAudit.findings.length === 1 ? '' : 'es'} (${dAudit.placements.length} cell`
-      + `${dAudit.placements.length === 1 ? '' : 's'})?\n\n`
+      `Apply ${placements.length} D cell change${placements.length === 1 ? '' : 's'}?\n\n`
       + 'Only D slots change — no call assignment is touched. This is undoable.')) return;
     setApplyingD(true);
     try {
       const res = await fetch(`/api/scheduling/schedules/${id}/repair-d`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ versionId: grid.version.id, placements: dAudit.placements }),
+        body: JSON.stringify({ versionId: grid.version.id, placements }),
       });
       const data = await res.json();
       if (!res.ok || data.ok === false) {
@@ -6175,9 +6175,18 @@ function DAuditModal({
   grid: GridData;
   audit: ReturnType<typeof auditDAssignments>;
   applying: boolean;
-  onApply: () => void;
+  onApply: (placements: Array<{ slotId: string; providerId: string | null }>) => void;
   onClose: () => void;
 }) {
+  // DELETED findings (Gabriel 2026-08-02: "hit delete if theres a reason for
+  // it"). Kept for THIS review only, deliberately not persisted: a dismissal
+  // that outlived the session would silently suppress a finding that has since
+  // become a real problem. Restore puts them all back, so a mis-click costs
+  // nothing.
+  const [deleted, setDeleted] = useState<Set<string>>(new Set());
+  const kept = audit.findings.filter(f => !deleted.has(f.key));
+  const keptPlacements = placementsFor(kept);
+
   const nameOf = (pid: string) =>
     grid.providers.find(p => p.id === pid)?.short_display_name ?? pid;
   const KIND_LABEL: Record<string, string> = {
@@ -6185,6 +6194,13 @@ function DAuditModal({
     'missing-sequence-code': 'Missing D',
     'ladder-order': 'Relief order',
   };
+  // Ladder details name providers by id; swap in display names for reading.
+  const readable = (f: (typeof audit.findings)[number]) =>
+    f.kind === 'ladder-order'
+      ? f.detail.replace(/[0-9a-zA-Z-]{6,}/g, m =>
+          grid.providers.some(p => p.id === m) ? nameOf(m) : m)
+      : f.detail;
+
   return (
     <div
       onClick={onClose}
@@ -6198,60 +6214,109 @@ function DAuditModal({
         style={{
           background: 'var(--bg-deep)', borderRadius: 12, border: '1px solid var(--border)',
           boxShadow: '0 24px 60px rgba(0,0,0,0.5)', padding: 20,
-          maxWidth: 820, width: '100%', maxHeight: '85vh', overflow: 'auto',
+          maxWidth: 860, width: '100%', maxHeight: '85vh', overflow: 'auto',
         }}
       >
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 4 }}>
-          <div style={{ fontSize: 16, fontWeight: 800, color: 'var(--text)' }}>D assignments</div>
-          <div style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
-            {audit.placements.length > 0 && (
-              <button onClick={onApply} disabled={applying} style={{
-                ...smallBtn, fontWeight: 800,
-                background: 'var(--ok-bg)', color: 'var(--ok)',
-                border: '1px solid color-mix(in srgb, var(--ok) 40%, transparent)',
-              }}>
-                {applying ? 'Applying…' : `Fix all (${audit.placements.length} cells)`}
+        {/* Scoped print stylesheet — same device the Call Counts modal uses:
+            everything outside the print area is hidden so Save-as-PDF captures
+            just the worklist. Portrait: this is a narrow table. */}
+        <style>{`
+          @media print {
+            @page { size: portrait; margin: 0.5in; }
+            body * { visibility: hidden !important; }
+            #d-audit-print, #d-audit-print * { visibility: visible !important; }
+            #d-audit-print {
+              position: fixed !important; inset: 0 !important;
+              background: #fff !important; color: #000 !important;
+              padding: 0 !important; overflow: visible !important;
+              max-height: none !important; max-width: none !important;
+              border: none !important; box-shadow: none !important;
+            }
+            #d-audit-print .no-print { display: none !important; }
+            #d-audit-print table { width: 100% !important; border-collapse: collapse; }
+            #d-audit-print td, #d-audit-print th {
+              color: #000 !important; border-bottom: 1px solid #ccc !important;
+              padding: 4px 6px !important; font-size: 11px !important;
+            }
+          }
+        `}</style>
+
+        <div id="d-audit-print">
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 4 }}>
+            <div style={{ fontSize: 16, fontWeight: 800, color: 'var(--text)' }}>
+              D assignments — {grid.schedule.schedule_name}
+            </div>
+            <div className="no-print" style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
+              <button onClick={() => window.print()} style={smallBtn}>Print</button>
+              {keptPlacements.length > 0 && (
+                <button onClick={() => onApply(keptPlacements)} disabled={applying} style={{
+                  ...smallBtn, fontWeight: 800,
+                  background: 'var(--ok-bg)', color: 'var(--ok)',
+                  border: '1px solid color-mix(in srgb, var(--ok) 40%, transparent)',
+                }}>
+                  {applying ? 'Applying…' : `Fix all (${keptPlacements.length} cells)`}
+                </button>
+              )}
+              <button onClick={onClose} style={smallBtn}>Close</button>
+            </div>
+          </div>
+
+          <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 10 }}>
+            Every D1–D8 placement re-derived from the calls around it, using this site&apos;s call
+            pattern. Where a provider is owed two, the lower D wins. D4 and below are ordered by
+            soonest next call — the first relief position leaves earliest. Call assignments are
+            never changed.
+          </div>
+
+          {deleted.size > 0 && (
+            <div className="no-print" style={{ fontSize: 12, marginBottom: 8, color: 'var(--text-muted)' }}>
+              {deleted.size} deleted from this list — they will NOT be applied.{' '}
+              <button onClick={() => setDeleted(new Set())} style={{ ...smallBtn, padding: '2px 8px' }}>
+                Restore
               </button>
-            )}
-            <button onClick={onClose} style={smallBtn}>Close</button>
-          </div>
-        </div>
+            </div>
+          )}
 
-        <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12 }}>
-          Every D1–D8 placement re-derived from the calls around it, using this site&apos;s call
-          pattern. Where a provider is owed two, the lower D wins. D4 and below are ordered by
-          soonest next call — the first relief position leaves earliest. Call assignments are
-          never changed.
+          {kept.length === 0 ? (
+            <div style={{ fontSize: 13, color: 'var(--ok)', fontWeight: 700 }}>
+              {audit.findings.length === 0
+                ? 'Every D assignment matches the call pattern.'
+                : 'Nothing left in the list.'}
+            </div>
+          ) : (
+            <table style={{ borderCollapse: 'collapse', width: '100%', fontSize: 12.5 }}>
+              <tbody>
+                {kept.map(f => (
+                  <tr key={f.key} style={{ borderTop: '1px solid var(--border)' }}>
+                    <td style={{ padding: '6px 10px 6px 0', fontWeight: 800, whiteSpace: 'nowrap', color: 'var(--text)' }}>
+                      {formatMMDD(f.date)}
+                    </td>
+                    <td style={{ padding: '6px 10px', whiteSpace: 'nowrap', color: 'var(--text-muted)' }}>
+                      {KIND_LABEL[f.kind] ?? f.kind}
+                    </td>
+                    <td style={{ padding: '6px 10px', color: 'var(--text)' }}>
+                      <strong>{f.providerIds.map(nameOf).join(', ')}</strong>{' '}
+                      <span style={{ color: 'var(--text-muted)' }}>{readable(f)}</span>
+                    </td>
+                    <td className="no-print" style={{ padding: '6px 0 6px 10px', textAlign: 'right' }}>
+                      <button
+                        onClick={() => setDeleted(prev => new Set(prev).add(f.key))}
+                        title="Remove from this list — it will not be applied"
+                        style={{
+                          ...smallBtn, padding: '2px 9px', lineHeight: 1.1,
+                          color: gridTokens.openCall,
+                          border: `1px solid color-mix(in srgb, ${gridTokens.openCall} 40%, transparent)`,
+                        }}
+                      >
+                        Delete
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
         </div>
-
-        {audit.findings.length === 0 ? (
-          <div style={{ fontSize: 13, color: 'var(--ok)', fontWeight: 700 }}>
-            Every D assignment matches the call pattern.
-          </div>
-        ) : (
-          <table style={{ borderCollapse: 'collapse', width: '100%', fontSize: 12.5 }}>
-            <tbody>
-              {audit.findings.map((f, i) => (
-                <tr key={`${f.date}-${f.kind}-${i}`} style={{ borderTop: '1px solid var(--border)' }}>
-                  <td style={{ padding: '6px 10px 6px 0', fontWeight: 800, whiteSpace: 'nowrap', color: 'var(--text)' }}>
-                    {formatMMDD(f.date)}
-                  </td>
-                  <td style={{ padding: '6px 10px', whiteSpace: 'nowrap', color: 'var(--text-muted)' }}>
-                    {KIND_LABEL[f.kind] ?? f.kind}
-                  </td>
-                  <td style={{ padding: '6px 10px', color: 'var(--text)' }}>
-                    <strong>{f.providerIds.map(nameOf).join(', ')}</strong>{' '}
-                    <span style={{ color: 'var(--text-muted)' }}>
-                      {f.kind === 'ladder-order'
-                        ? f.detail.replace(/\b[0-9a-f-]{8,}\b/g, m => nameOf(m))
-                        : f.detail}
-                    </span>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
       </div>
     </div>
   );
