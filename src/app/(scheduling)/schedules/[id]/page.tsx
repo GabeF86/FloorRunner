@@ -3638,6 +3638,9 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
           allDates={allDates}
           holidayMap={holidayMap}
           observanceByDate={observanceByDate}
+          offByDate={offByDate}
+          icuByDate={icuByDate}
+          ptoByDate={ptoByDate}
         />
       )}
       {showDAudit && grid && (
@@ -6432,6 +6435,7 @@ function DAuditModal({
  */
 function PrintableSchedule({
   grid, slotMap, shiftTypes, allDates, holidayMap, observanceByDate,
+  offByDate, icuByDate, ptoByDate,
 }: {
   grid: GridData;
   slotMap: Record<string, Record<string, Slot>>;
@@ -6439,6 +6443,9 @@ function PrintableSchedule({
   allDates: string[];
   holidayMap: Record<string, Holiday>;
   observanceByDate: Map<string, string[]>;
+  offByDate: Record<string, Provider[]>;
+  icuByDate: Record<string, Provider[]>;
+  ptoByDate: Record<string, Provider[]>;
 }) {
   const weeks = useMemo(() => weeksOf(allDates), [allDates]);
   const rows = useMemo(() => printRows(grid.slots), [grid]);
@@ -6448,14 +6455,27 @@ function PrintableSchedule({
     return m;
   }, [shiftTypes]);
 
-  const nameIn = (code: string, date: string): string => {
+  const cellIn = (code: string, date: string): { name: string; mark: HighlightColor | null } => {
     const st = stByCode[code];
-    if (!st) return '';
+    if (!st) return { name: '', mark: null };
     const slot = slotMap[st.id]?.[date];
-    if (!slot) return '—';                      // no slot stood that day
+    if (!slot) return { name: '—', mark: null };   // no slot stood that day
     const a = (slot.assignments ?? []).find(x => x.provider_id);
-    return a?.providers?.short_display_name ?? '';
+    return {
+      name: a?.providers?.short_display_name ?? '',
+      mark: normalizeHighlightColor(a?.highlight_color),
+    };
   };
+
+  // Off / ICU / PTO ride BELOW the shift rows, one row each with the day's
+  // names stacked. One row per category rather than the screen's N sub-rows:
+  // on paper the stack is the compact form, and a printed schedule is read for
+  // "who is away", not for a stable row position.
+  const CATEGORY_ROWS: Array<{ label: string; data: Record<string, Provider[]>; color: string }> = [
+    { label: 'Off', data: offByDate, color: gridTokens.category.Off },
+    { label: 'ICU', data: icuByDate, color: gridTokens.category.ICU },
+    { label: 'PTO', data: ptoByDate, color: gridTokens.category.PTO },
+  ];
 
   return (
     <div id="schedule-print" aria-hidden>
@@ -6483,6 +6503,20 @@ function PrintableSchedule({
           .sched-week .rowlab { font-weight: 700; text-align: left; width: 62px; background: #f6f6f6 !important; }
           .sched-week .we { background: #f2f2f2 !important; -webkit-print-color-adjust: exact; }
           .sched-week .callrow td, .sched-week .callrow th { font-weight: 700; }
+          /* Off / ICU / PTO sit visually apart from the staffed rows. */
+          .sched-week .catrow td, .sched-week .catrow th {
+            font-size: 9px; vertical-align: top;
+          }
+          .sched-week tr.catrow:first-of-type td, .sched-week tr.catrow:first-of-type th {
+            border-top: 2px solid #666;
+          }
+          /* Colour fidelity: without this every background is stripped and the
+             marks/shading vanish. The reader must ALSO tick "Background
+             graphics" in the print dialog — no stylesheet can override that. */
+          #schedule-print, #schedule-print * {
+            -webkit-print-color-adjust: exact !important;
+            print-color-adjust: exact !important;
+          }
           .sched-week h2 { font-size: 13px; margin: 0 0 1px 0; }
           .sched-week .sub { font-size: 9px; color: #444; margin: 0 0 5px 0; }
         }
@@ -6517,7 +6551,38 @@ function PrintableSchedule({
                   {week.dates.map(d => {
                     const dow = new Date(`${d}T00:00:00Z`).getUTCDay();
                     const isWe = dow === 0 || dow === 6;
-                    return <td key={d} className={isWe ? 'we' : undefined}>{nameIn(r.code, d)}</td>;
+                    const { name, mark } = cellIn(r.code, d);
+                    return (
+                      <td
+                        key={d}
+                        className={isWe ? 'we' : undefined}
+                        // The hand-set billing mark survives to paper — it is
+                        // the whole point of the mark, and a printed sheet is
+                        // where a physician checks what they can bill.
+                        style={mark ? { background: gridTokens.manualHighlight[mark] } : undefined}
+                      >
+                        {name}
+                      </td>
+                    );
+                  })}
+                </tr>
+              ))}
+              {CATEGORY_ROWS.map(cat => (
+                <tr key={cat.label} className="catrow">
+                  <th className="rowlab" style={{ borderLeft: `3px solid ${cat.color}` }}>
+                    {cat.label}
+                  </th>
+                  {week.dates.map(d => {
+                    const dow = new Date(`${d}T00:00:00Z`).getUTCDay();
+                    const isWe = dow === 0 || dow === 6;
+                    const people = cat.data[d] ?? [];
+                    return (
+                      <td key={d} className={isWe ? 'we' : undefined}>
+                        {people.map(p => (
+                          <div key={p.id} style={{ color: cat.color }}>{p.short_display_name}</div>
+                        ))}
+                      </td>
+                    );
                   })}
                 </tr>
               ))}
