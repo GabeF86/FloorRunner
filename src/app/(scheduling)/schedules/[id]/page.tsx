@@ -114,6 +114,7 @@ import { computeCoverageForecast, formatCalls } from '@/lib/coverageForecast';
 import { buildProviderFocusList } from '@/lib/providerFocusList';
 import { observanceNotesByDate, observanceLabelFor } from '@/lib/observanceNotes';
 import { auditDAssignments, placementsFor } from '@/lib/dAssignmentAudit';
+import { weeksOf, printRows, weekLabel } from '@/lib/printableSchedule';
 import {
   reviewTightPairs, callsByProvider, gapHistogram, rankSwapCandidates,
 } from '@/lib/callSpacing';
@@ -2069,6 +2070,14 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
           Check D{dAudit.findings.length > 0 ? ` (${dAudit.findings.length})` : ''}
         </Button>
 
+        <Button
+          variant="secondary"
+          onClick={() => window.print()}
+          title="Print the whole block — one week per landscape page. Save as PDF to send."
+        >
+          Print
+        </Button>
+
         {/* Focus a provider — rings their cells and fades the rest, so one
             person's call days read straight off an 11-week grid. Lists only
             providers who actually hold something in this block, newest state
@@ -3621,6 +3630,16 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
       )}
 
       {/* Available Call List */}
+      {grid && (
+        <PrintableSchedule
+          grid={grid}
+          slotMap={slotMap}
+          shiftTypes={shiftTypes}
+          allDates={allDates}
+          holidayMap={holidayMap}
+          observanceByDate={observanceByDate}
+        />
+      )}
       {showDAudit && grid && (
         <DAuditModal
           grid={grid}
@@ -6393,6 +6412,119 @@ function DAuditModal({
           )}
         </div>
       </div>
+    </div>
+  );
+}
+
+/* ── Printable schedule (Gabriel 2026-08-02) ───────────────────────────────
+ * "print in landscape a full version of the schedule or create a pdf for
+ * sending. It should print just the Schedule in the most efficently viewing
+ * possible."
+ *
+ * Hidden on screen, visible only in print. The interactive grid CANNOT be
+ * printed directly — it is one CSS grid with sticky headers inside an overflow
+ * container, 77 columns wide at Paoli, and a fixed-position print area clips
+ * rather than paginates (the Call Counts sheet documents that hazard). So this
+ * renders plain per-week tables the browser can break naturally, and the grid
+ * is hidden for print.
+ *
+ * Layout rationale lives in lib/printableSchedule.ts.
+ */
+function PrintableSchedule({
+  grid, slotMap, shiftTypes, allDates, holidayMap, observanceByDate,
+}: {
+  grid: GridData;
+  slotMap: Record<string, Record<string, Slot>>;
+  shiftTypes: ShiftTypeInfo[];
+  allDates: string[];
+  holidayMap: Record<string, Holiday>;
+  observanceByDate: Map<string, string[]>;
+}) {
+  const weeks = useMemo(() => weeksOf(allDates), [allDates]);
+  const rows = useMemo(() => printRows(grid.slots), [grid]);
+  const stByCode = useMemo(() => {
+    const m: Record<string, ShiftTypeInfo> = {};
+    for (const st of shiftTypes) m[st.code] = st;
+    return m;
+  }, [shiftTypes]);
+
+  const nameIn = (code: string, date: string): string => {
+    const st = stByCode[code];
+    if (!st) return '';
+    const slot = slotMap[st.id]?.[date];
+    if (!slot) return '—';                      // no slot stood that day
+    const a = (slot.assignments ?? []).find(x => x.provider_id);
+    return a?.providers?.short_display_name ?? '';
+  };
+
+  return (
+    <div id="schedule-print" aria-hidden>
+      <style>{`
+        #schedule-print { display: none; }
+        @media print {
+          /* Landscape, tight margins — the width is what buys a readable
+             column, so it is spent on the table rather than on paper edges. */
+          @page { size: landscape; margin: 0.35in; }
+          body * { visibility: hidden !important; }
+          #schedule-print, #schedule-print * { visibility: visible !important; }
+          #schedule-print {
+            display: block !important;
+            position: absolute !important; left: 0 !important; top: 0 !important;
+            width: 100% !important; background: #fff !important; color: #000 !important;
+          }
+          .sched-week { page-break-after: always; break-after: page; }
+          .sched-week:last-child { page-break-after: auto; break-after: auto; }
+          .sched-week table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+          .sched-week th, .sched-week td {
+            border: 1px solid #999; padding: 3px 4px; font-size: 10px;
+            overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+          }
+          .sched-week th { background: #eee !important; -webkit-print-color-adjust: exact; }
+          .sched-week .rowlab { font-weight: 700; text-align: left; width: 62px; background: #f6f6f6 !important; }
+          .sched-week .we { background: #f2f2f2 !important; -webkit-print-color-adjust: exact; }
+          .sched-week .callrow td, .sched-week .callrow th { font-weight: 700; }
+          .sched-week h2 { font-size: 13px; margin: 0 0 1px 0; }
+          .sched-week .sub { font-size: 9px; color: #444; margin: 0 0 5px 0; }
+        }
+      `}</style>
+
+      {weeks.map(week => (
+        <section className="sched-week" key={week.start}>
+          <h2>{grid.schedule.schedule_name}</h2>
+          <p className="sub">{weekLabel(week)}</p>
+          <table>
+            <thead>
+              <tr>
+                <th className="rowlab" />
+                {week.dates.map(d => {
+                  const dow = new Date(`${d}T00:00:00Z`).getUTCDay();
+                  const isWe = dow === 0 || dow === 6;
+                  const note = observanceByDate.get(d)?.join(' · ');
+                  return (
+                    <th key={d} className={isWe ? 'we' : undefined}>
+                      {DAYS_SHORT[dow]} {formatMMDD(d)}
+                      {holidayMap[d] && <div style={{ fontWeight: 400 }}>{holidayMap[d].holiday_name}</div>}
+                      {note && <div style={{ fontWeight: 400 }}>{note}</div>}
+                    </th>
+                  );
+                })}
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map(r => (
+                <tr key={r.code} className={r.category === 'call' ? 'callrow' : undefined}>
+                  <th className="rowlab">{r.code}</th>
+                  {week.dates.map(d => {
+                    const dow = new Date(`${d}T00:00:00Z`).getUTCDay();
+                    const isWe = dow === 0 || dow === 6;
+                    return <td key={d} className={isWe ? 'we' : undefined}>{nameIn(r.code, d)}</td>;
+                  })}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </section>
+      ))}
     </div>
   );
 }
