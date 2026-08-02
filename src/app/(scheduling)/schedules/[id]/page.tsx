@@ -3641,6 +3641,8 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
           offByDate={offByDate}
           icuByDate={icuByDate}
           ptoByDate={ptoByDate}
+          overParAssignmentIds={overParAssignmentIds}
+          callTakerIds={callTakerIds}
         />
       )}
       {showDAudit && grid && (
@@ -6435,7 +6437,7 @@ function DAuditModal({
  */
 function PrintableSchedule({
   grid, slotMap, shiftTypes, allDates, holidayMap, observanceByDate,
-  offByDate, icuByDate, ptoByDate,
+  offByDate, icuByDate, ptoByDate, overParAssignmentIds, callTakerIds,
 }: {
   grid: GridData;
   slotMap: Record<string, Record<string, Slot>>;
@@ -6446,6 +6448,8 @@ function PrintableSchedule({
   offByDate: Record<string, Provider[]>;
   icuByDate: Record<string, Provider[]>;
   ptoByDate: Record<string, Provider[]>;
+  overParAssignmentIds: Set<string>;
+  callTakerIds: Set<string>;
 }) {
   const weeks = useMemo(() => weeksOf(allDates), [allDates]);
   const rows = useMemo(() => printRows(grid.slots), [grid]);
@@ -6455,15 +6459,33 @@ function PrintableSchedule({
     return m;
   }, [shiftTypes]);
 
-  const cellIn = (code: string, date: string): { name: string; mark: HighlightColor | null } => {
+  const cellIn = (code: string, date: string) => {
     const st = stByCode[code];
-    if (!st) return { name: '', mark: null };
+    const empty = { name: '', mark: null as HighlightColor | null, extra: false, open: false };
+    if (!st) return empty;
     const slot = slotMap[st.id]?.[date];
-    if (!slot) return { name: '—', mark: null };   // no slot stood that day
+    if (!slot) return { ...empty, name: '—' };   // no slot stood that day
     const a = (slot.assignments ?? []).find(x => x.provider_id);
+    const isCallSlot = st.category === 'call';
+    if (!a) {
+      // OPEN, and only for CALL slots — the same single-homed predicate the
+      // grid's red cells and the Available Call list use, so the printout can
+      // never disagree with either about what is up for grabs. An unfilled DAY
+      // slot stays blank: nobody is chasing cover for a D6.
+      return { ...empty, open: isCallSlot && isUnfilledCallSlot(slot) };
+    }
+    const provider = a.providers;
     return {
-      name: a?.providers?.short_display_name ?? '',
-      mark: normalizeHighlightColor(a?.highlight_color),
+      name: provider?.short_display_name ?? '',
+      mark: normalizeHighlightColor(a.highlight_color),
+      // "Extra" on paper = either sense the grid paints red: past the
+      // provider's rounded obligation (over-par), or picked up by someone who
+      // is not in this site's call pool at all. Both are billable extras and a
+      // printed sheet is where that gets checked.
+      extra: isCallSlot && !!a.id
+        && (overParAssignmentIds.has(a.id)
+          || (!!provider && !callTakerIds.has(provider.id))),
+      open: false,
     };
   };
 
@@ -6503,6 +6525,19 @@ function PrintableSchedule({
           .sched-week .rowlab { font-weight: 700; text-align: left; width: 62px; background: #f6f6f6 !important; }
           .sched-week .we { background: #f2f2f2 !important; -webkit-print-color-adjust: exact; }
           .sched-week .callrow td, .sched-week .callrow th { font-weight: 700; }
+          /* OVER / EXTRA and OPEN both print RED — and the signal is the TEXT
+             colour, not a fill. Browsers strip backgrounds unless the reader
+             ticks "Background graphics", so a fill-only cue would vanish on a
+             default print; text colour always prints. The tint is a bonus for
+             readers who have backgrounds on, never the signal itself. */
+          .sched-week td.extra {
+            color: #b91c1c !important; font-weight: 800;
+            background: #fdecec !important;
+          }
+          .sched-week td.open {
+            color: #b91c1c !important; font-weight: 800; font-style: italic;
+            background: #fdecec !important;
+          }
           /* Off / ICU / PTO sit visually apart from the staffed rows. */
           .sched-week .catrow td, .sched-week .catrow th {
             font-size: 9px; vertical-align: top;
@@ -6551,17 +6586,21 @@ function PrintableSchedule({
                   {week.dates.map(d => {
                     const dow = new Date(`${d}T00:00:00Z`).getUTCDay();
                     const isWe = dow === 0 || dow === 6;
-                    const { name, mark } = cellIn(r.code, d);
+                    const { name, mark, extra, open } = cellIn(r.code, d);
                     return (
                       <td
                         key={d}
-                        className={isWe ? 'we' : undefined}
+                        className={[isWe ? 'we' : '', open ? 'open' : '', extra ? 'extra' : '']
+                          .filter(Boolean).join(' ') || undefined}
                         // The hand-set billing mark survives to paper — it is
                         // the whole point of the mark, and a printed sheet is
-                        // where a physician checks what they can bill.
-                        style={mark ? { background: gridTokens.manualHighlight[mark] } : undefined}
+                        // where a physician checks what they can bill. An
+                        // over/extra call out-ranks it: the .extra class sets
+                        // its own colour after this.
+                        style={mark && !extra && !open
+                          ? { background: gridTokens.manualHighlight[mark] } : undefined}
                       >
-                        {name}
+                        {open ? 'open' : name}
                       </td>
                     );
                   })}
