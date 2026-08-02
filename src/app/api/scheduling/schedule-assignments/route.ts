@@ -134,9 +134,13 @@ export async function POST(req: NextRequest) {
     .select()
     .single() as unknown as Promise<WideRes>;
 
-  let upsertRes = await upsert({ ...upsertRow, highlight_color: null });
+  // notes: cleared on reassignment for the SAME reason highlight_color is —
+  // a cell comment describes THIS placement ("covering for Jones"), and
+  // carrying it onto whoever replaces them would be a lie the scheduler never
+  // wrote. Named explicitly, because an unnamed column would silently persist.
+  let upsertRes = await upsert({ ...upsertRow, highlight_color: null, notes: null });
   if (upsertRes.error && isMissingColumnErr(upsertRes.error)) {
-    upsertRes = await upsert(upsertRow);
+    upsertRes = await upsert({ ...upsertRow, notes: null });
   }
   if (upsertRes.error) return NextResponse.json({ error: upsertRes.error.message }, { status: 500 });
   const data = upsertRes.data as Record<string, unknown> | null;
@@ -176,6 +180,10 @@ export async function POST(req: NextRequest) {
   });
 }
 
+// A cell comment is a tooltip, not a document. Capped so one cannot become an
+// unreadable wall of text on hover, and so the grid payload stays small.
+const NOTES_MAX = 500;
+
 export async function PATCH(req: NextRequest) {
   const sb = sbSchedulingServer();
   const body = await req.json();
@@ -197,6 +205,24 @@ export async function PATCH(req: NextRequest) {
       return NextResponse.json({ error: parsed.error }, { status: 400 });
     }
     fields.highlight_color = parsed.value;
+  }
+
+  // notes (cell comment, 2026-08-02) — same hardening idiom as highlight_color
+  // above: shape-validated when PRESENT, never trusted from the client. null /
+  // '' both mean "clear the comment"; whitespace is trimmed so a blank-looking
+  // comment is genuinely absent rather than rendering an empty tooltip.
+  if ('notes' in fields) {
+    const raw = fields.notes;
+    if (raw !== null && typeof raw !== 'string') {
+      return NextResponse.json({ error: 'notes must be a string or null' }, { status: 400 });
+    }
+    const trimmed = typeof raw === 'string' ? raw.trim() : null;
+    if (trimmed && trimmed.length > NOTES_MAX) {
+      return NextResponse.json(
+        { error: `Comment is too long (${trimmed.length}/${NOTES_MAX} characters).` },
+        { status: 400 });
+    }
+    fields.notes = trimmed && trimmed.length > 0 ? trimmed : null;
   }
 
   const { data, error } = await sb

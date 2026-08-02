@@ -24,10 +24,10 @@ export const GRID_SCHEDULE_COLUMNS =
 // with every cell unmarked, which is precisely the state of a DB that has no
 // marks to render.
 export const GRID_ASSIGNMENT_COLUMNS =
-  'id, schedule_slot_id, provider_id, assignment_status, is_open_call, manually_overridden, validation_flags, highlight_color, providers(id, last_name, short_display_name, initials, provider_type)';
+  'id, schedule_slot_id, provider_id, assignment_status, is_open_call, manually_overridden, validation_flags, highlight_color, notes, providers(id, last_name, short_display_name, initials, provider_type)';
 
 export const GRID_ASSIGNMENT_COLUMNS_PRE42 =
-  'id, schedule_slot_id, provider_id, assignment_status, is_open_call, manually_overridden, validation_flags, providers(id, last_name, short_display_name, initials, provider_type)';
+  'id, schedule_slot_id, provider_id, assignment_status, is_open_call, manually_overridden, validation_flags, notes, providers(id, last_name, short_display_name, initials, provider_type)';
 
 // requires_post_call_rule rides on the shift_types join for the Call Counts
 // modal's Working Days credit (post-call rest days credit as worked —

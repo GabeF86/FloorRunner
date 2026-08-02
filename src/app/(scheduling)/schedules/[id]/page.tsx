@@ -249,6 +249,9 @@ interface AssignmentInfo {
   // undefined on a pre-patch42 DB, where the grid route's narrow retry drops
   // the column entirely; normalizeHighlightColor folds both to "no mark".
   highlight_color?: HighlightColor | null;
+  /** Cell comment (assignments.notes) — shown on hover, marked by a corner
+   *  notch. Cleared when the cell is reassigned, same contract as the mark. */
+  notes?: string | null;
   providers: ProviderInfo | null;
 }
 
@@ -327,6 +330,8 @@ interface ActiveCell {
 interface PaletteCell {
   assignmentId: string;
   current: HighlightColor | null;
+  /** Existing cell comment (assignments.notes), null when none. */
+  note: string | null;
   label: string;
   x: number;
   y: number;
@@ -1257,6 +1262,28 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
   // a rejected write reverts and surfaces through the standard action toast —
   // including the "patch42 not applied yet" 501, so a missing column reads as
   // a clear explanation rather than a colour that silently refuses to stick.
+  // Cell comment (2026-08-02). Uses window.prompt deliberately: it is one
+  // short string, it must work from a context menu already anchored at the
+  // cursor, and a bespoke popover would be a second floating layer competing
+  // with the palette for the same corner of the screen.
+  const setCellComment = async (assignmentId: string, current: string | null) => {
+    const next = window.prompt('Comment for this cell (blank to clear):', current ?? '');
+    if (next === null) return;                    // cancelled — leave it alone
+    setPaletteCell(null);
+    try {
+      const res = await fetch('/api/scheduling/schedule-assignments', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: assignmentId, notes: next }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Could not save the comment');
+      await loadGrid();
+    } catch (e) {
+      setActionError(e instanceof Error ? e.message : 'Could not save the comment');
+    }
+  };
+
   const setHighlight = async (assignmentId: string, color: HighlightColor | null) => {
     if (!grid) return;
     const prevSlots = grid.slots;
@@ -2772,11 +2799,18 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
                               setPaletteCell({
                                 assignmentId: segAssignment.id,
                                 current: segHighlight,
+                                note: typeof segAssignment.notes === 'string' ? segAssignment.notes : null,
                                 label: `${seg.shift_types.code} · ${formatMMDD(date)} — ${segProvider.short_display_name}`,
                                 x: e.clientX, y: e.clientY,
                               });
                             }}
-                            title={`${seg.shift_types.name}${segProvider ? ` — ${segProvider.short_display_name}` : ' — open'}${segExtra ? ' — extra call (not in the regular call pool at this site)' : ''}${segHighlight ? `\n${manualHighlightTitle(segHighlight)}` : ''}`}
+                            title={[
+                              typeof segAssignment?.notes === 'string' && segAssignment.notes.trim()
+                                ? segAssignment.notes.trim() : null,
+                              `${seg.shift_types.name}${segProvider ? ` — ${segProvider.short_display_name}` : ' — open'}`
+                                + `${segExtra ? ' — extra call (not in the regular call pool at this site)' : ''}`,
+                              segHighlight ? manualHighlightTitle(segHighlight) : null,
+                            ].filter(Boolean).join('\n')}
                             style={{
                               flex: 1,
                               display: 'flex', alignItems: 'center', gap: 3,
@@ -2925,9 +2959,17 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
                               ? 'already listed up for grabs.'
                               : 'list it up for grabs. See Available Call.'}`
                           : undefined;
-                const cellTitle = manualHighlight
-                  ? [manualHighlightTitle(manualHighlight), computedTitle].filter(Boolean).join('\n')
-                  : computedTitle;
+                const cellNote = typeof assignment?.notes === 'string' && assignment.notes.trim()
+                  ? assignment.notes.trim() : null;
+                // The comment leads: it is the one line a human wrote, so it
+                // should be the first thing the tooltip says. The computed
+                // explanation and the manual-mark note still follow — a comment
+                // adds to what the cell says, it never replaces it.
+                const cellTitle = [
+                  cellNote,
+                  manualHighlight ? manualHighlightTitle(manualHighlight) : null,
+                  computedTitle,
+                ].filter(Boolean).join('\n');
 
                 return (
                   <div
@@ -2957,6 +2999,7 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
                       setPaletteCell({
                         assignmentId: assignment.id,
                         current: manualHighlight,
+                        note: typeof assignment.notes === 'string' ? assignment.notes : null,
                         label: `${st.code} · ${formatMMDD(date)} — ${provider!.short_display_name}`,
                         x: e.clientX,
                         y: e.clientY,
@@ -2985,6 +3028,23 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
                       (e.currentTarget as HTMLDivElement).style.background = cellBackground(cellFlags);
                     }}
                   >
+                    {/* Comment marker — a small notch in the TOP-RIGHT, the
+                        spreadsheet convention for "this cell has a note". That
+                        corner also carries the lock glyph, but a locked cell is
+                        rare and the notch is 6px inside the corner, so the two
+                        read as separate marks rather than overlapping. */}
+                    {cellNote && (
+                      <span
+                        aria-hidden
+                        style={{
+                          position: 'absolute', top: 0, right: 0,
+                          width: 0, height: 0,
+                          borderTop: '6px solid ' + gridTokens.accentStrong,
+                          borderLeft: '6px solid transparent',
+                          pointerEvents: 'none',
+                        }}
+                      />
+                    )}
                     {!slot ? null : isAssigned ? (
                       <span style={{
                         fontSize: viewMode === 'month' ? 11 : 13, fontWeight: 800, color: gridTokens.name,
@@ -3260,6 +3320,21 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
                 </button>
               );
             })}
+            <button
+              role="menuitem"
+              onClick={() => setCellComment(paletteCell.assignmentId, paletteCell.note)}
+              style={{
+                display: 'flex', alignItems: 'center', gap: 9,
+                padding: '7px 9px', borderRadius: 8, marginTop: 6,
+                cursor: 'pointer', border: '1px solid var(--border)',
+                background: 'transparent', color: 'var(--text-muted)',
+                fontSize: 12.5, fontWeight: 700, textAlign: 'left',
+                borderTop: '1px solid var(--border)',
+              }}
+            >
+              <span aria-hidden style={{ width: 18, textAlign: 'center', fontSize: 13 }}>&#128172;</span>
+              <span style={{ flex: 1 }}>{paletteCell.note ? 'Edit comment…' : 'Add comment…'}</span>
+            </button>
             <button
               role="menuitem"
               onClick={() => setHighlight(paletteCell.assignmentId, null)}

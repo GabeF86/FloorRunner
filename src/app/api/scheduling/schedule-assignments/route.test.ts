@@ -169,7 +169,19 @@ describe('POST /api/scheduling/schedule-assignments', () => {
   // route already guards against for validation_flags, and worse here because
   // the mark's entire purpose is to tell a physician which of THEIR calls pays.
   it('clears highlight_color on the upsert so a reassignment cannot inherit the previous provider\'s mark', async () => {
-    const { calls } = setupPost([joinedRow('slot-A')]);
+    const { sb, calls } = makeFakeSupabase({
+      tables: {
+        schedule_slots: { data: { slot_date: '2026-01-05' }, error: null },
+        assignments: (filters) => {
+          if (has(filters, 'upsert')) {
+            return { data: { id: 'a-slot-A', schedule_slot_id: 'slot-A', provider_id: 'p1' }, error: null };
+          }
+          if (has(filters, 'in', 'schedule_slot_id')) return { data: [joinedRow('slot-A')], error: null };
+          return { data: [], error: null };
+        },
+      },
+    });
+    holder.sb = sb;
     await POST(fakeReq({ schedule_slot_id: 'slot-A', provider_id: 'p1' }));
     const payload = callsFor(calls, 'assignments', 'upsert')[0].args[0] as Record<string, unknown>;
     expect(payload).toHaveProperty('highlight_color', null);
@@ -412,5 +424,85 @@ describe('DELETE /api/scheduling/schedule-assignments', () => {
     expect(insertPayload).toEqual({
       schedule_slot_id: 'slot-A', assignment_status: 'open', source_type: 'manual',
     });
+  });
+});
+
+// ── cell comments (Gabriel 2026-08-02) ──────────────────────────────────────
+// "right click on a cell and leave a comment so that when that cell is hovered
+// over, the comment appears." Stored on assignments.notes.
+describe('cell comment hardening', () => {
+  const patchWith = async (notes: unknown) => {
+    const { sb, calls } = makeFakeSupabase({
+      tables: {
+        assignments: (filters) => has(filters, 'update')
+          ? { data: { id: 'a-1' }, error: null }
+          : { data: joinedRow('slot-A'), error: null },
+      },
+    });
+    holder.sb = sb;
+    const res = await PATCH(fakeReq({ id: 'a-1', notes }));
+    const update = callsFor(calls, 'assignments', 'update')[0]?.args[0] as
+      Record<string, unknown> | undefined;
+    return { res, json: await res.json(), update };
+  };
+
+  it('trims, so a blank-looking comment is genuinely absent', async () => {
+    const { update } = await patchWith('   covering for Jones   ');
+    expect(update?.notes).toBe('covering for Jones');
+  });
+
+  it('whitespace-only clears rather than rendering an empty tooltip', async () => {
+    expect((await patchWith('   ')).update?.notes).toBeNull();
+    expect((await patchWith('')).update?.notes).toBeNull();
+  });
+
+  it('explicit null clears', async () => {
+    expect((await patchWith(null)).update?.notes).toBeNull();
+  });
+
+  it('rejects a non-string before it reaches the DB', async () => {
+    for (const bad of [42, {}, ['a'], true]) {
+      const { res } = await patchWith(bad);
+      expect(res.status).toBe(400);
+    }
+  });
+
+  it('rejects an over-long comment with a message naming the limit', async () => {
+    const { res, json } = await patchWith('x'.repeat(501));
+    expect(res.status).toBe(400);
+    expect(json.error).toContain('501/500');
+  });
+
+  it('accepts exactly the limit', async () => {
+    const { res, update } = await patchWith('x'.repeat(500));
+    expect(res.status).toBe(200);
+    expect((update?.notes as string).length).toBe(500);
+  });
+});
+
+describe('a reassignment clears the comment', () => {
+  it('names notes in the upsert, like highlight_color', async () => {
+    // Unnamed columns survive ON CONFLICT DO UPDATE, so a comment about THIS
+    // placement ("covering for Jones") would otherwise ride onto whoever
+    // replaces them — a line the scheduler never wrote about a person it was
+    // never about.
+    const { sb, calls } = makeFakeSupabase({
+      tables: {
+        schedule_slots: { data: { slot_date: '2026-01-05' }, error: null },
+        assignments: (filters) => {
+          if (has(filters, 'upsert')) {
+            return { data: { id: 'a-slot-A', schedule_slot_id: 'slot-A', provider_id: 'p1' }, error: null };
+          }
+          if (has(filters, 'in', 'schedule_slot_id')) return { data: [joinedRow('slot-A')], error: null };
+          return { data: [], error: null };
+        },
+      },
+    });
+    holder.sb = sb;
+    await POST(fakeReq({ schedule_slot_id: 'slot-A', provider_id: 'p1' }));
+    const upsert = callsFor(calls, 'assignments', 'upsert')[0]?.args[0] as
+      Record<string, unknown>;
+    expect(upsert).toHaveProperty('notes', null);
+    expect(upsert).toHaveProperty('highlight_color', null);
   });
 });
