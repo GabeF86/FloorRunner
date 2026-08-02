@@ -114,7 +114,7 @@ export const gridTokens = {
   // weekend/holiday washes legible as context — this is emphasis, not a filter.
   providerFocusDim: 0.32,
   // virtual-row category accents (label border only)
-  category: { Available: '#10b981', 'Post-Call': '#8b5cf6', Off: '#94a3b8', PTO: '#f59e0b' } as Record<string, string>,
+  category: { Available: '#10b981', 'Post-Call': '#8b5cf6', Off: '#94a3b8', ICU: '#06b6d4', PTO: '#f59e0b' } as Record<string, string>,
 } as const;
 
 /** Flags describing a single grid cell, used to resolve its background.

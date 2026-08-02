@@ -574,7 +574,7 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
 
   /* ── Derived Data ───────────────────────────────────────────────────────── */
 
-  const { shiftTypes, allDates, slotMap, segmentsByParent, holidayMap, assignedOnDate, availableByDate, offByDate, offTitleByDate, ptoByDate, postCallByDate, maxAvailable, maxOff, maxPto, maxPostCall, callTakerIds, sellbackByDate } = useMemo(() => {
+  const { shiftTypes, allDates, slotMap, segmentsByParent, holidayMap, assignedOnDate, availableByDate, offByDate, offTitleByDate, icuByDate, ptoByDate, postCallByDate, maxAvailable, maxOff, maxIcu, maxPto, maxPostCall, callTakerIds, sellbackByDate } = useMemo(() => {
     const empty = {
       shiftTypes: [] as ShiftTypeInfo[], allDates: [] as string[],
       slotMap: {} as Record<string, Record<string, Slot>>,
@@ -584,6 +584,8 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
       availableByDate: {} as Record<string, Provider[]>,
       offByDate: {} as Record<string, Provider[]>,
       offTitleByDate: {} as Record<string, Record<string, string>>,
+      icuByDate: {} as Record<string, Provider[]>,
+      maxIcu: 0,
       ptoByDate: {} as Record<string, Provider[]>,
       postCallByDate: {} as Record<string, Provider[]>,
       maxAvailable: 0, maxOff: 0, maxPto: 0, maxPostCall: 0,
@@ -677,6 +679,13 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
     // blocked entries (icu_week / icu_post_call) get one, so an ICU doc's Off
     // cell reads "ICU Week" instead of looking like a generic day off.
     const offTitleByDate: Record<string, Record<string, string>> = {};
+    // ICU rotation (Gabriel 2026-08-02): its own row below Off. Keyed off the
+    // SAME reason codes the hover label already uses (REASON_CODE_LABELS —
+    // icu_week / icu_post_call), so the row and the tooltip can never disagree
+    // about what counts as ICU, and adding a third ICU code there lights this
+    // up for free. These rows are blocking availability either way; this only
+    // changes which row they render in.
+    const icuByDate: Record<string, Provider[]> = {};
     const allDatesSet = new Set(allDates);
 
     // PTO sell-back coverage (2026-07-20): a LIVE pto_sellback row means the
@@ -732,6 +741,10 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
           if (label && label !== avail.reason_code) {
             if (!offTitleByDate[ds]) offTitleByDate[ds] = {};
             offTitleByDate[ds][provider.id] = label;
+            // A recognised reason code IS the ICU vocabulary today. Collected
+            // here so the Off bucket below can exclude them.
+            if (!icuByDate[ds]) icuByDate[ds] = [];
+            if (!icuByDate[ds].some(x => x.id === provider.id)) icuByDate[ds].push(provider);
           }
         }
       }
@@ -798,10 +811,16 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
       const ptoSet = new Set((ptoByDate[date] || []).map(p => p.id));
       const postCallSet = new Set((postCallByDate[date] || []).map(p => p.id));
       const offSet = scheduledOffByDate[date] || new Set<string>();
+      // ICU renders in its own row — a provider is in ONE bucket, never both.
+      const icuSet = new Set((icuByDate[date] || []).map(p => p.id));
       const available: Provider[] = [];
       const off: Provider[] = [];
       for (const pid of homeSiteIds) {
         if (assigned.has(pid) || ptoSet.has(pid) || postCallSet.has(pid)) continue;
+        // PTO stays ahead of ICU (checked above): a provider on leave is not in
+        // the unit, even when an icu_week row spans their leave — which is
+        // exactly Hussain's 8/31 and 9/6-9/7.
+        if (icuSet.has(pid)) continue;
         const provider = providerById[pid];
         if (!provider) continue;
         // Selling back PTO today → explicitly working: force Available (red
@@ -820,12 +839,16 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
       offByDate[date] = off;
     }
 
+    for (const list of Object.values(icuByDate)) {
+      list.sort((a, b) => a.short_display_name.localeCompare(b.short_display_name));
+    }
+    const maxIcu = Math.max(0, ...Object.values(icuByDate).map(v => v.length));
     const maxAvailable = Math.max(0, ...Object.values(availableByDate).map(v => v.length));
     const maxOff = Math.max(0, ...Object.values(offByDate).map(v => v.length));
     const maxPto = Math.max(0, ...Object.values(ptoByDate).map(v => v.length));
     const maxPostCall = Math.max(0, ...Object.values(postCallByDate).map(v => v.length));
 
-    return { shiftTypes, allDates, slotMap, segmentsByParent, holidayMap, assignedOnDate, availableByDate, offByDate, offTitleByDate, ptoByDate, postCallByDate, maxAvailable, maxOff, maxPto, maxPostCall, callTakerIds, sellbackByDate };
+    return { shiftTypes, allDates, slotMap, segmentsByParent, holidayMap, assignedOnDate, availableByDate, offByDate, offTitleByDate, icuByDate, ptoByDate, postCallByDate, maxAvailable, maxOff, maxIcu, maxPto, maxPostCall, callTakerIds, sellbackByDate };
   }, [grid]);
 
   /* ── Available Call (2026-07-29) ─────────────────────────────────────────
@@ -3059,6 +3082,21 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
             holidayMap,
             getDayOfWeek,
           })}
+          {/* ICU rotation — below Off, per Gabriel 2026-08-02. Same
+              reason-coded rows that used to sit inside Off with a hover
+              label; they now read at a glance instead. */}
+          {renderVirtualRows({
+            label: 'ICU',
+            count: maxIcu,
+            dataByDate: icuByDate,
+            titleByDate: offTitleByDate,
+            color: gridTokens.category.ICU,
+            visibleDates,
+            todayStr,
+            holidayMap,
+            getDayOfWeek,
+            zoneTop: maxPostCall === 0 && maxOff === 0 && maxIcu > 0,
+          })}
           {renderVirtualRows({
             label: 'PTO',
             count: maxPto,
@@ -3068,7 +3106,7 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
             todayStr,
             holidayMap,
             getDayOfWeek,
-            zoneTop: maxPostCall === 0 && maxOff === 0,
+            zoneTop: maxPostCall === 0 && maxOff === 0 && maxIcu === 0,
             // Always show the PTO label row even when empty — a standing
             // "PTO" cue so scanners know where to look for planned leave.
             alwaysRender: true,
