@@ -113,6 +113,7 @@ import {
 import { computeCoverageForecast, formatCalls } from '@/lib/coverageForecast';
 import { buildProviderFocusList } from '@/lib/providerFocusList';
 import { observanceNotesByDate, observanceLabelFor } from '@/lib/observanceNotes';
+import { auditDAssignments } from '@/lib/dAssignmentAudit';
 import {
   reviewTightPairs, callsByProvider, gapHistogram, rankSwapCandidates,
 } from '@/lib/callSpacing';
@@ -441,6 +442,8 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
   // Available Call List (2026-07-29) — sits with the other analysis views.
   const [showAvailableCalls, setShowAvailableCalls] = useState(false);
   const [showSpacing, setShowSpacing] = useState(false);
+  const [showDAudit, setShowDAudit] = useState(false);
+  const [applyingD, setApplyingD] = useState(false);
   // Threshold in DAYS for "too close". A control rather than a constant: what
   // counts as tight is a judgement about this practice, and the histogram in
   // the panel shows the distribution so it can be set from the board.
@@ -859,6 +862,16 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
    * consecutive-date clustering, the plain-text form) lives in the module. */
   const availableCalls = useMemo(
     () => buildAvailableCallList(grid?.slots ?? [], grid?.holidays ?? []),
+    [grid],
+  );
+
+  // D-assignment audit (2026-08-02): re-derive every D1-D8 placement from the
+  // calls around it. Recomputed from the grid, so it always reflects the
+  // switches just made rather than a cached verdict.
+  const dAudit = useMemo(
+    () => (grid?.callPattern
+      ? auditDAssignments(grid.slots, grid.callPattern)
+      : { findings: [], placements: [] }),
     [grid],
   );
 
@@ -1577,6 +1590,33 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
     }
   };
 
+  const applyDRepair = async () => {
+    if (!grid || applyingD || dAudit.placements.length === 0) return;
+    if (!confirm(
+      `Apply ${dAudit.findings.length} D-assignment fix`
+      + `${dAudit.findings.length === 1 ? '' : 'es'} (${dAudit.placements.length} cell`
+      + `${dAudit.placements.length === 1 ? '' : 's'})?\n\n`
+      + 'Only D slots change — no call assignment is touched. This is undoable.')) return;
+    setApplyingD(true);
+    try {
+      const res = await fetch(`/api/scheduling/schedules/${id}/repair-d`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ versionId: grid.version.id, placements: dAudit.placements }),
+      });
+      const data = await res.json();
+      if (!res.ok || data.ok === false) {
+        throw new Error((data.errors ?? []).join('; ') || data.error || 'Repair failed');
+      }
+      setShowDAudit(false);
+      await loadGrid();
+    } catch (e) {
+      setActionError(e instanceof Error ? e.message : 'D repair failed');
+    } finally {
+      setApplyingD(false);
+    }
+  };
+
   const continueGeneration = async () => {
     if (!grid || generating) return;
     await runGeneration('all');
@@ -1986,6 +2026,20 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
           title="Find providers whose first-call assignments sit too close together, and who could take one instead"
         >
           Spacing{spacingTightCount > 0 ? ` (${spacingTightCount})` : ''}
+        </Button>
+
+        {/* Re-check D assignments after call switches. */}
+        <Button
+          variant="secondary"
+          onClick={() => setShowDAudit(true)}
+          title="Re-derive every D1–D8 placement from the calls around it, and re-order D4+ by nearest call"
+          style={dAudit.findings.length > 0 ? {
+            background: `color-mix(in srgb, ${gridTokens.openCall} 15%, transparent)`,
+            color: gridTokens.openCall,
+            border: `1px solid color-mix(in srgb, ${gridTokens.openCall} 45%, transparent)`,
+          } : undefined}
+        >
+          Check D{dAudit.findings.length > 0 ? ` (${dAudit.findings.length})` : ''}
         </Button>
 
         {/* Focus a provider — rings their cells and fades the rest, so one
@@ -3492,6 +3546,15 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
       )}
 
       {/* Available Call List */}
+      {showDAudit && grid && (
+        <DAuditModal
+          grid={grid}
+          audit={dAudit}
+          applying={applyingD}
+          onApply={applyDRepair}
+          onClose={() => setShowDAudit(false)}
+        />
+      )}
       {showSpacing && grid && (
         <SpacingModal
           grid={grid}
@@ -6095,6 +6158,99 @@ function SpacingModal({
               );
             })}
           </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ── D-assignment audit (Gabriel 2026-08-02) ───────────────────────────────
+ * "re-check all the placements for correct D assignments after I make
+ * switches to peoples call." The arithmetic is lib/dAssignmentAudit.ts; this
+ * lists what it found and dispatches the batch apply.
+ */
+function DAuditModal({
+  grid, audit, applying, onApply, onClose,
+}: {
+  grid: GridData;
+  audit: ReturnType<typeof auditDAssignments>;
+  applying: boolean;
+  onApply: () => void;
+  onClose: () => void;
+}) {
+  const nameOf = (pid: string) =>
+    grid.providers.find(p => p.id === pid)?.short_display_name ?? pid;
+  const KIND_LABEL: Record<string, string> = {
+    'wrong-sequence-code': 'Wrong D',
+    'missing-sequence-code': 'Missing D',
+    'ladder-order': 'Relief order',
+  };
+  return (
+    <div
+      onClick={onClose}
+      style={{
+        position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.75)', zIndex: 800,
+        display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20,
+      }}
+    >
+      <div
+        onClick={e => e.stopPropagation()}
+        style={{
+          background: 'var(--bg-deep)', borderRadius: 12, border: '1px solid var(--border)',
+          boxShadow: '0 24px 60px rgba(0,0,0,0.5)', padding: 20,
+          maxWidth: 820, width: '100%', maxHeight: '85vh', overflow: 'auto',
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 4 }}>
+          <div style={{ fontSize: 16, fontWeight: 800, color: 'var(--text)' }}>D assignments</div>
+          <div style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
+            {audit.placements.length > 0 && (
+              <button onClick={onApply} disabled={applying} style={{
+                ...smallBtn, fontWeight: 800,
+                background: 'var(--ok-bg)', color: 'var(--ok)',
+                border: '1px solid color-mix(in srgb, var(--ok) 40%, transparent)',
+              }}>
+                {applying ? 'Applying…' : `Fix all (${audit.placements.length} cells)`}
+              </button>
+            )}
+            <button onClick={onClose} style={smallBtn}>Close</button>
+          </div>
+        </div>
+
+        <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12 }}>
+          Every D1–D8 placement re-derived from the calls around it, using this site&apos;s call
+          pattern. Where a provider is owed two, the lower D wins. D4 and below are ordered by
+          soonest next call — the first relief position leaves earliest. Call assignments are
+          never changed.
+        </div>
+
+        {audit.findings.length === 0 ? (
+          <div style={{ fontSize: 13, color: 'var(--ok)', fontWeight: 700 }}>
+            Every D assignment matches the call pattern.
+          </div>
+        ) : (
+          <table style={{ borderCollapse: 'collapse', width: '100%', fontSize: 12.5 }}>
+            <tbody>
+              {audit.findings.map((f, i) => (
+                <tr key={`${f.date}-${f.kind}-${i}`} style={{ borderTop: '1px solid var(--border)' }}>
+                  <td style={{ padding: '6px 10px 6px 0', fontWeight: 800, whiteSpace: 'nowrap', color: 'var(--text)' }}>
+                    {formatMMDD(f.date)}
+                  </td>
+                  <td style={{ padding: '6px 10px', whiteSpace: 'nowrap', color: 'var(--text-muted)' }}>
+                    {KIND_LABEL[f.kind] ?? f.kind}
+                  </td>
+                  <td style={{ padding: '6px 10px', color: 'var(--text)' }}>
+                    <strong>{f.providerIds.map(nameOf).join(', ')}</strong>{' '}
+                    <span style={{ color: 'var(--text-muted)' }}>
+                      {f.kind === 'ladder-order'
+                        ? f.detail.replace(/\b[0-9a-f-]{8,}\b/g, m => nameOf(m))
+                        : f.detail}
+                    </span>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         )}
       </div>
     </div>
