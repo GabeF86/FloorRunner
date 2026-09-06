@@ -4074,17 +4074,35 @@ function PoolSelectorModal({
     return m;
   }, [profiles]);
 
+  // Default-pool eligibility by provider — the SAME criterion the generation
+  // engine's default path enforces (genContext.ts §3): a full OR partial call
+  // taker who is NOT a day doc and NOT per-diem. Day docs and per-diem
+  // providers are never auto-selected into a new schedule's pool (Gabriel
+  // 2026-09-06); they can still be added by hand below (which builds a custom
+  // override pool) or placed directly on the grid.
+  const poolEligibleByPid = useMemo(() => {
+    const m = new Map<string, boolean>();
+    for (const p of profiles) {
+      const isCallTaker = !!p.call_taker || !!p.partial_call_taker;
+      const excluded = p.is_day_doc === true || p.employment_status === 'per_diem';
+      m.set(p.provider_id, isCallTaker && !excluded);
+    }
+    return m;
+  }, [profiles]);
+
   // Default selection = exactly whatever the current auto-gen rules would
-  // pick (home_site_id === this schedule's site_id). Called-out below via a
-  // "Reset to Default" button. If initialSelection is null we start with
-  // this; if it's set we start with whatever was saved.
+  // pick: home_site_id === this schedule's site_id AND default-pool eligible.
+  // (Home-site alone is NOT the engine's default — matching it here keeps the
+  // modal's "default"/"Reset to Default" from diverging from what generation
+  // actually runs.) If initialSelection is null we start with this; if it's
+  // set we start with whatever was saved.
   const defaultSelection = useMemo(() => {
     const ids = new Set<string>();
     for (const p of providers) {
-      if (homeSiteByPid.get(p.id) === scheduleSiteId) ids.add(p.id);
+      if (homeSiteByPid.get(p.id) === scheduleSiteId && poolEligibleByPid.get(p.id)) ids.add(p.id);
     }
     return ids;
-  }, [providers, homeSiteByPid, scheduleSiteId]);
+  }, [providers, homeSiteByPid, poolEligibleByPid, scheduleSiteId]);
 
   const [checked, setChecked] = useState<Set<string>>(() => {
     if (initialSelection && initialSelection.length > 0) return new Set(initialSelection);
