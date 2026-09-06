@@ -1,0 +1,82 @@
+-- ╔══════════════════════════════════════════════════════════════════════════╗
+-- ║ STATUS: APPLIED 2026-09-06 by Gabriel, via the dashboard SQL editor on    ║
+-- ║ project qhwdbtixhzdsgwwtcfrm ("Floor Runner") — ref verified.             ║
+-- ║ Never run through the atlas-staging / chiefos MCP servers.                ║
+-- ║                                                                           ║
+-- ║ SPOT-CHECK (2026-09-06, anon key against qhwdbtixhzdsgwwtcfrm.supabase.co):║
+-- ║   The canonical check —                                                   ║
+-- ║     SELECT enum_range(NULL::scheduling.availability_type);                ║
+-- ║   needs the service-role key, which this clone does not hold, so the value ║
+-- ║   was confirmed by PostgREST enum PARSING instead (parsing happens before  ║
+-- ║   RLS row filtering, so an empty result set does not weaken it):           ║
+-- ║     GET /rest/v1/provider_availability?availability_type=eq.holiday_call   ║
+-- ║       -> 200 []            (value accepted by the enum)                   ║
+-- ║     GET .../?availability_type=eq.zzz_not_a_real_value                    ║
+-- ║       -> 400 22P02 "invalid input value for enum availability_type"       ║
+-- ║   Positive and negative control together establish membership.            ║
+-- ╚══════════════════════════════════════════════════════════════════════════╝
+--
+-- Patch 44: holiday call availability type. Additive enum value only.
+--
+--   scheduling.availability_type += 'holiday_call'
+--
+-- Gabriel 2026-09-06: "create a Holiday Call list window on the schedule main
+-- page … when clicking on them, I should be able to select a provider and a
+-- call status for that day … this info should then be saved to their
+-- availability profile under a new heading 'holiday call'."
+--
+-- SEMANTICS (app code ships with this patch — src/lib/holidayCall.ts):
+--   One row per (provider, DAY, call code): start_date = end_date = the day,
+--   reason_code = the call code ('C1' | 'C2' | 'C3' | 'PC'), notes = the
+--   holiday name, source = 'holiday_call_card', approval_status 'approved'.
+--
+--   It records that the provider IS WORKING that day, so it is deliberately
+--   NOT added to BLOCKING_AVAIL (rulesEngine/shared.ts) — a holiday call row
+--   must never read as time off. Unlike pto_sellback it is also NOT a
+--   date-level override: it does not unblock PTO covering the same day. A
+--   provider recorded for holiday call who also has PTO there is a real
+--   conflict for the chief to resolve, and the Holiday Call card surfaces it
+--   rather than silently winning.
+--
+--   ENGINE REACH. Holiday call decisions are made months before the schedule
+--   covering them exists, so they hang off the PROVIDER, not a schedule
+--   version. They materialize at SCHEDULE CREATION (api/scheduling/schedules
+--   POST): after slots and their open assignment rows are inserted, recorded
+--   decisions overlapping the new block are matched to slots by (date, shift
+--   code) and written onto the assignment as assignment_status 'assigned',
+--   source_type 'manual', manually_overridden true, with the slot locked.
+--   From there the EXISTING seed machinery carries them — genContext's seed
+--   walk (§8) turns any assignment with a provider_id into a SeedAssignment,
+--   so post-call blocks, quota counting, cross-site checks and fairness all
+--   apply with no new engine path. source_type 'manual' also puts them out of
+--   reach of the pre-fill eviction gates (preFillEviction.ts gate (a) evicts
+--   auto_generated occupants only), so generation never displaces them.
+--
+--   Decisions with no matching slot (e.g. the site has no PC slot that day)
+--   are REPORTED on the create response (holiday_call.skipped), never dropped
+--   silently — same discipline as clinical invariant 4.
+--
+-- TRANSACTION SEMANTICS (Postgres ALTER TYPE ... ADD VALUE):
+--   Since PostgreSQL 12, ADD VALUE may run inside a transaction block, BUT the
+--   new value cannot be USED (inserted/compared in DML) in the same
+--   transaction that added it — doing so raises
+--   "unsafe use of new value of enum type". So:
+--     • run this statement in its OWN migration/transaction, and
+--     • do not bundle seed/backfill INSERTs of 'holiday_call' with it.
+--   IF NOT EXISTS makes the statement idempotent (re-running is a no-op).
+--   Enum additions are irreversible-in-place (no DROP VALUE) — acceptable
+--   here because unused enum values are inert.
+--
+-- No RLS statements: follows patch18/patch31 precedent — the app talks to the
+-- scheduling schema with the service-role key; RLS/auth work is tracked
+-- separately as the platform's #1 blocker.
+--
+-- Verification (after apply):
+--   SELECT enum_range(NULL::scheduling.availability_type);
+--   -- expect 'holiday_call' in the list.
+--
+-- Rollback: none needed in place. To undo the DATA:
+--   DELETE FROM scheduling.provider_availability
+--   WHERE availability_type = 'holiday_call';
+
+ALTER TYPE scheduling.availability_type ADD VALUE IF NOT EXISTS 'holiday_call';

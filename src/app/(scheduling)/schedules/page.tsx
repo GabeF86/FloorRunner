@@ -7,6 +7,7 @@ import { defaultScheduleName, SCHEDULE_NAME_MAX } from '@/lib/scheduleName';
 import { scheduleStamps } from '@/lib/scheduleStamps';
 import AssistantPanel from './[id]/AssistantPanel';
 import RequestWindowCard from './RequestWindowCard';
+import HolidayCallCard from './HolidayCallCard';
 
 interface Schedule {
   id: string;
@@ -246,6 +247,11 @@ export default function SchedulesPage() {
           the schedule list stays the page's focus; see RequestWindowCard for
           the placement rationale. */}
       <RequestWindowCard sites={sites} initialSiteId={siteFilter || undefined} />
+
+      {/* Holiday call planning (patch44) — a sibling of the request window for
+          the same reason: it is operational work Gabriel does around a
+          generation cycle, not durable site configuration. */}
+      <HolidayCallCard orgId={orgId} sites={sites} initialSiteId={siteFilter || undefined} />
 
       {showCreate && <CreateScheduleModal orgId={orgId} sites={sites} onClose={() => setShowCreate(false)} onCreated={() => { setShowCreate(false); loadSchedules(); }} />}
       {showAssistantPicker && (

@@ -4,7 +4,7 @@
 // assignment row (scheduling.assignments has UNIQUE(schedule_slot_id)).
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { NextRequest } from 'next/server';
-import { makeFakeSupabase, callsFor, fromCount } from '@/lib/rulesEngine/__fixtures__/fakeSupabase';
+import { makeFakeSupabase, callsFor, fromCount, type Canned } from '@/lib/rulesEngine/__fixtures__/fakeSupabase';
 
 const holder = vi.hoisted(() => ({ sb: null as unknown }));
 vi.mock('@/lib/supabaseScheduling', () => ({
@@ -41,21 +41,42 @@ function template(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function setup(templates: Record<string, unknown>[]) {
+interface SetupOpts {
+  /** holiday_calendars rows for the create window. */
+  holidays?: Record<string, unknown>[];
+  /** provider_availability rows of type 'holiday_call' (patch44 seeding). */
+  holidayCall?: Canned;
+  /** shift_types id → code map for the site. */
+  shiftTypes?: Record<string, unknown>[];
+  /** Force the slot-lock update to fail. */
+  slotUpdateError?: unknown;
+}
+
+function setup(templates: Record<string, unknown>[], opts: SetupOpts = {}) {
   const { sb, calls } = makeFakeSupabase({
     tables: {
       sites: { data: { name: 'Mercy General' }, error: null },
       schedules: { data: { id: 'sched-1', schedule_name: 'Mercy General - Schedule - January 2026', status: 'draft' }, error: null },
       schedule_versions: { data: { id: 'ver-1' }, error: null },
       shift_templates: { data: templates, error: null },
-      holiday_calendars: { data: [], error: null },
-      // Echo back one id per inserted slot row so the assignment pairing is exercised.
+      holiday_calendars: { data: opts.holidays ?? [], error: null },
+      provider_availability: opts.holidayCall ?? { data: [], error: null },
+      shift_types: { data: opts.shiftTypes ?? [], error: null },
+      // Echo back the inserted slot rows (with ids) so both the assignment
+      // pairing and the holiday-call seeding match are exercised.
       schedule_slots: (filters) => {
         const ins = filters.find(f => f.method === 'insert');
-        const rows = (ins?.args[0] as unknown[]) ?? [];
-        return { data: rows.map((_, i) => ({ id: `slot-${i}` })), error: null };
+        if (!ins) return { data: [], error: opts.slotUpdateError ?? null };
+        const rows = (ins.args[0] as Record<string, unknown>[]) ?? [];
+        return { data: rows.map((r, i) => ({ ...r, id: `slot-${i}` })), error: null };
       },
-      assignments: { data: [], error: null },
+      // Echo back one assignment id per inserted row, paired to its slot.
+      assignments: (filters) => {
+        const ins = filters.find(f => f.method === 'insert');
+        if (!ins) return { data: [], error: null };
+        const rows = (ins.args[0] as Array<{ schedule_slot_id: string }>) ?? [];
+        return { data: rows.map((r, i) => ({ id: `asg-${i}`, schedule_slot_id: r.schedule_slot_id })), error: null };
+      },
     },
   });
   holder.sb = sb;
@@ -377,5 +398,112 @@ describe('GET /api/scheduling/schedules — last_activity_at', () => {
     expect(res.status).toBe(500);
     expect((await res.json()).error).toBe('list blew up');
     expect(rpcCalls(calls)).toHaveLength(0);
+  });
+});
+
+// ── Holiday call seeding (patch44) ──────────────────────────────────────────
+// Recorded holiday-call decisions live on provider_availability because they
+// are made long before the schedule exists. Schedule creation is where they
+// become real assignments; from there the engine's ordinary seed walk carries
+// them (no new engine path). See src/lib/holidayCall.ts.
+describe('POST /api/scheduling/schedules — holiday call seeding', () => {
+  const SHIFT_TYPES = [{ id: 'st-C1', code: 'C1' }, { id: 'st-D1', code: 'D1' }];
+  // The seeding pass splices site_id into a PostgREST .or() filter, so it only
+  // runs for a real UUID (the rest of this file's fixtures use 'site-1').
+  const SITE = '2ddd2427-22fb-4290-9c4c-03a957e5af4e';
+  const SEED_BODY = { ...BODY, site_id: SITE };
+
+  function updatesFor(calls: ReturnType<typeof setup>['calls'], table: string) {
+    return callsFor(calls, table, 'update').map(c => c.args[0] as Record<string, unknown>);
+  }
+
+  it('writes the recorded provider onto the matching slot as a locked manual assignment', async () => {
+    const { calls } = setup([template()], {
+      shiftTypes: SHIFT_TYPES,
+      holidayCall: { data: [{ provider_id: 'prov-1', start_date: '2026-01-07', reason_code: 'C1' }], error: null },
+    });
+    const res = await POST(fakeReq(SEED_BODY));
+    expect(res.status).toBe(200);
+    expect((await res.json()).holiday_call).toEqual({ seeded: 1, skipped: [] });
+
+    const [update] = updatesFor(calls, 'assignments');
+    expect(update.provider_id).toBe('prov-1');
+    expect(update.assignment_status).toBe('assigned');
+    // source_type 'manual' is what keeps generation from evicting it
+    // (preFillEviction gate (a) only evicts auto_generated occupants).
+    expect(update.source_type).toBe('manual');
+    expect(update.manually_overridden).toBe(true);
+
+    expect(updatesFor(calls, 'schedule_slots')).toEqual([{ locked: true }]);
+  });
+
+  it('reports a decision it could not place instead of dropping it', async () => {
+    const { calls } = setup([template()], {
+      shiftTypes: SHIFT_TYPES,
+      // The site has no PC slot on that date — the slate stays authoritative.
+      holidayCall: { data: [{ provider_id: 'prov-1', start_date: '2026-01-07', reason_code: 'PC' }], error: null },
+    });
+    const res = await POST(fakeReq(SEED_BODY));
+    const json = await res.json();
+    expect(json.holiday_call.seeded).toBe(0);
+    expect(json.holiday_call.skipped).toEqual([
+      { provider_id: 'prov-1', date: '2026-01-07', code: 'PC', reason: 'no PC slot on this date in the new schedule' },
+    ]);
+    expect(updatesFor(calls, 'assignments')).toHaveLength(0);
+  });
+
+  it('touches nothing when no holiday call is recorded', async () => {
+    const { calls } = setup([template()], { shiftTypes: SHIFT_TYPES });
+    const res = await POST(fakeReq(SEED_BODY));
+    expect((await res.json()).holiday_call).toEqual({ seeded: 0, skipped: [] });
+    expect(updatesFor(calls, 'assignments')).toHaveLength(0);
+    expect(updatesFor(calls, 'schedule_slots')).toHaveLength(0);
+  });
+
+  it('still creates the schedule when the availability read fails (pre-patch44 DB)', async () => {
+    // Before the enum value exists the query errors rather than returning [].
+    const { calls } = setup([template()], {
+      shiftTypes: SHIFT_TYPES,
+      holidayCall: { data: null, error: { message: 'invalid input value for enum: "holiday_call"' } },
+    });
+    const res = await POST(fakeReq(SEED_BODY));
+    expect(res.status).toBe(200);
+    const json = await res.json();
+    expect(json.version_id).toBe('ver-1');
+    expect(json.holiday_call.seeded).toBe(0);
+    expect(json.holiday_call.error).toMatch(/holiday_call/);
+    expect(updatesFor(calls, 'assignments')).toHaveLength(0);
+  });
+
+  it('reports rather than splices a site_id that is not a UUID', async () => {
+    const { calls } = setup([template()], {
+      shiftTypes: SHIFT_TYPES,
+      holidayCall: { data: [{ provider_id: 'prov-1', start_date: '2026-01-07', reason_code: 'C1' }], error: null },
+    });
+    // BODY carries the non-UUID 'site-1'.
+    const json = await (await POST(fakeReq())).json();
+    expect(json.version_id).toBe('ver-1');
+    expect(json.holiday_call).toEqual({ seeded: 0, skipped: [], error: 'site_id is not a UUID — holiday call not seeded' });
+    expect(updatesFor(calls, 'assignments')).toHaveLength(0);
+  });
+
+  it('groups the assignment update per provider rather than per row', async () => {
+    const { calls } = setup([template({ required_count: 2 })], {
+      shiftTypes: SHIFT_TYPES,
+      holidayCall: {
+        data: [
+          { provider_id: 'prov-1', start_date: '2026-01-07', reason_code: 'C1' },
+          { provider_id: 'prov-2', start_date: '2026-01-07', reason_code: 'C1' },
+        ],
+        error: null,
+      },
+    });
+    const res = await POST(fakeReq(SEED_BODY));
+    expect((await res.json()).holiday_call.seeded).toBe(2);
+    const updates = updatesFor(calls, 'assignments');
+    expect(updates).toHaveLength(2);
+    expect(updates.map(u => u.provider_id).sort()).toEqual(['prov-1', 'prov-2']);
+    // Both slots locked in ONE update.
+    expect(updatesFor(calls, 'schedule_slots')).toEqual([{ locked: true }]);
   });
 });

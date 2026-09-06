@@ -20,6 +20,11 @@ export const AVAILABILITY_TYPES = [
   // blocking coverage date-by-date (rulesEngine/shared.ts isDateBlocked) and
   // sold-back weekdays are owed again in the working-days budget.
   'pto_sellback',
+  // holiday_call (patch44, 2026-09-06): the chief's recorded holiday call
+  // plan — the provider IS WORKING that day. NOT a blocking type, and (unlike
+  // pto_sellback) NOT a date-level override either: PTO covering the same day
+  // stays a conflict for the chief to resolve. See src/lib/holidayCall.ts.
+  'holiday_call',
 ] as const;
 export type AvailabilityType = typeof AVAILABILITY_TYPES[number];
 
@@ -41,6 +46,7 @@ export const AVAILABILITY_TYPE_LABELS: Record<AvailabilityType, string> = {
   parental_leave: 'Parental Leave',
   military_leave: 'Military Leave',
   pto_sellback: 'PTO Sell-Back',
+  holiday_call: 'Holiday Call',
 };
 
 export const APPROVAL_STATUSES = ['pending', 'approved', 'denied', 'waitlisted', 'canceled'] as const;

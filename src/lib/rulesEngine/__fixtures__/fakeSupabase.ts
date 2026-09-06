@@ -15,7 +15,7 @@ export type TableCfg = Canned | ((filters: Filter[]) => Canned);
 export interface RecordedCall { table?: string; fn?: string; method: string; args: unknown[] }
 
 const CHAIN_METHODS = [
-  'select', 'eq', 'neq', 'in', 'or', 'lt', 'lte', 'gte', 'gt', 'order', 'limit', 'range',
+  'select', 'eq', 'neq', 'in', 'is', 'or', 'lt', 'lte', 'gte', 'gt', 'order', 'limit', 'range',
   'update', 'upsert', 'insert', 'delete',
 ] as const;
 

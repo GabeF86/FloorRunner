@@ -1654,6 +1654,9 @@ const AVAILABILITY_TYPES: { value: string; label: string; color: string }[] = [
   // Sell-back is RED by convention (matches the schedule grid's sell-back
   // treatment): the provider IS WORKING these dates.
   { value: 'pto_sellback', label: 'PTO Sell-Back', color: '#dc2626' },
+  // Holiday call (patch44): the provider IS WORKING that holiday. Entered
+  // from the Holiday Call card on the schedules page, not here.
+  { value: 'holiday_call', label: 'Holiday Call', color: '#22d3ee' },
 ];
 
 const AVAIL_TYPE_MAP: Record<string, { label: string; color: string }> = {};
@@ -1743,8 +1746,9 @@ function AvailabilityTab({ providerId, profile }: { providerId: string; profile:
   const daysOffRows = rows.filter(r => r.availability_type === 'unavailable');
   const noCallRows = rows.filter(r => r.availability_type === 'no_call_request');
   const callReqRows = rows.filter(r => r.availability_type === 'call_request');
+  const holidayCallRows = rows.filter(r => r.availability_type === 'holiday_call');
   const otherRows = rows.filter(r =>
-    !['pto', 'pto_sellback', 'unavailable', 'no_call_request', 'call_request'].includes(r.availability_type) && !icuIds.has(r.id));
+    !['pto', 'pto_sellback', 'unavailable', 'no_call_request', 'call_request', 'holiday_call'].includes(r.availability_type) && !icuIds.has(r.id));
 
   // ── Category counters: CURRENT-CALENDAR-YEAR counts ──────────────────────
   // Only non-dismissed rows count (denied/canceled excluded; pending counts —
@@ -1884,6 +1888,22 @@ function AvailabilityTab({ providerId, profile }: { providerId: string; profile:
           hint="No open request window with call requests enabled for this provider's home site — existing requests are shown read-only; new ones can be entered once an enabled window opens."
         >
           <SectionRows rows={callReqRows} onDelete={deleteEntry} formatDate={formatDate} emptyText="" />
+        </AvailSection>
+      )}
+
+      {/* ── Holiday Call — the chief's recorded holiday plan (patch44) ────
+             Read-only here on purpose: each row is one cell of the Holiday
+             Call grid on the schedules page (a day × a call code), so editing
+             its dates from this side would break that pairing. Delete is
+             offered because a row that no longer applies must be removable
+             from the provider it sits on. ──────────────────────────────── */}
+      {holidayCallRows.length > 0 && (
+        <AvailSection
+          title="Holiday Call"
+          counter={<CategoryCounter label="Holiday Call Days" year={counterYear} days={countDaysInYear(live(holidayCallRows), counterYear)} />}
+          hint="Holiday call this provider is down for. The provider IS WORKING these days — it never reads as time off, and it does not override PTO covering the same day (that stays a conflict for you to resolve). Written in as a locked assignment when a schedule covering the date is created. Managed from Schedules → Holiday Call."
+        >
+          <SectionRows rows={holidayCallRows} onDelete={deleteEntry} formatDate={formatDate} emptyText="" />
         </AvailSection>
       )}
 
