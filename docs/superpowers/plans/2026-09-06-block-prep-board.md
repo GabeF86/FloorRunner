@@ -1453,7 +1453,8 @@ Create `src/app/api/scheduling/block-prep/route.helpers.ts`:
 
 import { filterPublishedVersions } from '@/lib/rulesEngine/committedAssignments';
 import {
-  computeAnnualTally, type TallyProfile, type TallyShiftType,
+  computeAnnualTally,
+  type AnnualTally, type TallyProfile, type TallyShiftType,
 } from '@/lib/annualTally';
 import type { RosterRow } from '@/lib/blockPrepView';
 import type { PlannerAvailabilityRow, PlannerHoliday, PlannerSlotRow } from '@/lib/plannerMath';
@@ -2017,16 +2018,14 @@ function EditableCell({
   const [text, setText] = useState(value == null ? '' : String(value));
   const [saving, setSaving] = useState(false);
 
+  // Bounds and blank policy live in blockPrepView's FTE_FIELD_BOUNDS, sourced
+  // from validation/providers.ts's FTE_MIN/FTE_MAX and WORK_DAYS_FTE_*. The
+  // caller names the FIELD, never the numbers — a mismatched bound/blank-policy
+  // pairing is then a type error rather than a call-site mistake.
   const parse = (raw: string) =>
     field === 'pto_weeks'
       ? parseAllotmentInput(raw)
-      : parseFteInput(raw, {
-        // Blank working-days FTE means "same as call FTE"; a blank call FTE is
-        // not a thing. Working-days FTE caps at 1 — nobody owes more days than
-        // the block has.
-        allowBlank: field === 'work_days_fte',
-        max: field === 'work_days_fte' ? 1 : 2,
-      });
+      : parseFteInput(raw, field === 'work_days_fte' ? 'workDays' : 'call');
 
   const commit = async () => {
     const original = value == null ? '' : String(value);
