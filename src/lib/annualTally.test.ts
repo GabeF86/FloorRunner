@@ -2,8 +2,11 @@
 // with a stated allotment, a partial-call doc whose WORKING-days FTE is 1.00
 // (Hussain), and a call taker with no allotment stated at all.
 import { describe, it, expect } from 'vitest';
-import { ptoFiguresFor, offDayBudgetFor, availabilityByProvider, type TallyProfile } from './annualTally';
-import type { PlannerAvailabilityRow } from './plannerMath';
+import {
+  ptoFiguresFor, offDayBudgetFor, availabilityByProvider, annualCallCounts,
+  type TallyProfile, type TallyShiftType,
+} from './annualTally';
+import type { PlannerAvailabilityRow, PlannerSlotRow } from './plannerMath';
 
 const profile = (over: Partial<TallyProfile> = {}): TallyProfile => ({
   provider_id: 'p1',
@@ -153,5 +156,126 @@ describe('availabilityByProvider', () => {
     const rows = [{ ...pto('2026-06-08', '2026-06-12'), provider_id: undefined }];
     const grouped = availabilityByProvider(rows);
     expect(grouped.size).toBe(0);
+  });
+});
+
+const SHIFT_TYPES = new Map<string, TallyShiftType>([
+  ['C1', { call_burden_weight: 1, parent_call_code: null }],
+  ['C2', { call_burden_weight: 1, parent_call_code: null }],
+  // A 12-hour split segment: half a call, folded under its parent C1.
+  ['C1N12', { call_burden_weight: 0.5, parent_call_code: 'C1' }],
+]);
+
+const slot = (
+  date: string, code: string, providerId: string | null,
+  dayType: string, status = 'assigned',
+): PlannerSlotRow => ({
+  slot_date: date,
+  derived_day_type: dayType,
+  shift_types: { code, category: 'call' },
+  assignments: providerId ? [{ provider_id: providerId, assignment_status: status }] : [],
+});
+
+describe('annualCallCounts', () => {
+  it('folds a split segment under its parent at half weight', () => {
+    // 2026-09-12 is a Saturday.
+    const out = annualCallCounts(
+      [slot('2026-09-12', 'C1N12', 'p1', 'saturday')], SHIFT_TYPES, 2026);
+    expect(out.get('p1')).toEqual([{ bucket: 'saturday', code: 'C1', count: 0.5 }]);
+  });
+
+  it('sums two 12h segments into one whole Saturday C1', () => {
+    const out = annualCallCounts([
+      slot('2026-09-12', 'C1N12', 'p1', 'saturday'),
+      slot('2026-09-19', 'C1N12', 'p1', 'saturday'),
+    ], SHIFT_TYPES, 2026);
+    expect(out.get('p1')).toEqual([{ bucket: 'saturday', code: 'C1', count: 1 }]);
+  });
+
+  it('buckets a Monday holiday as a M-Th call, not a holiday', () => {
+    // Labor Day 2026-09-07 is a Monday; its stored day type is the holiday one.
+    const out = annualCallCounts(
+      [slot('2026-09-07', 'C1', 'p1', 'holiday')], SHIFT_TYPES, 2026);
+    expect(out.get('p1')).toEqual([{ bucket: 'weekday', code: 'C1', count: 1 }]);
+  });
+
+  it('splits a block that straddles New Year by slot_date', () => {
+    const slots = [
+      slot('2026-12-28', 'C1', 'p1', 'weekday'),
+      slot('2027-01-05', 'C1', 'p1', 'weekday'),
+    ];
+    expect(annualCallCounts(slots, SHIFT_TYPES, 2026).get('p1'))
+      .toEqual([{ bucket: 'weekday', code: 'C1', count: 1 }]);
+    expect(annualCallCounts(slots, SHIFT_TYPES, 2027).get('p1'))
+      .toEqual([{ bucket: 'weekday', code: 'C1', count: 1 }]);
+  });
+
+  it('ignores unfilled slots and canceled assignments', () => {
+    const out = annualCallCounts([
+      slot('2026-09-08', 'C1', null, 'weekday'),
+      slot('2026-09-09', 'C1', 'p1', 'weekday', 'canceled'),
+    ], SHIFT_TYPES, 2026);
+    expect(out.size).toBe(0);
+  });
+
+  it('ignores non-call slots', () => {
+    const daySlot: PlannerSlotRow = {
+      slot_date: '2026-09-08',
+      derived_day_type: 'weekday',
+      shift_types: { code: 'D1', category: 'day' },
+      assignments: [{ provider_id: 'p1', assignment_status: 'assigned' }],
+    };
+    expect(annualCallCounts([daySlot], SHIFT_TYPES, 2026).size).toBe(0);
+  });
+
+  it('sorts counts by bucket then code', () => {
+    const out = annualCallCounts([
+      slot('2026-09-13', 'C2', 'p1', 'sunday'),
+      slot('2026-09-08', 'C2', 'p1', 'weekday'),
+      slot('2026-09-08', 'C1', 'p1', 'weekday'),
+    ], SHIFT_TYPES, 2026);
+    expect(out.get('p1')).toEqual([
+      { bucket: 'sunday', code: 'C2', count: 1 },
+      { bucket: 'weekday', code: 'C1', count: 1 },
+      { bucket: 'weekday', code: 'C2', count: 1 },
+    ]);
+  });
+
+  it('falls back to the DOW derivation for a null derived_day_type on a Saturday', () => {
+    // 2026-09-26 is a Saturday (independently verified, not reused from the
+    // fixtures above). A legacy row with no derived_day_type must NOT default
+    // to 'weekday' — that would charge this Saturday call to the M-Th bucket.
+    const row: PlannerSlotRow = {
+      slot_date: '2026-09-26',
+      derived_day_type: null,
+      shift_types: { code: 'C1', category: 'call' },
+      assignments: [{ provider_id: 'p1', assignment_status: 'assigned' }],
+    };
+    const out = annualCallCounts([row], SHIFT_TYPES, 2026);
+    expect(out.get('p1')).toEqual([{ bucket: 'saturday', code: 'C1', count: 1 }]);
+  });
+
+  it('counts an assignments embed returned as a single object, not an array', () => {
+    // PostgREST collapses the slot->assignments embed to an object when the
+    // UNIQUE constraint is present (embed.ts). PlannerSlotRow's own type
+    // permits this shape; annualCallCounts must normalize through embedArray
+    // rather than assuming an array.
+    const row: PlannerSlotRow = {
+      slot_date: '2026-09-08',
+      derived_day_type: 'weekday',
+      shift_types: { code: 'C1', category: 'call' },
+      assignments: { provider_id: 'p1', assignment_status: 'assigned' },
+    };
+    const out = annualCallCounts([row], SHIFT_TYPES, 2026);
+    expect(out.get('p1')).toEqual([{ bucket: 'weekday', code: 'C1', count: 1 }]);
+  });
+
+  it('falls back to weight 1 / own code when the shift type is absent from the map', () => {
+    // callBurden.ts: callBurdenWeight(undefined) === 1 and
+    // parentCallCodeOf(code, undefined) === code — the documented pre-patch35
+    // / unknown-code default. 'C9' is deliberately absent from SHIFT_TYPES.
+    const out = annualCallCounts(
+      [slot('2026-09-08', 'C9', 'p1', 'weekday')], SHIFT_TYPES, 2026);
+    expect(out.get('p1')).toEqual([{ bucket: 'weekday', code: 'C9', count: 1 }]);
   });
 });
