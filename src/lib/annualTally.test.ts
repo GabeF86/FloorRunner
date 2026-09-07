@@ -3,9 +3,11 @@
 // (Hussain), and a call taker with no allotment stated at all.
 import { describe, it, expect } from 'vitest';
 import {
-  ptoFiguresFor, offDayBudgetFor, availabilityByProvider, annualCallCounts,
+  ptoFiguresFor, offDayBudgetFor, availabilityByProvider, annualCallCounts, callTotal,
   type TallyProfile, type TallyShiftType,
 } from './annualTally';
+import { computeScheduleActuals } from './plannerMath';
+import { formatCallWeight } from './callBurden';
 import type { PlannerAvailabilityRow, PlannerSlotRow } from './plannerMath';
 
 const profile = (over: Partial<TallyProfile> = {}): TallyProfile => ({
@@ -164,6 +166,10 @@ const SHIFT_TYPES = new Map<string, TallyShiftType>([
   ['C2', { call_burden_weight: 1, parent_call_code: null }],
   // A 12-hour split segment: half a call, folded under its parent C1.
   ['C1N12', { call_burden_weight: 0.5, parent_call_code: 'C1' }],
+  // Live 8-hour thirds (patch35): C1D8/C1E8/C1N8, each 0.3333 of a C1.
+  ['C1D8', { call_burden_weight: 0.3333, parent_call_code: 'C1' }],
+  ['C1E8', { call_burden_weight: 0.3333, parent_call_code: 'C1' }],
+  ['C1N8', { call_burden_weight: 0.3333, parent_call_code: 'C1' }],
 ]);
 
 const slot = (
@@ -176,64 +182,94 @@ const slot = (
   assignments: providerId ? [{ provider_id: providerId, assignment_status: status }] : [],
 });
 
+// annualCallCounts is now a pure FOLD over computeScheduleActuals's raw
+// per-code counts (Change A) — it never walks slot rows itself. Every test
+// below builds actuals through the real helper, exactly as Task 4 will, so a
+// fixture never claims a bucketing/fill-predicate behaviour that
+// computeScheduleActuals doesn't actually produce. Empty availability/
+// workingDaySet/holidays are equivalent to what annualCallCounts's own
+// (now-removed) day-type fallback used to compute: computeScheduleActuals's
+// callCounts accumulation never consults workingDaySet, and a stored
+// derived_day_type still wins over the DOW fallback with no holidays passed.
+const actualsFor = (slots: PlannerSlotRow[]) =>
+  computeScheduleActuals(slots, [], new Set<string>(), []);
+
 describe('annualCallCounts', () => {
   it('folds a split segment under its parent at half weight', () => {
     // 2026-09-12 is a Saturday.
     const out = annualCallCounts(
-      [slot('2026-09-12', 'C1N12', 'p1', 'saturday')], SHIFT_TYPES, 2026);
+      actualsFor([slot('2026-09-12', 'C1N12', 'p1', 'saturday')]), SHIFT_TYPES);
     expect(out.get('p1')).toEqual([{ bucket: 'saturday', code: 'C1', count: 0.5 }]);
   });
 
   it('sums two 12h segments into one whole Saturday C1', () => {
-    const out = annualCallCounts([
+    const out = annualCallCounts(actualsFor([
       slot('2026-09-12', 'C1N12', 'p1', 'saturday'),
       slot('2026-09-19', 'C1N12', 'p1', 'saturday'),
-    ], SHIFT_TYPES, 2026);
+    ]), SHIFT_TYPES);
     expect(out.get('p1')).toEqual([{ bucket: 'saturday', code: 'C1', count: 1 }]);
+  });
+
+  it('sums three live 0.3333 eighths (C1D8/C1E8/C1N8) to ~1, collapsing through formatCallWeight', () => {
+    // Live data: three 8h segments of the same parent (C1) on the same day.
+    // 0.3333 x 3 = 0.9999 — NOT exactly 1, and NOT mere float noise: 0.3333
+    // is a deliberately truncated decimal for 1/3, so the shortfall is a real
+    // 1e-4, not a ~1e-16 rounding artifact. `toBeCloseTo(x, 6)` would demand
+    // a difference under 5e-7 and can never pass here — precision 3 (< 5e-4)
+    // is the tolerance that actually matches this data; this pins the
+    // raw-float contract on CallCount.count/callTotal rather than a
+    // `toEqual(1)` that would be lucky to pass and unpin the moment the
+    // weights changed.
+    const out = annualCallCounts(actualsFor([
+      slot('2026-09-08', 'C1D8', 'p1', 'weekday'),
+      slot('2026-09-08', 'C1E8', 'p1', 'weekday'),
+      slot('2026-09-08', 'C1N8', 'p1', 'weekday'),
+    ]), SHIFT_TYPES);
+    const counts = out.get('p1')!;
+    expect(counts).toHaveLength(1);
+    expect(counts[0].bucket).toBe('weekday');
+    expect(counts[0].code).toBe('C1');
+    expect(callTotal(counts)).toBeCloseTo(1, 3);
+    expect(formatCallWeight(callTotal(counts))).toBe('1');
   });
 
   it('buckets a Monday holiday as a M-Th call, not a holiday', () => {
     // Labor Day 2026-09-07 is a Monday; its stored day type is the holiday one.
     const out = annualCallCounts(
-      [slot('2026-09-07', 'C1', 'p1', 'holiday')], SHIFT_TYPES, 2026);
+      actualsFor([slot('2026-09-07', 'C1', 'p1', 'holiday')]), SHIFT_TYPES);
     expect(out.get('p1')).toEqual([{ bucket: 'weekday', code: 'C1', count: 1 }]);
   });
 
-  it('splits a block that straddles New Year by slot_date', () => {
-    const slots = [
-      slot('2026-12-28', 'C1', 'p1', 'weekday'),
-      slot('2027-01-05', 'C1', 'p1', 'weekday'),
-    ];
-    expect(annualCallCounts(slots, SHIFT_TYPES, 2026).get('p1'))
-      .toEqual([{ bucket: 'weekday', code: 'C1', count: 1 }]);
-    expect(annualCallCounts(slots, SHIFT_TYPES, 2027).get('p1'))
-      .toEqual([{ bucket: 'weekday', code: 'C1', count: 1 }]);
-  });
-
   it('ignores unfilled slots and canceled assignments', () => {
-    const out = annualCallCounts([
+    const out = annualCallCounts(actualsFor([
       slot('2026-09-08', 'C1', null, 'weekday'),
       slot('2026-09-09', 'C1', 'p1', 'weekday', 'canceled'),
-    ], SHIFT_TYPES, 2026);
+    ]), SHIFT_TYPES);
     expect(out.size).toBe(0);
   });
 
-  it('ignores non-call slots', () => {
+  it('ignores non-call slots — and omits a day-shift-only provider rather than giving them []', () => {
     const daySlot: PlannerSlotRow = {
       slot_date: '2026-09-08',
       derived_day_type: 'weekday',
       shift_types: { code: 'D1', category: 'day' },
       assignments: [{ provider_id: 'p1', assignment_status: 'assigned' }],
     };
-    expect(annualCallCounts([daySlot], SHIFT_TYPES, 2026).size).toBe(0);
+    // computeScheduleActuals DOES create a 'p1' entry here (any filled
+    // assignment counts for assignedWorkdays), with an empty callCounts
+    // array. annualCallCounts must fold that down to "no entry at all".
+    const actuals = actualsFor([daySlot]);
+    expect(Object.keys(actuals)).toContain('p1');
+    expect(actuals.p1.callCounts).toEqual([]);
+    expect(annualCallCounts(actuals, SHIFT_TYPES).size).toBe(0);
   });
 
   it('sorts counts by bucket then code', () => {
-    const out = annualCallCounts([
+    const out = annualCallCounts(actualsFor([
       slot('2026-09-13', 'C2', 'p1', 'sunday'),
       slot('2026-09-08', 'C2', 'p1', 'weekday'),
       slot('2026-09-08', 'C1', 'p1', 'weekday'),
-    ], SHIFT_TYPES, 2026);
+    ]), SHIFT_TYPES);
     expect(out.get('p1')).toEqual([
       { bucket: 'sunday', code: 'C2', count: 1 },
       { bucket: 'weekday', code: 'C1', count: 1 },
@@ -241,32 +277,35 @@ describe('annualCallCounts', () => {
     ]);
   });
 
-  it('falls back to the DOW derivation for a null derived_day_type on a Saturday', () => {
+  it('end-to-end: a null derived_day_type on a Saturday still buckets as saturday', () => {
     // 2026-09-26 is a Saturday (independently verified, not reused from the
-    // fixtures above). A legacy row with no derived_day_type must NOT default
-    // to 'weekday' — that would charge this Saturday call to the M-Th bucket.
+    // fixtures above). This now pins computeScheduleActuals' own DOW fallback
+    // (templateSlots.derivedDayTypeFor), not annualCallCounts's — a legacy row
+    // with no derived_day_type must NOT default to 'weekday' anywhere in the
+    // pipeline, or this Saturday call would land in the M-Th bucket.
     const row: PlannerSlotRow = {
       slot_date: '2026-09-26',
       derived_day_type: null,
       shift_types: { code: 'C1', category: 'call' },
       assignments: [{ provider_id: 'p1', assignment_status: 'assigned' }],
     };
-    const out = annualCallCounts([row], SHIFT_TYPES, 2026);
+    const out = annualCallCounts(actualsFor([row]), SHIFT_TYPES);
     expect(out.get('p1')).toEqual([{ bucket: 'saturday', code: 'C1', count: 1 }]);
   });
 
-  it('counts an assignments embed returned as a single object, not an array', () => {
+  it('end-to-end: an assignments embed returned as a single object is still counted', () => {
     // PostgREST collapses the slot->assignments embed to an object when the
-    // UNIQUE constraint is present (embed.ts). PlannerSlotRow's own type
-    // permits this shape; annualCallCounts must normalize through embedArray
-    // rather than assuming an array.
+    // UNIQUE constraint is present (embed.ts). This now pins
+    // computeScheduleActuals' own embedArray normalization, not
+    // annualCallCounts's — PlannerSlotRow's type permits this shape and the
+    // fold must still see the assignment that produced.
     const row: PlannerSlotRow = {
       slot_date: '2026-09-08',
       derived_day_type: 'weekday',
       shift_types: { code: 'C1', category: 'call' },
       assignments: { provider_id: 'p1', assignment_status: 'assigned' },
     };
-    const out = annualCallCounts([row], SHIFT_TYPES, 2026);
+    const out = annualCallCounts(actualsFor([row]), SHIFT_TYPES);
     expect(out.get('p1')).toEqual([{ bucket: 'weekday', code: 'C1', count: 1 }]);
   });
 
@@ -274,8 +313,10 @@ describe('annualCallCounts', () => {
     // callBurden.ts: callBurdenWeight(undefined) === 1 and
     // parentCallCodeOf(code, undefined) === code — the documented pre-patch35
     // / unknown-code default. 'C9' is deliberately absent from SHIFT_TYPES.
+    // This IS still annualCallCounts's own logic — the fold is what looks the
+    // code up in shiftTypes, not computeScheduleActuals.
     const out = annualCallCounts(
-      [slot('2026-09-08', 'C9', 'p1', 'weekday')], SHIFT_TYPES, 2026);
+      actualsFor([slot('2026-09-08', 'C9', 'p1', 'weekday')]), SHIFT_TYPES);
     expect(out.get('p1')).toEqual([{ bucket: 'weekday', code: 'C9', count: 1 }]);
   });
 });

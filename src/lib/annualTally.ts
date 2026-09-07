@@ -27,21 +27,17 @@
 
 import {
   plannerYearCounters,
-  assignmentFills,
   type PlannerAvailabilityRow,
-  type PlannerSlotRow,
+  type ProviderActuals,
 } from './plannerMath';
 import { entitledOffDays } from './rulesEngine/workDays';
 import { PTO_WORK_DAYS_PER_WEEK } from './dateRanges';
-import { dayTypeBucketOn } from './rulesEngine/shared';
 import {
   callBurdenWeight,
   parentCallCodeOf,
   type BurdenWeighted,
   type ParentCoded,
 } from './callBurden';
-import { embedArray } from './embed';
-import { derivedDayTypeFor } from './templateSlots';
 
 /** The employment-profile fields this module needs. */
 export interface TallyProfile {
@@ -165,70 +161,68 @@ export interface CallCount {
   bucket: string;
   /** PARENT call code — a split segment counts under the call it is part of. */
   code: string;
-  /** Weighted: a 12h segment is 0.5, a whole call is 1. */
+  /**
+   * Weighted: a 12h segment is 0.5, a whole call is 1. Accumulated from
+   * possibly-repeating fractional weights (three 8h thirds at 0.3333 each
+   * sum to 0.9999000000000001, not 1) — this is a RAW FLOAT. Render it
+   * through `callBurden.formatCallWeight`; never compare it to a whole
+   * number directly.
+   */
   count: number;
 }
 
 /**
- * Weighted per-provider call counts for one calendar year, keyed by provider id.
+ * Weighted per-provider call counts, folded ON TOP of
+ * `plannerMath.computeScheduleActuals`'s raw per-code counts — this function
+ * does not walk slot rows itself. `computeScheduleActuals` already owns the
+ * fill predicate, the assignments-embed normalization and the date-aware
+ * fairness bucketing (`dayTypeBucketOn`); re-implementing any of those here
+ * would be a second copy free to drift from it (see the CROSS-LINK note at
+ * plannerMath.ts:56-62 for a live example of exactly that kind of drift).
  *
- * `slots` MUST already be scoped to published versions at the site of interest
- * — this function does not know about version status and will happily count a
- * draft. The route is responsible for that (clinical invariant 3).
+ * The fold: each `callCounts` entry arrives keyed by the slot's OWN code at
+ * count 1 per filled assignment; this re-keys it to the PARENT call code
+ * (`callBurden.parentCallCodeOf`) and multiplies by the burden weight
+ * (`callBurden.callBurdenWeight`), summing entries that land on the same
+ * (bucket, parent code) pair. Same shape as `genContext.ts`'s
+ * `addHistorical`, which applies this identical fold to historical rows.
  *
- * Attribution is by `slot_date`, so a block straddling New Year splits between
- * the two years (Gabriel 2026-09-06: "a call on 1/5 counts toward 2027").
+ * Year and site scoping are NOT this function's job — the caller filters the
+ * slots handed to `computeScheduleActuals` first (Task 4: by year; the route:
+ * by published version, clinical invariant 3). `actuals` is trusted as-is.
+ *
+ * A provider present in `actuals` with zero CALL assignments (e.g. day-shift
+ * only) is omitted from the result entirely — never given an empty array.
  */
 export function annualCallCounts(
-  slots: ReadonlyArray<PlannerSlotRow>,
+  actuals: Record<string, ProviderActuals>,
   shiftTypes: ReadonlyMap<string, TallyShiftType>,
-  year: number,
 ): Map<string, CallCount[]> {
-  const prefix = `${year}-`;
-  const byProvider = new Map<string, Map<string, CallCount>>();
-
-  for (const slot of slots) {
-    const st = slot.shift_types;
-    if (!st || st.category !== 'call') continue;
-    if (!slot.slot_date.startsWith(prefix)) continue;
-
-    const meta = shiftTypes.get(st.code);
-    // Stored derived_day_type wins; a legacy row without one falls back to the
-    // single-homed date->day-type derivation, NOT to a hardcoded 'weekday'.
-    // dayTypeBucket only consults the date for HOLIDAY types (shared.ts:415),
-    // so a wrong day type wins outright — a hardcoded 'weekday' would charge a
-    // Saturday call to the M-Th bucket. Holidays need not be threaded here:
-    // dayTypeBucketOn already re-buckets a holiday to its day of the week, so
-    // the DOW derivation lands on the same answer.
-    const dayType = slot.derived_day_type || derivedDayTypeFor(slot.slot_date, undefined);
-    const bucket = dayTypeBucketOn(dayType, slot.slot_date);
-    const code = parentCallCodeOf(st.code, meta);
-    const weight = callBurdenWeight(meta);
-
-    // embedArray is the single home for the slot->assignments embed shape
-    // (see src/lib/embed.ts — PostgREST returns an object or an array
-    // depending on the UNIQUE constraint). Never re-inline that normalization.
-    for (const a of embedArray(slot.assignments)) {
-      if (!assignmentFills(a)) continue;
-      const pid = a.provider_id as string;
-      let counts = byProvider.get(pid);
-      if (!counts) { counts = new Map(); byProvider.set(pid, counts); }
-      const key = `${bucket}|${code}`;
-      const cur = counts.get(key);
-      if (cur) cur.count += weight;
-      else counts.set(key, { bucket, code, count: weight });
-    }
-  }
-
   const out = new Map<string, CallCount[]>();
-  for (const [pid, counts] of byProvider) {
-    out.set(pid, [...counts.values()].sort(
-      (a, b) => a.bucket.localeCompare(b.bucket) || a.code.localeCompare(b.code)));
+
+  for (const [pid, a] of Object.entries(actuals)) {
+    const folded = new Map<string, CallCount>();
+    for (const { bucket, code: rawCode, count: rawCount } of a.callCounts) {
+      const meta = shiftTypes.get(rawCode);
+      const code = parentCallCodeOf(rawCode, meta);
+      const weight = callBurdenWeight(meta);
+      const key = `${bucket}|${code}`;
+      const cur = folded.get(key);
+      if (cur) cur.count += rawCount * weight;
+      else folded.set(key, { bucket, code, count: rawCount * weight });
+    }
+    if (folded.size === 0) continue; // no call assignments — omit, not []
+    out.set(pid, [...folded.values()].sort(
+      // Alphabetical (friday, saturday, sunday, weekday) — NOT display order
+      // (M-Th, Fri, Sat, Sun). A caller that needs display order iterates
+      // shared.FAIRNESS_BUCKETS itself and filters against this map.
+      (x, y) => x.bucket.localeCompare(y.bucket) || x.code.localeCompare(y.code)));
   }
   return out;
 }
 
-/** Weighted total across every bucket — the roster's "Calls this year" cell. */
+/** Weighted total across every bucket — the roster's "Calls this year" cell.
+ *  Raw float (see `CallCount.count`) — render through `formatCallWeight`. */
 export function callTotal(counts: ReadonlyArray<CallCount>): number {
   return counts.reduce((n, c) => n + c.count, 0);
 }
