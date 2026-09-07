@@ -6,7 +6,7 @@
 
 **Architecture:** Two new pure lib modules (`annualTally.ts` for the math, `blockPrepView.ts` for view decisions) sit under one new read-only API route. Every number is assembled from helpers that already own it — `plannerYearCounters`, `entitledOffDays`, `computeScheduleActuals`, `dayTypeBucketOn`, `callBurdenWeight` — and none is re-derived. All writes reuse existing endpoints. No engine change; generation behaviour is untouched.
 
-**Tech Stack:** Next.js 14 App Router (client page + route handler), Supabase (`scheduling` schema, service-role client), TypeScript, vitest (`environment: 'node'`, no jsdom).
+**Tech Stack:** Next.js 14 App Router (client page + route handler), Supabase (`scheduling` schema, service-role client), TypeScript, vitest (`environment: 'node'`, no jsdom — components are render-tested via `renderToStaticMarkup`, following `src/components/ui/Modal.test.tsx`).
 
 **Spec:** `docs/superpowers/specs/2026-09-06-block-prep-board-design.md`
 
@@ -876,7 +876,16 @@ git commit -m "annualTally: off days used, covered span, whole-tally entry point
 
 ## Task 5: View logic
 
-Anything the board decides that could be *wrong* lives here beside a test, because vitest runs `environment: 'node'` with no jsdom and a page component is not unit-testable. This is the same split `blockTargetsPanel.ts` established.
+Anything the board decides that could be *wrong* lives here beside a test — the split `blockTargetsPanel.ts` established.
+
+**Correction to an earlier premise in this plan.** Tasks 5 through 10 were originally written on the claim that "a component is not unit-testable in this repo". That is only half true, and the wrong half was load-bearing. vitest does run `environment: 'node'` with no jsdom, so *interaction* — clicks, effects, focus — cannot be tested. But **render output can**: `src/components/ui/Modal.test.tsx` already asserts markup via `renderToStaticMarkup` from `react-dom/server`, in the node environment, with zero extra dependencies, and it names that as the ui-v1 plan's deliberate strategy.
+
+So the rule for the UI tasks is sharper than "components can't be tested":
+
+- **Decisions** — anything with a rule, threshold, or wording choice — still belong in this module, because they need to be exercised across many inputs.
+- **Render paths** — loading vs empty vs error vs populated, and which panels appear together — belong in a `renderToStaticMarkup` test beside the component. `useEffect` does not fire under SSR, which makes a pre-fetched component trivially testable.
+
+Every component task from here on carries render tests. This was caught in review of Task 7, where a duplicate error banner reached `main` that such a test would have failed on immediately.
 
 **Files:**
 - Create: `src/lib/blockPrepView.ts`

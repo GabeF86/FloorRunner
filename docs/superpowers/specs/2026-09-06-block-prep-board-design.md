@@ -133,7 +133,7 @@ Paired code change, and it is a **one-line UI fix only**: the profile Scheduling
 
 ## Modules
 
-The math lives in lib and the page is markup over it — the split `blockTargetsPanel.ts` established, for the reason stated in its header: vitest runs `environment: 'node'` with no jsdom, so anything decided inside a component cannot be unit-tested.
+The math lives in lib and the page is markup over it — the split `blockTargetsPanel.ts` established. vitest runs `environment: 'node'` with no jsdom, so component *interaction* cannot be tested; anything with a rule, threshold or wording choice therefore lives in lib where it can be exercised across many inputs. Component **render paths** are a different matter and are tested: `src/components/ui/Modal.test.tsx` asserts markup through `renderToStaticMarkup` in the node environment with no extra dependencies, and every component here follows it.
 
 - **`src/lib/annualTally.ts`** — pure. Given providers, employment profiles, availability rows, published slot rows, holidays and shift types, returns per-provider annual figures: weighted call counts by bucket and code, PTO used and remaining, off-day budget and used, and the covered-span metadata the honesty caveat needs. *Assembles* the single-homed helpers; re-implements none. This is the shared heart — the roster columns and the tally card both read from it, so they cannot disagree.
 - **`src/lib/blockPrepView.ts`** — pure view logic: row ordering, blank-vs-zero rendering, inline-edit parsing and bounds, column plan.
