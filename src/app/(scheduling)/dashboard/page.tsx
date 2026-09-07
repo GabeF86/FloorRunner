@@ -9,6 +9,7 @@ import { sbSchedulingServer } from '@/lib/supabaseScheduling';
 import { PageHeader, Card, Badge, Table, EmptyState, Banner, Button, scheduleStatusTone } from '@/components/ui';
 import { loadDashboardData, type DashboardData, type Panel } from './queries';
 import PhysicianPlannerCard from './PhysicianPlannerCard';
+import DashboardTallyCard from './DashboardTallyCard';
 
 // Never prerender — this page hits Supabase at request time.
 export const dynamic = 'force-dynamic';
@@ -296,6 +297,13 @@ export default async function DashboardPage() {
       >
         <TodaysCallPanel panel={data.todaysCall} today={data.today} />
         <AttentionPanel panel={data.attention} />
+      </div>
+
+      {/* Annual running tally — the same card /block-prep mounts, pointed at
+          the first site so the homepage carries the numbers without a picker
+          of its own. */}
+      <div style={{ marginTop: 'var(--space-4)' }}>
+        <DashboardTallyCard />
       </div>
 
       {/* Physician Planner — client card (its data comes from the planner API,

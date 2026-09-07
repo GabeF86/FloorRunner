@@ -62,6 +62,15 @@ export default function SchedulesPage() {
   const [groupFilter, setGroupFilter] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
   const [showCreate, setShowCreate] = useState(false);
+  // Deep link from /block-prep: open the create modal with the site pre-chosen.
+  const [presetSiteId, setPresetSiteId] = useState('');
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('create') === '1') {
+      setPresetSiteId(params.get('site_id') || '');
+      setShowCreate(true);
+    }
+  }, []);
   // Assistant reach (ui-v1 Task 8): the backend contract targets ONE schedule
   // per conversation, so the list page picks a schedule first, then mounts the
   // same self-contained AssistantPanel the grid page uses.
@@ -247,7 +256,7 @@ export default function SchedulesPage() {
           the placement rationale. */}
       <RequestWindowCard sites={sites} initialSiteId={siteFilter || undefined} />
 
-      {showCreate && <CreateScheduleModal orgId={orgId} sites={sites} onClose={() => setShowCreate(false)} onCreated={() => { setShowCreate(false); loadSchedules(); }} />}
+      {showCreate && <CreateScheduleModal orgId={orgId} sites={sites} initialSiteId={presetSiteId} onClose={() => setShowCreate(false)} onCreated={() => { setShowCreate(false); loadSchedules(); }} />}
       {showAssistantPicker && (
         <AssistantSchedulePicker
           schedules={schedules}
@@ -330,8 +339,8 @@ function AssistantSchedulePicker({ schedules, onClose, onPick }: {
 }
 
 // ── Create Schedule Modal ────────────────────────────────────────────────────
-function CreateScheduleModal({ orgId, sites, onClose, onCreated }: { orgId: string; sites: Site[]; onClose: () => void; onCreated: () => void }) {
-  const [siteId, setSiteId] = useState('');
+function CreateScheduleModal({ orgId, sites, initialSiteId = '', onClose, onCreated }: { orgId: string; sites: Site[]; initialSiteId?: string; onClose: () => void; onCreated: () => void }) {
+  const [siteId, setSiteId] = useState(initialSiteId);
   const [providerGroup, setProviderGroup] = useState('both');
   const [dateStart, setDateStart] = useState('');
   const [dateEnd, setDateEnd] = useState('');

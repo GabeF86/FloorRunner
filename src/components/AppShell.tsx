@@ -16,6 +16,7 @@ const NAV_SECTIONS: NavSection[] = [
   {
     label: 'Scheduling',
     items: [
+      { href: '/block-prep', label: 'Block Prep', icon: '◫' },
       { href: '/schedules', label: 'Schedules', icon: '▦' },
       { href: '/providers', label: 'Providers', icon: '◆' },
       { href: '/sites',     label: 'Sites',     icon: '⬡' },
