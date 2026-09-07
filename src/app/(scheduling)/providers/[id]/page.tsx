@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import Link from 'next/link';
 import {
   EMPLOYMENT_STATUSES,
@@ -30,6 +30,7 @@ import {
   callRequestsEnabled, windowRequestDates, countNoCallRequestUnits,
 } from '@/lib/validation/requestIntake';
 import { collapseDatesToRanges, countDaysInYear, ptoCounterStats, type DateRange, type PtoCounterStats } from '@/lib/dateRanges';
+import { HOLIDAY_CALL_CODES, holidayCallHolderNote } from '@/lib/holidayCall';
 import { CalendarMultiPicker } from '@/components/CalendarMultiPicker';
 import { SiteShiftTypePicker } from '@/components/ShiftTypePicker';
 
@@ -435,7 +436,14 @@ export default function ProviderDetailPage({ params }: { params: { id: string } 
       {tab === 'scheduling' && <SchedulingTab profile={prof || EMPTY_PROFILE} sites={sites} saveState={saveState} onSave={save} />}
       {tab === 'preferences' && <PreferencesTab profile={prof || EMPTY_PROFILE} sites={sites} saveState={saveState} onSave={save} />}
       {tab === 'sites' && <SitesTab providerId={id} credentials={provider.provider_site_credentials || []} sites={sites} onChanged={reload} />}
-      {tab === 'availability' && <AvailabilityTab providerId={id} profile={prof} />}
+      {tab === 'availability' && (
+        <AvailabilityTab
+          providerId={id}
+          profile={prof}
+          orgId={provider?.organization_id ?? ''}
+          sites={sites}
+        />
+      )}
       {tab === 'custom' && <CustomFieldsTab providerId={id} providerType={provider.provider_type} homeSiteId={prof?.home_site_id ?? null} />}
       {tab === 'compensation' && <CompensationTab providerId={id} />}
       {tab === 'history' && <HistoryTab providerId={id} />}
@@ -1632,6 +1640,24 @@ interface AvailabilityRow {
   source: string | null;
 }
 
+/** One holiday as the holiday-call route returns it: expanded into every day
+ *  it covers (a holiday takes in the weekend it touches). */
+interface HolidayCallHoliday {
+  id: string;
+  holiday_name: string;
+  holiday_date: string;
+  dates: string[];
+}
+
+/** One recorded cell of the holiday-call grid, as the route returns it. */
+interface HolidayCallEntryRow {
+  id: string;
+  provider_id: string;
+  provider_name: string;
+  date: string;
+  code: string;
+}
+
 interface RequestWindowInfo {
   id: string;
   site_id: string;
@@ -1677,7 +1703,14 @@ const APPROVAL_COLORS: Record<string, { color: string; bg: string }> = {
   canceled: { color: '#64748b', bg: 'rgba(100,116,139,0.12)' },
 };
 
-function AvailabilityTab({ providerId, profile }: { providerId: string; profile: EmploymentProfile | null }) {
+function AvailabilityTab({ providerId, profile, orgId, sites }: {
+  providerId: string;
+  profile: EmploymentProfile | null;
+  /** Needed to read the org's holiday calendar for the Holiday Call adder. */
+  orgId: string;
+  /** Org sites — the Holiday Call adder records against one of them. */
+  sites: Array<{ id: string; name: string; short_name: string | null }>;
+}) {
   const [rows, setRows] = useState<AvailabilityRow[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -1899,20 +1932,34 @@ function AvailabilityTab({ providerId, profile }: { providerId: string; profile:
       )}
 
       {/* ── Holiday Call — the chief's recorded holiday plan (patch44) ────
-             Read-only here on purpose: each row is one cell of the Holiday
-             Call grid on the schedules page (a day × a call code), so editing
-             its dates from this side would break that pairing. Delete is
-             offered because a row that no longer applies must be removable
-             from the provider it sits on. ──────────────────────────────── */}
-      {holidayCallRows.length > 0 && (
-        <AvailSection
-          title="Holiday Call"
-          counter={<CategoryCounter label="Holiday Call Days" year={counterYear} days={countDaysInYear(live(holidayCallRows), counterYear)} />}
-          hint="Holiday call this provider is down for. The provider IS WORKING these days — it never reads as time off, and it does not override PTO covering the same day (that stays a conflict for you to resolve). Written in as a locked assignment when a schedule covering the date is created. Managed from Schedules → Holiday Call."
-        >
-          <SectionRows rows={holidayCallRows} onDelete={deleteEntry} formatDate={formatDate} emptyText="" />
-        </AvailSection>
-      )}
+             ADDABLE from here as well as from Schedules → Holiday Call
+             (Gabriel 2026-09-07). Both surfaces POST the same
+             /api/scheduling/holiday-call cell write, so they mirror each
+             other by construction rather than by two code paths agreeing.
+             DATES still are not editable here: a row is one cell of that grid
+             (a day × a call code), so moving its date from this side would
+             break the pairing — change it by clearing the cell and setting
+             the one you want. Delete stays, because a row that no longer
+             applies must be removable from the provider it sits on. ─────── */}
+      <AvailSection
+        title="Holiday Call"
+        counter={<CategoryCounter label="Holiday Call Days" year={counterYear} days={countDaysInYear(live(holidayCallRows), counterYear)} />}
+        hint="Holiday call this provider is down for. The provider IS WORKING these days — it never reads as time off, and it does not override PTO covering the same day (that stays a conflict for you to resolve). Written in as a locked assignment when a schedule covering the date is created. Shared with Schedules → Holiday Call: anything added here appears there, and vice versa."
+      >
+        <HolidayCallAddForm
+          providerId={providerId}
+          orgId={orgId}
+          sites={sites}
+          homeSiteId={profile?.home_site_id ?? null}
+          onAdded={loadAvailability}
+        />
+        <SectionRows
+          rows={holidayCallRows}
+          onDelete={deleteEntry}
+          formatDate={formatDate}
+          emptyText="No holiday call recorded for this provider."
+        />
+      </AvailSection>
 
       {/* ── ICU Rotation — for flagged ICU docs, and always when an orphaned
              post-ICU Monday exists (it blocks a date and must stay visible/
@@ -2515,6 +2562,200 @@ function CallRequestAddForm(props: {
 
 // ICU week entry: default end = start + 6; creates the week row and (unless
 // already covered) the post-ICU Monday row via planIcuEntry.
+// ── Holiday Call add form ───────────────────────────────────────────────────
+// The profile-side half of the Holiday Call grid (Gabriel 2026-09-07: "add
+// Holiday Call schedule to the physicians profile under availability... This
+// should mirror what ever is entered in the holiday call schedule on the
+// schedule dashboard and vice versa").
+//
+// MIRRORING IS BY CONSTRUCTION, NOT BY AGREEMENT. This posts to the very same
+// /api/scheduling/holiday-call endpoint the card posts to, and both read the
+// same provider_availability rows. There is no second write path to keep in
+// step — a change here IS the change there.
+//
+// Two consequences of that endpoint's contract, surfaced rather than hidden:
+//   • The grid is SINGLE-VALUED per (day, code). Assigning this provider to a
+//     cell someone else holds REPLACES them. The current holder is shown
+//     before you commit, so that is a decision rather than a surprise.
+//   • One code per provider per day. A second code for the same day is
+//     refused by the route with a 409, whose message we surface verbatim.
+//
+// The holiday list is the route's own — major holidays only, each expanded
+// into every day it covers (Christmas on a Friday is three days), so this
+// form can never offer a day the card would not.
+function HolidayCallAddForm({ providerId, orgId, sites, homeSiteId, onAdded }: {
+  providerId: string;
+  orgId: string;
+  sites: Array<{ id: string; name: string; short_name: string | null }>;
+  homeSiteId: string | null;
+  onAdded: () => Promise<void>;
+}) {
+  const [year, setYear] = useState(() => new Date().getFullYear());
+  // The grid is SITE-SCOPED, and call takers span six sites — so which site a
+  // row is recorded against decides whether the card shows it. Defaults to the
+  // provider's home site, which is the site they would be covering; the picker
+  // is here so recording for another site is possible and, more importantly,
+  // so the scoping is never invisible.
+  const [siteId, setSiteId] = useState<string | null>(homeSiteId);
+  useEffect(() => { setSiteId(homeSiteId); }, [homeSiteId]);
+  const [holidays, setHolidays] = useState<HolidayCallHoliday[]>([]);
+  const [entries, setEntries] = useState<HolidayCallEntryRow[]>([]);
+  const [date, setDate] = useState('');
+  const [code, setCode] = useState<string>(HOLIDAY_CALL_CODES[0].code);
+  const [loading, setLoading] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    if (!orgId) return;
+    setLoading(true);
+    setError(null);
+    try {
+      const params = new URLSearchParams({ org_id: orgId, year: String(year) });
+      if (siteId) params.set('site_id', siteId);
+      const res = await fetch('/api/scheduling/holiday-call?' + params);
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        setError(body.error || `Could not load holidays (${res.status})`);
+        setHolidays([]); setEntries([]);
+        return;
+      }
+      const json = await res.json();
+      setHolidays(json.holidays ?? []);
+      setEntries(json.entries ?? []);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Network error');
+      setHolidays([]); setEntries([]);
+    } finally {
+      setLoading(false);
+    }
+  }, [orgId, siteId, year]);
+
+  useEffect(() => { load(); }, [load]);
+
+  // Every day of every holiday, flattened, with the holiday it belongs to —
+  // the same expansion the card shows, so the two offer identical choices.
+  const days = holidays.flatMap(h => h.dates.map(d => ({ date: d, holidayName: h.holiday_name })));
+  // Reset a stale selection whenever the year changes under it.
+  useEffect(() => {
+    if (days.length > 0 && !days.some(d => d.date === date)) setDate(days[0].date);
+    if (days.length === 0 && date !== '') setDate('');
+    // `days` is derived from holidays; keying on its length + first date is
+    // enough to catch a year change without rebuilding the array identity.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [holidays]);
+
+  const holder = entries.find(e => e.date === date && e.code === code);
+  const holderNote = holidayCallHolderNote(holder, providerId, code);
+  const selectedDay = days.find(d => d.date === date);
+
+  const submit = async () => {
+    if (!date || !selectedDay) return;
+    setSaving(true);
+    setError(null);
+    try {
+      const res = await fetch('/api/scheduling/holiday-call', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          provider_id: providerId,
+          site_id: siteId,
+          date,
+          code,
+          holiday_name: selectedDay.holidayName,
+        }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        setError(body.error || `Could not save (${res.status})`);
+        return;
+      }
+      await load();
+      await onAdded();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Network error');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (!orgId) return null;
+
+  const selectStyle: React.CSSProperties = {
+    padding: '7px 10px', borderRadius: 8, border: '1px solid var(--border)',
+    background: 'var(--bg-deep)', color: 'var(--text)', fontSize: 12.5,
+  };
+
+  return (
+    <div style={addFormBoxStyle}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+        <button onClick={() => setYear(y => y - 1)} style={selectStyle} aria-label="Previous year">&larr;</button>
+        <span style={{ fontSize: 12.5, fontWeight: 800, minWidth: 38, textAlign: 'center' }}>{year}</span>
+        <button onClick={() => setYear(y => y + 1)} style={selectStyle} aria-label="Next year">&rarr;</button>
+
+        <select
+          value={date}
+          onChange={e => setDate(e.target.value)}
+          style={{ ...selectStyle, cursor: 'pointer', minWidth: 210 }}
+          aria-label="Holiday day"
+          disabled={loading || days.length === 0}
+        >
+          {days.length === 0 && <option value="">{loading ? 'Loading…' : 'No major holidays'}</option>}
+          {days.map(d => (
+            <option key={d.date} value={d.date}>
+              {d.holidayName} — {new Date(d.date + 'T12:00:00').toLocaleDateString('en-US',
+                { weekday: 'short', month: 'short', day: 'numeric' })}
+            </option>
+          ))}
+        </select>
+
+        <select
+          value={siteId ?? ''}
+          onChange={e => setSiteId(e.target.value || null)}
+          style={{ ...selectStyle, cursor: 'pointer' }}
+          aria-label="Site this holiday call is recorded for"
+        >
+          <option value="">All sites (no site)</option>
+          {sites.map(s => (
+            <option key={s.id} value={s.id}>{s.short_name || s.name}</option>
+          ))}
+        </select>
+
+        <select
+          value={code}
+          onChange={e => setCode(e.target.value)}
+          style={{ ...selectStyle, cursor: 'pointer' }}
+          aria-label="Call code"
+        >
+          {HOLIDAY_CALL_CODES.map(c => (
+            <option key={c.code} value={c.code}>{c.label}</option>
+          ))}
+        </select>
+
+        <button
+          onClick={submit}
+          disabled={saving || loading || !date}
+          style={{
+            ...saveBtnStyle,
+            opacity: saving || loading || !date ? 0.5 : 1,
+            whiteSpace: 'nowrap',
+          }}
+        >
+          {saving ? 'Saving…' : 'Add'}
+        </button>
+      </div>
+
+      {holderNote && (
+        <div style={{ fontSize: 11.5, color: 'var(--warn)', marginTop: 8, lineHeight: 1.5 }}>
+          {holderNote}
+        </div>
+      )}
+
+      {error && <div style={{ ...addFormErrorStyle, marginTop: 8 }}>{error}</div>}
+    </div>
+  );
+}
+
 function IcuAddForm({ providerId, rows, onAdded }: {
   providerId: string;
   rows: AvailabilityRow[];

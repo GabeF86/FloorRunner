@@ -6,6 +6,7 @@ import {
   holidayCallCodeLabel,
   HOLIDAY_CALL_CODES,
   type HolidayCallSlot,
+  holidayCallHolderNote,
 } from './holidayCall';
 
 describe('holidayBlockDates', () => {
@@ -187,5 +188,32 @@ describe('planHolidayCallSeeds', () => {
   it('returns an empty plan for no decisions', () => {
     expect(planHolidayCallSeeds([], [slot('a', '2026-12-25', 'C1')]))
       .toEqual({ fills: [], skipped: [] });
+  });
+});
+
+
+describe('holidayCallHolderNote', () => {
+  // The grid is single-valued per (day, code): writing a cell someone else
+  // holds replaces them, silently, because the route clears before inserting.
+  // These surfaces must say so BEFORE the write, not after.
+  const other = { provider_id: 'p2', provider_name: 'A.Lovelace' };
+
+  it('is silent when the cell is empty', () => {
+    expect(holidayCallHolderNote(undefined, 'p1', 'C1')).toBeNull();
+  });
+
+  it('names who would be displaced, and the code', () => {
+    expect(holidayCallHolderNote(other, 'p1', 'C1'))
+      .toBe('A.Lovelace currently holds C1 that day — adding will replace them.');
+  });
+
+  it('does not threaten to replace the provider with themselves', () => {
+    expect(holidayCallHolderNote({ provider_id: 'p1', provider_name: 'B.Self' }, 'p1', 'C2'))
+      .toBe('Already recorded for this provider.');
+  });
+
+  it('distinguishes the two cases', () => {
+    expect(holidayCallHolderNote(other, 'p1', 'C1'))
+      .not.toBe(holidayCallHolderNote({ provider_id: 'p1', provider_name: 'B' }, 'p1', 'C1'));
   });
 });

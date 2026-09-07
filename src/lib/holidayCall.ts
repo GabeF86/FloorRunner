@@ -57,6 +57,26 @@ export function isHolidayCallCode(code: string | null | undefined): code is Holi
   return !!code && CODE_SET.has(code);
 }
 
+/**
+ * The warning shown before writing a holiday-call cell, or null when there is
+ * nothing to warn about.
+ *
+ * The grid is SINGLE-VALUED per (day, code): writing a cell someone else holds
+ * REPLACES them, silently, because the route clears the cell before inserting.
+ * That is correct behaviour for a grid, and exactly the kind of thing a chief
+ * should be told before committing rather than after — so the surfaces that
+ * write a cell say who they are about to displace.
+ */
+export function holidayCallHolderNote(
+  holder: { provider_id: string; provider_name: string } | undefined,
+  providerId: string,
+  code: string,
+): string | null {
+  if (!holder) return null;
+  if (holder.provider_id === providerId) return 'Already recorded for this provider.';
+  return `${holder.provider_name} currently holds ${code} that day — adding will replace them.`;
+}
+
 export function holidayCallCodeLabel(code: string): string {
   return HOLIDAY_CALL_CODES.find(c => c.code === code)?.label ?? code;
 }
