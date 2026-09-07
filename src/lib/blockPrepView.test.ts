@@ -2,6 +2,8 @@ import { describe, it, expect } from 'vitest';
 import {
   sortRosterRows, allotmentText, remainingText, offDaysText,
   coveredSpanLabel, unrosteredFootnote, parseFteInput, parseAllotmentInput,
+  ADDABLE_AVAILABILITY_TYPES, isPairedIcuRow, availabilityTypeTone,
+  availabilityStatusBadge,
   type RosterRow,
 } from './blockPrepView';
 // CoveredSpanInfo is annualTally's exported span shape — used below by
@@ -278,5 +280,79 @@ describe('parseAllotmentInput', () => {
   });
   it('rejects a non-numeric string', () => {
     expect(parseAllotmentInput('abc').ok).toBe(false);
+  });
+});
+
+describe('ADDABLE_AVAILABILITY_TYPES', () => {
+  it('offers exactly the four planning-relevant types', () => {
+    expect([...ADDABLE_AVAILABILITY_TYPES].sort()).toEqual(
+      ['no_call_request', 'pto', 'pto_sellback', 'unavailable'].sort());
+  });
+
+  it('excludes paired ICU rows, HR-sensitive/as-they-occur types, and gated request types', () => {
+    const addable = ADDABLE_AVAILABILITY_TYPES as readonly string[];
+    for (const excluded of [
+      'blocked', 'fmla', 'military_leave', 'sick', 'jury_duty',
+      'conference', 'admin', 'cme', 'call_request', 'available',
+    ]) {
+      expect(addable).not.toContain(excluded);
+    }
+  });
+});
+
+describe('isPairedIcuRow', () => {
+  it('flags both halves of an ICU pair', () => {
+    expect(isPairedIcuRow('icu_week')).toBe(true);
+    expect(isPairedIcuRow('icu_post_call')).toBe(true);
+  });
+
+  it('does not flag a plain reason code, null, or undefined', () => {
+    expect(isPairedIcuRow('something_else')).toBe(false);
+    expect(isPairedIcuRow(null)).toBe(false);
+    expect(isPairedIcuRow(undefined)).toBe(false);
+  });
+});
+
+describe('availabilityTypeTone', () => {
+  it('renders sell-back in danger red — it is a working day, not leave', () => {
+    expect(availabilityTypeTone('pto_sellback')).toBe('danger');
+    // The whole point: it must never collapse onto PTO's tone, or a
+    // sold-back date reads as the provider being off when they're working.
+    expect(availabilityTypeTone('pto_sellback')).not.toBe(availabilityTypeTone('pto'));
+  });
+
+  it('renders PTO as ok and a no-call request as warn', () => {
+    expect(availabilityTypeTone('pto')).toBe('ok');
+    expect(availabilityTypeTone('no_call_request')).toBe('warn');
+  });
+
+  it('falls back to neutral for anything else, including unavailable', () => {
+    expect(availabilityTypeTone('unavailable')).toBe('neutral');
+    expect(availabilityTypeTone('some_future_type')).toBe('neutral');
+  });
+});
+
+describe('availabilityStatusBadge', () => {
+  it('shows no badge for approved — the unremarkable default', () => {
+    expect(availabilityStatusBadge('approved')).toBeNull();
+  });
+
+  it('marks pending as LIVE with a warn badge, never as inert', () => {
+    // Clinical invariant 2: pending blocks scheduling exactly like approved.
+    expect(availabilityStatusBadge('pending')).toEqual({ tone: 'warn', label: 'Pending' });
+  });
+
+  it('marks denied and canceled neutral — the only statuses the engine ignores', () => {
+    expect(availabilityStatusBadge('denied')).toEqual({ tone: 'neutral', label: 'Denied' });
+    expect(availabilityStatusBadge('canceled')).toEqual({ tone: 'neutral', label: 'Canceled' });
+  });
+
+  it('never gives denied/canceled the same tone as pending', () => {
+    expect(availabilityStatusBadge('denied')!.tone).not.toBe(availabilityStatusBadge('pending')!.tone);
+    expect(availabilityStatusBadge('canceled')!.tone).not.toBe(availabilityStatusBadge('pending')!.tone);
+  });
+
+  it('falls back to a neutral badge with the raw string for an unknown status', () => {
+    expect(availabilityStatusBadge('weird')).toEqual({ tone: 'neutral', label: 'weird' });
   });
 });

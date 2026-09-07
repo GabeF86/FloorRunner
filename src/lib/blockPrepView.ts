@@ -29,6 +29,10 @@ import type {
 // rather than hand-copied so the board is a fourth home wired to the same
 // numbers, not a fourth number that happens to agree today.
 import { FTE_MAX, FTE_MIN, WORK_DAYS_FTE_MAX, WORK_DAYS_FTE_MIN } from './validation/providers';
+// ICU rotation rows are PAIRED (a week row + its post-call Monday); the
+// availability drawer's isPairedIcuRow below needs the same two reason codes
+// icuRotation.ts uses to create/remove them, imported rather than re-typed.
+import { ICU_WEEK_REASON, ICU_POST_CALL_REASON } from './icuRotation';
 
 export interface RosterRow {
   provider_id: string;
@@ -249,4 +253,101 @@ export function parseAllotmentInput(raw: string): ParseResult<number | null> {
   const n = Number(s);
   if (!Number.isInteger(n) || n < 0) return { ok: false, error: 'Must be a whole number of weeks' };
   return { ok: true, value: n };
+}
+
+// ── Availability drawer (Task 9) ────────────────────────────────────────────
+// Per-provider PTO / off / no-call dates, reachable from the roster instead of
+// eleven separate profile visits. The decisions below are the ones that could
+// be wrong — which types are safe to offer, and how a row's status should
+// read — kept here with tests rather than as literals in the drawer's JSX.
+
+/**
+ * Availability types the drawer lets a chief ADD. Deliberately a narrow
+ * subset of AVAILABILITY_TYPES (validation/providers.ts):
+ *
+ *  - `pto`, `pto_sellback`, `unavailable` are exactly the types
+ *    annualTally.ts nets against the PTO/off-day figures this board exists to
+ *    show — adding one here and watching the tally move in the same drawer is
+ *    the point.
+ *  - `no_call_request` is a lightweight scheduling preference with no
+ *    approval workflow of its own (isActiveNoCallRequest, rulesEngine/
+ *    shared.ts) — safe to state ahead of a block build.
+ *
+ * Excluded, and why — each either cannot be created SAFELY from a generic
+ * one-shot form, or belongs to a flow this drawer does not replicate:
+ *  - `fmla`, `military_leave`, `sick`, `jury_duty`, `conference`, `admin`,
+ *    `cme`: HR-sensitive or as-they-occur types, not things "prepared ahead
+ *    of a block" — they stay on the profile's Availability tab, which is
+ *    where the group actually enters them.
+ *  - `blocked` (ICU rotation rows, reason_code icu_week / icu_post_call):
+ *    ICU weeks are stored as a PAIR — the week plus its post-call Monday
+ *    (icuRotation.ts). A generic add-form creates one row; doing that here
+ *    would silently create HALF a pair. The profile's ICU Rotation section
+ *    is the only place that creates both halves together, and stays that way.
+ *  - `call_request`: the profile tab only allows this while the site's
+ *    no-call/call request window is open (a check this drawer does not
+ *    replicate); offering it unconditionally here would let a request be
+ *    filed against a closed window.
+ *  - `available`: the DB default state, not something anyone "adds".
+ */
+export const ADDABLE_AVAILABILITY_TYPES = [
+  'pto', 'pto_sellback', 'unavailable', 'no_call_request',
+] as const;
+
+/**
+ * Whether an availability row is one half of a PAIRED ICU rotation entry
+ * (icuRotation.ts: a week row plus its post-call Monday, created and removed
+ * TOGETHER by the profile's ICU Rotation section). A lone delete here would
+ * silently orphan the other half — a Monday that still blocks the date with
+ * no visible reason, or a week with a dangling post-call day nobody can see.
+ * The drawer must not offer a plain Remove for these rows.
+ */
+export function isPairedIcuRow(reasonCode: string | null | undefined): boolean {
+  return reasonCode === ICU_WEEK_REASON || reasonCode === ICU_POST_CALL_REASON;
+}
+
+/**
+ * Badge tone for an availability row's TYPE (not its approval status — see
+ * availabilityStatusBadge below for that).
+ *
+ * `pto_sellback` is RED by convention across the app — the schedule grid uses
+ * the same red for sell-back cells (Gabriel 2026-07-20 / 2026-09-06: the
+ * chief bought the PTO back, so the provider IS WORKING those dates). This
+ * must never collapse onto `pto`'s tone: a sold-back date reading as leave
+ * would be exactly backwards — it is the one date in the list the provider is
+ * definitely NOT off.
+ */
+export function availabilityTypeTone(
+  availabilityType: string,
+): 'ok' | 'warn' | 'danger' | 'neutral' {
+  switch (availabilityType) {
+    case 'pto':             return 'ok';
+    case 'pto_sellback':    return 'danger';
+    case 'no_call_request': return 'warn';
+    default:                return 'neutral';
+  }
+}
+
+/**
+ * Badge tone + label for an availability row's approval status. `null` means
+ * "no badge" — reserved for `approved`, the drawer's unremarkable default.
+ *
+ * `pending` is deliberately NOT muted: clinical invariant 2 says a pending
+ * request blocks scheduling exactly like an approved one (isBlockingAvailability,
+ * rulesEngine/shared.ts — only denied/canceled are ignored), so it must read
+ * as LIVE, not as an inert waiting-room state the way a dimmed/grey badge
+ * would. `denied` / `canceled` get the quiet 'neutral' tone precisely because
+ * they are the only two statuses the engine ignores.
+ */
+export function availabilityStatusBadge(
+  approvalStatus: string,
+): { tone: 'warn' | 'neutral' | 'info'; label: string } | null {
+  switch (approvalStatus) {
+    case 'approved':   return null;
+    case 'pending':    return { tone: 'warn', label: 'Pending' };
+    case 'waitlisted': return { tone: 'info', label: 'Waitlisted' };
+    case 'denied':     return { tone: 'neutral', label: 'Denied' };
+    case 'canceled':   return { tone: 'neutral', label: 'Canceled' };
+    default:           return { tone: 'neutral', label: approvalStatus };
+  }
 }
