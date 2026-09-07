@@ -26,6 +26,15 @@
 
 import { addDays, dayOfWeekUTC } from './rulesEngine/shared';
 
+// Working days consumed per week of stated PTO allotment (pto_weeks × this =
+// days). This module already owns the "PTO is debited in weekdays" semantics
+// (see the ptoCounterStats note above), so the constant lives here rather than
+// wherever next needs it. gridCalculator keeps its own separate copies
+// (providerProfile.ts, fteSimulator.ts) deliberately — it is a sibling engine
+// that does not share code with the scheduling path (CLAUDE.md) — this export
+// is for callers on the scheduling path only (e.g. lib/annualTally.ts).
+export const PTO_WORK_DAYS_PER_WEEK = 5;
+
 export interface DateRange {
   start: string; // ISO YYYY-MM-DD, inclusive
   end: string;   // ISO YYYY-MM-DD, inclusive

@@ -26,18 +26,11 @@
 // (Gabriel: "0 is a real number for some of them").
 
 import {
-  liveAvailabilityRows,
   plannerYearCounters,
   type PlannerAvailabilityRow,
 } from './plannerMath';
 import { entitledOffDays } from './rulesEngine/workDays';
-
-// Working days consumed per week of PTO. Deliberately a local constant rather
-// than an import from gridCalculator/providerProfile.ts, which holds its own
-// copy for its simulator: CLAUDE.md keeps gridCalculator a sibling engine that
-// does not share code with the scheduling path, and one definitional integer is
-// a smaller cost than crossing that boundary.
-export const PTO_WORK_DAYS_PER_WEEK = 5;
+import { PTO_WORK_DAYS_PER_WEEK } from './dateRanges';
 
 /** The employment-profile fields this module needs. */
 export interface TallyProfile {
@@ -50,6 +43,11 @@ export interface TallyProfile {
   pto_weeks: number | null;
 }
 
+/**
+ * INVARIANT: `allotmentDays` and `remainingDays` are null exactly together —
+ * both null when the allotment is unstated, both non-null when it's stated
+ * (including a stated 0). Never one without the other.
+ */
 export interface PtoFigures {
   /** Weekdays consumed from the pool this year, sold-back days INCLUDED. */
   usedWeekdays: number;
@@ -92,15 +90,51 @@ export function ptoFiguresFor(
  * Note this is NOT the same thing as `availability_type = 'unavailable'` rows,
  * which the provider profile labels "Days Off". Those are typed entries; this
  * is a contractual entitlement.
+ *
+ * Returns null when the FTE is unknown (null/undefined/non-finite) — an
+ * unknown FTE is BLANK, not a stated zero, and must never render as "entitled
+ * to every working day off" (what `entitledOffDays` would compute for fte=0).
+ * This deliberately does NOT follow the rest of the codebase's convention of
+ * coercing a missing FTE with `|| 1` (fteTarget.ts:606's `prof.fte_value || 1`
+ * engine-pool coercion; dayShiftAutoGen.ts:367's `Number(p.fte_value) || 1`
+ * day-shift cap — both also swallow a stated 0 as a side effect). Those sites
+ * need SOME number to keep a generation pipeline moving; this module is a
+ * read-only view with no such obligation, so it refuses to guess instead.
  */
-export function offDayBudgetFor(profile: TallyProfile, workingDaysInYear: number): number {
-  return entitledOffDays(
-    Number(profile.fte_value ?? 0), workingDaysInYear, profile.work_days_fte);
+export function offDayBudgetFor(profile: TallyProfile, workingDaysInYear: number): number | null {
+  if (profile.fte_value == null) return null; // unstated — cannot say, not a guessed 0
+  // fte_value is a Postgres `numeric` column and can arrive over the wire as a
+  // string (e.g. "0.75"); that is why it alone is coerced here.
+  // work_days_fte's string coercion happens later, inside entitledOffDays'
+  // effectiveWorkDaysFte, and pto_weeks needs none (it's int4).
+  const fte = Number(profile.fte_value);
+  if (!Number.isFinite(fte)) return null; // unparseable — unknown, never a guessed 0
+  // TODO(gabriel): a stated 0.00-FTE per diem falls through to here and gets
+  // the FULL working-day count as their off-day budget (entitledOffDays(0, WD)
+  // = WD). Is that the number the board should show for a per diem, or should
+  // it read "n/a" instead? Open product question — ask before shipping this
+  // to a per-diem-heavy site.
+  return entitledOffDays(fte, workingDaysInYear, profile.work_days_fte);
 }
 
-/** Live (non-dismissed) rows for one provider — shared by the callers below. */
-export function liveRowsFor(
-  providerId: string, rows: ReadonlyArray<PlannerAvailabilityRow>,
-): PlannerAvailabilityRow[] {
-  return liveAvailabilityRows(rows.filter(r => r.provider_id === providerId));
+/**
+ * Groups availability rows by provider_id — splits a whole-roster payload's
+ * rows into per-provider slices for callers that iterate a roster (Task 4).
+ * Deliberately does NOT filter by approval_status: that predicate belongs to
+ * the helpers that already own it (isDismissedAvailability, reached via
+ * ptoWeekdaysCovered and plannerYearCounters/liveAvailabilityRows) — filtering
+ * here too would be a second, independently-maintained copy of that status
+ * rule sitting in front of them, free to drift out of sync.
+ */
+export function availabilityByProvider(
+  rows: ReadonlyArray<PlannerAvailabilityRow>,
+): Map<string, PlannerAvailabilityRow[]> {
+  const out = new Map<string, PlannerAvailabilityRow[]>();
+  for (const row of rows) {
+    if (!row.provider_id) continue;
+    const list = out.get(row.provider_id);
+    if (list) list.push(row);
+    else out.set(row.provider_id, [row]);
+  }
+  return out;
 }
