@@ -177,3 +177,43 @@ Fixtures are built from the live 8/10–10/25 Paoli block, the way `statedObliga
 - **Cross-site annual totals.** Counts are this site's call only; revisit if he wants a group-wide burden view.
 - **Making the picker ignore prior blocks.** `historical_call_counts` still orders candidates by lifetime fairness. Gabriel was told this explicitly and it stays; if he wants it removed, that is a separate engine change with its own spec.
 - **`src/lib/callCountDays.ts` line 180** embeds a raw NUL character directly in the source, inside the sentinel `const BLOCK_KEY` (uncommitted work). The sentinel behaves exactly as its comment intends, but the raw control byte makes the whole file read as *binary* to `grep` and `ripgrep`, which then silently return no matches for every search against it. Fix is to spell the NUL as a backslash escape in the string literal rather than embedding the byte. Unrelated to this work; noted so it is not lost.
+
+---
+
+## What review caught (2026-09-06/07)
+
+Every task went through spec-compliance review then code-quality review, each with mutation testing. Recording the defects that were caught before shipping, because several are the kind that recur:
+
+**Would have produced wrong clinical numbers:**
+
+1. **Silent truncation.** The year-wide slot read had no row-count guard. PostgREST caps un-ranged selects at 1000 rows and returns *no error*; Paoli holds 717 published 2026 slot rows, so the second published block of a year would have crossed it and the tally would have quietly under-counted calls. Now paged, with an exact-count backstop that distinguishes "page budget exhausted" from "row count changed mid-read".
+2. **ICU pairs orphaned at the year boundary.** A fix that inferred "this ICU week has no post-call Monday" from a *year-scoped* fetch would have offered a live Remove on ten consecutive December week-starts whose Monday sits in January — creating exactly the orphan the lock exists to prevent, in the window when a chief is most likely to be doing block prep. Absence is now only trusted when the partner's date is provably inside the fetched window.
+3. **`no_call_request` bypassing the per-window cap.** The drawer briefly offered it as an addable type. The profile writes those through the request-intake route, tagged to the window, one row per date — which is how `max_no_call_requests` is counted. An untagged range row counts as zero against the cap while the engine still honours it in full.
+4. **ICU days double-subtracted.** Off-days-used was a chain of subtractions over overlapping sets; an ICU `blocked` row is both credited-as-worked *and* a blocking absence, so it was charged twice. Now a union of explained dates.
+
+**Would have broken the build or the UI:**
+
+5. **The branch did not compile in a clean checkout.** A component imported `FAIRNESS_BUCKETS` from `rulesEngine/shared`, which existed only as an uncommitted working-tree edit belonging to unrelated in-flight work. Every local test run was green; a fresh checkout gave 4 type errors and 13 test failures, and pushing would have broken the Vercel build. **Lesson: with a large uncommitted working tree, verify in a detached worktree, not in place.**
+6. **An edit that silently reverted itself.** The post-edit refetch was triggered by the *optimistic* update, so the GET raced the PATCH that caused it and could read pre-edit data. The chief would type an FTE, tab out, and watch it snap back — with no self-correction until reload. The refetch now fires from the PATCH's `finally`.
+7. **A stale roster under a fresh title.** Switching site or year rendered the previous selection's rows, while the tally card beside it correctly blanked. Both cards now share one freshness guard.
+8. **The honesty caveat overstating coverage.** With disjoint published blocks, the covered-span label collapsed the gap: two blocks at either end of a year read as "Jan 5 – Dec 20", implying near-total coverage of a year it had counted half of.
+
+**Rendering that bypassed its own tested rule:** the PTO cell's "not stated" em-dash came from a literal in markup while the tested function that owns that string rendered nowhere — so changing the placeholder would have left every test green while the UI diverged, on the exact rule the feature exists to protect.
+
+## Known residuals
+
+Both are documented at their call sites:
+
+- **The row-freeze on re-sort is unpinned.** Keying roster cells per provider (necessary to stop one provider's in-flight edit bleeding into another's row) means a re-sort replaces the input rather than moving it, dropping keyboard focus. The mitigation freezes row order while any cell is focused or saving. The component→helper edge can't be pinned under a render-only strategy, because the frozen-order state is set by an effect that never fires during SSR. Consequence is focus loss, not a wrong number.
+- **A per-diem at a stated 0.00 FTE.** Resolved to render `n/a` rather than a full-year off-day budget. Note the Physician Planner card on the same dashboard coerces a missing-or-zero FTE to 1.0 and shows zero; the two surfaces answer differently for the same provider by design, and the board's answer is the honest one.
+
+## Deploy sequence
+
+Order matters — step 5 before step 4 loses data.
+
+1. Merge `block-prep-board` to `main` and push. Vercel auto-deploys.
+2. Confirm the build is live at https://floor-runner.vercel.app/block-prep.
+3. Verify the Supabase project ref is `qhwdbtixhzdsgwwtcfrm` before touching anything.
+4. Run `supabase_scheduling_patch45_pto_weeks_unset.sql`. Its `DO` block aborts if fewer than five stated allotments remain — if it fires, someone has been editing allotments and the "these zeros carry no information" premise has expired. Re-read before overriding.
+5. **Only now** enter the real PTO allotments from the board, including the genuine zeros. A real `0` typed before step 4 is indistinguishable from the 78 defaults and gets cleared with them.
+6. If the code is ever rolled back, roll the DB back too. Pre-change code renders a null allotment as `0`, and the next save on any of those profiles writes that `0` back as real data — one provider at a time, silently.
