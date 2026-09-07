@@ -313,6 +313,35 @@ export function nonEntitlementAbsenceDates(
   return out;
 }
 
+/**
+ * The availability type recording a chief's holiday call plan (patch44). The
+ * provider IS WORKING the covered dates — it is not a blocking type and not a
+ * PTO-netting one, so nothing else in this module would otherwise account for
+ * it.
+ */
+export const HOLIDAY_CALL_TYPE = 'holiday_call';
+
+/**
+ * Working dates in `workingDaySet` covered by a live row of one availability
+ * type. Dismissed (denied/canceled) rows are ignored, matching every other
+ * consumer.
+ */
+export function workingDatesCoveredBy(
+  rows: ReadonlyArray<PlannerAvailabilityRow>,
+  availabilityType: string,
+  workingDaySet: ReadonlySet<string>,
+): Set<string> {
+  const out = new Set<string>();
+  for (const row of rows) {
+    if (isDismissedAvailability(row)) continue;
+    if (row.availability_type !== availabilityType) continue;
+    for (const d of workingDaySet) {
+      if (row.start_date <= d && d <= row.end_date) out.add(d);
+    }
+  }
+  return out;
+}
+
 export interface CoveredSpan {
   date_start: string;
   date_end: string;
@@ -576,6 +605,20 @@ export function computeAnnualTally(input: AnnualTallyInput): AnnualTally {
       //    `unavailable` — workDays.ts states those rows ARE the off-day
       //    entitlement being consumed, so they must stay countable.
       for (const d of nonEntitlementAbsenceDates(rows, coveredWorkingDays)) explained.add(d);
+      // 4. Recorded holiday call (patch44). The row means the provider IS
+      //    WORKING that day, so it explains the day exactly as an assignment
+      //    would — it must not read as an off day just because generation
+      //    hasn't placed the slot yet.
+      //
+      //    This is NOT a special case for holidays. Gabriel 2026-09-07: "the
+      //    minor holidays are not considered to be special." Major holidays
+      //    never reach here at all (isWorkingDay excludes them, so they are
+      //    not in coveredWorkingDays); minor ones are ordinary working days
+      //    and get no holiday-specific treatment. What is honoured here is the
+      //    ROW's meaning — working — which is true whatever day it falls on.
+      for (const d of workingDatesCoveredBy(rows, HOLIDAY_CALL_TYPE, coveredWorkingDays)) {
+        explained.add(d);
+      }
 
       // No Math.max(0, ...) clamp: every contributor to `explained` above is
       // either filtered by `coveredWorkingDays` or intersected against it,

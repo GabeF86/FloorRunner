@@ -1121,6 +1121,55 @@ describe('loadGenerationContext — override pool narrows the call-taker criteri
   });
 });
 
+// Gabriel 2026-09-06, verbatim: "A per diem or day doc can be manually assigned
+// to the call schedule but they should never be selected to be part of a pool
+// for a new schedule creation." The DEFAULT (rule-based) pool must drop them
+// even when a call_taker flag also sits on the profile; the override path is an
+// explicit hand-pick and is left untouched (that IS the "manual" channel,
+// alongside direct grid assignment which never goes through the pool at all).
+describe('loadGenerationContext — default pool excludes day docs and per-diem (Gabriel 2026-09-06)', () => {
+  const CALL        = { provider_id: 'p1', fte_value: 1.0, home_site_id: 'site1', call_taker: true, partial_call_taker: false, is_day_doc: false, employment_status: 'full_time', available_weekdays: null };
+  const DAYDOC_CALL = { provider_id: 'pd', fte_value: 1.0, home_site_id: 'site1', call_taker: true, partial_call_taker: false, is_day_doc: true,  employment_status: 'full_time', available_weekdays: null };
+  const PERDIEM_CALL= { provider_id: 'pp', fte_value: 1.0, home_site_id: 'site1', call_taker: true, partial_call_taker: false, is_day_doc: false, employment_status: 'per_diem',  available_weekdays: null };
+  const PROVIDERS = [
+    { id: 'p1', provider_type: 'physician', short_display_name: 'CALLDOC', status: 'active' },
+    { id: 'pd', provider_type: 'physician', short_display_name: 'DAYDOC',  status: 'active' },
+    { id: 'pp', provider_type: 'physician', short_display_name: 'PERDIEM', status: 'active' },
+  ];
+
+  it('a day doc flagged call_taker is NOT pulled into the default pool', async () => {
+    const { res } = await run({
+      provider_employment_profiles: { data: [CALL, DAYDOC_CALL], error: null },
+      providers: { data: PROVIDERS, error: null },
+    });
+    expect(res.ctx).toBeTruthy();
+    expect(res.ctx!.providerById!.has('pd')).toBe(false);
+    expect(res.ctx!.providers.map(p => p.id)).toEqual(['p1']);
+  });
+
+  it('a per-diem flagged call_taker is NOT pulled into the default pool', async () => {
+    const { res } = await run({
+      provider_employment_profiles: { data: [CALL, PERDIEM_CALL], error: null },
+      providers: { data: PROVIDERS, error: null },
+    });
+    expect(res.ctx).toBeTruthy();
+    expect(res.ctx!.providerById!.has('pp')).toBe(false);
+    expect(res.ctx!.providers.map(p => p.id)).toEqual(['p1']);
+  });
+
+  it('an override pool still honors a hand-picked day-doc / per-diem call taker (manual selection allowed)', async () => {
+    const { sb } = makeFakeSupabase({
+      tables: baseTables({
+        provider_employment_profiles: { data: [DAYDOC_CALL, PERDIEM_CALL], error: null },
+        providers: { data: PROVIDERS, error: null },
+      }),
+    });
+    const res = await loadGenerationContext(sb, 'ver1', { overrideProviderIds: ['pd', 'pp'] });
+    expect(res.ctx).toBeTruthy();
+    expect(res.ctx!.providers.map(p => p.id).sort()).toEqual(['pd', 'pp']);
+  });
+});
+
 // ── A HOLIDAY COUNTS AS THE DAY OF THE WEEK IT FALLS ON ──────────────────────
 // Gabriel 2026-07-27, verbatim: "Holidays that fall out on a weekend Friday
 // saturday or sunday, get included in the obligatory weekend count, and those
