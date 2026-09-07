@@ -1916,6 +1916,26 @@ export default function AnnualTallyCard({
             {coveredSpanLabel(data?.coveredSpan ?? null)}
           </div>
 
+          {/* Providers with published call at this site who have NO ROW above —
+              a mid-year status change, cross-site coverage, or someone simply
+              not flagged as a call taker. Their calls are counted by the tally
+              but belong to nobody on screen, so the count would vanish silently
+              without this line. There is a live instance at Paoli (Orji holds a
+              published 2026 call and is not flagged a call taker). The ids come
+              from annualTally, which exposes them for exactly this purpose. */}
+          {(data?.unrosteredProviderIds ?? []).length > 0 && (
+            <div style={{
+              marginTop: 'var(--space-2)', fontSize: 'var(--fs-xs)',
+              color: 'var(--warn)', lineHeight: 1.5,
+            }}>
+              {data!.unrosteredProviderIds.length} provider
+              {data!.unrosteredProviderIds.length === 1 ? ' holds' : 's hold'} published call at this
+              site but {data!.unrosteredProviderIds.length === 1 ? 'is' : 'are'} not on the roster
+              above — inactive, based at another site, or not marked a call taker. Those calls are
+              not shown in any row.
+            </div>
+          )}
+
           {data?.blocks.error ? (
             <div style={{ marginTop: 'var(--space-3)' }}>
               <Banner tone="error">{data.blocks.error}</Banner>
@@ -2013,7 +2033,8 @@ function EditableCell({
   field: Field;
   providerId: string;
   onSaved: (field: Field, value: number | null) => void;
-  onError: (message: string) => void;
+  /** null clears the banner — called at the start of every commit attempt. */
+  onError: (message: string | null) => void;
 }) {
   const [text, setText] = useState(value == null ? '' : String(value));
   const [saving, setSaving] = useState(false);
@@ -2030,6 +2051,10 @@ function EditableCell({
   const commit = async () => {
     const original = value == null ? '' : String(value);
     if (text.trim() === original) return;
+    // Clear any previous cell error before attempting this one, or a single
+    // transient failure leaves the banner up for the rest of the session and
+    // the chief can't tell whether their latest edit saved.
+    onError(null);
     const parsed = parse(text);
     if (!parsed.ok) {
       onError(parsed.error);
