@@ -9,7 +9,9 @@
 //   - PTO netting inside a span → rulesEngine/workDays.ptoWeekdaysCovered
 //   - worked-day credit         → plannerMath.computeScheduleActuals
 //   - fairness bucket           → rulesEngine/shared.dayTypeBucketOn (DATE-aware:
-//     a Monday holiday is a M-Th call)
+//     a Monday holiday is a M-Th call), via plannerMath.computeScheduleActuals
+//     — the bucket arrives pre-computed on its ProviderActuals output; this
+//     module does not call dayTypeBucketOn itself
 //   - call split weighting      → callBurden.callBurdenWeight / parentCallCodeOf
 //
 // THE TALLY IS A VIEW, NEVER AN INPUT (Gabriel 2026-09-06, verbatim: "I want
@@ -164,9 +166,9 @@ export interface CallCount {
   /**
    * Weighted: a 12h segment is 0.5, a whole call is 1. Accumulated from
    * possibly-repeating fractional weights (three 8h thirds at 0.3333 each
-   * sum to 0.9999000000000001, not 1) — this is a RAW FLOAT. Render it
-   * through `callBurden.formatCallWeight`; never compare it to a whole
-   * number directly.
+   * sum to 0.9999, not 1) — this is a RAW FLOAT. Render it through
+   * `callBurden.formatCallWeight`; never compare it to a whole number
+   * directly.
    */
   count: number;
 }

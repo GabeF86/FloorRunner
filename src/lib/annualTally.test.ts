@@ -170,6 +170,9 @@ const SHIFT_TYPES = new Map<string, TallyShiftType>([
   ['C1D8', { call_burden_weight: 0.3333, parent_call_code: 'C1' }],
   ['C1E8', { call_burden_weight: 0.3333, parent_call_code: 'C1' }],
   ['C1N8', { call_burden_weight: 0.3333, parent_call_code: 'C1' }],
+  // Parent code is NOT a prefix of the segment code — folding this one
+  // reorders the keys, unlike every C1N12/C1D8-style fixture above.
+  ['Z9', { call_burden_weight: 0.5, parent_call_code: 'C1' }],
 ]);
 
 const slot = (
@@ -264,7 +267,12 @@ describe('annualCallCounts', () => {
     expect(annualCallCounts(actuals, SHIFT_TYPES).size).toBe(0);
   });
 
-  it('sorts counts by bucket then code', () => {
+  it("carries computeScheduleActuals' bucket/code ordering through the fold", () => {
+    // NOTE: none of these codes get parent-folded (C1/C2 have no
+    // parent_call_code), so this only checks that the fold's own sort call
+    // does not scramble what computeScheduleActuals already handed it
+    // sorted — see the dedicated re-sort test below for the case where
+    // folding itself must change the order.
     const out = annualCallCounts(actualsFor([
       slot('2026-09-13', 'C2', 'p1', 'sunday'),
       slot('2026-09-08', 'C2', 'p1', 'weekday'),
@@ -273,6 +281,20 @@ describe('annualCallCounts', () => {
     expect(out.get('p1')).toEqual([
       { bucket: 'sunday', code: 'C2', count: 1 },
       { bucket: 'weekday', code: 'C1', count: 1 },
+      { bucket: 'weekday', code: 'C2', count: 1 },
+    ]);
+  });
+
+  it('re-sorts after parent folding reorders the keys', () => {
+    const actuals = actualsFor([
+      slot('2026-09-08', 'C2', 'p1', 'weekday'),
+      slot('2026-09-09', 'Z9', 'p1', 'weekday'),
+    ]);
+    // computeScheduleActuals hands these over sorted by OWN code: C2, Z9.
+    expect(actuals.p1.callCounts.map(c => c.code)).toEqual(['C2', 'Z9']);
+    // After folding Z9 -> C1, C1 must come FIRST.
+    expect(annualCallCounts(actuals, SHIFT_TYPES).get('p1')).toEqual([
+      { bucket: 'weekday', code: 'C1', count: 0.5 },
       { bucket: 'weekday', code: 'C2', count: 1 },
     ]);
   });
