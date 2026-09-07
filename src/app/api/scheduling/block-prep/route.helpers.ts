@@ -100,11 +100,28 @@ function msg(e: unknown, what: string): string {
 export const PAGE_SIZE = 1000;
 export const MAX_PAGES = 50;
 
+// Two distinct causes land on the same "the aggregate came up short" outcome,
+// and they call for different chief-facing advice, so they get different
+// messages (mirrors fetchRollupRows's own "stalled at N of M" vs "exceeded
+// budget" split):
+//   EXHAUSTED   — every one of MAX_PAGES pages came back FULL (never a short
+//                 page to stop on); there is genuinely more data than this
+//                 route can page through. Reloading will not help — an
+//                 engineer needs to raise the budget.
+//   SHORTFALL   — a page came back SHORT (or empty) before the running total
+//                 met the reported count. The most plausible real cause is a
+//                 schedule being published/edited WHILE this read was paging
+//                 (a stall with no growth is the same shape) — a fresh read
+//                 is expected to be consistent, so reloading is the fix.
 const TRUNCATED_MSG = (what: string) =>
-  `${what} could not be loaded in full — the read was truncated even after paging through `
-  + `up to ${MAX_PAGES} pages of ${PAGE_SIZE} rows each, so the numbers below would be wrong. `
-  + 'This is an engineering issue (the page budget needs raising, or something is producing far '
-  + 'more rows than expected) — please report it rather than retrying from this screen.';
+  `${what} could not be loaded in full — the read exhausted its page budget (${MAX_PAGES} pages `
+  + `of ${PAGE_SIZE} rows each) without finishing, so the numbers below would be wrong. This is an `
+  + 'engineering issue (the page budget needs raising) — please report it rather than retrying.';
+
+const SHORTFALL_MSG = (what: string) =>
+  `${what} came back short of its own reported total while this read was still in progress — most `
+  + 'likely a schedule was published or edited at the same time, so the numbers below would be '
+  + 'wrong. Reload the page; a fresh read should be consistent.';
 
 const COUNT_UNAVAILABLE_MSG = (what: string) =>
   `${what} could not be verified complete — the read did not report a row count, so it is `
@@ -117,8 +134,15 @@ const COUNT_UNAVAILABLE_MSG = (what: string) =>
 // `{ count: 'exact' }` from a select) is therefore ALSO "truncated" here, not
 // "no evidence of truncation" — same posture as dashboard/queries.ts's
 // countPanel, which turns a null head-count into an error rather than a
-// good-looking zero. Kept as a plain data/count comparison (rather than
-// folded into fetchAllPages) so it stays independently testable.
+// good-looking zero.
+//
+// NOTE: the fail-closed-on-null POSTURE is actually enforced one level up, by
+// fetchAllPages's explicit `lastCount == null` check, which runs (and
+// returns) before this function is ever called — so the `res.count == null`
+// branch below is unreachable from that caller today, and no test exercises
+// it through fetchAllPages. It is kept anyway so this predicate is safe to
+// call on its own (a null count should never read as "not truncated" to any
+// future caller), not because a test proves it fires from here.
 function truncated(res: { data: unknown; count?: number | null }): boolean {
   const len = Array.isArray(res.data) ? res.data.length : 0;
   return res.count == null || len < res.count;
@@ -128,7 +152,13 @@ function truncated(res: { data: unknown; count?: number | null }): boolean {
  * Pages a single query via `.range()` until either every row (per the exact
  * count) has been collected or MAX_PAGES is exhausted. Mirrors
  * dashboard/queries.ts's `fetchRollupRows` — the house pattern for a
- * year-wide read past PostgREST's 1000-row cap.
+ * year-wide read past PostgREST's 1000-row cap — but validates the AGGREGATE
+ * against the count once, after the loop, rather than using the count as a
+ * per-page termination signal: a complete MAX_PAGES-page read where every
+ * page is exactly full succeeds here (the aggregate matches the count),
+ * whereas a naive `rows.length >= res.count` per-page check has no
+ * opportunity to fire past the final iteration and would need special-casing
+ * to avoid a false "exceeded budget" error at exactly that boundary.
  *
  * `buildPage` must apply a STABLE `.order()` (otherwise `.range()` pages are
  * not guaranteed disjoint/complete — same requirement fetchRollupRows
@@ -136,10 +166,13 @@ function truncated(res: { data: unknown; count?: number | null }): boolean {
  *
  * Never returns a partial result: a short page is trusted as "the last page"
  * only provisionally — the aggregate is re-checked against the reported exact
- * count once the loop ends (via `truncated()`), so a query that stalls (an
- * empty/short page before the count is satisfied) fails exactly like one that
- * exhausts the whole page budget. A null count is failed closed rather than
- * treated as "nothing to prove" — see `truncated()`.
+ * count once the loop ends (via `truncated()`). Which of the two failure
+ * messages fires depends on HOW the loop ended: `exhausted` stays true only
+ * when every page came back full (MAX_PAGES genuinely wasn't enough);
+ * breaking on any short/empty page — a stall, or a shortfall from a
+ * concurrent write — clears it, because in both cases the loop stopped well
+ * within budget and reloading is the fix, not raising MAX_PAGES. A null
+ * count is failed closed rather than treated as "nothing to prove".
  */
 async function fetchAllPages<T>(
   buildPage: (fromRow: number, toRow: number) => PromiseLike<{
@@ -151,6 +184,7 @@ async function fetchAllPages<T>(
 ): Promise<{ data: T[] | null; error: string | null }> {
   const rows: T[] = [];
   let lastCount: number | null | undefined;
+  let exhausted = true; // stays true only if every page ran full to MAX_PAGES
   for (let page = 0; page < MAX_PAGES; page++) {
     const fromRow = page * PAGE_SIZE;
     // eslint-disable-next-line no-await-in-loop -- pages are inherently sequential (.range() offsets)
@@ -159,10 +193,12 @@ async function fetchAllPages<T>(
     lastCount = res.count;
     const batch = (res.data ?? []) as T[];
     rows.push(...batch);
-    if (batch.length < PAGE_SIZE) break; // short page — provisionally the last one
+    if (batch.length < PAGE_SIZE) { exhausted = false; break; } // short page — provisionally the last one
   }
   if (lastCount == null) return { data: null, error: COUNT_UNAVAILABLE_MSG(what) };
-  if (truncated({ data: rows, count: lastCount })) return { data: null, error: TRUNCATED_MSG(what) };
+  if (truncated({ data: rows, count: lastCount })) {
+    return { data: null, error: exhausted ? TRUNCATED_MSG(what) : SHORTFALL_MSG(what) };
+  }
   return { data: rows, error: null };
 }
 

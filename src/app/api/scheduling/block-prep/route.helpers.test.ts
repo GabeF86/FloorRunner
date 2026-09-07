@@ -167,10 +167,12 @@ describe('loadBlockPrepData', () => {
     expect(out.unrosteredProviderIds).toBeNull();
   });
 
-  it('errors rather than under-counting when the slot read is truncated', async () => {
-    // PostgREST caps un-ranged selects at 1000 rows with no error. A short read
-    // against a larger exact count must surface as an error — never as a
-    // confident, wrong call tally.
+  it('errors rather than under-counting when the slot read comes back short of its declared count (a stall)', async () => {
+    // PostgREST caps un-ranged selects at 1000 rows with no error. A short
+    // read against a larger exact count must surface as an error — never as
+    // a confident, wrong call tally. This never reaches MAX_PAGES (it breaks
+    // on the very first short/empty page), so it is a SHORTFALL, not a
+    // page-budget exhaustion — reload-oriented wording, not "raise the budget".
     const sb = fakeClient({
       provider_employment_profiles: { data: PROFILES },
       holiday_calendars: { data: [] },
@@ -181,10 +183,12 @@ describe('loadBlockPrepData', () => {
     });
     const out = await loadBlockPrepData(sb, SITE, 2026);
     expect(out.roster.data).toBeNull();
-    expect(out.roster.error).toMatch(/truncated/i);
+    expect(out.roster.error).toMatch(/short/i);
+    expect(out.roster.error).toMatch(/reload/i);
+    expect(out.roster.error).not.toMatch(/page budget/i);
   });
 
-  it('errors rather than showing full PTO balances when availability is truncated', async () => {
+  it('errors rather than showing full PTO balances when availability comes back short of its declared count (a stall)', async () => {
     const sb = fakeClient({
       provider_employment_profiles: { data: PROFILES },
       holiday_calendars: { data: [] },
@@ -195,7 +199,8 @@ describe('loadBlockPrepData', () => {
     });
     const out = await loadBlockPrepData(sb, SITE, 2026);
     expect(out.roster.data).toBeNull();
-    expect(out.roster.error).toMatch(/truncated/i);
+    expect(out.roster.error).toMatch(/short/i);
+    expect(out.roster.error).toMatch(/reload/i);
   });
 
   it('filters slots to published versions', async () => {
@@ -407,7 +412,11 @@ describe('loadBlockPrepData', () => {
     });
     const out = await loadBlockPrepData(sb, SITE, 2026);
     expect(out.roster.data).toBeNull();
-    expect(out.roster.error).toMatch(/truncated/i);
+    // The EXHAUSTED-branch message: reloading would not help here (every
+    // page was full — there's genuinely more data than the budget covers),
+    // so it must say "page budget" / "report", never "reload".
+    expect(out.roster.error).toMatch(/page budget/i);
+    expect(out.roster.error).not.toMatch(/reload/i);
     const slotCalls = sb.calls.filter(c => c.table === 'schedule_slots');
     // Genuinely exhausted the page budget (MAX_PAGES round trips) rather than
     // bailing after the first mismatched count.
@@ -436,6 +445,94 @@ describe('loadBlockPrepData', () => {
     expect(out.roster.error).toBeNull();
     const availCalls = sb.calls.filter(c => c.table === 'provider_availability');
     expect(availCalls.length).toBe(2); // genuinely paged, not a single call
+  });
+
+  it('validates the aggregate against the LAST reported count, not the first — a concurrent insert must not slip through as success', async () => {
+    // page 0 looks complete on its own (1000 of 1000). Page 1 (the mandatory
+    // follow-up check, since page 0 was exactly full) comes back EMPTY, but
+    // the count has grown to 1005 — five rows became visible somewhere in the
+    // table after page 0 ran, and this read never fetched them. Using the
+    // FIRST count (1000) would read as "1000 of 1000 — done" and silently
+    // return an incomplete set; only comparing against the LAST count (1005)
+    // catches the shortfall.
+    const fullPage = Array.from({ length: PAGE_SIZE }, () => callRow('p1'));
+    const sb = fakeClient({
+      provider_employment_profiles: { data: PROFILES },
+      holiday_calendars: { data: [] },
+      shift_types: { data: [] },
+      provider_availability: { data: [] },
+      schedule_slots: { pages: [
+        { data: fullPage, count: PAGE_SIZE },     // page 0: 1000 of 1000, looks done
+        { data: [], count: PAGE_SIZE + 5 },       // page 1: empty, but the true total grew
+      ] },
+      schedules: { data: [] },
+    });
+    const out = await loadBlockPrepData(sb, SITE, 2026);
+    expect(out.roster.data).toBeNull();
+    // A concurrent write mid-read is a SHORTFALL, not a budget exhaustion —
+    // only 2 calls were made, so "reload" is the right advice, not "raise
+    // the page budget".
+    expect(out.roster.error).toMatch(/reload/i);
+    expect(out.roster.error).not.toMatch(/page budget/i);
+    const slotCalls = sb.calls.filter(c => c.table === 'schedule_slots');
+    expect(slotCalls.length).toBe(2);
+  });
+
+  // ── Nit 4: two correct boundaries the suite would otherwise miss ───────────
+
+  it('a read whose count is an exact multiple of PAGE_SIZE succeeds via one harmless extra empty request', async () => {
+    // .range() sets an offset/limit, not a Range header — an offset past the
+    // end of the result set returns 200 with an empty array, never a 416. So
+    // when the true total is EXACTLY 1000 (one full page), the loop cannot
+    // tell it's done without asking once more; that second call comes back
+    // empty and the read still succeeds, just with one extra harmless round
+    // trip. A future "optimization" that tries to skip that check must not
+    // start failing this exact-multiple case.
+    const fullPage = Array.from({ length: PAGE_SIZE }, () => callRow('p1'));
+    const sb = fakeClient({
+      provider_employment_profiles: { data: PROFILES },
+      holiday_calendars: { data: [] },
+      shift_types: { data: [{ code: 'C1', call_burden_weight: 1, parent_call_code: null }] },
+      provider_availability: { data: [] },
+      schedule_slots: { pages: [
+        { data: fullPage, count: PAGE_SIZE },
+        { data: [], count: PAGE_SIZE }, // the harmless confirmation call
+      ] },
+      schedules: { data: [] },
+    });
+    const out = await loadBlockPrepData(sb, SITE, 2026);
+    expect(out.roster.error).toBeNull();
+    const jones = out.roster.data!.find(r => r.provider_id === 'p1')!;
+    expect(jones.callTotal).toBe(PAGE_SIZE);
+    const slotCalls = sb.calls.filter(c => c.table === 'schedule_slots');
+    expect(slotCalls.length).toBe(2); // the one extra request, not an error
+  });
+
+  it('MAX_PAGES reached with the count exactly satisfied still succeeds (not a false budget failure)', async () => {
+    // Every one of MAX_PAGES pages comes back exactly full, and the total
+    // (MAX_PAGES x PAGE_SIZE) matches the reported count exactly — a
+    // completely legitimate, if large, read. `exhausted` stays true (no page
+    // was ever short), but `truncated()` is false (the aggregate matches the
+    // count), so this must succeed. This is the boundary a per-page
+    // `rows.length >= res.count` termination check (the fetchRollupRows
+    // style) needs special-casing to avoid failing; validating the aggregate
+    // once, after the loop, does not.
+    const TOTAL = MAX_PAGES * PAGE_SIZE;
+    const fullPage = Array.from({ length: PAGE_SIZE }, () => callRow('p1'));
+    const sb = fakeClient({
+      provider_employment_profiles: { data: PROFILES },
+      holiday_calendars: { data: [] },
+      shift_types: { data: [{ code: 'C1', call_burden_weight: 1, parent_call_code: null }] },
+      provider_availability: { data: [] },
+      schedule_slots: { pages: [{ data: fullPage, count: TOTAL }] }, // repeated (clamped) for all 50 calls
+      schedules: { data: [] },
+    });
+    const out = await loadBlockPrepData(sb, SITE, 2026);
+    expect(out.roster.error).toBeNull();
+    const jones = out.roster.data!.find(r => r.provider_id === 'p1')!;
+    expect(jones.callTotal).toBe(TOTAL);
+    const slotCalls = sb.calls.filter(c => c.table === 'schedule_slots');
+    expect(slotCalls.length).toBe(MAX_PAGES); // exactly the budget, no more, no error
   });
 
   // ── Fix 2 (Important): the exact count is what makes truncation detectable ─
