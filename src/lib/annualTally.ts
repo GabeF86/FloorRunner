@@ -28,11 +28,20 @@
 // (Gabriel: "0 is a real number for some of them").
 
 import {
+  computeScheduleActuals,
   plannerYearCounters,
+  rangeComposition,
   type PlannerAvailabilityRow,
+  type PlannerHoliday,
   type ProviderActuals,
 } from './plannerMath';
-import { entitledOffDays } from './rulesEngine/workDays';
+import {
+  effectiveWorkDaysFte,
+  entitledOffDays,
+  ptoWeekdaysCovered,
+  PTO_NETTING_TYPES,
+} from './rulesEngine/workDays';
+import { BLOCKING_AVAIL, isDismissedAvailability } from './rulesEngine/shared';
 import { PTO_WORK_DAYS_PER_WEEK } from './dateRanges';
 import {
   callBurdenWeight,
@@ -44,8 +53,8 @@ import {
 /** The employment-profile fields this module needs. */
 export interface TallyProfile {
   provider_id: string;
-  /** Call FTE. NULL means NOT STATED — offDayBudgetFor returns null rather
-   *  than guessing; it is never treated as 0. */
+  /** Call FTE. NULL means NOT STATED — offDayBudgetFor returns
+   *  { kind: 'unknown' } rather than guessing; it is never treated as 0. */
   fte_value: number | null;
   /** Working-days FTE (patch43). Null means "same as fte_value". */
   work_days_fte: number | null;
@@ -93,6 +102,27 @@ export function ptoFiguresFor(
 }
 
 /**
+ * The off-day BUDGET, as a discriminated union rather than a bare number
+ * (Gabriel 2026-09-06). Four states that must never collapse into each other:
+ *   - `days`           a real off-day entitlement.
+ *   - `none`           owes every working day — a full-timer (or a >1 FTE
+ *                       "odd partner working two jobs") has NO off days
+ *                       because they owe everything.
+ *   - `not-applicable` owes NO working days at all — a per diem's off-day
+ *                       BUDGET concept doesn't apply. The opposite fact from
+ *                       `none`: nothing to owe, not everything owed.
+ *   - `unknown`         fte_value null, non-finite or negative — a data gap
+ *                       worth fixing, not a correct answer.
+ * `offDaysText` and every other consumer is forced by the compiler to handle
+ * all four, so a per diem and a full-timer can never both render as "0".
+ */
+export type OffDayBudget =
+  | { kind: 'days'; days: number }
+  | { kind: 'none' }
+  | { kind: 'not-applicable' }
+  | { kind: 'unknown' };
+
+/**
  * The off-day BUDGET: working days the provider is not obligated to work,
  * because their working-days FTE is below 1. Independent of PTO — a PTO day is
  * not an off day, it is a paid absence from an obligated day.
@@ -101,9 +131,20 @@ export function ptoFiguresFor(
  * which the provider profile labels "Days Off". Those are typed entries; this
  * is a contractual entitlement.
  *
- * Returns null when the FTE is unknown (null/undefined/non-finite) — an
- * unknown FTE is BLANK, not a stated zero, and must never render as "entitled
- * to every working day off" (what `entitledOffDays` would compute for fte=0).
+ * BRANCHES ON THE COMPUTED DAYS, NOT ON FTE THRESHOLDS — except
+ * `not-applicable`, which is about OWING NOTHING and so is the one state that
+ * keys off the FTE itself. An earlier draft specified `days`/`none` by FTE
+ * range ("0 < eff < 1" / "eff is 1") and that is wrong twice over: a call FTE
+ * of 1.5 (legal — FTE_MAX is 2, for a partner working two jobs) matches no
+ * band at all, and a work_days_fte of 0.999 rounds to a zero entitlement
+ * while still matching "0 < eff < 1", rendering `{ kind: 'days', days: 0 }` —
+ * "0 budgeted", the exact string this ruling exists to abolish. Branching on
+ * `entitledOffDays`'s answer instead sends both of those to `none`.
+ *
+ * Returns `{ kind: 'unknown' }` when the FTE is unknown (null/undefined/
+ * non-finite/negative) — an unknown FTE is BLANK, not a stated zero, and must
+ * never render as "entitled to every working day off" (what `entitledOffDays`
+ * would compute for fte=0, which is exactly what `not-applicable` replaces).
  * This deliberately does NOT follow the rest of the codebase's convention of
  * coercing a missing FTE with `|| 1` (fteTarget.ts:606's `prof.fte_value || 1`
  * engine-pool coercion; dayShiftAutoGen.ts:367's `Number(p.fte_value) || 1`
@@ -111,8 +152,8 @@ export function ptoFiguresFor(
  * need SOME number to keep a generation pipeline moving; this module is a
  * read-only view with no such obligation, so it refuses to guess instead.
  */
-export function offDayBudgetFor(profile: TallyProfile, workingDaysInYear: number): number | null {
-  if (profile.fte_value == null) return null; // unstated — cannot say, not a guessed 0
+export function offDayBudgetFor(profile: TallyProfile, workingDaysInYear: number): OffDayBudget {
+  if (profile.fte_value == null) return { kind: 'unknown' }; // unstated — cannot say, not a guessed 0
   // fte_value is a Postgres `numeric` column and can arrive over the wire as a
   // string (e.g. "0.75"); that is why it alone is coerced here.
   // work_days_fte's string coercion happens later, inside entitledOffDays'
@@ -124,13 +165,16 @@ export function offDayBudgetFor(profile: TallyProfile, workingDaysInYear: number
   // a DB CHECK) — defence-in-depth, not a live bug. Without the `< 0` half, a
   // negative FTE would flow into entitledOffDays and invert its subtraction
   // (fte=-1, WD=250 → 250 - round(-250) = 500 — twice the working year).
-  if (!Number.isFinite(fte) || fte < 0) return null; // unparseable/negative — unknown, never a guessed 0
-  // TODO(gabriel): a stated 0.00-FTE per diem falls through to here and gets
-  // the FULL working-day count as their off-day budget (entitledOffDays(0, WD)
-  // = WD). Is that the number the board should show for a per diem, or should
-  // it read "n/a" instead? Open product question — ask before shipping this
-  // to a per-diem-heavy site.
-  return entitledOffDays(fte, workingDaysInYear, profile.work_days_fte);
+  if (!Number.isFinite(fte) || fte < 0) return { kind: 'unknown' }; // unparseable/negative
+  // 'not-applicable' is about OWING NOTHING, so — and ONLY this branch — keys
+  // off the FTE itself rather than the computed answer. Routed through
+  // effectiveWorkDaysFte (never fte_value directly): Hussain is call FTE 0.70
+  // with working-days FTE 1.00 and must NOT land here.
+  if (effectiveWorkDaysFte(fte, profile.work_days_fte) === 0) return { kind: 'not-applicable' };
+  // Everything else keys off the ANSWER, so a >1 FTE and a rounds-to-zero
+  // budget both land in 'none' rather than rendering "0 budgeted".
+  const days = entitledOffDays(fte, workingDaysInYear, profile.work_days_fte);
+  return days === 0 ? { kind: 'none' } : { kind: 'days', days };
 }
 
 /**
@@ -227,4 +271,206 @@ export function annualCallCounts(
  *  Raw float (see `CallCount.count`) — render through `formatCallWeight`. */
 export function callTotal(counts: ReadonlyArray<CallCount>): number {
   return counts.reduce((n, c) => n + c.count, 0);
+}
+
+// ── Off days used, and the covered span (Task 4) ────────────────────────────
+
+/**
+ * One slot row as `plannerMath.computeScheduleActuals` expects it — derived
+ * structurally from its own parameter type rather than importing
+ * `PlannerSlotRow` by name. Task 3's refold moved all slot-walking (the fill
+ * predicate, the assignments-embed normalization, the date-aware bucketing)
+ * into `computeScheduleActuals` itself; this module calls that function but
+ * has no reason to re-acquire its input type's name into its own import list.
+ */
+type TallySlotRow = Parameters<typeof computeScheduleActuals>[0][number];
+
+// Absence types that EXPLAIN an unworked day without it being a day off
+// (Gabriel 2026-09-06: "dont count sick days as off days").
+//
+// DERIVED from the engine's own sets, never hand-typed — a literal list would
+// drift the first time an availability type is added. BLOCKING_AVAIL is
+// {pto, sick, fmla, parental_leave, military_leave, jury_duty, unavailable,
+// blocked}; removing the PTO-netting types (counted separately) and
+// `unavailable` leaves {sick, jury_duty, blocked}.
+//
+// `unavailable` is deliberately KEPT OUT of this set: workDays.ts states that
+// those rows ARE the partial's entitledOff being consumed, so they must remain
+// countable as off days. Conference / CME / admin are not in BLOCKING_AVAIL at
+// all — the provider was schedulable and simply wasn't scheduled — so those
+// days stay off days too.
+export const NON_ENTITLEMENT_ABSENCE_TYPES: ReadonlySet<string> = new Set(
+  [...BLOCKING_AVAIL].filter(t => !PTO_NETTING_TYPES.has(t) && t !== 'unavailable'),
+);
+
+/**
+ * Working dates in `workingDaySet` covered by a live non-entitlement absence.
+ * Dismissed (denied/canceled) rows are ignored, matching every other consumer.
+ */
+export function nonEntitlementAbsenceDates(
+  rows: ReadonlyArray<PlannerAvailabilityRow>,
+  workingDaySet: ReadonlySet<string>,
+): Set<string> {
+  const out = new Set<string>();
+  for (const row of rows) {
+    if (isDismissedAvailability(row)) continue;
+    if (!NON_ENTITLEMENT_ABSENCE_TYPES.has(row.availability_type)) continue;
+    for (const d of workingDaySet) {
+      if (row.start_date <= d && d <= row.end_date) out.add(d);
+    }
+  }
+  return out;
+}
+
+export interface CoveredSpan {
+  date_start: string;
+  date_end: string;
+}
+
+export interface AnnualTallyInput {
+  year: number;
+  profiles: ReadonlyArray<TallyProfile>;
+  /** Whole-roster availability rows; each MUST carry provider_id. */
+  availability: ReadonlyArray<PlannerAvailabilityRow>;
+  /** PUBLISHED slots at the site, any date — filtered to the year here. */
+  slots: ReadonlyArray<TallySlotRow>;
+  holidays: ReadonlyArray<PlannerHoliday>;
+  shiftTypes: ReadonlyMap<string, TallyShiftType>;
+  /** Date ranges of the published blocks at the site that overlap the year. */
+  coveredSpans: ReadonlyArray<CoveredSpan>;
+}
+
+export interface ProviderAnnualFigures {
+  pto: PtoFigures;
+  /**
+   * Contractual off-day entitlement for the whole year — a tagged union, not a
+   * number, so a per diem ('not-applicable') and a full-timer ('none') can
+   * never render as the same "0". See offDayBudgetFor.
+   */
+  offDayBudget: OffDayBudget;
+  /**
+   * Off days consumed, counted ONLY across `coveredSpan`. Null when no
+   * published block covers any of the year — an unbuilt month is not a month
+   * of days off, and must never be rendered as one.
+   */
+  offDaysUsed: number | null;
+  callCounts: CallCount[];
+  callTotal: number;
+}
+
+export interface AnnualTally {
+  year: number;
+  /** Weekdays in the year minus MAJOR holidays (workDays.ts contract). */
+  workingDaysInYear: number;
+  /**
+   * The union of published block ranges, clipped to the year, expressed as its
+   * outer bounds plus the working-day count actually used for offDaysUsed.
+   * Null when nothing is published in the year.
+   */
+  coveredSpan: { start: string; end: string; workingDays: number } | null;
+  providers: Map<string, ProviderAnnualFigures>;
+}
+
+/**
+ * The board's whole annual picture in one pass.
+ *
+ * `slots` must already be published-only and site-scoped; see annualCallCounts.
+ */
+export function computeAnnualTally(input: AnnualTallyInput): AnnualTally {
+  const { year, profiles, availability, slots, holidays, shiftTypes, coveredSpans } = input;
+
+  // The year's working-day set. rangeComposition caps at MAX_PLANNER_RANGE_DAYS
+  // (400), comfortably above a 366-day year.
+  const comp = rangeComposition(`${year}-01-01`, `${year}-12-31`, holidays);
+
+  // The published blocks' CALENDAR bounds, clipped to the year — NOT derived
+  // from which of their dates happen to be working days. A block that runs
+  // Mon..Sun must report its Sunday as the span's end; deriving start/end
+  // from the working-day set would silently truncate it to the preceding
+  // Friday, misrepresenting the block boundary the honesty caveat names.
+  const yearStart = `${year}-01-01`;
+  const yearEnd = `${year}-12-31`;
+  const clippedSpans = coveredSpans
+    .map(s => ({
+      start: s.date_start < yearStart ? yearStart : s.date_start,
+      end: s.date_end > yearEnd ? yearEnd : s.date_end,
+    }))
+    .filter(s => s.start <= s.end); // drop spans with no overlap in the year
+
+  // Working days inside a published block, clipped to the year — this set (not
+  // the span's calendar bounds above) is what offDaysUsed below counts against.
+  const coveredWorkingDays = new Set<string>();
+  for (const d of comp.workingDaySet) {
+    if (clippedSpans.some(s => d >= s.start && d <= s.end)) coveredWorkingDays.add(d);
+  }
+  const coveredSpan = clippedSpans.length === 0 ? null : {
+    start: clippedSpans.reduce((min, s) => (s.start < min ? s.start : min), clippedSpans[0].start),
+    end: clippedSpans.reduce((max, s) => (s.end > max ? s.end : max), clippedSpans[0].end),
+    workingDays: coveredWorkingDays.size,
+  };
+
+  // ONE walk over the slots, feeding both halves of the tally.
+  // computeScheduleActuals owns the fill predicate, the embed normalization and
+  // the date-aware bucketing; annualCallCounts folds split segments over its raw
+  // per-code counts, and the off-days math below reads its three DISJOINT
+  // worked-day sets (assigned / post-call rest / ICU), so their sizes simply add.
+  //
+  // The year filter lives HERE, not inside annualCallCounts — this is the line
+  // that makes a block straddling New Year split between two calendar years.
+  //
+  // Called UNCONDITIONALLY, even when nothing is published: its callCounts
+  // accumulation never consults the working-day set (plannerMath.ts:400-410), so
+  // an empty coveredWorkingDays still yields correct call counts. Gating it on
+  // coveredSpan would zero out every call in a year with no published block.
+  const yearSlots = slots.filter(s => s.slot_date.startsWith(`${year}-`));
+  const actuals = computeScheduleActuals(yearSlots, availability, coveredWorkingDays, holidays);
+  const counts = annualCallCounts(actuals, shiftTypes);
+
+  // Group availability once rather than rescanning the whole roster's rows per
+  // provider (annualTally.availabilityByProvider).
+  const byProvider = availabilityByProvider(availability);
+
+  const providers = new Map<string, ProviderAnnualFigures>();
+  for (const profile of profiles) {
+    const pid = profile.provider_id;
+    const myCounts = counts.get(pid) ?? [];
+
+    let offDaysUsed: number | null = null;
+    if (coveredSpan) {
+      // A working day is an OFF DAY only if nothing else explains it
+      // (Gabriel 2026-09-06: "dont count sick days as off days").
+      //
+      // Built as a UNION of explained dates rather than a chain of
+      // subtractions, because the sets overlap: an ICU `blocked` row is both
+      // credited-as-worked AND a blocking absence, so subtracting counts would
+      // charge it twice and under-report off days.
+      const rows = byProvider.get(pid) ?? [];
+      const a = actuals[pid];
+      const explained = new Set<string>();
+      // 1. Credited as worked — assignment, post-call rest, ICU. Already
+      //    clipped to the working-day set by computeScheduleActuals, and the
+      //    three sets are disjoint by construction.
+      for (const d of a?.assignedWorkdays ?? []) explained.add(d);
+      for (const d of a?.postCallRestWorkdays ?? []) explained.add(d);
+      for (const d of a?.icuWorkdays ?? []) explained.add(d);
+      // 2. PTO-netting leave, sell-back aware.
+      for (const d of ptoWeekdaysCovered(rows, coveredWorkingDays)) explained.add(d);
+      // 3. Non-entitlement absences: sick, jury duty, plain blocked. NOT
+      //    `unavailable` — workDays.ts states those rows ARE the off-day
+      //    entitlement being consumed, so they must stay countable.
+      for (const d of nonEntitlementAbsenceDates(rows, coveredWorkingDays)) explained.add(d);
+
+      offDaysUsed = Math.max(0, coveredSpan.workingDays - explained.size);
+    }
+
+    providers.set(pid, {
+      pto: ptoFiguresFor(profile, availability, year),
+      offDayBudget: offDayBudgetFor(profile, comp.workingDays),
+      offDaysUsed,
+      callCounts: myCounts,
+      callTotal: callTotal(myCounts),
+    });
+  }
+
+  return { year, workingDaysInYear: comp.workingDays, coveredSpan, providers };
 }

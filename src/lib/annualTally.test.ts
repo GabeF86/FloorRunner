@@ -4,11 +4,13 @@
 import { describe, it, expect } from 'vitest';
 import {
   ptoFiguresFor, offDayBudgetFor, availabilityByProvider, annualCallCounts, callTotal,
+  computeAnnualTally, NON_ENTITLEMENT_ABSENCE_TYPES,
   type TallyProfile, type TallyShiftType,
 } from './annualTally';
 import { computeScheduleActuals } from './plannerMath';
 import { formatCallWeight } from './callBurden';
-import type { PlannerAvailabilityRow, PlannerSlotRow } from './plannerMath';
+import { ICU_WEEK_REASON } from './icuRotation';
+import type { PlannerAvailabilityRow, PlannerHoliday, PlannerSlotRow } from './plannerMath';
 
 const profile = (over: Partial<TallyProfile> = {}): TallyProfile => ({
   provider_id: 'p1',
@@ -97,43 +99,66 @@ describe('ptoFiguresFor', () => {
 });
 
 describe('offDayBudgetFor', () => {
-  it('gives a full-timer zero off days', () => {
-    expect(offDayBudgetFor(profile({ fte_value: 1 }), 250)).toBe(0);
+  // offDayBudgetFor returns a discriminated union (Gabriel 2026-09-06), not a
+  // bare number/null — 'none' and 'not-applicable' are OPPOSITE facts (owes
+  // everything vs. owes nothing) and must never collapse into the same "0".
+
+  it('gives a full-timer "none" — they owe every working day, so there are no off days', () => {
+    expect(offDayBudgetFor(profile({ fte_value: 1 }), 250)).toEqual({ kind: 'none' });
   });
 
-  it('gives a 0.75 FTE a quarter of the working days', () => {
+  it('gives a 0.75 FTE a real days figure — a quarter of the working days', () => {
     // 250 - round(187.5) = 250 - 188 = 62. entitledOffDays rounds half UP, and
     // that rounding is the engine's — match it, never "fix" it here.
-    expect(offDayBudgetFor(profile({ fte_value: 0.75 }), 250)).toBe(62);
+    expect(offDayBudgetFor(profile({ fte_value: 0.75 }), 250)).toEqual({ kind: 'days', days: 62 });
   });
 
   it('keys off WORKING-days FTE, not call FTE (the Hussain case)', () => {
-    // Call FTE 0.70 but work_days_fte 1.00 — he works full days, so zero off days.
-    expect(offDayBudgetFor(profile({ fte_value: 0.7, work_days_fte: 1 }), 250)).toBe(0);
+    // Call FTE 0.70 but work_days_fte 1.00 — he works full days, so "none".
+    expect(offDayBudgetFor(profile({ fte_value: 0.7, work_days_fte: 1 }), 250)).toEqual({ kind: 'none' });
   });
 
-  it('returns null for an unknown FTE — never a guessed maximal budget', () => {
-    expect(offDayBudgetFor(profile({ fte_value: null }), 250)).toBeNull();
+  it('returns "unknown" for a null FTE — never a guessed maximal budget', () => {
+    expect(offDayBudgetFor(profile({ fte_value: null }), 250)).toEqual({ kind: 'unknown' });
   });
 
-  it('returns null for a non-numeric FTE rather than rendering NaN', () => {
+  it('returns "unknown" for a non-numeric FTE rather than rendering NaN', () => {
     const bad = profile({ fte_value: 'abc' as unknown as number });
-    expect(offDayBudgetFor(bad, 250)).toBeNull();
+    expect(offDayBudgetFor(bad, 250)).toEqual({ kind: 'unknown' });
   });
 
-  it('returns null for a negative FTE rather than inverting the subtraction', () => {
+  it('returns "unknown" for a negative FTE rather than inverting the subtraction', () => {
     // Mirrors effectiveWorkDaysFte's own `< 0` guard (workDays.ts:193). Not
     // reachable through the app (range-checked at the write gates) — this
     // pins the defence-in-depth, not a live path. Without the guard,
     // entitledOffDays(-1, 250) = 250 - round(-250) = 500: twice the year.
-    expect(offDayBudgetFor(profile({ fte_value: -1 }), 250)).toBeNull();
+    expect(offDayBudgetFor(profile({ fte_value: -1 }), 250)).toEqual({ kind: 'unknown' });
   });
 
-  it('treats a stated zero FTE as a real answer, not as unknown', () => {
-    // A stated 0 is not blank — it delegates to entitledOffDays like any
-    // other finite FTE (see the TODO in annualTally.ts on whether the FULL
-    // working-day result this produces is the right board figure).
-    expect(offDayBudgetFor(profile({ fte_value: 0 }), 250)).toBe(250);
+  it('treats a stated zero FTE as "not-applicable" — a per diem owes NO working days at all', () => {
+    // A stated 0 is not blank, but it is also not a number to show: a per
+    // diem's effective working-days FTE is 0, so the off-day BUDGET concept
+    // doesn't apply (Gabriel 2026-09-06, "n/a for gorelick"). This replaces
+    // the earlier TODO, which had this falling through to the FULL working-
+    // day count — literally correct but useless on screen.
+    expect(offDayBudgetFor(profile({ fte_value: 0 }), 250)).toEqual({ kind: 'not-applicable' });
+  });
+
+  it('treats a call FTE of 1.5 as "none" — a >1 FTE must not go unmatched', () => {
+    // FTE_MAX is 2 (the "odd partner working two jobs" case). Branching on
+    // FTE THRESHOLDS ("eff is 1" / "0 < eff < 1") instead of the computed
+    // answer leaves 1.5 matching no state at all — this is the case that
+    // proved that draft wrong.
+    expect(offDayBudgetFor(profile({ fte_value: 1.5 }), 250)).toEqual({ kind: 'none' });
+  });
+
+  it('treats a work_days_fte of 0.999 as "none", never as "0 budgeted"', () => {
+    // entitledOffDays rounds 0.999 x 250 = 249.75 UP to 250, so the computed
+    // entitlement is exactly 0. Branching on the FTE ("0 < eff < 1") would
+    // land this in 'days' with days: 0, rendering "0 budgeted" — the exact
+    // string this ruling exists to abolish. Branching on the ANSWER (0) sends
+    // it to 'none' instead.
+    expect(offDayBudgetFor(profile({ fte_value: 1, work_days_fte: 0.999 }), 250)).toEqual({ kind: 'none' });
   });
 });
 
@@ -340,5 +365,198 @@ describe('annualCallCounts', () => {
     const out = annualCallCounts(
       actualsFor([slot('2026-09-08', 'C9', 'p1', 'weekday')]), SHIFT_TYPES);
     expect(out.get('p1')).toEqual([{ bucket: 'weekday', code: 'C9', count: 1 }]);
+  });
+});
+
+describe('NON_ENTITLEMENT_ABSENCE_TYPES', () => {
+  it('derives to exactly {sick, jury_duty, blocked} — pinned so a change to ' +
+     "BLOCKING_AVAIL or PTO_NETTING_TYPES can't silently drift this set", () => {
+    expect([...NON_ENTITLEMENT_ABSENCE_TYPES].sort()).toEqual(['blocked', 'jury_duty', 'sick']);
+  });
+});
+
+const HOLIDAYS_2026: PlannerHoliday[] = [
+  { holiday_date: '2026-01-01', is_major_holiday: true },
+  { holiday_date: '2026-05-25', is_major_holiday: true },
+  { holiday_date: '2026-07-04', is_major_holiday: true },
+  { holiday_date: '2026-09-07', is_major_holiday: true },
+  { holiday_date: '2026-11-26', is_major_holiday: true },
+  { holiday_date: '2026-12-25', is_major_holiday: true },
+];
+
+describe('computeAnnualTally', () => {
+  const base = {
+    year: 2026,
+    profiles: [profile({ provider_id: 'p1', fte_value: 1, pto_weeks: 4 })],
+    availability: [] as PlannerAvailabilityRow[],
+    slots: [] as PlannerSlotRow[],
+    holidays: HOLIDAYS_2026,
+    shiftTypes: SHIFT_TYPES,
+    coveredSpans: [] as Array<{ date_start: string; date_end: string }>,
+  };
+
+  it('reports a null offDaysUsed when no published block covers the year', () => {
+    const t = computeAnnualTally(base);
+    expect(t.coveredSpan).toBeNull();
+    expect(t.providers.get('p1')!.offDaysUsed).toBeNull();
+  });
+
+  it('counts working days in the year excluding major holidays only', () => {
+    // 2026-07-04 is a Saturday, so it removes no working day; the other five
+    // majors are weekdays. 2026 has 261 weekdays.
+    const t = computeAnnualTally(base);
+    expect(t.workingDaysInYear).toBe(261 - 5);
+  });
+
+  it('counts off days only through the blocks that exist', () => {
+    // One published week, Mon 2026-06-08 .. Sun 2026-06-14: 5 working days.
+    // The provider is assigned on 2 of them and has no PTO, so 3 are off days.
+    const t = computeAnnualTally({
+      ...base,
+      coveredSpans: [{ date_start: '2026-06-08', date_end: '2026-06-14' }],
+      slots: [
+        slot('2026-06-08', 'C1', 'p1', 'weekday'),
+        slot('2026-06-10', 'C1', 'p1', 'weekday'),
+      ],
+    });
+    expect(t.coveredSpan).toEqual({ start: '2026-06-08', end: '2026-06-14', workingDays: 5 });
+    // 2026-06-08 is a call with requires_post_call_rule unset in the fixture,
+    // so only the two assigned days are credited.
+    expect(t.providers.get('p1')!.offDaysUsed).toBe(3);
+  });
+
+  it('does not charge PTO weekdays as off days', () => {
+    const t = computeAnnualTally({
+      ...base,
+      coveredSpans: [{ date_start: '2026-06-08', date_end: '2026-06-14' }],
+      slots: [slot('2026-06-08', 'C1', 'p1', 'weekday')],
+      availability: [pto('2026-06-09', '2026-06-10')],
+    });
+    // 5 working days - 1 assigned - 2 PTO = 2 off days.
+    expect(t.providers.get('p1')!.offDaysUsed).toBe(2);
+  });
+
+  it('splits a block that straddles New Year by slot_date', () => {
+    // This coverage lives HERE, not in annualCallCounts — the year filter is
+    // computeAnnualTally's. Gabriel 2026-09-06: "a call on 1/5 counts toward
+    // 2027." The same two slots must land in different years.
+    const slots = [
+      slot('2026-12-28', 'C1', 'p1', 'weekday'),
+      slot('2027-01-05', 'C1', 'p1', 'weekday'),
+    ];
+    expect(computeAnnualTally({ ...base, year: 2026, slots }).providers.get('p1')!.callTotal).toBe(1);
+    expect(computeAnnualTally({
+      ...base, year: 2027, slots, holidays: [{ holiday_date: '2027-01-01', is_major_holiday: true }],
+    }).providers.get('p1')!.callTotal).toBe(1);
+  });
+
+  it('counts calls even when no block is published that year', () => {
+    // computeScheduleActuals must be called unconditionally: gating it on
+    // coveredSpan would zero every call in a year with nothing published.
+    const t = computeAnnualTally({
+      ...base,
+      coveredSpans: [],
+      slots: [slot('2026-06-08', 'C1', 'p1', 'weekday')],
+    });
+    expect(t.coveredSpan).toBeNull();
+    expect(t.providers.get('p1')!.callTotal).toBe(1);
+    expect(t.providers.get('p1')!.offDaysUsed).toBeNull();
+  });
+
+  it('clips the covered span to the requested year', () => {
+    const t = computeAnnualTally({
+      ...base,
+      coveredSpans: [{ date_start: '2026-12-28', date_end: '2027-01-10' }],
+    });
+    expect(t.coveredSpan!.start).toBe('2026-12-28');
+    expect(t.coveredSpan!.end).toBe('2026-12-31');
+  });
+
+  it('carries PTO, budget and call figures onto every profile row', () => {
+    const t = computeAnnualTally({
+      ...base,
+      profiles: [
+        profile({ provider_id: 'p1', fte_value: 1, pto_weeks: 4 }),
+        profile({ provider_id: 'p2', fte_value: 0.5, pto_weeks: null }),
+      ],
+      slots: [slot('2026-06-08', 'C1', 'p1', 'weekday')],
+    });
+    const p1 = t.providers.get('p1')!;
+    expect(p1.pto.allotmentDays).toBe(20);
+    expect(p1.offDayBudget).toEqual({ kind: 'none' });
+    expect(p1.callTotal).toBe(1);
+    const p2 = t.providers.get('p2')!;
+    expect(p2.pto.remainingDays).toBeNull();
+    expect(p2.offDayBudget).toEqual({ kind: 'days', days: 128 });
+    expect(p2.callTotal).toBe(0);
+    expect(p2.callCounts).toEqual([]);
+  });
+
+  // ── The two product rulings (Gabriel 2026-09-06) ──────────────────────────
+  // These pin the "sick days don't count as off days" ruling and its mirror
+  // ("unavailable" DOES count) — the plan's own test list predates the
+  // ruling, so this coverage is not in the plan text above.
+
+  it('does NOT count a sick day inside the covered span as an off day', () => {
+    const t = computeAnnualTally({
+      ...base,
+      coveredSpans: [{ date_start: '2026-06-08', date_end: '2026-06-14' }],
+      availability: [{
+        provider_id: 'p1', availability_type: 'sick',
+        start_date: '2026-06-09', end_date: '2026-06-09', approval_status: 'approved',
+      }],
+    });
+    // 5 working days, 1 explained by sickness -> 4 off days, not 5. Sick
+    // days do not count as off days (Gabriel: "dont count sick days").
+    expect(t.providers.get('p1')!.offDaysUsed).toBe(4);
+  });
+
+  it('DOES count an "unavailable" day inside the covered span as an off day — the opposite of sick', () => {
+    const t = computeAnnualTally({
+      ...base,
+      coveredSpans: [{ date_start: '2026-06-08', date_end: '2026-06-14' }],
+      availability: [{
+        provider_id: 'p1', availability_type: 'unavailable',
+        start_date: '2026-06-09', end_date: '2026-06-09', approval_status: 'approved',
+      }],
+    });
+    // workDays.ts: an 'unavailable' row IS the off-day entitlement being
+    // consumed, so — unlike sick — it stays countable. Still 5, not 4. If
+    // sick and unavailable were ever treated the same, this test and the one
+    // above could not both pass.
+    expect(t.providers.get('p1')!.offDaysUsed).toBe(5);
+  });
+
+  it('does NOT count a jury-duty day as an off day', () => {
+    const t = computeAnnualTally({
+      ...base,
+      coveredSpans: [{ date_start: '2026-06-08', date_end: '2026-06-14' }],
+      availability: [{
+        provider_id: 'p1', availability_type: 'jury_duty',
+        start_date: '2026-06-09', end_date: '2026-06-09', approval_status: 'approved',
+      }],
+    });
+    expect(t.providers.get('p1')!.offDaysUsed).toBe(4);
+  });
+
+  it('counts an ICU blocked row ONCE — a union of explained dates, not a subtraction chain', () => {
+    // An icu_week 'blocked' row is BOTH credited as worked
+    // (computeScheduleActuals' icuWorkdays) AND a non-entitlement blocking
+    // absence (nonEntitlementAbsenceDates — 'blocked' is in the derived set).
+    // A subtraction-chain implementation
+    // (workingDays - assigned - postCall - icu - pto - nonEntitlement) would
+    // subtract this ONE date twice: 5 - 1(icu) - 1(nonEntitlement) = 3. The
+    // union of explained dates counts it once: 5 - 1 = 4. This test would
+    // FAIL under the subtraction-chain form (it would compute 3, not 4),
+    // which is what makes it discriminate.
+    const t = computeAnnualTally({
+      ...base,
+      coveredSpans: [{ date_start: '2026-06-08', date_end: '2026-06-14' }],
+      availability: [{
+        provider_id: 'p1', availability_type: 'blocked', reason_code: ICU_WEEK_REASON,
+        start_date: '2026-06-09', end_date: '2026-06-09', approval_status: 'approved',
+      }],
+    });
+    expect(t.providers.get('p1')!.offDaysUsed).toBe(4);
   });
 });
