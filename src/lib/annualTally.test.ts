@@ -545,6 +545,44 @@ describe('computeAnnualTally', () => {
     expect(t.providers.get('p1')!.offDaysUsed).toBe(3);
   });
 
+  it('does not charge a recorded holiday call as an off day — the provider is working', () => {
+    // patch44's holiday_call row means the provider IS WORKING that date. It
+    // is not blocking and not PTO-netting, so without explicit handling it
+    // would fall through and be counted as a day off for someone on duty.
+    // 2026-06-09 is an ordinary Tuesday: this is NOT a holiday special case,
+    // it is the row's meaning being honoured wherever it lands.
+    const t = computeAnnualTally({
+      ...base,
+      coveredSpans: [{ date_start: '2026-06-08', date_end: '2026-06-14' }],
+      slots: [slot('2026-06-08', 'C1', 'p1', 'weekday')],
+      availability: [{
+        provider_id: 'p1',
+        availability_type: 'holiday_call',
+        start_date: '2026-06-09',
+        end_date: '2026-06-09',
+        approval_status: 'approved',
+      }],
+    });
+    // 5 working days - 1 assigned - 1 holiday call = 3 off days, not 4.
+    expect(t.providers.get('p1')!.offDaysUsed).toBe(3);
+  });
+
+  it('ignores a dismissed holiday call row', () => {
+    const t = computeAnnualTally({
+      ...base,
+      coveredSpans: [{ date_start: '2026-06-08', date_end: '2026-06-14' }],
+      slots: [slot('2026-06-08', 'C1', 'p1', 'weekday')],
+      availability: [{
+        provider_id: 'p1',
+        availability_type: 'holiday_call',
+        start_date: '2026-06-09',
+        end_date: '2026-06-09',
+        approval_status: 'canceled',
+      }],
+    });
+    expect(t.providers.get('p1')!.offDaysUsed).toBe(4);
+  });
+
   it('does not charge PTO weekdays as off days', () => {
     const t = computeAnnualTally({
       ...base,
