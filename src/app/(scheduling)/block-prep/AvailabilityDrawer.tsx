@@ -8,12 +8,18 @@
 // path to drift.
 //
 // Scoped to the board's year: the GET below asks for rows overlapping
-// Jan 1 - Dec 31 of the selected year (`from`/`to`, an OVERLAP filter per the
-// route: end_date >= from AND start_date <= to), matching exactly what
-// annualTally.ts counts for the tally card. Every successful write calls
-// `onChanged()` so the host (the block-prep page) bumps its refreshKey and
-// the roster's PTO / off-day figures refetch — this drawer never recomputes
-// those numbers itself.
+// Jan 1 - Dec 31 of the selected year (blockPrepView's `availabilityQueryUrl`
+// / `yearBounds` — an OVERLAP filter per the route: end_date >= from AND
+// start_date <= to), matching exactly what annualTally.ts counts for the
+// tally card. The same `yearBounds` clamp the add-form's date inputs (Fix I2,
+// review 2026-09-07): without it, an out-of-year add succeeded silently — the
+// POST has no year concept of its own, so the subsequent year-scoped refetch
+// simply wouldn't show the new row and the chief saw the form clear with
+// nothing appearing and no error.
+//
+// Every successful write calls `onChanged()` so the host (the block-prep
+// page) bumps its refreshKey and the roster's PTO / off-day figures refetch —
+// this drawer never recomputes those numbers itself.
 //
 // TESTING NOTE (read before touching the split below): Modal (components/ui/
 // Modal.tsx) portals to `document.body` and renders nothing at all when
@@ -29,11 +35,14 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { Badge, Banner, Button, EmptyState, Modal } from '@/components/ui';
-import { AVAILABILITY_TYPE_LABELS, type AvailabilityType } from '@/lib/validation/providers';
+import {
+  AVAILABILITY_TYPE_LABELS, reasonCodeLabel, type AvailabilityType,
+} from '@/lib/validation/providers';
 import { isDismissedAvailability } from '@/lib/rulesEngine/shared';
 import {
-  ADDABLE_AVAILABILITY_TYPES, availabilityStatusBadge, availabilityTypeTone,
-  isPairedIcuRow,
+  ADDABLE_AVAILABILITY_TYPES, availabilityQueryUrl, availabilityStatusBadge,
+  availabilityTypeHint, availabilityTypeTone, dateRangeError, icuRowLockInfo,
+  removalConfirmMessage, sellbackStandaloneNote, yearBounds,
 } from '@/lib/blockPrepView';
 
 /** The provider_availability columns this drawer reads and renders. */
@@ -60,15 +69,22 @@ const INPUT: React.CSSProperties = {
  * this way.
  */
 export function AvailabilityDrawerBody({
-  rows, loadError, addError, year, type, start, end, saving,
+  rows, loadError, addError, deleteError, year, type, start, end, saving,
   onTypeChange, onStartChange, onEndChange, onAdd, onRemove,
 }: {
   rows: AvailabilityDrawerRow[] | null;
-  /** Set when the GET failed — distinct from `addError` so a stale load
-   *  failure can never be mistaken for a fresh add failure or vice versa. */
+  /** Set when the GET failed. Kept distinct from `addError`/`deleteError` so
+   *  a stale load failure can never be mistaken for a fresh add or delete
+   *  failure, or vice versa. */
   loadError: string | null;
   /** Set when the most recent add (POST) failed. */
   addError: string | null;
+  /** Set when the most recent delete (DELETE) failed. Rendered next to the
+   *  list it acted on, NOT in the top load-error banner (Fix I3, review
+   *  2026-09-07: a delete failure used to land in the banner above the add
+   *  form, reading as "the list failed to load" while the list itself was
+   *  fine). */
+  deleteError: string | null;
   year: number;
   type: AvailabilityType;
   start: string;
@@ -80,12 +96,9 @@ export function AvailabilityDrawerBody({
   onAdd: () => void;
   onRemove: (row: AvailabilityDrawerRow) => void;
 }) {
-  // Client-side mirror of the route's own end_date >= start_date check
-  // (validation/providers.ts / the availability routes): catch it before
-  // submit rather than round-tripping to learn what a string compare already
-  // tells us. The server remains the actual gate — addError below still
-  // surfaces its message verbatim if this is ever bypassed.
-  const rangeInvalid = start !== '' && end !== '' && end < start;
+  const rangeError = dateRangeError(start, end);
+  const { start: minDate, end: maxDate } = yearBounds(year);
+  const sellbackHint = availabilityTypeHint(type);
 
   return (
     <>
@@ -98,6 +111,7 @@ export function AvailabilityDrawerBody({
         flexWrap: 'wrap', marginBottom: 'var(--space-2)',
       }}>
         <select
+          aria-label="Availability type"
           value={type}
           onChange={e => onTypeChange(e.target.value as AvailabilityType)}
           style={{ ...INPUT, cursor: 'pointer' }}
@@ -106,19 +120,43 @@ export function AvailabilityDrawerBody({
             <option key={t} value={t}>{AVAILABILITY_TYPE_LABELS[t]}</option>
           ))}
         </select>
-        <input type="date" value={start} onChange={e => onStartChange(e.target.value)} style={INPUT} />
-        <input type="date" value={end} onChange={e => onEndChange(e.target.value)} style={INPUT} />
-        <Button onClick={onAdd} disabled={saving || !start || !end || rangeInvalid}>
+        <input
+          aria-label="Start date"
+          type="date"
+          value={start}
+          min={minDate}
+          max={maxDate}
+          onChange={e => onStartChange(e.target.value)}
+          style={INPUT}
+        />
+        <input
+          aria-label="End date"
+          type="date"
+          value={end}
+          min={minDate}
+          max={maxDate}
+          onChange={e => onEndChange(e.target.value)}
+          style={INPUT}
+        />
+        <Button onClick={onAdd} disabled={saving || !start || !end || !!rangeError}>
           {saving ? 'Adding…' : 'Add'}
         </Button>
       </div>
-      {rangeInvalid && (
+      {sellbackHint && (
+        <div style={{ marginBottom: 'var(--space-3)', fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>
+          {sellbackHint}
+        </div>
+      )}
+      {rangeError && (
         <div style={{ marginBottom: 'var(--space-3)', fontSize: 'var(--fs-xs)', color: 'var(--danger)' }}>
-          End date must be on or after the start date.
+          {rangeError}
         </div>
       )}
       {addError && (
         <div style={{ marginBottom: 'var(--space-3)' }}><Banner tone="error">{addError}</Banner></div>
+      )}
+      {deleteError && (
+        <div style={{ marginBottom: 'var(--space-3)' }}><Banner tone="error">{deleteError}</Banner></div>
       )}
 
       {rows == null ? (
@@ -127,13 +165,22 @@ export function AvailabilityDrawerBody({
         <EmptyState
           icon="◷"
           title={`No dates in ${year}`}
-          hint="PTO, sell-back, days off and no-call requests added here are the same entries the provider's Availability tab shows."
+          hint="PTO, sell-back, days off and ICU rotation dates added here are the same entries the provider's Availability tab shows."
         />
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-2)' }}>
           {rows.map(r => {
             const typeLabel = AVAILABILITY_TYPE_LABELS[r.availability_type as AvailabilityType] ?? r.availability_type;
+            // ICU rows carry availability_type 'blocked' — the type badge
+            // alone reads as an opaque hard block. reason_code already
+            // distinguishes icu_week / icu_post_call (Fix M10, review
+            // 2026-09-07); reasonCodeLabel is the single home for that text,
+            // shown as a SECOND badge alongside the type, same as the
+            // profile's own row rendering.
+            const reasonLabel = reasonCodeLabel(r.reason_code);
+            const typeHint = availabilityTypeHint(r.availability_type);
             const statusBadge = availabilityStatusBadge(r.approval_status);
+            const standaloneNote = sellbackStandaloneNote(rows, r);
             // Dismissed (denied/canceled) rows no longer block anything —
             // isDismissedAvailability is the single-homed predicate every
             // engine already routes through (rulesEngine/shared.ts). Dimmed
@@ -143,7 +190,7 @@ export function AvailabilityDrawerBody({
             // availabilityStatusBadge's header for why that distinction
             // matters (clinical invariant 2: pending still blocks).
             const dismissed = isDismissedAvailability(r);
-            const lockedIcu = isPairedIcuRow(r.reason_code);
+            const lockInfo = icuRowLockInfo(rows, r);
             return (
               <div
                 key={r.id}
@@ -154,19 +201,30 @@ export function AvailabilityDrawerBody({
                   opacity: dismissed ? 0.55 : 1,
                 }}
               >
-                <Badge tone={availabilityTypeTone(r.availability_type)}>{typeLabel}</Badge>
-                <span style={{ fontSize: 'var(--fs-sm)', marginRight: 'auto' }}>
-                  {r.start_date} → {r.end_date}
+                {/* A plain <span title> rather than a Badge prop — Badge
+                    (components/ui) doesn't accept a title, and the sell-back
+                    explanation (Fix I4) needs a hover affordance without
+                    widening that shared component's API. */}
+                <span title={typeHint ?? undefined}>
+                  <Badge tone={availabilityTypeTone(r.availability_type)}>{typeLabel}</Badge>
                 </span>
+                {reasonLabel && <Badge tone="info">{reasonLabel}</Badge>}
+                <div style={{ display: 'flex', flexDirection: 'column', marginRight: 'auto' }}>
+                  <span style={{ fontSize: 'var(--fs-sm)' }}>{r.start_date} → {r.end_date}</span>
+                  {standaloneNote && (
+                    <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', fontStyle: 'italic' }}>
+                      {standaloneNote}
+                    </span>
+                  )}
+                </div>
                 {statusBadge && <Badge tone={statusBadge.tone}>{statusBadge.label}</Badge>}
-                {lockedIcu ? (
-                  // ICU rows are paired (week + post-call Monday) by the
-                  // profile's ICU Rotation section; a lone delete here would
-                  // orphan the other half, so no Remove is offered — see
-                  // isPairedIcuRow's header in blockPrepView.ts.
+                {lockInfo.locked ? (
+                  // ICU rows are paired (week + post-call Monday); a lone
+                  // delete here would orphan the other half, so no Remove is
+                  // offered — see icuRowLockInfo's header in blockPrepView.ts.
                   <span
                     style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}
-                    title="Paired with a post-call Monday — remove it from the provider's ICU Rotation section on their profile so both sides stay in sync."
+                    title={lockInfo.note ?? undefined}
                   >
                     ICU-paired
                   </span>
@@ -198,6 +256,7 @@ export default function AvailabilityDrawer({
   const [rows, setRows] = useState<AvailabilityDrawerRow[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [addError, setAddError] = useState<string | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
   const [type, setType] = useState<AvailabilityType>('pto');
   const [start, setStart] = useState('');
   const [end, setEnd] = useState('');
@@ -206,8 +265,7 @@ export default function AvailabilityDrawer({
   const load = useCallback(async () => {
     setLoadError(null);
     try {
-      const res = await fetch(
-        `/api/scheduling/availability?provider_id=${providerId}&from=${year}-01-01&to=${year}-12-31`);
+      const res = await fetch(availabilityQueryUrl(providerId, year));
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
         setLoadError(body.error || `Could not load dates (${res.status})`);
@@ -224,7 +282,7 @@ export default function AvailabilityDrawer({
   useEffect(() => { load(); }, [load]);
 
   const add = async () => {
-    if (!start || !end || end < start) return;
+    if (!start || !end || dateRangeError(start, end)) return;
     setSaving(true);
     setAddError(null);
     try {
@@ -257,22 +315,25 @@ export default function AvailabilityDrawer({
   const remove = async (row: AvailabilityDrawerRow) => {
     const label = AVAILABILITY_TYPE_LABELS[row.availability_type as AvailabilityType] ?? row.availability_type;
     // Destructive and possibly load-bearing for a published schedule — name
-    // exactly what's being removed rather than a generic "are you sure?".
-    const ok = confirm(
-      `Remove ${label} covering ${row.start_date} → ${row.end_date}? This cannot be undone.`);
+    // exactly what's being removed, including WHO, rather than a generic
+    // "are you sure?" (Fix M12: this drawer's whole premise is editing eleven
+    // people from one screen, so the provider's name belongs in the prompt).
+    const ok = confirm(removalConfirmMessage({
+      providerName, typeLabel: label, startDate: row.start_date, endDate: row.end_date,
+    }));
     if (!ok) return;
-    setLoadError(null);
+    setDeleteError(null);
     try {
       const res = await fetch(`/api/scheduling/availability/${row.id}`, { method: 'DELETE' });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
-        setLoadError(body.error || `Could not delete (${res.status})`);
+        setDeleteError(body.error || `Could not delete (${res.status})`);
         return;
       }
       await load();
       onChanged();
     } catch (e) {
-      setLoadError(e instanceof Error ? e.message : 'Network error');
+      setDeleteError(e instanceof Error ? e.message : 'Network error');
     }
   };
 
@@ -288,6 +349,7 @@ export default function AvailabilityDrawer({
         rows={rows}
         loadError={loadError}
         addError={addError}
+        deleteError={deleteError}
         year={year}
         type={type}
         start={start}

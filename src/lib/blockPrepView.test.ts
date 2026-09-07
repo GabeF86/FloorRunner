@@ -2,9 +2,11 @@ import { describe, it, expect } from 'vitest';
 import {
   sortRosterRows, allotmentText, remainingText, offDaysText,
   coveredSpanLabel, unrosteredFootnote, parseFteInput, parseAllotmentInput,
-  ADDABLE_AVAILABILITY_TYPES, isPairedIcuRow, availabilityTypeTone,
+  ADDABLE_AVAILABILITY_TYPES, icuRowLockInfo, availabilityTypeTone,
   availabilityStatusBadge, rosterFooterNote, WORK_DAYS_FTE_PLACEHOLDER,
-  type RosterRow,
+  sellbackStandaloneNote, availabilityTypeHint, dateRangeError, yearBounds,
+  availabilityQueryUrl, removalConfirmMessage,
+  type RosterRow, type AvailabilityLikeRow,
 } from './blockPrepView';
 // CoveredSpanInfo is annualTally's exported span shape — used below by
 // coveredSpanLabel's tests. Missing from the plan's listing; added here
@@ -316,32 +318,90 @@ describe('WORK_DAYS_FTE_PLACEHOLDER', () => {
 });
 
 describe('ADDABLE_AVAILABILITY_TYPES', () => {
-  it('offers exactly the four planning-relevant types', () => {
+  it('offers exactly the three types this surface can create correctly', () => {
     expect([...ADDABLE_AVAILABILITY_TYPES].sort()).toEqual(
-      ['no_call_request', 'pto', 'pto_sellback', 'unavailable'].sort());
+      ['pto', 'pto_sellback', 'unavailable'].sort());
   });
 
-  it('excludes paired ICU rows, HR-sensitive/as-they-occur types, and gated request types', () => {
+  // Fix C1 (Critical, review 2026-09-07): no_call_request used to be offered
+  // here. The profile never creates it through THIS API — it POSTs to
+  // /api/requests/submit/{token}, tags the row with windowNotesTag(id), and
+  // that tag is what countWindowRequestRows/windowRequestDates count against
+  // max_no_call_requests. A range row added here would carry no tag, so it
+  // counts as ZERO against the cap while still being a fully live no-call
+  // lever to solve.ts/slotCandidates.ts — pinned here so it can never
+  // silently come back.
+  it('excludes paired ICU rows, HR-sensitive/as-they-occur types, and both gated request types', () => {
     const addable = ADDABLE_AVAILABILITY_TYPES as readonly string[];
     for (const excluded of [
       'blocked', 'fmla', 'military_leave', 'sick', 'jury_duty',
-      'conference', 'admin', 'cme', 'call_request', 'available',
+      'conference', 'admin', 'cme', 'call_request', 'no_call_request', 'available',
     ]) {
       expect(addable).not.toContain(excluded);
     }
   });
 });
 
-describe('isPairedIcuRow', () => {
-  it('flags both halves of an ICU pair', () => {
-    expect(isPairedIcuRow('icu_week')).toBe(true);
-    expect(isPairedIcuRow('icu_post_call')).toBe(true);
+function availRow(over: Partial<AvailabilityLikeRow> = {}): AvailabilityLikeRow {
+  return {
+    id: 'r1',
+    availability_type: 'blocked',
+    approval_status: 'approved',
+    reason_code: null,
+    start_date: '2026-06-08',
+    end_date: '2026-06-12',
+    ...over,
+  };
+}
+
+describe('icuRowLockInfo', () => {
+  it('locks an ICU week row whose post-call Monday exists in the same row set', () => {
+    const week = availRow({ id: 'week1', reason_code: 'icu_week', start_date: '2026-06-08', end_date: '2026-06-12' });
+    const monday = availRow({ id: 'mon1', reason_code: 'icu_post_call', start_date: '2026-06-15', end_date: '2026-06-15' });
+    const info = icuRowLockInfo([week, monday], week);
+    expect(info.locked).toBe(true);
+    expect(info.note).toContain('post-call Monday');
   });
 
-  it('does not flag a plain reason code, null, or undefined', () => {
-    expect(isPairedIcuRow('something_else')).toBe(false);
-    expect(isPairedIcuRow(null)).toBe(false);
-    expect(isPairedIcuRow(undefined)).toBe(false);
+  it('locks the post-call Monday itself, with wording that does not call IT the thing paired with a Monday', () => {
+    const week = availRow({ id: 'week1', reason_code: 'icu_week', start_date: '2026-06-08', end_date: '2026-06-12' });
+    const monday = availRow({ id: 'mon1', reason_code: 'icu_post_call', start_date: '2026-06-15', end_date: '2026-06-15' });
+    const info = icuRowLockInfo([week, monday], monday);
+    expect(info.locked).toBe(true);
+    // The bug this fixes: the OLD single fixed string said "paired with a
+    // post-call Monday" on BOTH rows — backwards on the Monday row itself,
+    // since IT is the post-call day, not something paired with one.
+    expect(info.note).not.toContain('post-call Monday after it');
+    expect(info.note).toContain('post-call rest day');
+  });
+
+  it('does not lock a week row whose Monday was never created (nothing to orphan)', () => {
+    const week = availRow({ id: 'week1', reason_code: 'icu_week', start_date: '2026-06-08', end_date: '2026-06-12' });
+    expect(icuRowLockInfo([week], week)).toEqual({ locked: false, note: null });
+  });
+
+  it('does not lock an orphaned post-call Monday whose week no longer exists — the profile deletes these directly', () => {
+    const orphan = availRow({ id: 'orphan1', reason_code: 'icu_post_call', start_date: '2026-06-15', end_date: '2026-06-15' });
+    expect(icuRowLockInfo([orphan], orphan)).toEqual({ locked: false, note: null });
+  });
+
+  it('never locks a non-ICU row, even one that happens to be type blocked', () => {
+    const plain = availRow({ id: 'b1', reason_code: null });
+    expect(icuRowLockInfo([plain], plain)).toEqual({ locked: false, note: null });
+  });
+
+  it('never locks an ordinary PTO/sell-back/unavailable row', () => {
+    for (const type of ['pto', 'pto_sellback', 'unavailable']) {
+      const r = availRow({ id: 'x', availability_type: type, reason_code: null });
+      expect(icuRowLockInfo([r], r).locked).toBe(false);
+    }
+  });
+
+  it('does not promise the profile section is visible — it names how to make it visible', () => {
+    const week = availRow({ id: 'week1', reason_code: 'icu_week', start_date: '2026-06-08', end_date: '2026-06-12' });
+    const monday = availRow({ id: 'mon1', reason_code: 'icu_post_call', start_date: '2026-06-15', end_date: '2026-06-15' });
+    const info = icuRowLockInfo([week, monday], week);
+    expect(info.note).toContain('ICU-doc flag');
   });
 });
 
@@ -386,5 +446,117 @@ describe('availabilityStatusBadge', () => {
 
   it('falls back to a neutral badge with the raw string for an unknown status', () => {
     expect(availabilityStatusBadge('weird')).toEqual({ tone: 'neutral', label: 'weird' });
+  });
+});
+
+describe('sellbackStandaloneNote', () => {
+  it('returns null for anything that is not a sell-back row', () => {
+    const pto = availRow({ id: 'p1', availability_type: 'pto' });
+    expect(sellbackStandaloneNote([pto], pto)).toBeNull();
+  });
+
+  it('flags a sell-back row that overlaps nothing as standalone/inert', () => {
+    const sb = availRow({
+      id: 's1', availability_type: 'pto_sellback', start_date: '2026-07-04', end_date: '2026-07-04',
+    });
+    expect(sellbackStandaloneNote([sb], sb)).toContain('Standalone');
+  });
+
+  it('does not flag a sell-back row that overlaps a live PTO row', () => {
+    const pto = availRow({
+      id: 'p1', availability_type: 'pto', start_date: '2026-07-01', end_date: '2026-07-10',
+    });
+    const sb = availRow({
+      id: 's1', availability_type: 'pto_sellback', start_date: '2026-07-04', end_date: '2026-07-04',
+    });
+    expect(sellbackStandaloneNote([pto, sb], sb)).toBeNull();
+  });
+
+  it('ignores a DENIED PTO row when deciding overlap — a dismissed row blocks nothing', () => {
+    const deniedPto = availRow({
+      id: 'p1', availability_type: 'pto', approval_status: 'denied',
+      start_date: '2026-07-01', end_date: '2026-07-10',
+    });
+    const sb = availRow({
+      id: 's1', availability_type: 'pto_sellback', start_date: '2026-07-04', end_date: '2026-07-04',
+    });
+    expect(sellbackStandaloneNote([deniedPto, sb], sb)).toContain('Standalone');
+  });
+
+  it('honors the bookend-extended blocking range — a sell-back on the bookend Saturday is not standalone', () => {
+    // A Monday-start PTO run bookends over the PRECEDING Saturday/Sunday
+    // (effectivePtoRange, rulesEngine/shared.ts) — pinned in shared.test.ts.
+    // Monday 2026-07-06 start; the extended range reaches back to Saturday
+    // 2026-07-04.
+    const pto = availRow({
+      id: 'p1', availability_type: 'pto', start_date: '2026-07-06', end_date: '2026-07-10',
+    });
+    const sb = availRow({
+      id: 's1', availability_type: 'pto_sellback', start_date: '2026-07-04', end_date: '2026-07-04',
+    });
+    expect(sellbackStandaloneNote([pto, sb], sb)).toBeNull();
+  });
+});
+
+describe('availabilityTypeHint', () => {
+  it('explains that a sell-back date is a working day, not leave', () => {
+    expect(availabilityTypeHint('pto_sellback')).toContain('IS WORKING');
+  });
+
+  it('returns null for every other type — no elaboration needed', () => {
+    expect(availabilityTypeHint('pto')).toBeNull();
+    expect(availabilityTypeHint('unavailable')).toBeNull();
+  });
+});
+
+describe('dateRangeError', () => {
+  it('is null while the range is incomplete', () => {
+    expect(dateRangeError('', '')).toBeNull();
+    expect(dateRangeError('2026-08-10', '')).toBeNull();
+    expect(dateRangeError('', '2026-08-10')).toBeNull();
+  });
+
+  it('flags an end date before the start date', () => {
+    expect(dateRangeError('2026-08-14', '2026-08-10')).toBe('End date must be on or after the start date.');
+  });
+
+  it('is null for a valid range, including a single-day range', () => {
+    expect(dateRangeError('2026-08-10', '2026-08-14')).toBeNull();
+    expect(dateRangeError('2026-08-10', '2026-08-10')).toBeNull();
+  });
+});
+
+describe('yearBounds / availabilityQueryUrl', () => {
+  it('spans Jan 1 to Dec 31 of the given year', () => {
+    expect(yearBounds(2026)).toEqual({ start: '2026-01-01', end: '2026-12-31' });
+  });
+
+  it('builds the GET url with provider_id and the year bounds as from/to', () => {
+    expect(availabilityQueryUrl('prov-1', 2026)).toBe(
+      '/api/scheduling/availability?provider_id=prov-1&from=2026-01-01&to=2026-12-31');
+  });
+
+  it('encodes a provider id that needs escaping', () => {
+    expect(availabilityQueryUrl('a b', 2026)).toContain('provider_id=a%20b');
+  });
+});
+
+describe('removalConfirmMessage', () => {
+  it('names the provider, the type, and the range', () => {
+    const msg = removalConfirmMessage({
+      providerName: 'A.Jones', typeLabel: 'PTO', startDate: '2026-08-10', endDate: '2026-08-14',
+    });
+    expect(msg).toContain('A.Jones');
+    expect(msg).toContain('PTO');
+    expect(msg).toContain('2026-08-10 → 2026-08-14');
+    expect(msg).toContain('cannot be undone');
+  });
+
+  it('collapses a single-day range to one date rather than "X → X"', () => {
+    const msg = removalConfirmMessage({
+      providerName: 'A.Jones', typeLabel: 'PTO Sell-Back', startDate: '2026-08-10', endDate: '2026-08-10',
+    });
+    expect(msg).toContain('2026-08-10');
+    expect(msg).not.toContain('→');
   });
 });

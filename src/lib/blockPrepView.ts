@@ -28,11 +28,19 @@ import type {
 // validator and the profile editor all key off these two pairs) — imported
 // rather than hand-copied so the board is a fourth home wired to the same
 // numbers, not a fourth number that happens to agree today.
-import { FTE_MAX, FTE_MIN, WORK_DAYS_FTE_MAX, WORK_DAYS_FTE_MIN } from './validation/providers';
-// ICU rotation rows are PAIRED (a week row + its post-call Monday); the
-// availability drawer's isPairedIcuRow below needs the same two reason codes
-// icuRotation.ts uses to create/remove them, imported rather than re-typed.
-import { ICU_WEEK_REASON, ICU_POST_CALL_REASON } from './icuRotation';
+import {
+  FTE_MAX, FTE_MIN, WORK_DAYS_FTE_MAX, WORK_DAYS_FTE_MIN, type AvailabilityType,
+} from './validation/providers';
+// ICU rotation rows are PAIRED (a week row + its post-call Monday).
+// icuRowLockInfo below routes the actual pairing decision through
+// icuRotation.ts's own `pairIcuRows` rather than re-deriving it, so the
+// drawer can never disagree with the profile's ICU section about which rows
+// are genuinely paired.
+import { ICU_WEEK_REASON, ICU_POST_CALL_REASON, pairIcuRows, type IcuAvailabilityRow } from './icuRotation';
+// The sell-back "standalone" note below is a straight port of the profile's
+// own decision (providers/[id]/page.tsx's sellbackNotes) — same imports, so
+// the two can never compute a different answer for the same rows.
+import { BLOCKING_AVAIL, effectivePtoRange, isDismissedAvailability } from './rulesEngine/shared';
 
 export interface RosterRow {
   provider_id: string;
@@ -306,15 +314,13 @@ export function rosterFooterNote(): string {
 
 /**
  * Availability types the drawer lets a chief ADD. Deliberately a narrow
- * subset of AVAILABILITY_TYPES (validation/providers.ts):
+ * subset of AVAILABILITY_TYPES (validation/providers.ts) — `pto`,
+ * `pto_sellback`, `unavailable` are exactly the types annualTally.ts nets
+ * against the PTO/off-day figures this board exists to show; adding one here
+ * and watching the tally move in the same drawer is the point.
  *
- *  - `pto`, `pto_sellback`, `unavailable` are exactly the types
- *    annualTally.ts nets against the PTO/off-day figures this board exists to
- *    show — adding one here and watching the tally move in the same drawer is
- *    the point.
- *  - `no_call_request` is a lightweight scheduling preference with no
- *    approval workflow of its own (isActiveNoCallRequest, rulesEngine/
- *    shared.ts) — safe to state ahead of a block build.
+ * `satisfies readonly AvailabilityType[]` so a typo in this list fails at the
+ * declaration, not silently as a dead option nobody notices.
  *
  * Excluded, and why — each either cannot be created SAFELY from a generic
  * one-shot form, or belongs to a flow this drawer does not replicate:
@@ -327,26 +333,210 @@ export function rosterFooterNote(): string {
  *    (icuRotation.ts). A generic add-form creates one row; doing that here
  *    would silently create HALF a pair. The profile's ICU Rotation section
  *    is the only place that creates both halves together, and stays that way.
- *  - `call_request`: the profile tab only allows this while the site's
- *    no-call/call request window is open (a check this drawer does not
- *    replicate); offering it unconditionally here would let a request be
- *    filed against a closed window.
+ *  - `no_call_request` AND `call_request` (CORRECTED 2026-09-07 — an earlier
+ *    version of this list wrongly included `no_call_request`; flagged
+ *    Critical in review). The profile does NOT create either through THIS
+ *    API. It POSTs to /api/requests/submit/{token} (requestIntake.ts), which
+ *    (a) requires an OPEN request window, (b) writes ONE ROW PER DATE, never
+ *    a range, and (c) tags every row's `notes` with `windowNotesTag(window.id)`.
+ *    That tag is load-bearing: `countWindowRequestRows` / `windowRequestDates`
+ *    count a provider's used requests by matching `notes === windowNotesTag(id)`
+ *    — a range row created through this generic form carries no such tag, so
+ *    it counts as ZERO against `max_no_call_requests` while still being a
+ *    fully LIVE lever (`isActiveNoCallRequest` plus solve.ts / slotCandidates.ts
+ *    honor it regardless of notes). One Mon–Fri row here would be five free
+ *    no-call days against a cap the profile's own counter still reports as
+ *    unused. What `no_call_request` actually lacks is APPROVAL, not gating —
+ *    `isActiveNoCallRequest` treats pending and approved alike — and the
+ *    open-window gate is the identical reason `call_request` was already
+ *    excluded for.
  *  - `available`: the DB default state, not something anyone "adds".
+ *
+ * NONE of this affects DISPLAY — every row the API returns for the year still
+ * renders in the drawer's list regardless of type; this constant only bounds
+ * the type picker in the add form.
  */
 export const ADDABLE_AVAILABILITY_TYPES = [
-  'pto', 'pto_sellback', 'unavailable', 'no_call_request',
-] as const;
+  'pto', 'pto_sellback', 'unavailable',
+] as const satisfies readonly AvailabilityType[];
 
 /**
- * Whether an availability row is one half of a PAIRED ICU rotation entry
- * (icuRotation.ts: a week row plus its post-call Monday, created and removed
- * TOGETHER by the profile's ICU Rotation section). A lone delete here would
- * silently orphan the other half — a Monday that still blocks the date with
- * no visible reason, or a week with a dangling post-call day nobody can see.
- * The drawer must not offer a plain Remove for these rows.
+ * Minimal row shape icuRowLockInfo and sellbackStandaloneNote both need —
+ * satisfied structurally by AvailabilityDrawerRow (the component's row type)
+ * without either side importing the other.
  */
-export function isPairedIcuRow(reasonCode: string | null | undefined): boolean {
-  return reasonCode === ICU_WEEK_REASON || reasonCode === ICU_POST_CALL_REASON;
+export interface AvailabilityLikeRow {
+  id: string;
+  availability_type: string;
+  approval_status: string;
+  reason_code: string | null;
+  start_date: string;
+  end_date: string;
+}
+
+export interface IcuLockInfo {
+  /** True only when this row is genuinely one half of an INTACT ICU pair —
+   *  its partner is present in the row set passed in. The drawer must not
+   *  offer a plain Remove for these; a lone delete would silently orphan the
+   *  other half. */
+  locked: boolean;
+  /** Tooltip text for a locked row, branched by which half of the pair this
+   *  row actually is — "paired with a post-call Monday" is backwards on the
+   *  Monday row itself. Null when not locked. */
+  note: string | null;
+}
+
+/**
+ * Is `row` genuinely still paired, and with what wording?
+ *
+ * NOT a reason-code check alone — an earlier version of this function was,
+ * and it over-locked two real cases: a `blocked`/`icu_week` row whose Monday
+ * was never created (icuRotation.ts skips it when an existing blocked row
+ * already covers that date) has nothing to orphan, and a `blocked`/
+ * `icu_post_call` row whose week no longer exists is already an ORPHAN the
+ * profile itself lets a chief delete directly (providers/[id]/page.tsx's
+ * `icuOrphans` list, its own Delete button) — locking it here would
+ * contradict the very surface this drawer defers to. Routes the actual
+ * pairing decision through icuRotation.ts's own `pairIcuRows` so it can never
+ * disagree with the profile's.
+ *
+ * `note` deliberately does NOT promise the profile's ICU Rotation section is
+ * currently visible: that section is gated on `is_icu_doc || an orphan
+ * exists` (providers/[id]/page.tsx), so a genuinely INTACT pair whose
+ * is_icu_doc flag was later cleared is invisible there — a fact this
+ * function has no way to check (the drawer never fetches the profile). The
+ * wording says how to reach AND how to restore visibility, rather than
+ * asserting the section is already showing.
+ *
+ * KNOWN LIMITATION: `allRows` is whatever the drawer fetched for one
+ * calendar year (Fix I2's `yearBounds`), so a pair straddling a year
+ * boundary (an ICU week ending in late December, post-call Monday landing in
+ * January) can have its partner outside the fetched window — this would
+ * read as unpaired when it is not. Narrow and pre-existing to the drawer
+ * being year-scoped at all; not fixed here.
+ */
+export function icuRowLockInfo(
+  allRows: ReadonlyArray<AvailabilityLikeRow>,
+  row: AvailabilityLikeRow,
+): IcuLockInfo {
+  const isIcu = row.availability_type === 'blocked'
+    && (row.reason_code === ICU_WEEK_REASON || row.reason_code === ICU_POST_CALL_REASON);
+  if (!isIcu) return { locked: false, note: null };
+
+  const pairs = pairIcuRows(allRows as unknown as IcuAvailabilityRow[]);
+  const managedElsewhere = 'managed together from the provider’s profile — ICU Rotation section '
+    + '(turn the provider’s ICU-doc flag on there if the section isn’t showing).';
+
+  if (row.reason_code === ICU_WEEK_REASON) {
+    const pair = pairs.find(p => p.week.id === row.id);
+    if (pair?.monday) {
+      return { locked: true, note: `Paired with the post-call Monday after it — ${managedElsewhere}` };
+    }
+    return { locked: false, note: null }; // no Monday was ever created — nothing to orphan
+  }
+  // icu_post_call
+  const paired = pairs.some(p => p.monday?.id === row.id);
+  if (paired) {
+    return { locked: true, note: `The post-call rest day after an ICU week — ${managedElsewhere}` };
+  }
+  return { locked: false, note: null }; // orphan — the profile's own delete-it-directly case
+}
+
+/**
+ * A sell-back row that doesn't overlap ANY live blocking row is legal but
+ * INERT — the schedule only treats sell-back as an override where it
+ * actually overlaps something it would otherwise block, so a standalone
+ * entry changes nothing until it does. This is a straight port of the
+ * profile's own decision (providers/[id]/page.tsx's `sellbackNotes`), using
+ * the SAME imports (BLOCKING_AVAIL, isDismissedAvailability,
+ * effectivePtoRange) so the two surfaces can never disagree about the same
+ * rows. `effectivePtoRange`'s bookend extension matters here: a sell-back on
+ * the Saturday a Monday-start PTO bookends over is correctly NOT flagged as
+ * standalone (shared.test.ts pins this same case).
+ */
+export function sellbackStandaloneNote(
+  allRows: ReadonlyArray<AvailabilityLikeRow>,
+  row: AvailabilityLikeRow,
+): string | null {
+  if (row.availability_type !== 'pto_sellback') return null;
+  const liveBlocking = allRows.filter(
+    r => BLOCKING_AVAIL.has(r.availability_type) && !isDismissedAvailability(r));
+  const overlaps = liveBlocking.some(b => {
+    const eff = effectivePtoRange(b);
+    return eff.start <= row.end_date && eff.end >= row.start_date;
+  });
+  return overlaps ? null : 'Standalone — no overlapping PTO or leave, so this changes nothing yet.';
+}
+
+/**
+ * A one-line explanation for types whose colour alone doesn't say enough to
+ * someone seeing it for the first time — currently just `pto_sellback` (Fix
+ * I4, review 2026-09-07): the red tone signals "not a day off" only to a
+ * reader who already knows the convention. Null for every other type, which
+ * need no elaboration beyond their label.
+ */
+export function availabilityTypeHint(availabilityType: string): string | null {
+  if (availabilityType !== 'pto_sellback') return null;
+  return 'The provider IS WORKING these dates — the group bought the PTO back.';
+}
+
+/**
+ * Client-side mirror of the availability routes' own `end_date >= start_date`
+ * check (validation/providers.ts; the POST and PATCH routes both enforce it
+ * server-side) — catch it before submit rather than round-tripping to learn
+ * what a string compare already tells us. Null while the range is INCOMPLETE
+ * (blank isn't wrong yet, just unfinished) or while it's valid; the route
+ * remains the actual gate, and its message still surfaces verbatim in the
+ * drawer's add-error banner if this is ever bypassed.
+ */
+export function dateRangeError(start: string, end: string): string | null {
+  if (start === '' || end === '') return null;
+  if (end < start) return 'End date must be on or after the start date.';
+  return null;
+}
+
+export interface YearBounds { start: string; end: string }
+
+/**
+ * Jan 1 – Dec 31 of `year`, as ISO date strings — the single home for "what
+ * counts as this board's year". Used both for the availability GET's
+ * from/to (availabilityQueryUrl below) and to clamp the add-form's date
+ * inputs (Fix I2, review 2026-09-07: an out-of-year add used to succeed
+ * silently — the POST has no year concept of its own, and the subsequent
+ * year-scoped refetch simply wouldn't show the new row, so the chief saw the
+ * form clear with nothing appearing and no error).
+ */
+export function yearBounds(year: number): YearBounds {
+  return { start: `${year}-01-01`, end: `${year}-12-31` };
+}
+
+/**
+ * The GET url for a provider's availability rows overlapping `year` — an
+ * OVERLAP filter (end_date >= from AND start_date <= to; see
+ * /api/scheduling/availability's route), matching exactly what
+ * annualTally.ts counts for the tally card.
+ */
+export function availabilityQueryUrl(providerId: string, year: number): string {
+  const { start, end } = yearBounds(year);
+  return `/api/scheduling/availability?provider_id=${encodeURIComponent(providerId)}&from=${start}&to=${end}`;
+}
+
+/**
+ * The delete-confirmation prompt. Names the PROVIDER as well as the type and
+ * range (Fix M12, review 2026-09-07) — the drawer's whole premise is editing
+ * eleven people from one screen, so a bare "remove this entry?" carries none
+ * of the context that makes this surface useful once a chief has several
+ * drawers' worth of edits in a row.
+ */
+export function removalConfirmMessage(opts: {
+  providerName: string;
+  typeLabel: string;
+  startDate: string;
+  endDate: string;
+}): string {
+  const { providerName, typeLabel, startDate, endDate } = opts;
+  const range = startDate === endDate ? startDate : `${startDate} → ${endDate}`;
+  return `Remove ${providerName}’s ${typeLabel} covering ${range}? This cannot be undone.`;
 }
 
 /**
