@@ -35,12 +35,18 @@ import {
 // icuRowLockInfo below routes the actual pairing decision through
 // icuRotation.ts's own `pairIcuRows` rather than re-deriving it, so the
 // drawer can never disagree with the profile's ICU section about which rows
-// are genuinely paired.
-import { ICU_WEEK_REASON, ICU_POST_CALL_REASON, pairIcuRows, type IcuAvailabilityRow } from './icuRotation';
+// are genuinely paired. `icuMondayAfter` is needed separately for the
+// year-boundary proof (see icuPairsFor/icuRowLockInfo below) — the drawer's
+// row set is year-scoped, so "partner absent from what I fetched" is not the
+// same fact as "partner does not exist".
+import {
+  ICU_WEEK_REASON, ICU_POST_CALL_REASON, icuMondayAfter, pairIcuRows,
+  type IcuAvailabilityRow, type IcuPair,
+} from './icuRotation';
 // The sell-back "standalone" note below is a straight port of the profile's
 // own decision (providers/[id]/page.tsx's sellbackNotes) — same imports, so
 // the two can never compute a different answer for the same rows.
-import { BLOCKING_AVAIL, effectivePtoRange, isDismissedAvailability } from './rulesEngine/shared';
+import { addDays, BLOCKING_AVAIL, effectivePtoRange, isDismissedAvailability } from './rulesEngine/shared';
 
 export interface RosterRow {
   provider_id: string;
@@ -361,6 +367,17 @@ export const ADDABLE_AVAILABILITY_TYPES = [
 ] as const satisfies readonly AvailabilityType[];
 
 /**
+ * Fix 5 (review 2026-09-07): the add-form's own selected type is narrower
+ * than a general availability row's type — it can only ever be one of the
+ * three ADDABLE_AVAILABILITY_TYPES. Using the full `AvailabilityType` for the
+ * add-form's `type` state made "a select whose value matches no rendered
+ * option" representable in the type system even though it can never actually
+ * happen. Existing ROWS still use the general `AvailabilityType` — a fetched
+ * row can be any of the full vocabulary, addable here or not.
+ */
+export type AddableAvailabilityType = typeof ADDABLE_AVAILABILITY_TYPES[number];
+
+/**
  * Minimal row shape icuRowLockInfo and sellbackStandaloneNote both need —
  * satisfied structurally by AvailabilityDrawerRow (the component's row type)
  * without either side importing the other.
@@ -387,6 +404,21 @@ export interface IcuLockInfo {
 }
 
 /**
+ * Precompute the pairing for a whole row set ONCE (Fix 4, review
+ * 2026-09-07): `icuRowLockInfo` used to call `pairIcuRows` itself, so mapping
+ * it over N rows re-scanned the whole set N times. Callers hoist this outside
+ * their row loop and pass the same result into `icuRowLockInfo` per row.
+ */
+export function icuPairsFor(
+  allRows: ReadonlyArray<AvailabilityLikeRow>,
+): IcuPair<IcuAvailabilityRow>[] {
+  return pairIcuRows(allRows as unknown as IcuAvailabilityRow[]);
+}
+
+const ICU_MANAGED_ELSEWHERE = 'managed together from the provider’s profile — ICU Rotation section '
+  + '(turn the provider’s ICU-doc flag on there if the section isn’t showing).';
+
+/**
  * Is `row` genuinely still paired, and with what wording?
  *
  * NOT a reason-code check alone — an earlier version of this function was,
@@ -397,8 +429,39 @@ export interface IcuLockInfo {
  * profile itself lets a chief delete directly (providers/[id]/page.tsx's
  * `icuOrphans` list, its own Delete button) — locking it here would
  * contradict the very surface this drawer defers to. Routes the actual
- * pairing decision through icuRotation.ts's own `pairIcuRows` so it can never
- * disagree with the profile's.
+ * pairing decision through icuRotation.ts's own `pairIcuRows` (via
+ * `icuPairsFor`) so it can never disagree with the profile's.
+ *
+ * YEAR-BOUNDARY REGRESSION (CRITICAL, caught in review 2026-09-07): the first
+ * version of this fix treated "partner absent from `pairs`" as "partner does
+ * not exist" — wrong, because `pairs` is built from a YEAR-SCOPED fetch
+ * (Fix I2's `yearBounds`). Ten consecutive week-starts (Dec 22–31) have their
+ * post-call Monday in January: viewed from the 2026 board the Monday is
+ * outside the fetch and the week read as unlocked (a click would create the
+ * exact orphan this lock exists to prevent); viewed from 2027 the Monday
+ * reads as an orphan when its week is intact in 2026. `isPairedIcuRow` (the
+ * version before Task 9's rework) never had this bug because it never
+ * consulted the row set at all — this is a REGRESSION, not a pre-existing
+ * gap, and it lands exactly on the usage peak (a chief planning January's
+ * block reads December's rows).
+ *
+ * THE FIX: before trusting "partner not found" as "partner does not exist",
+ * prove the fetch WOULD have found it had it existed — i.e. the partner's
+ * only possible date(s) fall inside `[start, end]`. If that can't be proven,
+ * stay LOCKED (assume paired) rather than risk unlocking a real pair we
+ * simply can't see:
+ *  - Week row: `icuMondayAfter(row.end_date)` is a single deterministic
+ *    date. If it's after `end` (the window's upper bound), the Monday could
+ *    exist just outside the fetch — stay locked.
+ *  - Post-call row: the week's end date that would produce this exact Monday
+ *    is one of the 7 calendar days immediately before it (icuMondayAfter's
+ *    inverse spans a week — a Monday-dow end date needs +7, a Sunday-dow end
+ *    date needs +1). Its EARLIEST possible date is `row.start_date - 7`; if
+ *    that's before `start` (the window's lower bound), a qualifying week
+ *    could exist just outside the fetch — stay locked. The upper bound never
+ *    needs checking: every candidate is <= `row.start_date - 1`, and
+ *    `row.start_date <= end` always holds because `row` itself came from
+ *    this fetch.
  *
  * `note` deliberately does NOT promise the profile's ICU Rotation section is
  * currently visible: that section is gated on `is_icu_doc || an orphan
@@ -407,39 +470,51 @@ export interface IcuLockInfo {
  * function has no way to check (the drawer never fetches the profile). The
  * wording says how to reach AND how to restore visibility, rather than
  * asserting the section is already showing.
- *
- * KNOWN LIMITATION: `allRows` is whatever the drawer fetched for one
- * calendar year (Fix I2's `yearBounds`), so a pair straddling a year
- * boundary (an ICU week ending in late December, post-call Monday landing in
- * January) can have its partner outside the fetched window — this would
- * read as unpaired when it is not. Narrow and pre-existing to the drawer
- * being year-scoped at all; not fixed here.
  */
 export function icuRowLockInfo(
-  allRows: ReadonlyArray<AvailabilityLikeRow>,
+  pairs: ReadonlyArray<IcuPair<IcuAvailabilityRow>>,
   row: AvailabilityLikeRow,
+  year: number,
 ): IcuLockInfo {
   const isIcu = row.availability_type === 'blocked'
     && (row.reason_code === ICU_WEEK_REASON || row.reason_code === ICU_POST_CALL_REASON);
   if (!isIcu) return { locked: false, note: null };
 
-  const pairs = pairIcuRows(allRows as unknown as IcuAvailabilityRow[]);
-  const managedElsewhere = 'managed together from the provider’s profile — ICU Rotation section '
-    + '(turn the provider’s ICU-doc flag on there if the section isn’t showing).';
+  const window = yearBounds(year);
+  const lockedWeek: IcuLockInfo = { locked: true, note: `Paired with the post-call Monday after it — ${ICU_MANAGED_ELSEWHERE}` };
+  const lockedMonday: IcuLockInfo = { locked: true, note: `The post-call rest day after an ICU week — ${ICU_MANAGED_ELSEWHERE}` };
 
   if (row.reason_code === ICU_WEEK_REASON) {
     const pair = pairs.find(p => p.week.id === row.id);
-    if (pair?.monday) {
-      return { locked: true, note: `Paired with the post-call Monday after it — ${managedElsewhere}` };
-    }
-    return { locked: false, note: null }; // no Monday was ever created — nothing to orphan
+    if (pair?.monday) return lockedWeek;
+    // Not found in the fetch. Only trust that as "genuinely no Monday" if the
+    // fetch was guaranteed to include one had it existed.
+    const expectedMonday = icuMondayAfter(row.end_date);
+    if (expectedMonday > window.end) return lockedWeek; // could exist just outside the window
+    return { locked: false, note: null }; // provably no Monday — nothing to orphan
   }
+
   // icu_post_call
   const paired = pairs.some(p => p.monday?.id === row.id);
-  if (paired) {
-    return { locked: true, note: `The post-call rest day after an ICU week — ${managedElsewhere}` };
-  }
-  return { locked: false, note: null }; // orphan — the profile's own delete-it-directly case
+  if (paired) return lockedMonday;
+  // Not claimed by any week in the fetch. Only trust that as "genuinely
+  // orphaned" if every week that could have produced this exact Monday was
+  // guaranteed to be inside the fetch.
+  const earliestPossibleWeekEnd = addDays(row.start_date, -7);
+  if (earliestPossibleWeekEnd < window.start) return lockedMonday; // its week could exist just outside the window
+  return { locked: false, note: null }; // provably orphaned — the profile's own delete-it-directly case
+}
+
+/**
+ * Precompute the live-blocking-row subset ONCE (Fix 4, review 2026-09-07,
+ * same rationale as `icuPairsFor`): `sellbackStandaloneNote` used to filter
+ * the whole row set itself, so mapping it over N rows re-filtered N times.
+ * Callers hoist this outside their row loop.
+ */
+export function liveBlockingRows(
+  allRows: ReadonlyArray<AvailabilityLikeRow>,
+): AvailabilityLikeRow[] {
+  return allRows.filter(r => BLOCKING_AVAIL.has(r.availability_type) && !isDismissedAvailability(r));
 }
 
 /**
@@ -449,18 +524,17 @@ export function icuRowLockInfo(
  * entry changes nothing until it does. This is a straight port of the
  * profile's own decision (providers/[id]/page.tsx's `sellbackNotes`), using
  * the SAME imports (BLOCKING_AVAIL, isDismissedAvailability,
- * effectivePtoRange) so the two surfaces can never disagree about the same
- * rows. `effectivePtoRange`'s bookend extension matters here: a sell-back on
- * the Saturday a Monday-start PTO bookends over is correctly NOT flagged as
- * standalone (shared.test.ts pins this same case).
+ * effectivePtoRange, via `liveBlockingRows`) so the two surfaces can never
+ * disagree about the same rows. `effectivePtoRange`'s bookend extension
+ * matters here: a sell-back on the Saturday a Monday-start PTO bookends over
+ * is correctly NOT flagged as standalone (shared.test.ts pins this same
+ * case).
  */
 export function sellbackStandaloneNote(
-  allRows: ReadonlyArray<AvailabilityLikeRow>,
+  liveBlocking: ReadonlyArray<AvailabilityLikeRow>,
   row: AvailabilityLikeRow,
 ): string | null {
   if (row.availability_type !== 'pto_sellback') return null;
-  const liveBlocking = allRows.filter(
-    r => BLOCKING_AVAIL.has(r.availability_type) && !isDismissedAvailability(r));
   const overlaps = liveBlocking.some(b => {
     const eff = effectivePtoRange(b);
     return eff.start <= row.end_date && eff.end >= row.start_date;
@@ -478,21 +552,6 @@ export function sellbackStandaloneNote(
 export function availabilityTypeHint(availabilityType: string): string | null {
   if (availabilityType !== 'pto_sellback') return null;
   return 'The provider IS WORKING these dates — the group bought the PTO back.';
-}
-
-/**
- * Client-side mirror of the availability routes' own `end_date >= start_date`
- * check (validation/providers.ts; the POST and PATCH routes both enforce it
- * server-side) — catch it before submit rather than round-tripping to learn
- * what a string compare already tells us. Null while the range is INCOMPLETE
- * (blank isn't wrong yet, just unfinished) or while it's valid; the route
- * remains the actual gate, and its message still surfaces verbatim in the
- * drawer's add-error banner if this is ever bypassed.
- */
-export function dateRangeError(start: string, end: string): string | null {
-  if (start === '' || end === '') return null;
-  if (end < start) return 'End date must be on or after the start date.';
-  return null;
 }
 
 export interface YearBounds { start: string; end: string }
@@ -519,6 +578,39 @@ export function yearBounds(year: number): YearBounds {
 export function availabilityQueryUrl(providerId: string, year: number): string {
   const { start, end } = yearBounds(year);
   return `/api/scheduling/availability?provider_id=${encodeURIComponent(providerId)}&from=${start}&to=${end}`;
+}
+
+/**
+ * Client-side mirror of TWO server-side gates, checked before submit rather
+ * than round-tripping to learn what the server already knows:
+ *
+ *  1. `end_date >= start_date` (validation/providers.ts; the POST and PATCH
+ *     routes both enforce this).
+ *  2. The dates fall within the board's own year — NOT server-enforced at
+ *     all (Fix 2, review 2026-09-07). `min`/`max` on a `<input type=date>`
+ *     only set `rangeUnderflow`/`rangeOverflow`; per spec they do NOT clamp
+ *     the value, and this form has no `<form>` wrapper for native constraint
+ *     validation to run against anyway. A typed or pasted out-of-year date
+ *     reaches `add()`'s state untouched, would still POST, would still land
+ *     in the DB, and would still vanish from the year-scoped refetch with no
+ *     error — the exact silent-invisible-add `yearBounds`'s min/max alone was
+ *     supposed to close. `year` is required (not optional) so a call site
+ *     cannot accidentally validate range order while forgetting the year
+ *     bound.
+ *
+ * Null while the range is INCOMPLETE (blank isn't wrong yet, just
+ * unfinished) or while it's fully valid; either route's message still
+ * surfaces verbatim in the drawer's add-error banner if either gate is ever
+ * bypassed.
+ */
+export function dateRangeError(start: string, end: string, year: number): string | null {
+  if (start === '' || end === '') return null;
+  if (end < start) return 'End date must be on or after the start date.';
+  const bounds = yearBounds(year);
+  if (start < bounds.start || start > bounds.end || end < bounds.start || end > bounds.end) {
+    return `Dates must fall within ${year}.`;
+  }
+  return null;
 }
 
 /**

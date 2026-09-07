@@ -2,11 +2,11 @@ import { describe, it, expect } from 'vitest';
 import {
   sortRosterRows, allotmentText, remainingText, offDaysText,
   coveredSpanLabel, unrosteredFootnote, parseFteInput, parseAllotmentInput,
-  ADDABLE_AVAILABILITY_TYPES, icuRowLockInfo, availabilityTypeTone,
+  ADDABLE_AVAILABILITY_TYPES, icuPairsFor, icuRowLockInfo, availabilityTypeTone,
   availabilityStatusBadge, rosterFooterNote, WORK_DAYS_FTE_PLACEHOLDER,
-  sellbackStandaloneNote, availabilityTypeHint, dateRangeError, yearBounds,
-  availabilityQueryUrl, removalConfirmMessage,
-  type RosterRow, type AvailabilityLikeRow,
+  liveBlockingRows, sellbackStandaloneNote, availabilityTypeHint, dateRangeError,
+  yearBounds, availabilityQueryUrl, removalConfirmMessage,
+  type RosterRow, type AvailabilityLikeRow, type AddableAvailabilityType,
 } from './blockPrepView';
 // CoveredSpanInfo is annualTally's exported span shape — used below by
 // coveredSpanLabel's tests. Missing from the plan's listing; added here
@@ -342,6 +342,18 @@ describe('ADDABLE_AVAILABILITY_TYPES', () => {
   });
 });
 
+describe('AddableAvailabilityType', () => {
+  // Fix 5 (Minor, review 2026-09-07): mostly a compile-time guarantee — a
+  // select whose value matches no rendered ADDABLE_AVAILABILITY_TYPES option
+  // is now unrepresentable. The runtime check below is a weak echo of that
+  // (every member must be assignable to the narrowed type); the real
+  // enforcement is `npx tsc --noEmit` rejecting a stray fourth type.
+  it('every ADDABLE_AVAILABILITY_TYPES member is assignable to the narrowed type', () => {
+    const sample: AddableAvailabilityType[] = [...ADDABLE_AVAILABILITY_TYPES];
+    expect(sample).toEqual(['pto', 'pto_sellback', 'unavailable']);
+  });
+});
+
 function availRow(over: Partial<AvailabilityLikeRow> = {}): AvailabilityLikeRow {
   return {
     id: 'r1',
@@ -354,11 +366,18 @@ function availRow(over: Partial<AvailabilityLikeRow> = {}): AvailabilityLikeRow 
   };
 }
 
+/** icuRowLockInfo is called on the HOISTED pairing result, matching how the
+ *  component actually calls it (icuPairsFor once per render, then per row) —
+ *  never on the raw row list directly. */
+function lockInfoFor(allRows: AvailabilityLikeRow[], row: AvailabilityLikeRow, year: number) {
+  return icuRowLockInfo(icuPairsFor(allRows), row, year);
+}
+
 describe('icuRowLockInfo', () => {
   it('locks an ICU week row whose post-call Monday exists in the same row set', () => {
     const week = availRow({ id: 'week1', reason_code: 'icu_week', start_date: '2026-06-08', end_date: '2026-06-12' });
     const monday = availRow({ id: 'mon1', reason_code: 'icu_post_call', start_date: '2026-06-15', end_date: '2026-06-15' });
-    const info = icuRowLockInfo([week, monday], week);
+    const info = lockInfoFor([week, monday], week, 2026);
     expect(info.locked).toBe(true);
     expect(info.note).toContain('post-call Monday');
   });
@@ -366,7 +385,7 @@ describe('icuRowLockInfo', () => {
   it('locks the post-call Monday itself, with wording that does not call IT the thing paired with a Monday', () => {
     const week = availRow({ id: 'week1', reason_code: 'icu_week', start_date: '2026-06-08', end_date: '2026-06-12' });
     const monday = availRow({ id: 'mon1', reason_code: 'icu_post_call', start_date: '2026-06-15', end_date: '2026-06-15' });
-    const info = icuRowLockInfo([week, monday], monday);
+    const info = lockInfoFor([week, monday], monday, 2026);
     expect(info.locked).toBe(true);
     // The bug this fixes: the OLD single fixed string said "paired with a
     // post-call Monday" on BOTH rows — backwards on the Monday row itself,
@@ -375,33 +394,79 @@ describe('icuRowLockInfo', () => {
     expect(info.note).toContain('post-call rest day');
   });
 
-  it('does not lock a week row whose Monday was never created (nothing to orphan)', () => {
+  it('does not lock a week row whose Monday was never created, WITHIN the fetch window (nothing to orphan)', () => {
+    // Week 2026-06-08..12 (Mon-Fri) -> expected Monday 2026-06-15, well
+    // inside the 2026 window, so its absence from the fetch is provable.
     const week = availRow({ id: 'week1', reason_code: 'icu_week', start_date: '2026-06-08', end_date: '2026-06-12' });
-    expect(icuRowLockInfo([week], week)).toEqual({ locked: false, note: null });
+    expect(lockInfoFor([week], week, 2026)).toEqual({ locked: false, note: null });
   });
 
-  it('does not lock an orphaned post-call Monday whose week no longer exists — the profile deletes these directly', () => {
+  it('does not lock an orphaned post-call Monday whose week no longer exists, WITHIN the fetch window', () => {
+    // Every candidate week-end date (the 7 days before 2026-06-15) is well
+    // inside the 2026 window, so genuine absence is provable.
     const orphan = availRow({ id: 'orphan1', reason_code: 'icu_post_call', start_date: '2026-06-15', end_date: '2026-06-15' });
-    expect(icuRowLockInfo([orphan], orphan)).toEqual({ locked: false, note: null });
+    expect(lockInfoFor([orphan], orphan, 2026)).toEqual({ locked: false, note: null });
   });
 
   it('never locks a non-ICU row, even one that happens to be type blocked', () => {
     const plain = availRow({ id: 'b1', reason_code: null });
-    expect(icuRowLockInfo([plain], plain)).toEqual({ locked: false, note: null });
+    expect(lockInfoFor([plain], plain, 2026)).toEqual({ locked: false, note: null });
   });
 
   it('never locks an ordinary PTO/sell-back/unavailable row', () => {
     for (const type of ['pto', 'pto_sellback', 'unavailable']) {
       const r = availRow({ id: 'x', availability_type: type, reason_code: null });
-      expect(icuRowLockInfo([r], r).locked).toBe(false);
+      expect(lockInfoFor([r], r, 2026).locked).toBe(false);
     }
   });
 
   it('does not promise the profile section is visible — it names how to make it visible', () => {
     const week = availRow({ id: 'week1', reason_code: 'icu_week', start_date: '2026-06-08', end_date: '2026-06-12' });
     const monday = availRow({ id: 'mon1', reason_code: 'icu_post_call', start_date: '2026-06-15', end_date: '2026-06-15' });
-    const info = icuRowLockInfo([week, monday], week);
+    const info = lockInfoFor([week, monday], week, 2026);
     expect(info.note).toContain('ICU-doc flag');
+  });
+
+  // ── Year-boundary regression (CRITICAL, review 2026-09-07) ────────────────
+  // A prior version of this fix trusted "partner absent from the fetch" as
+  // "partner does not exist" — wrong under year-scoping. These pin the
+  // boundary-safe behaviour on BOTH sides so the regression can't silently
+  // come back.
+  describe('year boundary — a pair split across Dec 31 / Jan 1 stays locked on both sides', () => {
+    // Dates verified against the real icuMondayAfter arithmetic (dow(2026-12-28)
+    // = Monday, delta=7 for "strictly after" -> 2027-01-04). This is the exact
+    // review example: a week starting 2026-12-22 whose post-call Monday lands
+    // in January.
+    const week = availRow({
+      id: 'week-dec', reason_code: 'icu_week', start_date: '2026-12-22', end_date: '2026-12-28',
+    });
+    const monday = availRow({
+      id: 'mon-jan', reason_code: 'icu_post_call', start_date: '2027-01-04', end_date: '2027-01-04',
+    });
+
+    it('keeps the December week LOCKED when viewed from the 2026 board — the Monday is out of window, not absent', () => {
+      // Only the week is in the 2026-scoped fetch; the Monday (Jan 2027) is
+      // NOT — exactly what the real GET would return.
+      const info = lockInfoFor([week], week, 2026);
+      expect(info.locked).toBe(true);
+      expect(info.note).toContain('post-call Monday');
+    });
+
+    it('keeps the January Monday LOCKED when viewed from the 2027 board — its week is out of window, not absent', () => {
+      // Only the Monday is in the 2027-scoped fetch; the week (Dec 2026) is
+      // NOT — exactly what the real GET would return.
+      const info = lockInfoFor([monday], monday, 2027);
+      expect(info.locked).toBe(true);
+      expect(info.note).toContain('post-call rest day');
+    });
+
+    it('sanity check: the SAME pair unlocks correctly when both halves ARE in one fetch', () => {
+      // Guards against the boundary fix overcorrecting into "always locked".
+      const infoWeek = lockInfoFor([week, monday], week, 2026);
+      expect(infoWeek.locked).toBe(true); // genuinely paired, correctly locked
+      const soloWeek = availRow({ id: 'w2', reason_code: 'icu_week', start_date: '2026-06-08', end_date: '2026-06-12' });
+      expect(lockInfoFor([soloWeek], soloWeek, 2026).locked).toBe(false); // genuinely alone, correctly unlocked
+    });
   });
 });
 
@@ -449,17 +514,33 @@ describe('availabilityStatusBadge', () => {
   });
 });
 
+/** sellbackStandaloneNote is called on the HOISTED live-blocking list, matching
+ *  how the component actually calls it (liveBlockingRows once per render,
+ *  then per row) — never on the raw row list directly. */
+function standaloneNoteFor(allRows: AvailabilityLikeRow[], row: AvailabilityLikeRow) {
+  return sellbackStandaloneNote(liveBlockingRows(allRows), row);
+}
+
+describe('liveBlockingRows', () => {
+  it('keeps only live (non-dismissed) BLOCKING_AVAIL rows', () => {
+    const pto = availRow({ id: 'p1', availability_type: 'pto' });
+    const deniedPto = availRow({ id: 'p2', availability_type: 'pto', approval_status: 'denied' });
+    const sellback = availRow({ id: 's1', availability_type: 'pto_sellback' }); // not in BLOCKING_AVAIL
+    expect(liveBlockingRows([pto, deniedPto, sellback]).map(r => r.id)).toEqual(['p1']);
+  });
+});
+
 describe('sellbackStandaloneNote', () => {
   it('returns null for anything that is not a sell-back row', () => {
     const pto = availRow({ id: 'p1', availability_type: 'pto' });
-    expect(sellbackStandaloneNote([pto], pto)).toBeNull();
+    expect(standaloneNoteFor([pto], pto)).toBeNull();
   });
 
   it('flags a sell-back row that overlaps nothing as standalone/inert', () => {
     const sb = availRow({
       id: 's1', availability_type: 'pto_sellback', start_date: '2026-07-04', end_date: '2026-07-04',
     });
-    expect(sellbackStandaloneNote([sb], sb)).toContain('Standalone');
+    expect(standaloneNoteFor([sb], sb)).toContain('Standalone');
   });
 
   it('does not flag a sell-back row that overlaps a live PTO row', () => {
@@ -469,7 +550,7 @@ describe('sellbackStandaloneNote', () => {
     const sb = availRow({
       id: 's1', availability_type: 'pto_sellback', start_date: '2026-07-04', end_date: '2026-07-04',
     });
-    expect(sellbackStandaloneNote([pto, sb], sb)).toBeNull();
+    expect(standaloneNoteFor([pto, sb], sb)).toBeNull();
   });
 
   it('ignores a DENIED PTO row when deciding overlap — a dismissed row blocks nothing', () => {
@@ -480,7 +561,7 @@ describe('sellbackStandaloneNote', () => {
     const sb = availRow({
       id: 's1', availability_type: 'pto_sellback', start_date: '2026-07-04', end_date: '2026-07-04',
     });
-    expect(sellbackStandaloneNote([deniedPto, sb], sb)).toContain('Standalone');
+    expect(standaloneNoteFor([deniedPto, sb], sb)).toContain('Standalone');
   });
 
   it('honors the bookend-extended blocking range — a sell-back on the bookend Saturday is not standalone', () => {
@@ -494,7 +575,7 @@ describe('sellbackStandaloneNote', () => {
     const sb = availRow({
       id: 's1', availability_type: 'pto_sellback', start_date: '2026-07-04', end_date: '2026-07-04',
     });
-    expect(sellbackStandaloneNote([pto, sb], sb)).toBeNull();
+    expect(standaloneNoteFor([pto, sb], sb)).toBeNull();
   });
 });
 
@@ -511,18 +592,43 @@ describe('availabilityTypeHint', () => {
 
 describe('dateRangeError', () => {
   it('is null while the range is incomplete', () => {
-    expect(dateRangeError('', '')).toBeNull();
-    expect(dateRangeError('2026-08-10', '')).toBeNull();
-    expect(dateRangeError('', '2026-08-10')).toBeNull();
+    expect(dateRangeError('', '', 2026)).toBeNull();
+    expect(dateRangeError('2026-08-10', '', 2026)).toBeNull();
+    expect(dateRangeError('', '2026-08-10', 2026)).toBeNull();
   });
 
   it('flags an end date before the start date', () => {
-    expect(dateRangeError('2026-08-14', '2026-08-10')).toBe('End date must be on or after the start date.');
+    expect(dateRangeError('2026-08-14', '2026-08-10', 2026)).toBe('End date must be on or after the start date.');
   });
 
   it('is null for a valid range, including a single-day range', () => {
-    expect(dateRangeError('2026-08-10', '2026-08-14')).toBeNull();
-    expect(dateRangeError('2026-08-10', '2026-08-10')).toBeNull();
+    expect(dateRangeError('2026-08-10', '2026-08-14', 2026)).toBeNull();
+    expect(dateRangeError('2026-08-10', '2026-08-10', 2026)).toBeNull();
+  });
+
+  // ── Fix 2 (Important, review 2026-09-07) ──────────────────────────────────
+  // min/max on a date input do NOT clamp the value (they only set
+  // rangeUnderflow/rangeOverflow), and this form has no <form> for native
+  // constraint validation to run against — so the year bound has to be a
+  // real, enforced check here, not just an input attribute.
+  it('flags a start date before the board year', () => {
+    expect(dateRangeError('2025-12-31', '2026-01-05', 2026)).toBe('Dates must fall within 2026.');
+  });
+
+  it('flags an end date after the board year', () => {
+    expect(dateRangeError('2026-12-20', '2027-01-02', 2026)).toBe('Dates must fall within 2026.');
+  });
+
+  it('flags a range that is entirely in the wrong year', () => {
+    expect(dateRangeError('2027-03-01', '2027-03-05', 2026)).toBe('Dates must fall within 2026.');
+  });
+
+  it('is null for a range flush against both year edges', () => {
+    expect(dateRangeError('2026-01-01', '2026-12-31', 2026)).toBeNull();
+  });
+
+  it('is null for the same valid range under its own year, not a neighboring one', () => {
+    expect(dateRangeError('2027-06-01', '2027-06-05', 2027)).toBeNull();
   });
 });
 

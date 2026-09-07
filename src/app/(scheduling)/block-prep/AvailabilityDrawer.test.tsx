@@ -28,7 +28,7 @@
 import { describe, it, expect } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { AvailabilityDrawerBody, type AvailabilityDrawerRow } from './AvailabilityDrawer';
-import type { AvailabilityType } from '@/lib/validation/providers';
+import type { AddableAvailabilityType } from '@/lib/blockPrepView';
 
 function row(over: Partial<AvailabilityDrawerRow> = {}): AvailabilityDrawerRow {
   return {
@@ -48,11 +48,11 @@ interface BodyProps {
   addError: string | null;
   deleteError: string | null;
   year: number;
-  type: AvailabilityType;
+  type: AddableAvailabilityType;
   start: string;
   end: string;
   saving: boolean;
-  onTypeChange: (t: AvailabilityType) => void;
+  onTypeChange: (t: AddableAvailabilityType) => void;
   onStartChange: (v: string) => void;
   onEndChange: (v: string) => void;
   onAdd: () => void;
@@ -119,6 +119,15 @@ describe('AvailabilityDrawerBody — loading / empty / populated', () => {
     expect(html).toContain('2026-01-05');
     expect(html).toContain('2026-03-02');
     expect(html).toContain('Unavailable');
+  });
+
+  it('names only what this drawer can actually ADD in the empty-state hint (Fix 3)', () => {
+    // An earlier edit swapped an accurate clause ("no-call requests", addable
+    // at the time) for an inaccurate one ("ICU rotation dates") — ICU rows
+    // specifically cannot be added from here. The hint must never claim that.
+    const html = render({ rows: [] });
+    expect(html).toContain('PTO, sell-back and days off');
+    expect(html).not.toContain('ICU rotation dates');
   });
 });
 
@@ -322,6 +331,50 @@ describe('AvailabilityDrawerBody — ICU pairing (Fix I5 + M10: correct lock, co
     expect(html).not.toContain('ICU Week');
     expect(html).not.toContain('ICU Post-Call');
   });
+
+  // ── Fix 1 (CRITICAL, review 2026-09-07) ───────────────────────────────────
+  // The first version of the year-scoped fix trusted "partner absent from
+  // THIS render's `rows`" as "partner does not exist" — wrong, because `rows`
+  // is a year-scoped fetch. These exercise the fix end-to-end through the
+  // component (not just the lib function) at the exact boundary named in
+  // review: a week starting 2026-12-22 whose post-call Monday lands in
+  // January.
+  it('keeps a December week LOCKED on the 2026 board even though its Monday is not in this year\'s rows', () => {
+    const decWeek = row({
+      id: 'week-dec', availability_type: 'blocked', reason_code: 'icu_week',
+      start_date: '2026-12-22', end_date: '2026-12-28',
+    });
+    // Only the week is present — exactly what the 2026-scoped GET returns;
+    // the January Monday is out of window, not fetched.
+    const html = render({ year: 2026, rows: [decWeek] });
+    expect(html).toContain('ICU-paired');
+    expect(html).not.toContain('>Remove<');
+  });
+
+  it('keeps a January Monday LOCKED on the 2027 board even though its week is not in this year\'s rows', () => {
+    const janMonday = row({
+      id: 'mon-jan', availability_type: 'blocked', reason_code: 'icu_post_call',
+      start_date: '2027-01-04', end_date: '2027-01-04',
+    });
+    // Only the Monday is present — exactly what the 2027-scoped GET returns;
+    // its December week is out of window, not fetched.
+    const html = render({ year: 2027, rows: [janMonday] });
+    expect(html).toContain('ICU-paired');
+    expect(html).not.toContain('>Remove<');
+  });
+
+  it('still unlocks a genuinely orphaned row far from any year boundary', () => {
+    // Sanity check that the boundary fix didn't overcorrect into "always
+    // locked" — this is the same mid-year case as the earlier orphan test,
+    // re-asserted after the hoisted icuPairsFor/liveBlockingRows wiring.
+    const midYearWeek = row({
+      id: 'week-mid', availability_type: 'blocked', reason_code: 'icu_week',
+      start_date: '2026-06-08', end_date: '2026-06-12',
+    });
+    const html = render({ year: 2026, rows: [midYearWeek] });
+    expect(html).toContain('>Remove<');
+    expect(html).not.toContain('ICU-paired');
+  });
 });
 
 describe('AvailabilityDrawerBody — add-form validation and addable types', () => {
@@ -374,6 +427,30 @@ describe('AvailabilityDrawerBody — add-form validation and addable types', () 
     expect(html).toContain('min="2027-01-01"');
     expect(html).toContain('max="2027-12-31"');
     expect(html).not.toContain('2026-01-01');
+  });
+
+  // ── Fix 2 (Important, review 2026-09-07) ──────────────────────────────────
+  // min/max alone do not clamp a date input's value and this form has no
+  // <form> for native constraint validation to run against, so an
+  // out-of-year date must be caught by the SAME rangeError path that already
+  // disables Add for a backwards range — not just decorated with an
+  // attribute a typed/pasted date can ignore.
+  it('rejects a start date before the board year and disables Add', () => {
+    const html = render({ start: '2025-12-31', end: '2026-01-05' });
+    expect(html).toContain('Dates must fall within 2026.');
+    expect(html).toContain('disabled');
+  });
+
+  it('rejects an end date after the board year and disables Add', () => {
+    const html = render({ start: '2026-12-20', end: '2027-01-02' });
+    expect(html).toContain('Dates must fall within 2026.');
+    expect(html).toContain('disabled');
+  });
+
+  it('does not flag a range that is valid and fully inside the board year', () => {
+    const html = render({ start: '2026-01-01', end: '2026-12-31' });
+    expect(html).not.toContain('Dates must fall within');
+    expect(html).not.toContain('disabled');
   });
 });
 

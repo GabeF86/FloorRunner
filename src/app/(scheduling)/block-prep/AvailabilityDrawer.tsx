@@ -11,11 +11,13 @@
 // Jan 1 - Dec 31 of the selected year (blockPrepView's `availabilityQueryUrl`
 // / `yearBounds` — an OVERLAP filter per the route: end_date >= from AND
 // start_date <= to), matching exactly what annualTally.ts counts for the
-// tally card. The same `yearBounds` clamp the add-form's date inputs (Fix I2,
-// review 2026-09-07): without it, an out-of-year add succeeded silently — the
-// POST has no year concept of its own, so the subsequent year-scoped refetch
-// simply wouldn't show the new row and the chief saw the form clear with
-// nothing appearing and no error.
+// tally card. The same `yearBounds` clamp the add-form's date inputs, AND
+// `dateRangeError` is passed the year so it can independently reject an
+// out-of-year date (Fix 2, review 2026-09-07): `min`/`max` alone do NOT
+// clamp a date input's value per spec, and this form has no `<form>` for
+// native constraint validation to run against — without the explicit check
+// in `add()`, a typed/pasted out-of-year date still POSTs, still lands in
+// the DB, and still vanishes from the year-scoped refetch with no error.
 //
 // Every successful write calls `onChanged()` so the host (the block-prep
 // page) bumps its refreshKey and the roster's PTO / off-day figures refetch —
@@ -41,8 +43,9 @@ import {
 import { isDismissedAvailability } from '@/lib/rulesEngine/shared';
 import {
   ADDABLE_AVAILABILITY_TYPES, availabilityQueryUrl, availabilityStatusBadge,
-  availabilityTypeHint, availabilityTypeTone, dateRangeError, icuRowLockInfo,
-  removalConfirmMessage, sellbackStandaloneNote, yearBounds,
+  availabilityTypeHint, availabilityTypeTone, dateRangeError, icuPairsFor,
+  icuRowLockInfo, liveBlockingRows, removalConfirmMessage, sellbackStandaloneNote,
+  yearBounds, type AddableAvailabilityType,
 } from '@/lib/blockPrepView';
 
 /** The provider_availability columns this drawer reads and renders. */
@@ -86,19 +89,28 @@ export function AvailabilityDrawerBody({
    *  fine). */
   deleteError: string | null;
   year: number;
-  type: AvailabilityType;
+  /** Narrower than a general row's `AvailabilityType` (Fix 5, review
+   *  2026-09-07) — the add-form can only ever hold one of the three
+   *  ADDABLE_AVAILABILITY_TYPES, so a select value matching no rendered
+   *  option is unrepresentable. */
+  type: AddableAvailabilityType;
   start: string;
   end: string;
   saving: boolean;
-  onTypeChange: (t: AvailabilityType) => void;
+  onTypeChange: (t: AddableAvailabilityType) => void;
   onStartChange: (v: string) => void;
   onEndChange: (v: string) => void;
   onAdd: () => void;
   onRemove: (row: AvailabilityDrawerRow) => void;
 }) {
-  const rangeError = dateRangeError(start, end);
+  const rangeError = dateRangeError(start, end, year);
   const { start: minDate, end: maxDate } = yearBounds(year);
   const sellbackHint = availabilityTypeHint(type);
+  // Hoisted ONCE per render (Fix 4, review 2026-09-07) rather than re-scanned
+  // inside the row loop below — icuRowLockInfo and sellbackStandaloneNote
+  // both take the precomputed result so neither rescans `rows` per row.
+  const icuPairs = rows ? icuPairsFor(rows) : [];
+  const liveBlocking = rows ? liveBlockingRows(rows) : [];
 
   return (
     <>
@@ -113,7 +125,7 @@ export function AvailabilityDrawerBody({
         <select
           aria-label="Availability type"
           value={type}
-          onChange={e => onTypeChange(e.target.value as AvailabilityType)}
+          onChange={e => onTypeChange(e.target.value as AddableAvailabilityType)}
           style={{ ...INPUT, cursor: 'pointer' }}
         >
           {ADDABLE_AVAILABILITY_TYPES.map(t => (
@@ -164,8 +176,11 @@ export function AvailabilityDrawerBody({
       ) : rows.length === 0 ? (
         <EmptyState
           icon="◷"
+          // Fix 3 (Minor, review 2026-09-07): only name what this drawer can
+          // actually ADD. An earlier edit swapped in "ICU rotation dates",
+          // which is exactly the one type this drawer refuses to create.
           title={`No dates in ${year}`}
-          hint="PTO, sell-back, days off and ICU rotation dates added here are the same entries the provider's Availability tab shows."
+          hint="PTO, sell-back and days off added here are the same entries the provider's Availability tab shows."
         />
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-2)' }}>
@@ -180,7 +195,7 @@ export function AvailabilityDrawerBody({
             const reasonLabel = reasonCodeLabel(r.reason_code);
             const typeHint = availabilityTypeHint(r.availability_type);
             const statusBadge = availabilityStatusBadge(r.approval_status);
-            const standaloneNote = sellbackStandaloneNote(rows, r);
+            const standaloneNote = sellbackStandaloneNote(liveBlocking, r);
             // Dismissed (denied/canceled) rows no longer block anything —
             // isDismissedAvailability is the single-homed predicate every
             // engine already routes through (rulesEngine/shared.ts). Dimmed
@@ -190,7 +205,7 @@ export function AvailabilityDrawerBody({
             // availabilityStatusBadge's header for why that distinction
             // matters (clinical invariant 2: pending still blocks).
             const dismissed = isDismissedAvailability(r);
-            const lockInfo = icuRowLockInfo(rows, r);
+            const lockInfo = icuRowLockInfo(icuPairs, r, year);
             return (
               <div
                 key={r.id}
@@ -257,7 +272,7 @@ export default function AvailabilityDrawer({
   const [loadError, setLoadError] = useState<string | null>(null);
   const [addError, setAddError] = useState<string | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
-  const [type, setType] = useState<AvailabilityType>('pto');
+  const [type, setType] = useState<AddableAvailabilityType>('pto');
   const [start, setStart] = useState('');
   const [end, setEnd] = useState('');
   const [saving, setSaving] = useState(false);
@@ -282,7 +297,10 @@ export default function AvailabilityDrawer({
   useEffect(() => { load(); }, [load]);
 
   const add = async () => {
-    if (!start || !end || dateRangeError(start, end)) return;
+    // Fix 2 (Important, review 2026-09-07): the year bound is now enforced
+    // HERE, not just via the (non-clamping) min/max attributes — see
+    // dateRangeError's header for why min/max alone are not enough.
+    if (!start || !end || dateRangeError(start, end, year)) return;
     setSaving(true);
     setAddError(null);
     try {
