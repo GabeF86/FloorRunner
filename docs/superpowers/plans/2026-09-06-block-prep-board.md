@@ -213,11 +213,29 @@ availabilityByProvider(rows): Map<string, PlannerAvailabilityRow[]>
 
 Three things the review established that a re-implementation must preserve:
 
-- **`offDayBudgetFor` returns null for an unknown FTE** (null, non-finite, or negative — mirroring
-  `effectiveWorkDaysFte`'s guard at `rulesEngine/workDays.ts:193`). It deliberately does NOT use the
-  `|| 1` coercion the rest of the codebase applies, because that also swallows a stated `0`. A stated
-  `0` delegates to `entitledOffDays` normally. Coerce with `Number()` BEFORE the finite check — a
-  Postgres `numeric` arrives as a string, and `'0.75'` must still yield a budget.
+- **`offDayBudgetFor` returns a discriminated union, not a number** (Gabriel 2026-09-06). Four states
+  that must never collapse into each other:
+
+  ```ts
+  export type OffDayBudget =
+    | { kind: 'days'; days: number }   // 0 < effective work-days FTE < 1
+    | { kind: 'none' }                 // effective work-days FTE is 1 — owes every working day
+    | { kind: 'not-applicable' }       // effective work-days FTE is 0 — a per diem owes none
+    | { kind: 'unknown' };             // fte_value null, non-finite or negative
+  ```
+
+  `none` and `not-applicable` are OPPOSITE facts — a full-timer has no off days because they owe
+  everything, a per diem has none because they owe nothing — and rendering both as "0" is the bug
+  this replaces. `unknown` is a data gap worth fixing, not a correct answer, so it stays separate.
+  The union exists so `offDaysText` and every other consumer is forced by the compiler to handle all
+  four.
+
+  It deliberately does NOT use the `|| 1` coercion the rest of the codebase applies (`fteTarget.ts:606`,
+  `dayShiftAutoGen.ts:367`), because that also swallows a stated `0`. Guard on null, non-finite and
+  negative — mirroring `effectiveWorkDaysFte` at `rulesEngine/workDays.ts:193`. Coerce with `Number()`
+  BEFORE the finite check: a Postgres `numeric` arrives as a string, and `'0.75'` must still yield a
+  budget. Route the 0-and-1 decisions through `effectiveWorkDaysFte`, never off `fte_value` directly —
+  Hussain is call FTE 0.70 with working-days FTE 1.00 and must land in `none`, not `days`.
 - **`PTO_WORK_DAYS_PER_WEEK` lives in `src/lib/dateRanges.ts`**, beside the `ptoCounterStats`
   semantics that produce the `weekdaysBooked` it is subtracted from. It is imported here, not
   redeclared. gridCalculator keeps its own separate copies per the sibling-engine rule.
@@ -586,11 +604,11 @@ describe('computeAnnualTally', () => {
     });
     const p1 = t.providers.get('p1')!;
     expect(p1.pto.allotmentDays).toBe(20);
-    expect(p1.offDayBudget).toBe(0);
+    expect(p1.offDayBudget).toEqual({ kind: 'none' });
     expect(p1.callTotal).toBe(1);
     const p2 = t.providers.get('p2')!;
     expect(p2.pto.remainingDays).toBeNull();
-    expect(p2.offDayBudget).toBe(128);
+    expect(p2.offDayBudget).toEqual({ kind: 'days', days: 128 });
     expect(p2.callTotal).toBe(0);
     expect(p2.callCounts).toEqual([]);
   });
@@ -623,6 +641,43 @@ import { entitledOffDays, ptoWeekdaysCovered } from './rulesEngine/workDays';
 Append to `src/lib/annualTally.ts`:
 
 ```ts
+// Absence types that EXPLAIN an unworked day without it being a day off
+// (Gabriel 2026-09-06: "dont count sick days as off days").
+//
+// DERIVED from the engine's own sets, never hand-typed — a literal list would
+// drift the first time an availability type is added. BLOCKING_AVAIL is
+// {pto, sick, fmla, parental_leave, military_leave, jury_duty, unavailable,
+// blocked}; removing the PTO-netting types (counted separately) and
+// `unavailable` leaves {sick, jury_duty, blocked}.
+//
+// `unavailable` is deliberately KEPT OUT of this set: workDays.ts states that
+// those rows ARE the partial's entitledOff being consumed, so they must remain
+// countable as off days. Conference / CME / admin are not in BLOCKING_AVAIL at
+// all — the provider was schedulable and simply wasn't scheduled — so those
+// days stay off days too.
+export const NON_ENTITLEMENT_ABSENCE_TYPES: ReadonlySet<string> = new Set(
+  [...BLOCKING_AVAIL].filter(t => !PTO_NETTING_TYPES.has(t) && t !== 'unavailable'),
+);
+
+/**
+ * Working dates in `workingDaySet` covered by a live non-entitlement absence.
+ * Dismissed (denied/canceled) rows are ignored, matching every other consumer.
+ */
+export function nonEntitlementAbsenceDates(
+  rows: ReadonlyArray<PlannerAvailabilityRow>,
+  workingDaySet: ReadonlySet<string>,
+): Set<string> {
+  const out = new Set<string>();
+  for (const row of rows) {
+    if (isDismissedAvailability(row)) continue;
+    if (!NON_ENTITLEMENT_ABSENCE_TYPES.has(row.availability_type)) continue;
+    for (const d of workingDaySet) {
+      if (row.start_date <= d && d <= row.end_date) out.add(d);
+    }
+  }
+  return out;
+}
+
 export interface CoveredSpan {
   date_start: string;
   date_end: string;
@@ -644,11 +699,11 @@ export interface AnnualTallyInput {
 export interface ProviderAnnualFigures {
   pto: PtoFigures;
   /**
-   * Contractual off-day entitlement for the whole year. NULL when the
-   * provider's FTE is unknown — this module refuses to guess an FTE, unlike
-   * the `|| 1` coercion used elsewhere (see offDayBudgetFor).
+   * Contractual off-day entitlement for the whole year — a tagged union, not a
+   * number, so a per diem ('not-applicable') and a full-timer ('none') can
+   * never render as the same "0". See offDayBudgetFor.
    */
-  offDayBudget: number | null;
+  offDayBudget: OffDayBudget;
   /**
    * Off days consumed, counted ONLY across `coveredSpan`. Null when no
    * published block covers any of the year — an unbuilt month is not a month
@@ -724,19 +779,30 @@ export function computeAnnualTally(input: AnnualTallyInput): AnnualTally {
 
     let offDaysUsed: number | null = null;
     if (coveredSpan) {
+      // A working day is an OFF DAY only if nothing else explains it
+      // (Gabriel 2026-09-06: "dont count sick days as off days").
+      //
+      // Built as a UNION of explained dates rather than a chain of
+      // subtractions, because the sets overlap: an ICU `blocked` row is both
+      // credited-as-worked AND a blocking absence, so subtracting counts would
+      // charge it twice and under-report off days.
+      const rows = byProvider.get(pid) ?? [];
       const a = actuals[pid];
-      const credited = a
-        ? a.assignedWorkdays.length + a.postCallRestWorkdays.length + a.icuWorkdays.length
-        : 0;
-      // ONLY PTO nets here, matching workDays.ts's PTO_NETTING_TYPES. Sick,
-      // jury duty and plain `blocked` days deliberately do NOT net (see the
-      // comment on isBlockingAvailability) — they surface as an honest "under"
-      // rather than shrinking an obligation. The consequence to be aware of:
-      // a provider out sick for two weeks reads as having consumed 10 off
-      // days. That is the engine's existing stance carried through, not a new
-      // decision made here.
-      const ptoInSpan = ptoWeekdaysCovered(byProvider.get(pid) ?? [], coveredWorkingDays).size;
-      offDaysUsed = Math.max(0, coveredSpan.workingDays - credited - ptoInSpan);
+      const explained = new Set<string>();
+      // 1. Credited as worked — assignment, post-call rest, ICU. Already
+      //    clipped to the working-day set by computeScheduleActuals, and the
+      //    three sets are disjoint by construction.
+      for (const d of a?.assignedWorkdays ?? []) explained.add(d);
+      for (const d of a?.postCallRestWorkdays ?? []) explained.add(d);
+      for (const d of a?.icuWorkdays ?? []) explained.add(d);
+      // 2. PTO-netting leave, sell-back aware.
+      for (const d of ptoWeekdaysCovered(rows, coveredWorkingDays)) explained.add(d);
+      // 3. Non-entitlement absences: sick, jury duty, plain blocked. NOT
+      //    `unavailable` — workDays.ts states those rows ARE the off-day
+      //    entitlement being consumed, so they must stay countable.
+      for (const d of nonEntitlementAbsenceDates(rows, coveredWorkingDays)) explained.add(d);
+
+      offDaysUsed = Math.max(0, coveredSpan.workingDays - explained.size);
     }
 
     providers.set(pid, {
@@ -803,7 +869,7 @@ const row = (over: Partial<RosterRow> = {}): RosterRow => ({
   call_taker: true,
   partial_call_taker: false,
   pto: { usedWeekdays: 0, soldWeekdays: 0, allotmentDays: 20, remainingDays: 20 },
-  offDayBudget: 0,
+  offDayBudget: { kind: 'none' },
   offDaysUsed: null,
   callCounts: [],
   callTotal: 0,
@@ -862,16 +928,22 @@ describe('remainingText', () => {
 
 describe('offDaysText', () => {
   it('shows the budget alone when nothing is built', () => {
-    expect(offDaysText(62, null)).toBe('62 budgeted');
+    expect(offDaysText({ kind: 'days', days: 62 }, null)).toBe('62 budgeted');
   });
   it('shows used against budget when blocks exist', () => {
-    expect(offDaysText(62, 20)).toBe('20 of 62 used');
+    expect(offDaysText({ kind: 'days', days: 62 }, 20)).toBe('20 of 62 used');
   });
-  it('shows a full-timer as having none', () => {
-    expect(offDaysText(0, null)).toBe('none');
+  it('shows a full-timer as having none — they owe every working day', () => {
+    expect(offDaysText({ kind: 'none' }, null)).toBe('none');
+  });
+  it('shows a per diem as n/a — NOT the same as a full-timer having none', () => {
+    expect(offDaysText({ kind: 'not-applicable' }, null)).toBe('n/a');
+    // The two must never collapse into one string: they are opposite facts.
+    expect(offDaysText({ kind: 'not-applicable' }, null))
+      .not.toBe(offDaysText({ kind: 'none' }, null));
   });
   it('says the FTE is not stated rather than inventing a budget', () => {
-    expect(offDaysText(null, null)).toBe('FTE not stated');
+    expect(offDaysText({ kind: 'unknown' }, null)).toBe('FTE not stated');
   });
 });
 
@@ -960,8 +1032,10 @@ export interface RosterRow {
   call_taker: boolean;
   partial_call_taker: boolean;
   pto: PtoFigures;
-  /** Null when the provider's FTE is unknown — never guessed. */
-  offDayBudget: number | null;
+  /** Tagged union — 'none' (a full-timer owes every working day) and
+   *  'not-applicable' (a per diem owes none) are different facts and render
+   *  differently. Never guessed from a missing FTE. */
+  offDayBudget: OffDayBudget;
   offDaysUsed: number | null;
   callCounts: CallCount[];
   callTotal: number;
@@ -997,12 +1071,20 @@ export function remainingText(pto: PtoFigures): string {
   return `${pto.usedWeekdays} of ${pto.allotmentDays} used${sold} · ${tail}`;
 }
 
-/** The off-days cell. A null budget means the FTE is unknown — say so. */
-export function offDaysText(budget: number | null, used: number | null): string {
-  if (budget == null) return 'FTE not stated';
-  if (budget === 0) return 'none';
-  if (used == null) return `${budget} budgeted`;
-  return `${used} of ${budget} used`;
+/**
+ * The off-days cell. Four states, and the two that both mean "zero days" are
+ * deliberately different strings: a 1.0 FTE has NO off days because they owe
+ * every working day; a per diem has none because they owe nothing at all, so
+ * the concept doesn't apply (Gabriel 2026-09-06: "n/a for gorelick").
+ */
+export function offDaysText(budget: OffDayBudget, used: number | null): string {
+  switch (budget.kind) {
+    case 'unknown':        return 'FTE not stated';
+    case 'not-applicable': return 'n/a';
+    case 'none':           return 'none';
+    case 'days':
+      return used == null ? `${budget.days} budgeted` : `${used} of ${budget.days} used`;
+  }
 }
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -1162,7 +1244,8 @@ describe('loadBlockPrepData', () => {
     expect(out.roster.data!.map(r => r.provider_id).sort()).toEqual(['p1', 'p2']);
     const hussain = out.roster.data!.find(r => r.provider_id === 'p2')!;
     // work_days_fte 1.00 despite call FTE 0.70 -> zero off days.
-    expect(hussain.offDayBudget).toBe(0);
+    // work_days_fte 1.00 despite call FTE 0.70 -> owes every working day.
+    expect(hussain.offDayBudget).toEqual({ kind: 'none' });
     expect(hussain.pto.remainingDays).toBeNull();
   });
 
