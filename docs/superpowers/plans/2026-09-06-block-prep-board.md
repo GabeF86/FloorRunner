@@ -2066,7 +2066,16 @@ function EditableCell({
       style={{ ...CELL_INPUT, opacity: saving ? 0.6 : 1 }}
       value={text}
       disabled={saving}
-      placeholder={field === 'work_days_fte' ? 'same' : field === 'pto_weeks' ? '—' : ''}
+      // The unstated-allotment affordance MUST come from allotmentText, not a
+      // literal. It is the rendering of rule 1 (blank is not zero), and
+      // blockPrepView tests it — a hardcoded em-dash here would let the string
+      // a chief actually sees drift from the one under test while every test
+      // stayed green. That is precisely the drift this module exists to stop.
+      placeholder={
+        field === 'pto_weeks' ? allotmentText(null)
+          : field === 'work_days_fte' ? 'same'
+            : ''
+      }
       title={
         field === 'work_days_fte'
           ? 'Working-days FTE — the share of working days owed. Blank means the same as call FTE.'
