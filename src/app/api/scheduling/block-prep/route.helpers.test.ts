@@ -1,40 +1,67 @@
 // The route's data layer, exercised with an injected fake supabase client —
 // the house convention for DB-coupled modules (no network, no DB).
 import { describe, it, expect } from 'vitest';
-import { loadBlockPrepData } from './route.helpers';
+import { loadBlockPrepData, PAGE_SIZE, MAX_PAGES } from './route.helpers';
 
 const SITE = 'site-1';
+
+interface TableResponse {
+  data?: unknown;
+  error?: { message: string };
+  /** Set HIGHER than data.length to simulate a PostgREST 1000-row truncation.
+   *  Pass `null` explicitly (not "omitted") to simulate the `{ count: 'exact' }`
+   *  option being dropped from a select — see the `'count' in res` check
+   *  below, which distinguishes "unset" (default to a clean count) from
+   *  "explicitly null" (a real transport anomaly). */
+  count?: number | null;
+}
 
 /**
  * Minimal PostgREST-shaped fake. Each table returns a canned { data, error };
  * every builder method returns `this` so any chain of .select/.eq/.in/.gte/.lte
- * /.order resolves to the same envelope. `await`-ability comes from `then`.
+ * /.order/.range resolves to the same envelope. `await`-ability comes from
+ * `then`.
+ *
+ * PAGING: a table may instead configure `pages: TableResponse[]` — successive
+ * `.from(table)` calls consume successive entries (clamped to the last one
+ * once exhausted), so a route that genuinely loops `.range()` calls sees a
+ * different response each time, exactly like real pagination. A table with a
+ * bare `TableResponse` (no `pages`) returns that same response on every call,
+ * as before — existing single-shot tests are unaffected.
  */
-function fakeClient(tables: Record<string, {
-  data?: unknown;
-  error?: { message: string };
-  /** Set HIGHER than data.length to simulate a PostgREST 1000-row truncation. */
-  count?: number;
-}>) {
+function fakeClient(tables: Record<string, TableResponse | { pages: TableResponse[] }>) {
   const calls: Array<{ table: string; filters: Array<[string, unknown]> }> = [];
+  const callIndex: Record<string, number> = {};
   const client = {
     calls,
     from(table: string) {
       const record = { table, filters: [] as Array<[string, unknown]> };
       calls.push(record);
-      const res = tables[table] ?? { data: [] };
+      const config = tables[table] ?? { data: [] };
+      let res: TableResponse;
+      if ('pages' in config) {
+        const idx = callIndex[table] ?? 0;
+        callIndex[table] = idx + 1;
+        res = config.pages[Math.min(idx, config.pages.length - 1)];
+      } else {
+        res = config;
+      }
       const builder: Record<string, unknown> = {
         then(resolve: (v: unknown) => unknown) {
+          const hasCount = Object.prototype.hasOwnProperty.call(res, 'count');
           return Promise.resolve({
             data: res.data ?? null,
             error: res.error ?? null,
-            // Default the count to the row count — i.e. NOT truncated — so only
-            // a test that explicitly sets a higher count exercises the guard.
-            count: res.count ?? (Array.isArray(res.data) ? res.data.length : 0),
+            // Default the count to the row count — i.e. NOT truncated — so
+            // only a test that explicitly sets a count (including `null`)
+            // exercises the guard. `'count' in res` rather than `??` so a
+            // test can force a genuine null count through, distinct from
+            // "the test didn't say".
+            count: hasCount ? res.count : (Array.isArray(res.data) ? res.data.length : 0),
           }).then(resolve);
         },
       };
-      for (const m of ['select', 'eq', 'in', 'gte', 'lte', 'order', 'or', 'not']) {
+      for (const m of ['select', 'eq', 'in', 'gte', 'lte', 'order', 'or', 'not', 'range']) {
         builder[m] = (...args: unknown[]) => {
           record.filters.push([m, args]);
           return builder;
@@ -44,6 +71,18 @@ function fakeClient(tables: Record<string, {
     },
   };
   return client;
+}
+
+/** A single published call-assignment slot row for `pid`, all on the same
+ *  date — fine for volume/pagination tests, which only need each row to
+ *  contribute one weighted call count, not clinically distinct dates. */
+function callRow(pid: string) {
+  return {
+    slot_date: '2026-01-05',
+    derived_day_type: 'weekday',
+    shift_types: { code: 'C1', category: 'call', requires_post_call_rule: false },
+    assignments: { provider_id: pid, assignment_status: 'assigned' },
+  };
 }
 
 const PROFILES = [
@@ -77,6 +116,7 @@ describe('loadBlockPrepData', () => {
     // work_days_fte 1.00 despite call FTE 0.70 -> owes every working day.
     expect(hussain.offDayBudget).toEqual({ kind: 'none' });
     expect(hussain.pto.remainingDays).toBeNull();
+    expect(out.unrosteredProviderIds).toEqual([]);
   });
 
   it('surfaces a roster query error instead of an empty roster', async () => {
@@ -124,6 +164,7 @@ describe('loadBlockPrepData', () => {
     expect(out.roster.data).toBeNull();
     expect(out.roster.error).toContain('blocks down');
     expect(out.coveredSpan).toBeNull();
+    expect(out.unrosteredProviderIds).toBeNull();
   });
 
   it('errors rather than under-counting when the slot read is truncated', async () => {
@@ -257,9 +298,22 @@ describe('loadBlockPrepData', () => {
     expect(jones.callTotal).toBe(0.5);
   });
 
-  it('coerces string numeric fte_value/work_days_fte/pto_weeks, and keeps a null pto_weeks null', async () => {
-    // provider_employment_profiles' fte_value, work_days_fte and pto_weeks are
-    // all Postgres `numeric`/int columns and can arrive as strings.
+  it('coerces string numeric fte_value/work_days_fte for both the roster row and the tally path, and keeps a null pto_weeks null', async () => {
+    // fte_value and work_days_fte are Postgres `numeric` columns and arrive as
+    // strings over PostgREST. pto_weeks is `integer` and does NOT — kept as a
+    // plain number below; there is nothing to coerce for it.
+    //
+    // The route coerces fte_value/work_days_fte/pto_weeks TWICE: once building
+    // TallyProfile for computeAnnualTally (the tally path), and again,
+    // independently, building the RosterRow copy of the same fields (the
+    // display path) — see route.helpers.ts. NOTE: annualTally's own helpers
+    // (offDayBudgetFor, effectiveWorkDaysFte) also defensively re-coerce
+    // fte_value/work_days_fte with their own Number() calls, so the
+    // TallyProfile-side coercion here is belt-and-suspenders, not a live bug
+    // if it were ever dropped — asserted anyway (via hussain.pto.allotmentDays
+    // below) so this test's claim of tally-path coverage is honest, and so a
+    // future edit that also removes annualTally's defensive coercion has a
+    // second guard.
     const sb = fakeClient({
       provider_employment_profiles: {
         data: [
@@ -269,7 +323,7 @@ describe('loadBlockPrepData', () => {
             providers: { id: 'p1', last_name: 'Jones', short_display_name: 'A.Jones', status: 'active' },
           },
           {
-            provider_id: 'p2', fte_value: '1', work_days_fte: null, pto_weeks: '3',
+            provider_id: 'p2', fte_value: '1', work_days_fte: null, pto_weeks: 3,
             call_taker: true, partial_call_taker: false, home_site_id: SITE,
             providers: { id: 'p2', last_name: 'Hussain', short_display_name: 'O.Hussain', status: 'active' },
           },
@@ -295,5 +349,184 @@ describe('loadBlockPrepData', () => {
     expect(hussain.fte_value).toBe(1);
     expect(hussain.pto_weeks).toBe(3);
     expect(typeof hussain.pto_weeks).toBe('number');
+    // The TALLY path: a stated pto_weeks reaches ptoFiguresFor as a real
+    // number and produces a real allotment (3 weeks x 5 = 15 days) — this is
+    // the assertion that actually exercises computeAnnualTally's output,
+    // rather than only the RosterRow echo of the same input fields.
+    expect(hussain.pto.allotmentDays).toBe(15);
+  });
+
+  // ── Fix 1 (CRITICAL): paging past PostgREST's 1000-row cap ─────────────────
+
+  it('assembles a 3-page slot read into one correct call total (genuine multi-page pagination, not a single stubbed call)', async () => {
+    const page0 = Array.from({ length: PAGE_SIZE }, () => callRow('p1'));
+    const page1 = Array.from({ length: PAGE_SIZE }, () => callRow('p1'));
+    const page2 = Array.from({ length: 200 }, () => callRow('p1'));
+    const TOTAL = page0.length + page1.length + page2.length; // 2200
+    const sb = fakeClient({
+      provider_employment_profiles: { data: PROFILES },
+      holiday_calendars: { data: [] },
+      shift_types: { data: [{ code: 'C1', call_burden_weight: 1, parent_call_code: null }] },
+      provider_availability: { data: [] },
+      schedule_slots: { pages: [
+        { data: page0, count: TOTAL },
+        { data: page1, count: TOTAL },
+        { data: page2, count: TOTAL },
+      ] },
+      schedules: { data: [] },
+    });
+    const out = await loadBlockPrepData(sb, SITE, 2026);
+    expect(out.roster.error).toBeNull();
+    const jones = out.roster.data!.find(r => r.provider_id === 'p1')!;
+    // Proves every page's rows reached the tally — a stub that only read
+    // page 0 would total 1000, not 2200 (and would in fact have errored: 1000
+    // rows against a declared count of 2200 IS a truncation).
+    expect(jones.callTotal).toBe(TOTAL);
+
+    const slotCalls = sb.calls.filter(c => c.table === 'schedule_slots');
+    expect(slotCalls.length).toBe(3); // exactly 3 round trips — not 1, not 50
+    const ranges = slotCalls.map(c => c.filters.find(([m]) => m === 'range')?.[1]);
+    // Each call requested a genuinely different .range() window — proof the
+    // loop is advancing, not resubmitting page 0.
+    expect(ranges).toEqual([[0, 999], [1000, 1999], [2000, 2999]]);
+  });
+
+  it('errors rather than assembling a partial tally when a slot read exhausts the page budget', async () => {
+    // Every page comes back FULL (never a short page) with a count that keeps
+    // claiming there's more — simulating a read genuinely larger than
+    // MAX_PAGES x PAGE_SIZE rows. `pages` has one entry, repeated (clamped)
+    // for every subsequent call, so all 50 calls are exercised for real.
+    const fullPage = Array.from({ length: PAGE_SIZE }, () => callRow('p1'));
+    const sb = fakeClient({
+      provider_employment_profiles: { data: PROFILES },
+      holiday_calendars: { data: [] },
+      shift_types: { data: [] },
+      provider_availability: { data: [] },
+      schedule_slots: { pages: [{ data: fullPage, count: MAX_PAGES * PAGE_SIZE + 1 }] },
+      schedules: { data: [] },
+    });
+    const out = await loadBlockPrepData(sb, SITE, 2026);
+    expect(out.roster.data).toBeNull();
+    expect(out.roster.error).toMatch(/truncated/i);
+    const slotCalls = sb.calls.filter(c => c.table === 'schedule_slots');
+    // Genuinely exhausted the page budget (MAX_PAGES round trips) rather than
+    // bailing after the first mismatched count.
+    expect(slotCalls.length).toBe(MAX_PAGES);
+  });
+
+  it('pages provider_availability past the 1000-row cap too (symmetry with slots)', async () => {
+    const ptoRow = (pid: string) => ({
+      provider_id: pid, availability_type: 'pto', start_date: '2026-01-05', end_date: '2026-01-05',
+      approval_status: 'approved', reason_code: null,
+    });
+    const page0 = Array.from({ length: PAGE_SIZE }, () => ptoRow('p1'));
+    const page1 = [ptoRow('p1')]; // one more row -> a short second page ends it
+    const sb = fakeClient({
+      provider_employment_profiles: { data: PROFILES },
+      holiday_calendars: { data: [] },
+      shift_types: { data: [] },
+      provider_availability: { pages: [
+        { data: page0, count: PAGE_SIZE + 1 },
+        { data: page1, count: PAGE_SIZE + 1 },
+      ] },
+      schedule_slots: { data: [] },
+      schedules: { data: [] },
+    });
+    const out = await loadBlockPrepData(sb, SITE, 2026);
+    expect(out.roster.error).toBeNull();
+    const availCalls = sb.calls.filter(c => c.table === 'provider_availability');
+    expect(availCalls.length).toBe(2); // genuinely paged, not a single call
+  });
+
+  // ── Fix 2 (Important): the exact count is what makes truncation detectable ─
+
+  it('requests an exact count on both year-wide reads — dropping it would make truncation undetectable', async () => {
+    const sb = fakeClient({
+      provider_employment_profiles: { data: PROFILES },
+      holiday_calendars: { data: [] },
+      shift_types: { data: [] },
+      provider_availability: { data: [] },
+      schedule_slots: { data: [] },
+      schedules: { data: [] },
+    });
+    await loadBlockPrepData(sb, SITE, 2026);
+    const hasExactCount = (table: string) => {
+      const call = sb.calls.find(c => c.table === table)!;
+      const selectCall = call.filters.find(([m]) => m === 'select');
+      return !!selectCall && JSON.stringify(selectCall[1]).includes('exact');
+    };
+    expect(hasExactCount('schedule_slots')).toBe(true);
+    expect(hasExactCount('provider_availability')).toBe(true);
+  });
+
+  it('treats a missing exact count as unverifiable, never as an all-clear', async () => {
+    // If a future edit silently drops `{ count: 'exact' }` from the select,
+    // PostgREST returns `count: null` with NO error — this must still error,
+    // never render a short read as a complete one.
+    const sb = fakeClient({
+      provider_employment_profiles: { data: PROFILES },
+      holiday_calendars: { data: [] },
+      shift_types: { data: [] },
+      provider_availability: { data: [] },
+      schedule_slots: { data: [callRow('p1')], count: null },
+      schedules: { data: [] },
+    });
+    const out = await loadBlockPrepData(sb, SITE, 2026);
+    expect(out.roster.data).toBeNull();
+    expect(out.roster.error).toMatch(/count/i);
+  });
+
+  // ── Fix 3 (Important): unrostered providers are footnoted, never dropped ───
+
+  it('surfaces unrostered provider ids — a published call for someone the roster query excluded is not silently lost', async () => {
+    // Live case (2026-09-06): Orji has a published 2026 call at Paoli but is
+    // neither call_taker nor partial_call_taker, so the roster query's
+    // .or('call_taker.eq.true,partial_call_taker.eq.true') excludes them
+    // while annualCallCounts still counts their call. computeAnnualTally
+    // exposes exactly this gap via unrosteredProviderIds; the route must pass
+    // it through rather than dropping it on the floor.
+    const sb = fakeClient({
+      provider_employment_profiles: { data: PROFILES }, // p1, p2 only — no 'orji'
+      holiday_calendars: { data: [] },
+      shift_types: { data: [] },
+      provider_availability: { data: [] },
+      schedule_slots: { data: [callRow('orji')] },
+      schedules: { data: [] },
+    });
+    const out = await loadBlockPrepData(sb, SITE, 2026);
+    expect(out.roster.error).toBeNull();
+    expect(out.roster.data!.map(r => r.provider_id).sort()).toEqual(['p1', 'p2']);
+    expect(out.unrosteredProviderIds).toEqual(['orji']);
+  });
+
+  it('unrosteredProviderIds is null (not []) when the roster itself failed to load', async () => {
+    const sb = fakeClient({
+      provider_employment_profiles: { error: { message: 'boom' } },
+      holiday_calendars: { data: [] },
+      shift_types: { data: [] },
+      provider_availability: { data: [] },
+      schedule_slots: { data: [] },
+      schedules: { data: [] },
+    });
+    const out = await loadBlockPrepData(sb, SITE, 2026);
+    expect(out.unrosteredProviderIds).toBeNull();
+  });
+
+  // ── Fix 4 (Important): the slots read must not be serialized behind the roster ─
+
+  it('queries schedule_slots concurrently with the roster read, not serialized behind it', async () => {
+    // The slots read is scoped only by site_id and date — it doesn't need the
+    // roster's provider ids, unlike availability. A serialized implementation
+    // would short-circuit on profiles.error before ever reaching it.
+    const sb = fakeClient({
+      provider_employment_profiles: { error: { message: 'boom' } },
+      holiday_calendars: { data: [] },
+      shift_types: { data: [] },
+      provider_availability: { data: [] },
+      schedule_slots: { data: [] },
+      schedules: { data: [] },
+    });
+    await loadBlockPrepData(sb, SITE, 2026);
+    expect(sb.calls.some(c => c.table === 'schedule_slots')).toBe(true);
   });
 });

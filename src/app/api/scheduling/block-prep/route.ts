@@ -17,6 +17,13 @@ export async function GET(req: NextRequest) {
   }
 
   const rawYear = searchParams.get('year');
+  // getUTCFullYear() flips a few hours early for US callers (e.g. 8pm Eastern
+  // on Dec 31 already reads as next year in UTC) — a UTC/Eastern mismatch in
+  // a codebase that is otherwise careful about this (blockPrepView.ts avoids
+  // Date construction for exactly this reason). Left as-is deliberately: this
+  // default is best-effort only, exercised when `year` is omitted entirely —
+  // every real caller (the Block Prep page, Task 7) always passes `year`
+  // explicitly, so the edge case is not reachable through the app today.
   const year = rawYear == null ? new Date().getUTCFullYear() : Number(rawYear);
   if (!Number.isInteger(year) || year < 2000 || year > 2100) {
     return NextResponse.json({ error: 'year must be a 4-digit year between 2000 and 2100' }, { status: 400 });
