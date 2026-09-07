@@ -207,7 +207,7 @@ TallyProfile      { provider_id, fte_value, work_days_fte, pto_weeks }  — all 
 PtoFigures        { usedWeekdays, soldWeekdays, allotmentDays, remainingDays }
                     allotmentDays and remainingDays are null together or not at all
 ptoFiguresFor(profile, rows, year): PtoFigures
-offDayBudgetFor(profile, workingDaysInYear): number | null
+offDayBudgetFor(profile, workingDaysInYear): OffDayBudget   // union, see below
 availabilityByProvider(rows): Map<string, PlannerAvailabilityRow[]>
 ```
 
@@ -218,11 +218,34 @@ Three things the review established that a re-implementation must preserve:
 
   ```ts
   export type OffDayBudget =
-    | { kind: 'days'; days: number }   // 0 < effective work-days FTE < 1
-    | { kind: 'none' }                 // effective work-days FTE is 1 — owes every working day
-    | { kind: 'not-applicable' }       // effective work-days FTE is 0 — a per diem owes none
+    | { kind: 'days'; days: number }   // a real off-day entitlement
+    | { kind: 'none' }                 // owes every working day — no off days
+    | { kind: 'not-applicable' }       // owes NO working days — a per diem
     | { kind: 'unknown' };             // fte_value null, non-finite or negative
   ```
+
+  **Branch on the COMPUTED DAYS, not on FTE thresholds.** An earlier draft specified these by FTE
+  ranges (`days` = "0 < eff < 1", `none` = "eff is 1") and that is wrong twice over: a call FTE of
+  1.5 — which `FTE_MAX = 2` and Task 5's parser both accept, for the "odd partner working two jobs"
+  the codebase names — matches no state at all, and a `work_days_fte` of 0.999 yields
+  `entitledOffDays` 0 while matching `days`, rendering "0 budgeted" — the exact string this ruling
+  exists to abolish. Only `not-applicable` keys off the FTE, because it is about owing nothing:
+
+  ```ts
+  if (profile.fte_value == null) return { kind: 'unknown' };
+  const fte = Number(profile.fte_value);
+  if (!Number.isFinite(fte) || fte < 0) return { kind: 'unknown' };
+  // 'not-applicable' is about OWING NOTHING, so it keys off the FTE itself.
+  if (effectiveWorkDaysFte(fte, profile.work_days_fte) === 0) return { kind: 'not-applicable' };
+  // Everything else keys off the ANSWER, so a >1 FTE and a rounds-to-zero
+  // budget both land in 'none' rather than rendering "0 budgeted".
+  const days = entitledOffDays(fte, workingDaysInYear, profile.work_days_fte);
+  return days === 0 ? { kind: 'none' } : { kind: 'days', days };
+  ```
+
+  Verified against every case: Hussain (0.70 call / 1.00 work-days, eff 1.0) → `none`; a per diem
+  (0.00) → `not-applicable`; a half-timer (0.5, WD 256) → `days: 128`; a 1.5 partner → `none`; a
+  0.999 work-days FTE → `none`.
 
   `none` and `not-applicable` are OPPOSITE facts — a full-timer has no off days because they owe
   everything, a per diem has none because they owe nothing — and rendering both as "0" is the bug
@@ -622,21 +645,21 @@ Expected: FAIL — `computeAnnualTally is not a function`.
 
 - [ ] **Step 3: Write the implementation**
 
-Extend the `plannerMath` import in `src/lib/annualTally.ts` to also pull `computeScheduleActuals` and `rangeComposition`:
+**First, replace the shipped `offDayBudgetFor`.** It currently returns `number | null` and Task 4 assigns its result to an `OffDayBudget`, so Task 4 will not typecheck until this is done. Swap in the union and the days-derived branching given in Task 2's "exported surface after review" section above. While you are there:
+
+- Delete the `TODO(gabriel)` on the stated-zero branch — this ruling closes it.
+- Fix the module header's line "offDayBudgetFor returns null rather than guessing", which the union supersedes.
+- The `Number()`-before-finite-check ordering and the divergence comment naming `fteTarget.ts:606` both stay — the reason for them is unchanged.
+
+**Then extend the imports.** ADD only what is missing; do not paste this as a wholesale replacement, and do not reintroduce `assignmentFills`, `liveAvailabilityRows`, `dayTypeBucketOn`, `embedArray`, `derivedDayTypeFor` or `PlannerSlotRow` — Task 3's refold deliberately removed all of them and the module no longer walks slots.
 
 ```ts
-import {
-  assignmentFills,
-  computeScheduleActuals,
-  liveAvailabilityRows,
-  plannerYearCounters,
-  rangeComposition,
-  type PlannerAvailabilityRow,
-  type PlannerHoliday,
-  type PlannerSlotRow,
-} from './plannerMath';
-import { entitledOffDays, ptoWeekdaysCovered } from './rulesEngine/workDays';
+// ./plannerMath — ADD: computeScheduleActuals, rangeComposition, PlannerHoliday
+// ./rulesEngine/workDays — ADD: PTO_NETTING_TYPES  (entitledOffDays, ptoWeekdaysCovered already there)
+import { BLOCKING_AVAIL, isDismissedAvailability } from './rulesEngine/shared';
 ```
+
+`effectiveWorkDaysFte` also comes from `./rulesEngine/workDays` and is needed by the new `offDayBudgetFor`.
 
 Append to `src/lib/annualTally.ts`:
 

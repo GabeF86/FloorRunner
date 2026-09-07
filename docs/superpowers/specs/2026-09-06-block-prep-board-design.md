@@ -94,10 +94,12 @@ A stated `0` is a different matter and is NOT null: it delegates to `entitledOff
 
 | State | When | Renders |
 |---|---|---|
-| A number | Effective working-days FTE is between 0 and 1, exclusive | `N budgeted` / `M of N used` |
-| `none` | Effective working-days FTE is 1.0 — owes every working day | `none` |
+| A number | The computed entitlement is greater than zero | `N budgeted` / `M of N used` |
+| `none` | The computed entitlement is zero — owes every working day | `none` |
 | `n/a` | Effective working-days FTE is 0 — owes no working days at all | `n/a` |
 | `FTE not stated` | `fte_value` null, non-finite or negative | `FTE not stated` |
+
+Note which side of the formula each state keys off. Only `n/a` is decided by the FTE, because it means *owes nothing*. The other two are decided by the **computed answer**, not by an FTE threshold — specifying them as "eff is 1" and "0 < eff < 1" left a call FTE of 1.5 (legal: `FTE_MAX` is 2, for a partner working two jobs) matching no state at all, and let a working-days FTE of 0.999 round to a zero entitlement while still matching "a number", rendering `0 budgeted` — the very string this ruling exists to abolish.
 
 `none` and `n/a` are opposite facts and must never collapse into one string: a full-timer has zero off days because they owe everything, a per diem has no off-day concept because they owe nothing. The fourth state is a data gap worth fixing, not a correct answer, so it stays distinguishable. `offDayBudgetFor` returns a discriminated union rather than `number | null` so every consumer is forced to handle all four.
 
