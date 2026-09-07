@@ -1793,20 +1793,36 @@ export default function AnnualTallyCard({
   siteId,
   year,
   siteName,
-  /** Bumped by the host after an edit so the card refetches. */
+  /** Bumped by the host after an edit so the card refetches. Ignored when
+   *  `data` is supplied — the host owns reloading in that case. */
   refreshKey = 0,
+  /**
+   * Pre-fetched payload. When the host has already loaded `/block-prep` for
+   * this (site, year) — as /block-prep itself has, for its roster — it passes
+   * the data in and the card renders from it instead of issuing a SECOND
+   * identical request. Without this the board would fire two year-wide slot
+   * queries on every load and two more on every inline edit, against exactly
+   * the read we just had to add an exact-count truncation guard to.
+   *
+   * Omit it on /dashboard, where the card is standalone and self-fetches.
+   */
+  data: providedData,
 }: {
   siteId: string | null;
   year: number;
   siteName?: string;
   refreshKey?: number;
+  data?: BlockPrepData | null;
 }) {
-  const [data, setData] = useState<BlockPrepData | null>(null);
+  const [fetched, setFetched] = useState<BlockPrepData | null>(null);
   const [fatal, setFatal] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const selfFetch = providedData === undefined;
+  const data = selfFetch ? fetched : providedData;
 
   const load = useCallback(async () => {
-    if (!siteId) { setData(null); return; }
+    if (!selfFetch) return;
+    if (!siteId) { setFetched(null); return; }
     setLoading(true);
     setFatal(null);
     try {
@@ -1814,17 +1830,17 @@ export default function AnnualTallyCard({
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
         setFatal(body.error || `Request failed (${res.status})`);
-        setData(null);
+        setFetched(null);
         return;
       }
-      setData(await res.json());
+      setFetched(await res.json());
     } catch (e) {
       setFatal(e instanceof Error ? e.message : 'Network error');
-      setData(null);
+      setFetched(null);
     } finally {
       setLoading(false);
     }
-  }, [siteId, year]);
+  }, [siteId, year, selfFetch]);
 
   useEffect(() => { load(); }, [load, refreshKey]);
 
@@ -2540,11 +2556,14 @@ export default function BlockPrepPage() {
           onPatched={onPatched}
           onOpenDrawer={setDrawerRow}
         />
+        {/* Data is passed in: the page already loaded /block-prep for its
+            roster, and the card must not fire a second identical year-wide
+            query. On /dashboard the same component self-fetches instead. */}
         <AnnualTallyCard
           siteId={siteId || null}
           year={year}
           siteName={siteName}
-          refreshKey={refreshKey}
+          data={data}
         />
       </div>
 
