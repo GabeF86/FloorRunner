@@ -233,7 +233,23 @@ export default function AnnualTallyCard(props: AnnualTallyCardProps) {
                 return total === 0
                   // Fix 7 (review, a11y): the dash alone reads to a screen
                   // reader as "em dash", not "0 calls" — name it explicitly.
-                  ? <span key={b} title="0 calls" aria-label="0 calls" style={{ color: 'var(--text-dim)' }}>—</span>
+                  // A bare <span> has an implicit ARIA role of `generic`,
+                  // which per the ARIA spec PROHIBITS naming from `aria-label`
+                  // (browsers strip it) — it only appeared to work because
+                  // `title` is a valid name source independent of role.
+                  // `role="img"` is one of the roles that DOES permit
+                  // `aria-label` naming, so this now conforms (axe-clean).
+                  ? (
+                    <span
+                      key={b}
+                      role="img"
+                      aria-label="0 calls"
+                      title="0 calls"
+                      style={{ color: 'var(--text-dim)' }}
+                    >
+                      —
+                    </span>
+                  )
                   : <span key={b}>{formatCallWeight(total)}</span>;
               }),
               <span key="total" style={{ fontWeight: 700 }}>{formatCallWeight(r.callTotal)}</span>,

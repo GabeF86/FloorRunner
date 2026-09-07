@@ -142,6 +142,31 @@ describe('AnnualTallyCard — roster.error and blocks.error are separate panels'
     );
     expect(html).toContain('Published blocks could not be loaded: separate failure');
   });
+
+  it('mutant-killer: roster AND blocks both fail with DIFFERENT messages — both banners render', () => {
+    // Unreachable from the real route today (a failed blocks read always
+    // cascades the IDENTICAL string onto roster.error — pinned by
+    // route.helpers.test.ts's `expect(out.roster.error).toBe(out.blocks.error)`),
+    // so this is defensive-code coverage, not a live bug. It is, however,
+    // exactly the semantics `blocksError` hinges on: it must key on
+    // byte-EQUALITY, not mere presence. A mutant that weakens the guard to
+    // `blocks?.error && !roster?.error` passes every other test in this file
+    // (they all pair a blocks failure with either a successful roster or an
+    // IDENTICAL roster message) yet drops this banner outright, because
+    // `roster?.error` is truthy here and `!roster?.error` is false.
+    const html = renderToStaticMarkup(
+      <AnnualTallyCard
+        siteId="site-1"
+        year={2026}
+        data={blockPrepData({
+          roster: { data: null, error: 'Roster boom' },
+          blocks: { data: null, error: 'Blocks boom' },
+        })}
+      />,
+    );
+    expect(html).toContain('Roster boom');
+    expect(html).toContain('Blocks boom');
+  });
 });
 
 describe('AnnualTallyCard — the unrostered footnote', () => {

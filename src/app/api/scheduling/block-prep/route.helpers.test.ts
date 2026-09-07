@@ -165,6 +165,12 @@ describe('loadBlockPrepData', () => {
     expect(out.roster.error).toContain('blocks down');
     expect(out.coveredSpan).toBeNull();
     expect(out.unrosteredProviderIds).toBeNull();
+    // AnnualTallyCard's blocks-banner dedup (2026-09-06 review) hinges on this
+    // being BYTE-IDENTICAL, not merely both mentioning the same failure — a
+    // future wrapping of the roster's copy (e.g. prefixing "Roster could not
+    // be loaded: ") would pass every `toContain` check above while silently
+    // bringing back two differently-worded banners about one root cause.
+    expect(out.roster.error).toBe(out.blocks.error);
   });
 
   it('errors rather than under-counting when the slot read comes back short of its declared count (a stall)', async () => {
