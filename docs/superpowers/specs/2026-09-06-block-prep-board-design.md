@@ -90,9 +90,22 @@ Every figure routes through the helper that already owns it. This board re-deriv
 
 A stated `0` is a different matter and is NOT null: it delegates to `entitledOffDays` like any other number. `entitledOffDays` already handles the case that motivated this whole column: it keys off `effectiveWorkDaysFte`, so Hussain — call FTE 0.70, working-days FTE 1.00 — is entitled to **zero** off days despite a partial call contract, and a 1.0 FTE is likewise zero. No new arithmetic.
 
-**Open question (Gabriel, asked 2026-09-06):** a per-diem at a *stated* 0.00 FTE computes to a budget of every working day in the year (256 for 2026) — literally correct, since they owe no working days, but uninformative next to the Physician Planner card, which coerces the same provider to 1.0 FTE and shows zero. Whether that column should read the full number or "n/a" is unresolved; `annualTally.ts` carries a `TODO(gabriel)` at the branch.
+**A per diem gets "n/a", not a number** (Gabriel, 2026-09-06, answering the question this raised). At a *stated* 0.00 FTE the formula yields every working day in the year — literally correct, since they owe no working days, but useless on screen and contradicting the Physician Planner card, which coerces the same provider to 1.0 FTE and shows zero. So the off-day budget has **three** states, and they must render differently:
 
-**What does NOT net against off days:** only PTO. Sick, jury duty and plain `blocked` days are deliberately excluded from `PTO_NETTING_TYPES` (`workDays.ts`) so they surface as an honest "under" rather than shrinking an obligation. The consequence, carried through here rather than re-decided: a provider out sick for two weeks reads as having consumed 10 off days. Also raised with Gabriel 2026-09-06.
+| State | When | Renders |
+|---|---|---|
+| A number | Effective working-days FTE is between 0 and 1, exclusive | `N budgeted` / `M of N used` |
+| `none` | Effective working-days FTE is 1.0 — owes every working day | `none` |
+| `n/a` | Effective working-days FTE is 0 — owes no working days at all | `n/a` |
+| `FTE not stated` | `fte_value` null, non-finite or negative | `FTE not stated` |
+
+`none` and `n/a` are opposite facts and must never collapse into one string: a full-timer has zero off days because they owe everything, a per diem has no off-day concept because they owe nothing. The fourth state is a data gap worth fixing, not a correct answer, so it stays distinguishable. `offDayBudgetFor` returns a discriminated union rather than `number | null` so every consumer is forced to handle all four.
+
+**Sick days do NOT count as off days** (Gabriel, 2026-09-06). A working day inside a published block counts as an off day only if nothing else explains it. Days that do not count: those credited as worked (assignment, post-call rest, ICU), those covered by PTO-netting leave, and those covered by a **non-entitlement absence** — sick, jury duty, and plain `blocked`.
+
+That last set is *derived*, never hand-typed: `BLOCKING_AVAIL − PTO_NETTING_TYPES − {unavailable}`, both sets owned by the engine (`rulesEngine/shared.ts`, `rulesEngine/workDays.ts`). `unavailable` is deliberately excluded from the subtraction because `workDays.ts` already states that those rows **are** the off-day entitlement being consumed. Conference, CME and admin are not in `BLOCKING_AVAIL` at all — the provider was schedulable and simply wasn't scheduled — so those days do remain off days.
+
+Because these date sets can overlap (an ICU `blocked` row is both credited-as-worked and a blocking absence), the count is computed as a **union of explained dates subtracted from the covered working days**, not as a chain of subtractions that could double-count.
 
 **Cross-site:** call counts are **this site's call only**, matching the per-site obligation bands. A provider taking call at another site does not appear in this site's tally.
 
