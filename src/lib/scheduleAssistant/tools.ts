@@ -749,7 +749,7 @@ async function loadCallPool(
   const data = await pagedSelect<Record<string, unknown>>('providers', () => {
     let q = sb
       .from('providers')
-      .select('id, last_name, short_display_name, provider_type, status, provider_employment_profiles(fte_value, home_site_id, call_taker, partial_call_taker)', { count: 'exact' });
+      .select('id, last_name, short_display_name, provider_type, status, provider_employment_profiles(fte_value, home_site_id, call_taker, partial_call_taker, is_day_doc, employment_status)', { count: 'exact' });
     if (override) q = q.in('id', override);
     return q;
   });
@@ -759,12 +759,16 @@ async function loadCallPool(
   let poolFte = 0;
   for (const row of data) {
     const profile = embedArray(row.provider_employment_profiles as never)[0] as
-      { home_site_id?: string; call_taker?: boolean; partial_call_taker?: boolean } | undefined;
+      { home_site_id?: string; call_taker?: boolean; partial_call_taker?: boolean; is_day_doc?: boolean; employment_status?: string } | undefined;
     // fte defaults to 1 for profiled providers (genContext parity: `|| 1`).
     const fte = profile ? (parseEmbeddedFte(row.provider_employment_profiles) || 1) : null;
+    // Day docs and per-diem providers are excluded from the DEFAULT pool
+    // (genContext §3 parity, Gabriel 2026-09-06) — never auto-selected for a
+    // new schedule. The override path honors the user's explicit hand-pick.
+    const notDayOrPerDiem = profile?.is_day_doc !== true && profile?.employment_status !== 'per_diem';
     const inPool = row.status === 'active' && !!profile &&
       (profile.call_taker === true || profile.partial_call_taker === true) &&
-      (override ? true : profile.home_site_id === ctx.siteId);
+      (override ? true : (profile.home_site_id === ctx.siteId && notDayOrPerDiem));
     const p: CallPoolProvider = {
       id: row.id as string,
       name: (row.short_display_name as string) || (row.last_name as string) || (row.id as string),

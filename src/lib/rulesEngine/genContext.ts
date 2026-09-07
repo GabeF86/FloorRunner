@@ -48,9 +48,9 @@ export const DEFAULT_PAR_LEVEL = 12;
 // means "use fte_value", which is exactly what a DB without the column can
 // hold — so the narrow rung is an exact degradation, not an approximation.
 export const CALL_POOL_PROFILE_COLUMNS =
-  'provider_id, fte_value, work_days_fte, home_site_id, call_taker, partial_call_taker, available_weekdays';
+  'provider_id, fte_value, work_days_fte, home_site_id, call_taker, partial_call_taker, is_day_doc, employment_status, available_weekdays';
 export const CALL_POOL_PROFILE_COLUMNS_PRE43 =
-  'provider_id, fte_value, home_site_id, call_taker, partial_call_taker, available_weekdays';
+  'provider_id, fte_value, home_site_id, call_taker, partial_call_taker, is_day_doc, employment_status, available_weekdays';
 
 // Missing-relation detection (pre-patch18 live DB) is the shared
 // isMissingRelationError; missing-COLUMN errors (patch18 partly applied) are
@@ -550,6 +550,16 @@ export async function loadGenerationContext(
     // predicate the override path must intersect too).
     if (!p.call_taker && !p.partial_call_taker) {
       if (override) overrideNonCallTakers.push(p.provider_id as string);
+      continue;
+    }
+    // Day docs and per-diem providers are NEVER auto-selected into the DEFAULT
+    // pool for a new schedule (Gabriel 2026-09-06). They remain placeable by
+    // hand — a manual grid assignment bypasses the pool entirely, and a custom
+    // override pool honors whoever the user deliberately picked — but the
+    // rule-based default must not pull them in on its own, even when the flag
+    // sits on top of a call_taker role. Scoped to the default path only; the
+    // override list is the user's explicit choice and is not second-guessed.
+    if (!override && (p.is_day_doc === true || p.employment_status === 'per_diem')) {
       continue;
     }
     profileByPid.set(p.provider_id as string, {

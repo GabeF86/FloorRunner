@@ -3,6 +3,12 @@ import { sbSchedulingServer } from '@/lib/supabaseScheduling';
 import { derivedDayTypeFor, slateForDayType, templateSlotCount } from '@/lib/templateSlots';
 import { defaultScheduleName, parseScheduleName } from '@/lib/scheduleName';
 import { loadLastActivity, withLastActivity, type ScheduleActivityRow } from '@/lib/scheduleActivity';
+import {
+  HOLIDAY_CALL_TYPE,
+  planHolidayCallSeeds,
+  type HolidayCallSlot,
+  type HolidayCallSeedSkip,
+} from '@/lib/holidayCall';
 
 // Never prerender — this route hits Supabase per request.
 export const dynamic = 'force-dynamic';
@@ -165,23 +171,154 @@ export async function POST(req: NextRequest) {
   }
 
   // Batch insert slots
+  let createdSlots: SlotRow[] = [];
+  let createdAssignments: AssignmentRow[] = [];
   if (slotRows.length > 0) {
     const { data: slots, error: slotErr } = await sb
       .from('schedule_slots')
       .insert(slotRows)
-      .select('id');
+      .select('id, slot_date, shift_type_id, slot_index');
     if (slotErr) return NextResponse.json({ error: slotErr.message }, { status: 500 });
+    createdSlots = (slots || []) as SlotRow[];
 
     // Create open assignments for each slot
-    const assignmentRows = (slots || []).map((s: { id: string }) => ({
+    const assignmentRows = createdSlots.map((s) => ({
       schedule_slot_id: s.id,
       assignment_status: 'open',
       source_type: 'manual',
     }));
 
-    const { error: assignErr } = await sb.from('assignments').insert(assignmentRows);
+    const { data: created, error: assignErr } = await sb
+      .from('assignments')
+      .insert(assignmentRows)
+      .select('id, schedule_slot_id');
     if (assignErr) return NextResponse.json({ error: assignErr.message }, { status: 500 });
+    createdAssignments = (created || []) as AssignmentRow[];
   }
 
-  return NextResponse.json({ ...schedule, version_id: version.id });
+  // 7. Materialize the chief's recorded holiday call plan (patch44).
+  //
+  // Holiday call decisions are made months before the schedule covering them
+  // exists, so they live on provider_availability. This is where they become
+  // real: matched onto the slots just created and written as LOCKED MANUAL
+  // assignments, which the engine's existing seed walk (genContext §8) then
+  // treats like any other pre-existing placement — no new engine path, and
+  // source_type 'manual' keeps them out of reach of the pre-fill eviction
+  // gates. See src/lib/holidayCall.ts.
+  //
+  // Never fatal: the schedule itself is already created and correct, so a
+  // seeding failure is REPORTED on the response rather than 500-ing a
+  // successful create. Unplaceable decisions come back in `skipped` — they
+  // are not dropped silently (clinical invariant 4's discipline).
+  const holidayCall = await seedHolidayCall(
+    sb, body.site_id, body.date_start, body.date_end, createdSlots, createdAssignments,
+  );
+
+  return NextResponse.json({ ...schedule, version_id: version.id, holiday_call: holidayCall });
+}
+
+interface SlotRow { id: string; slot_date: string; shift_type_id: string; slot_index: number }
+interface AssignmentRow { id: string; schedule_slot_id: string }
+
+interface HolidayCallSeedReport {
+  seeded: number;
+  skipped: HolidayCallSeedSkip[];
+  /** Present only when the seeding pass itself degraded. */
+  error?: string;
+}
+
+async function seedHolidayCall(
+  sb: ReturnType<typeof sbSchedulingServer>,
+  siteId: string,
+  dateStart: string,
+  dateEnd: string,
+  slots: SlotRow[],
+  assignments: AssignmentRow[],
+): Promise<HolidayCallSeedReport> {
+  const empty: HolidayCallSeedReport = { seeded: 0, skipped: [] };
+  if (slots.length === 0 || assignments.length === 0) return empty;
+  // siteId is interpolated into a PostgREST `.or()` filter string below, where
+  // a comma or paren would break out of the expression — only an exact UUID
+  // is ever spliced in.
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(siteId)) {
+    return { seeded: 0, skipped: [], error: 'site_id is not a UUID — holiday call not seeded' };
+  }
+
+  const { data: entryRows, error: entryErr } = await sb
+    .from('provider_availability')
+    .select('provider_id, start_date, reason_code')
+    .eq('availability_type', HOLIDAY_CALL_TYPE)
+    .gte('start_date', dateStart)
+    .lte('start_date', dateEnd)
+    .or(`site_id.eq.${siteId},site_id.is.null`);
+  // A pre-patch44 database has no 'holiday_call' enum value, so this query
+  // errors rather than returning nothing. Report and carry on — schedule
+  // creation must keep working before the patch lands.
+  if (entryErr) return { seeded: 0, skipped: [], error: entryErr.message };
+  if (!entryRows || entryRows.length === 0) return empty;
+
+  const { data: shiftTypes, error: stErr } = await sb
+    .from('shift_types')
+    .select('id, code')
+    .eq('site_id', siteId);
+  if (stErr) return { seeded: 0, skipped: [], error: stErr.message };
+  const codeById = new Map<string, string>(
+    (shiftTypes || []).map((s: { id: string; code: string }) => [s.id, s.code]),
+  );
+
+  const assignmentBySlot = new Map(assignments.map(a => [a.schedule_slot_id, a.id]));
+  const seedSlots: HolidayCallSlot[] = [];
+  for (const s of slots) {
+    const code = codeById.get(s.shift_type_id);
+    const assignmentId = assignmentBySlot.get(s.id);
+    if (!code || !assignmentId) continue;
+    seedSlots.push({
+      slot_id: s.id, assignment_id: assignmentId,
+      slot_date: s.slot_date, code, slot_index: s.slot_index,
+    });
+  }
+
+  const plan = planHolidayCallSeeds(
+    entryRows.map((r: { provider_id: string; start_date: string; reason_code: string | null }) => ({
+      provider_id: r.provider_id,
+      date: r.start_date,
+      code: r.reason_code ?? '',
+    })),
+    seedSlots,
+  );
+  if (plan.fills.length === 0) return { seeded: 0, skipped: plan.skipped };
+
+  // One update per provider (each holds a handful of holiday days at most)
+  // rather than per row.
+  const byProvider = new Map<string, string[]>();
+  for (const f of plan.fills) {
+    const list = byProvider.get(f.provider_id);
+    if (list) list.push(f.assignment_id);
+    else byProvider.set(f.provider_id, [f.assignment_id]);
+  }
+  for (const [providerId, assignmentIds] of byProvider) {
+    const { error } = await sb
+      .from('assignments')
+      .update({
+        provider_id: providerId,
+        assignment_status: 'assigned',
+        source_type: 'manual',
+        manually_overridden: true,
+        assigned_at: new Date().toISOString(),
+        notes: 'Holiday call (recorded plan)',
+      })
+      .in('id', assignmentIds);
+    if (error) return { seeded: 0, skipped: plan.skipped, error: error.message };
+  }
+
+  // Lock the slots so generation treats them as fixed structure.
+  const { error: lockErr } = await sb
+    .from('schedule_slots')
+    .update({ locked: true })
+    .in('id', plan.fills.map(f => f.slot_id));
+  if (lockErr) {
+    return { seeded: plan.fills.length, skipped: plan.skipped, error: `assignments seeded but slots not locked: ${lockErr.message}` };
+  }
+
+  return { seeded: plan.fills.length, skipped: plan.skipped };
 }
