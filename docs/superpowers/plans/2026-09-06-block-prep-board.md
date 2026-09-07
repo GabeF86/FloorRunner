@@ -746,7 +746,19 @@ export interface AnnualTally {
    * outer bounds plus the working-day count actually used for offDaysUsed.
    * Null when nothing is published in the year.
    */
-  coveredSpan: { start: string; end: string; workingDays: number } | null;
+  coveredSpan: {
+    start: string;
+    end: string;
+    workingDays: number;
+    /**
+     * The published blocks' own clipped ranges, ascending, with adjacent and
+     * overlapping ones merged. `segments.length > 1` means the coverage HAS
+     * GAPS and the start–end range overstates it — two blocks at either end of
+     * the year read as "Jan 5 – Dec 20" while covering half the working days,
+     * and the label must not present that as continuous.
+     */
+    segments: Array<{ start: string; end: string }>;
+  } | null;
   providers: Map<string, ProviderAnnualFigures>;
 }
 
@@ -971,13 +983,40 @@ describe('offDaysText', () => {
 });
 
 describe('coveredSpanLabel', () => {
+  const span = (over: Partial<CoveredSpanView> = {}): CoveredSpanView => ({
+    start: '2026-08-10', end: '2026-10-25', workingDays: 55,
+    segments: [{ start: '2026-08-10', end: '2026-10-25' }],
+    ...over,
+  });
+
   it('names the span the off-day figure was counted over', () => {
-    expect(coveredSpanLabel({ start: '2026-08-10', end: '2026-10-25', workingDays: 55 }))
+    expect(coveredSpanLabel(span()))
       .toBe('Off days counted across published blocks only: Aug 10 – Oct 25, 2026 (55 working days).');
   });
   it('says plainly that nothing is published', () => {
     expect(coveredSpanLabel(null))
       .toBe('No published blocks this year — off days show the budget only, with nothing counted against it.');
+  });
+  it('does not present a GAPPED range as continuous coverage', () => {
+    // Two blocks at either end of the year with a five-month hole between
+    // them. The bare range reads as near-total coverage; the label must not.
+    const label = coveredSpanLabel(span({
+      start: '2026-01-05', end: '2026-12-20', workingDays: 130,
+      segments: [
+        { start: '2026-01-05', end: '2026-03-22' },
+        { start: '2026-09-07', end: '2026-12-20' },
+      ],
+    }));
+    expect(label).toContain('2 published blocks');
+    expect(label).toContain('gaps between them');
+  });
+  it('distinguishes a block with no working days from nothing published', () => {
+    const label = coveredSpanLabel(span({
+      start: '2026-01-01', end: '2026-01-01', workingDays: 0,
+      segments: [{ start: '2026-01-01', end: '2026-01-01' }],
+    }));
+    expect(label).toContain('no working days');
+    expect(label).not.toBe(coveredSpanLabel(null));
   });
 });
 
@@ -1043,7 +1082,20 @@ Create `src/lib/blockPrepView.ts`:
 // 3. AN OVERDRAWN BALANCE IS SHOWN, NOT CLAMPED. Someone 5 days past their
 //    allotment reads "5 over", because that is a thing a chief needs to see.
 
-import type { CallCount, PtoFigures } from './annualTally';
+import type { CallCount, OffDayBudget, PtoFigures } from './annualTally';
+
+/**
+ * The covered-span shape this module renders. Structurally the `coveredSpan`
+ * field of `AnnualTally` — imported as a type rather than restated once Task 4
+ * exports it. `segments` carries the individual published blocks so a gapped
+ * range can never be rendered as continuous coverage.
+ */
+export interface CoveredSpanView {
+  start: string;
+  end: string;
+  workingDays: number;
+  segments: Array<{ start: string; end: string }>;
+}
 
 export interface RosterRow {
   provider_id: string;
@@ -1121,15 +1173,31 @@ function shortDate(iso: string): string {
  * The honesty caveat under the off-days column. Off days can only be counted
  * where a schedule exists; this names the span so nobody reads the figure as a
  * full-year number.
+ *
+ * THE GAP CASE IS THE WHOLE POINT. When the year's published blocks are
+ * disjoint — a draft block sitting between two published ones is enough — the
+ * start–end range OVERSTATES coverage badly: two blocks at either end of the
+ * year read as "Jan 5 – Dec 20" while covering half the working days. So the
+ * label must say how many blocks it counted whenever there is more than one
+ * segment, and never present a gapped range as a continuous one.
  */
-export function coveredSpanLabel(
-  span: { start: string; end: string; workingDays: number } | null,
-): string {
+export function coveredSpanLabel(span: CoveredSpanView | null): string {
   if (!span) {
     return 'No published blocks this year — off days show the budget only, with nothing counted against it.';
   }
+  // A published block that contains no working days (e.g. one clipped to a
+  // single major holiday) is NOT the same as nothing being published, and must
+  // not read as "0 days off taken".
+  if (span.workingDays === 0) {
+    return 'The published block covers no working days this year — nothing has been counted against the off-day budget.';
+  }
   const start = shortDate(span.start).replace(/, \d{4}$/, '');
-  return `Off days counted across published blocks only: ${start} – ${shortDate(span.end)} (${span.workingDays} working days).`;
+  const range = `${start} – ${shortDate(span.end)}`;
+  if (span.segments.length > 1) {
+    return `Off days counted across ${span.segments.length} published blocks only, with gaps between them: `
+      + `${range} (${span.workingDays} working days counted).`;
+  }
+  return `Off days counted across published blocks only: ${range} (${span.workingDays} working days).`;
 }
 
 export type ParseResult<T> = { ok: true; value: T } | { ok: false; error: string };
@@ -1300,6 +1368,25 @@ describe('loadBlockPrepData', () => {
     expect(out.roster.error).toContain('avail down');
   });
 
+  it('fails the roster when the blocks read fails, rather than claiming nothing is published', async () => {
+    // coveredSpans feeds offDaysUsed, and an empty list is indistinguishable
+    // from "no blocks this year" — so a failed blocks read must not degrade
+    // into a confident "nothing published" label.
+    const sb = fakeClient({
+      provider_employment_profiles: { data: PROFILES },
+      holiday_calendars: { data: [] },
+      shift_types: { data: [] },
+      provider_availability: { data: [] },
+      schedule_slots: { data: [] },
+      schedules: { error: { message: 'blocks down' } },
+    });
+    const out = await loadBlockPrepData(sb, SITE, 2026);
+    expect(out.blocks.error).toContain('blocks down');
+    expect(out.roster.data).toBeNull();
+    expect(out.roster.error).toContain('blocks down');
+    expect(out.coveredSpan).toBeNull();
+  });
+
   it('errors rather than under-counting when the slot read is truncated', async () => {
     // PostgREST caps un-ranged selects at 1000 rows with no error. A short read
     // against a larger exact count must surface as an error — never as a
@@ -1402,7 +1489,9 @@ export interface BlockPrepData {
   year: number;
   roster: Panel<RosterRow[]>;
   blocks: Panel<PublishedBlock[]>;
-  coveredSpan: { start: string; end: string; workingDays: number } | null;
+  /** See annualTally.AnnualTally.coveredSpan — carries `segments` so a gapped
+   *  coverage range can never be rendered as continuous. */
+  coveredSpan: AnnualTally['coveredSpan'];
 }
 
 const PROFILE_COLUMNS =
@@ -1475,6 +1564,16 @@ export async function loadBlockPrepData(
       error: null,
     };
 
+  // A FAILED BLOCKS READ MUST FAIL THE ROSTER TOO. `coveredSpans` feeds
+  // offDaysUsed, and an empty list is indistinguishable from "nothing is
+  // published this year" — so passing `blocks.data ?? []` through on error
+  // would make the board assert, in Task 5's covered-span label, that no
+  // blocks exist, a claim the code never established, while the blocks panel
+  // beside it simultaneously shows an error. Same no-silent-clean rule as
+  // holidays and shift types below (invariant 6, display-layer form).
+  if (blocks.error) {
+    return { site_id: siteId, year, roster: { data: null, error: blocks.error }, blocks, coveredSpan: null };
+  }
   if (profilesRes.error) {
     return { site_id: siteId, year, roster: { data: null, error: msg(profilesRes.error, 'Roster') }, blocks, coveredSpan: null };
   }
