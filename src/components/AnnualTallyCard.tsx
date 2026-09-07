@@ -69,13 +69,21 @@ import { useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
 import { Banner, Card, EmptyState, Table } from '@/components/ui';
 import { formatCallWeight } from '@/lib/callBurden';
-import { FAIRNESS_BUCKETS } from '@/lib/rulesEngine/shared';
-// The Call Counts modal's own column labels (Fix 4, review) — this card's
-// whole purpose is to point at that modal, so the two are MEANT to agree, and
-// a local copy could silently drift from it. `BUCKET_LABELS` is a
-// `Record<BucketDayType, string>` (BucketDayType = FairnessBucket), so it is
-// exhaustive by construction: a fifth bucket would fail THAT map to compile
-// rather than render an un-labelled raw key here.
+// The bucket list and the Call Counts modal's own column labels (Fix 4,
+// review) — this card's whole purpose is to point at that modal, so the two
+// are MEANT to agree, and a local copy could silently drift from it.
+// `BUCKET_LABELS` is a `Record<BucketDayType, string>` keyed off the very list
+// imported beside it, so it is exhaustive by construction: a fifth bucket
+// would fail THAT map to compile rather than render an un-labelled raw key.
+//
+// BUCKET_DAY_TYPES, not rulesEngine/shared's FAIRNESS_BUCKETS: the two are the
+// same four strings and in-flight work moves ownership to `shared`, with
+// callCountDays re-exporting. But that move is UNCOMMITTED, and importing it
+// from there left this branch failing to typecheck in a clean checkout while
+// passing in the working tree that happened to have it — a green suite that
+// would have broken the Vercel build on merge. This import is correct today
+// and stays byte-identical after the move lands.
+import { BUCKET_DAY_TYPES } from '@/lib/callCountDays';
 import { BUCKET_LABELS } from '@/lib/callCountColumns';
 import {
   coveredSpanLabel, offDaysText, remainingText, sortRosterRows, unrosteredFootnote,
@@ -184,7 +192,7 @@ export default function AnnualTallyCard(props: AnnualTallyCardProps) {
 
   const headers = [
     'Provider',
-    ...FAIRNESS_BUCKETS.map(b => BUCKET_LABELS[b]),
+    ...BUCKET_DAY_TYPES.map(b => BUCKET_LABELS[b]),
     'Calls',
     'PTO',
     'Off days',
@@ -224,7 +232,7 @@ export default function AnnualTallyCard(props: AnnualTallyCardProps) {
               >
                 {r.display_name}
               </Link>,
-              ...FAIRNESS_BUCKETS.map(b => {
+              ...BUCKET_DAY_TYPES.map(b => {
                 // Plain aggregation over already-weighted counts (no rule of
                 // its own) — a bucket can hold more than one parent call code.
                 const total = r.callCounts
