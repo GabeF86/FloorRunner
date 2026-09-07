@@ -147,8 +147,10 @@ The math lives in lib and the page is markup over it — the split `blockTargets
 The board fails soft **per card**, the way `/dashboard` already does: a query error renders a `Banner` for that card alone and **never renders a number it could not compute**. This is the display-layer form of invariant 6 — a failed read must not read as a clean zero. Specifically:
 
 - A failed assignments read shows an error in the tally card, not zero calls for everyone.
-- A failed availability read shows an error in the PTO columns, not full remaining balances.
+- A failed availability read shows an error where the PTO figures would be, not full remaining balances. **The roster fails as one panel** rather than degrading column by column: the PTO, off-day and call figures all derive from the same reads, and a row showing a name and an FTE beside three blank columns invites the reader to treat the blanks as zeros. Splitting the roster into a profile panel and a figures panel is a reasonable future refinement; it is deliberately not the shipped contract.
 - Null `pto_weeks` renders an em-dash and a "not stated" affordance, never a computed remaining.
+- A **truncated** read is an error, not a short answer. The year-wide reads page until exhausted; if paging cannot complete, the panel says so rather than rendering a partial tally as fact. This matters concretely: measured 2026-09-06, Paoli holds 717 published 2026 slot rows against a 1000-row per-request cap, so the second published block of a year crosses it.
+- Providers with published call at the site who are **absent from the roster** — a mid-year status change, cross-site coverage, or someone not flagged as a call taker — have their calls counted by the tally but no row to show them on. The route surfaces those ids and the card footnotes them, rather than letting the count disappear. There is a live instance at Paoli today.
 
 Inline edits apply optimistically and **revert with an error message** if the PATCH fails, so a rejected FTE cannot linger on screen looking saved.
 
