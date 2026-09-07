@@ -56,10 +56,21 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: 'year must be a 4-digit calendar year' }, { status: 400 });
   }
 
+  // MAJOR HOLIDAYS ONLY (Gabriel 2026-09-07: "remove the non-major holidays
+  // from the holiday call list"). The calendar also carries MLK, Presidents',
+  // Juneteenth, Veterans and Columbus days, which the group works as ordinary
+  // days — they are not planned around, so offering them was noise on a card
+  // whose whole job is deciding who covers the days that actually need it.
+  //
+  // This is the same line `is_major_holiday` already draws elsewhere: it is
+  // exactly the set `workDays.isWorkingDay` removes from the working-day
+  // count, so a day that can carry a holiday call is now precisely a day
+  // nobody owes as a working day.
   const { data: holidayRows, error: holErr } = await sb
     .from('holiday_calendars')
     .select('id, holiday_name, holiday_date, holiday_type, is_major_holiday')
     .eq('organization_id', orgId)
+    .eq('is_major_holiday', true)
     .gte('holiday_date', `${year}-01-01`)
     .lte('holiday_date', `${year}-12-31`)
     .order('holiday_date');

@@ -76,6 +76,21 @@ describe('GET /api/scheduling/holiday-call', () => {
     expect(json.holidays[0].dates).toEqual(['2026-12-25', '2026-12-26', '2026-12-27']);
   });
 
+  it('asks the database for MAJOR holidays only', async () => {
+    // Gabriel 2026-09-07: "remove the non-major holidays from the holiday call
+    // list." MLK, Presidents', Juneteenth, Veterans and Columbus are worked as
+    // ordinary days, so offering them was noise on a card for deciding who
+    // covers the days that actually need covering.
+    //
+    // The filter has to be asserted on the QUERY, not on the response: the
+    // fake returns its configured rows whatever is asked of it, so a test that
+    // only checked the returned holidays would pass with the filter deleted.
+    const { calls } = setup();
+    await GET(getReq('org_id=org-1&year=2026'));
+    const eqs = callsFor(calls, 'holiday_calendars', 'eq');
+    expect(eqs.some(c => c.args[0] === 'is_major_holiday' && c.args[1] === true)).toBe(true);
+  });
+
   it('maps recorded decisions to date + code with a display name', async () => {
     setup({
       entries: [{

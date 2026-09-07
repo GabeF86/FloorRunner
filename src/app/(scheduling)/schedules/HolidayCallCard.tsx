@@ -4,7 +4,10 @@
 // page next to the request window, for the same reason: it is an operational
 // act tied to the blocks he is about to build, not durable site configuration.
 //
-// The list is the org's federal holidays for a calendar year; opening one
+// The list is the org's MAJOR holidays for a calendar year (Gabriel
+// 2026-09-07: "remove the non-major holidays from the holiday call list" —
+// MLK, Presidents', Juneteenth, Veterans and Columbus are worked as
+// ordinary days and are not planned around here); opening one
 // shows every DAY that holiday covers — a holiday "stretches" over the
 // weekend it touches (Thanksgiving also takes its Friday), so Christmas is
 // three days to staff, not one. Each day × call code is a single-valued cell:
@@ -13,7 +16,7 @@
 // src/lib/holidayCall.ts for the day-expansion rule and how these decisions
 // later materialize into real assignments.
 import { useState, useEffect, useCallback, useMemo } from 'react';
-import { Card, Button, Badge, Modal } from '@/components/ui';
+import { Card, Button, Modal } from '@/components/ui';
 import { HOLIDAY_CALL_CODES } from '@/lib/holidayCall';
 
 interface Site {
@@ -177,7 +180,7 @@ export default function HolidayCallCard({ orgId, sites, initialSiteId }: {
         )}
       </div>
       <div style={{ fontSize: 11.5, color: 'var(--text-dim)', marginBottom: 12, lineHeight: 1.5 }}>
-        Who covers call on each federal holiday. Open a holiday to staff every day it
+        Who covers call on each major holiday. Open a holiday to staff every day it
         covers — a holiday takes in the weekend it touches, and Thanksgiving its Friday,
         so Christmas on a Friday is three days to fill. Each pick is saved to that
         provider’s availability profile under <b>Holiday Call</b>, and is written in as a
@@ -190,7 +193,8 @@ export default function HolidayCallCard({ orgId, sites, initialSiteId }: {
         <div style={{ fontSize: 12, color: 'var(--text-dim)' }}>Loading…</div>
       ) : data.holidays.length === 0 ? (
         <div style={{ fontSize: 12, color: 'var(--text-dim)', fontStyle: 'italic' }}>
-          No holidays on the calendar for {year}. Add them under Settings → Holidays.
+          No major holidays on the calendar for {year}. Add them under Settings → Holidays,
+          and mark them major — only major holidays are planned here.
         </div>
       ) : (
         <div>
@@ -209,7 +213,8 @@ export default function HolidayCallCard({ orgId, sites, initialSiteId }: {
                   <span style={{ fontWeight: 700, color: 'var(--text-strong)', fontSize: 13 }}>
                     {h.holiday_name}
                   </span>
-                  {h.is_major_holiday && <Badge tone="warn">Major</Badge>}
+                  {/* No "Major" badge: the route now returns major holidays
+                      ONLY, so a badge on every row distinguishes nothing. */}
                 </span>
                 <span style={{ display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0 }}>
                   {clashes > 0 && (
