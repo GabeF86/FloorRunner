@@ -611,16 +611,37 @@ describe('dateRangeError', () => {
   // rangeUnderflow/rangeOverflow), and this form has no <form> for native
   // constraint validation to run against — so the year bound has to be a
   // real, enforced check here, not just an input attribute.
-  it('flags a start date before the board year', () => {
-    expect(dateRangeError('2025-12-31', '2026-01-05', 2026)).toBe('Dates must fall within 2026.');
+  //
+  // OVERLAP, NOT CONTAINMENT (second-pass fix, review 2026-09-07): the first
+  // version of this check required BOTH endpoints inside the year — strictly
+  // narrower than the OVERLAP fetch that actually decides visibility
+  // (end_date >= from AND start_date <= to). That rejected a Dec 28 – Jan 5
+  // holiday PTO block from BOTH the 2026 AND the 2027 board — the single
+  // most common PTO shape in a hospital calendar, with no board left that
+  // could enter it. These three cases are the exact ones review named.
+  it('accepts a range that starts in-year and ends in the NEXT year — the fetch shows it fine on this board', () => {
+    // 2026-12-28 -> 2027-01-05: visible on the 2026 board (end_date 2027-01-05
+    // >= from 2026-01-01; start_date 2026-12-28 <= to 2026-12-31).
+    expect(dateRangeError('2026-12-28', '2027-01-05', 2026)).toBeNull();
   });
 
-  it('flags an end date after the board year', () => {
-    expect(dateRangeError('2026-12-20', '2027-01-02', 2026)).toBe('Dates must fall within 2026.');
+  it('accepts a range that starts in the PREVIOUS year and ends in-year — the fetch shows it fine on this board', () => {
+    // 2025-12-29 -> 2026-01-02: visible on the 2026 board (end_date
+    // 2026-01-02 >= from 2026-01-01; start_date 2025-12-29 <= to 2026-12-31).
+    expect(dateRangeError('2025-12-29', '2026-01-02', 2026)).toBeNull();
   });
 
-  it('flags a range that is entirely in the wrong year', () => {
-    expect(dateRangeError('2027-03-01', '2027-03-05', 2026)).toBe('Dates must fall within 2026.');
+  it('rejects a range that does not overlap the board year AT ALL', () => {
+    // 2027-06-01 -> 2027-06-05 viewed from the 2026 board: genuinely
+    // invisible on this board — start_date 2027-06-01 > to 2026-12-31, so
+    // the range starts after the year has already ended.
+    expect(dateRangeError('2027-06-01', '2027-06-05', 2026))
+      .toBe('Dates must overlap 2026 to appear on this board.');
+  });
+
+  it('rejects a range entirely BEFORE the board year too', () => {
+    expect(dateRangeError('2025-01-01', '2025-06-01', 2026))
+      .toBe('Dates must overlap 2026 to appear on this board.');
   });
 
   it('is null for a range flush against both year edges', () => {
@@ -629,6 +650,10 @@ describe('dateRangeError', () => {
 
   it('is null for the same valid range under its own year, not a neighboring one', () => {
     expect(dateRangeError('2027-06-01', '2027-06-05', 2027)).toBeNull();
+  });
+
+  it('is null for a range spanning the ENTIRE board year and beyond on both sides', () => {
+    expect(dateRangeError('2025-06-01', '2027-06-01', 2026)).toBeNull();
   });
 });
 

@@ -416,13 +416,16 @@ describe('AvailabilityDrawerBody — add-form validation and addable types', () 
     expect(html).toContain('disabled');
   });
 
-  it('clamps both date inputs to the board\'s year (Fix I2)', () => {
+  it('carries the board\'s year bounds on the inputs that still need one (Fix I2)', () => {
+    // Which input carries which bound is pinned precisely by the
+    // "drops min on start / max on end" test below; this just confirms both
+    // surviving bounds are present somewhere.
     const html = render({ year: 2026 });
     expect(html).toContain('min="2026-01-01"');
     expect(html).toContain('max="2026-12-31"');
   });
 
-  it('clamps to a DIFFERENT year\'s bounds when the board year differs', () => {
+  it('carries a DIFFERENT year\'s bounds when the board year differs', () => {
     const html = render({ year: 2027 });
     expect(html).toContain('min="2027-01-01"');
     expect(html).toContain('max="2027-12-31"');
@@ -431,26 +434,48 @@ describe('AvailabilityDrawerBody — add-form validation and addable types', () 
 
   // ── Fix 2 (Important, review 2026-09-07) ──────────────────────────────────
   // min/max alone do not clamp a date input's value and this form has no
-  // <form> for native constraint validation to run against, so an
-  // out-of-year date must be caught by the SAME rangeError path that already
-  // disables Add for a backwards range — not just decorated with an
-  // attribute a typed/pasted date can ignore.
-  it('rejects a start date before the board year and disables Add', () => {
-    const html = render({ start: '2025-12-31', end: '2026-01-05' });
-    expect(html).toContain('Dates must fall within 2026.');
-    expect(html).toContain('disabled');
+  // <form> for native constraint validation to run against, so a range with
+  // NO overlap with the board year at all must be caught by the SAME
+  // rangeError path that already disables Add for a backwards range — not
+  // just decorated with an attribute a typed/pasted date can ignore.
+  //
+  // OVERLAP, NOT CONTAINMENT (second-pass fix): a range spanning INTO the
+  // neighboring year (the single most common PTO shape in a hospital
+  // calendar — a holiday block crossing New Year) must be ACCEPTED, not
+  // rejected — the fetch would show it fine on this board.
+  it('accepts a range spanning into the NEXT year — the fetch would show it fine on this board', () => {
+    const html = render({ start: '2026-12-28', end: '2027-01-05' });
+    expect(html).not.toContain('Dates must overlap');
+    expect(html).not.toContain('disabled');
   });
 
-  it('rejects an end date after the board year and disables Add', () => {
-    const html = render({ start: '2026-12-20', end: '2027-01-02' });
-    expect(html).toContain('Dates must fall within 2026.');
+  it('accepts a range spanning in from the PREVIOUS year — the fetch would show it fine on this board', () => {
+    const html = render({ start: '2025-12-29', end: '2026-01-02' });
+    expect(html).not.toContain('Dates must overlap');
+    expect(html).not.toContain('disabled');
+  });
+
+  it('rejects a range with no overlap with the board year at all, and disables Add', () => {
+    const html = render({ start: '2027-06-01', end: '2027-06-05' });
+    expect(html).toContain('Dates must overlap 2026 to appear on this board.');
     expect(html).toContain('disabled');
   });
 
   it('does not flag a range that is valid and fully inside the board year', () => {
     const html = render({ start: '2026-01-01', end: '2026-12-31' });
-    expect(html).not.toContain('Dates must fall within');
+    expect(html).not.toContain('Dates must overlap');
     expect(html).not.toContain('disabled');
+  });
+
+  it('drops min on the start input and max on the end input, so the spanning case above is even enterable', () => {
+    // Fix 2 (second pass): the picker's native min/max must not contradict
+    // what dateRangeError now accepts. Start keeps a `max` (a start after the
+    // year ends can never overlap it); end keeps a `min` (an end before the
+    // year begins can never overlap it) — but start has no `min` and end has
+    // no `max`.
+    const html = render();
+    expect(html).toContain('aria-label="Start date" type="date" max="2026-12-31"');
+    expect(html).toContain('aria-label="End date" type="date" min="2026-01-01"');
   });
 });
 

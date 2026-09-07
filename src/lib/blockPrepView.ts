@@ -452,7 +452,13 @@ const ICU_MANAGED_ELSEWHERE = 'managed together from the provider’s profile �
  * simply can't see:
  *  - Week row: `icuMondayAfter(row.end_date)` is a single deterministic
  *    date. If it's after `end` (the window's upper bound), the Monday could
- *    exist just outside the fetch — stay locked.
+ *    exist just outside the fetch — stay locked. The LOWER bound never needs
+ *    checking: `icuMondayAfter` always returns a date strictly AFTER
+ *    `row.end_date`, and `row.end_date >= start` always holds because `row`
+ *    itself came from this fetch (the overlap filter requires
+ *    `end_date >= from`) — so the computed Monday can never fall below the
+ *    window's start; only whether it overshoots the window's END is ever in
+ *    question.
  *  - Post-call row: the week's end date that would produce this exact Monday
  *    is one of the 7 calendar days immediately before it (icuMondayAfter's
  *    inverse spans a week — a Monday-dow end date needs +7, a Sunday-dow end
@@ -558,12 +564,14 @@ export interface YearBounds { start: string; end: string }
 
 /**
  * Jan 1 – Dec 31 of `year`, as ISO date strings — the single home for "what
- * counts as this board's year". Used both for the availability GET's
- * from/to (availabilityQueryUrl below) and to clamp the add-form's date
- * inputs (Fix I2, review 2026-09-07: an out-of-year add used to succeed
- * silently — the POST has no year concept of its own, and the subsequent
- * year-scoped refetch simply wouldn't show the new row, so the chief saw the
- * form clear with nothing appearing and no error).
+ * counts as this board's year". Used for the availability GET's from/to
+ * (availabilityQueryUrl below), for `dateRangeError`'s overlap check, and to
+ * PARTIALLY bound the add-form's date inputs: `end.start` is a legitimate
+ * `min` for the END input and `end.end` is a legitimate `max` for the START
+ * input (a range with no overlap at all can never validate), but NOT the
+ * other two corners — the drawer accepts a range spanning into the
+ * neighboring year (Fix 2's overlap correction, review 2026-09-07), so the
+ * START input carries no `min` and the END input carries no `max`.
  */
 export function yearBounds(year: number): YearBounds {
   return { start: `${year}-01-01`, end: `${year}-12-31` };
@@ -586,29 +594,49 @@ export function availabilityQueryUrl(providerId: string, year: number): string {
  *
  *  1. `end_date >= start_date` (validation/providers.ts; the POST and PATCH
  *     routes both enforce this).
- *  2. The dates fall within the board's own year — NOT server-enforced at
- *     all (Fix 2, review 2026-09-07). `min`/`max` on a `<input type=date>`
- *     only set `rangeUnderflow`/`rangeOverflow`; per spec they do NOT clamp
- *     the value, and this form has no `<form>` wrapper for native constraint
- *     validation to run against anyway. A typed or pasted out-of-year date
- *     reaches `add()`'s state untouched, would still POST, would still land
- *     in the DB, and would still vanish from the year-scoped refetch with no
- *     error — the exact silent-invisible-add `yearBounds`'s min/max alone was
- *     supposed to close. `year` is required (not optional) so a call site
- *     cannot accidentally validate range order while forgetting the year
- *     bound.
+ *  2. The range OVERLAPS the board's own year — NOT server-enforced at all
+ *     (Fix 2, review 2026-09-07). `min`/`max` on a `<input type=date>` only
+ *     set `rangeUnderflow`/`rangeOverflow`; per spec they do NOT clamp the
+ *     value, and this form has no `<form>` wrapper for native constraint
+ *     validation to run against anyway. A typed or pasted range with NO
+ *     overlap at all reaches `add()`'s state untouched, would still POST,
+ *     would still land in the DB, and would still vanish from the
+ *     year-scoped refetch with no error.
+ *
+ *     OVERLAP, NOT CONTAINMENT (second-pass fix, review 2026-09-07): the
+ *     first version of this check rejected a range unless BOTH endpoints
+ *     fell inside `[start, end]` — strictly narrower than the fetch that
+ *     actually decides visibility (`end_date >= from AND start_date <= to`;
+ *     /api/scheduling/availability's route). That over-rejected every range
+ *     spanning New Year: a Dec 28 – Jan 5 holiday PTO block — the single
+ *     most common PTO shape in a hospital calendar — was rejected from BOTH
+ *     the 2026 board (fails containment: end date is in 2027) AND the 2027
+ *     board (fails containment: start date is in 2026), leaving no board a
+ *     chief could enter it from at all. The fetch would have shown that row
+ *     on both boards fine (it overlaps both years), so containment was
+ *     rejecting a range the route was never going to hide. Overlap is the
+ *     right question — reject ONLY a range with NO overlap at all
+ *     (`end < start` OR `start > end` OF THE YEAR) — because that is the
+ *     wholly-invisible case Fix 2 actually exists to catch, and it is the
+ *     one case where the year-scoped downstream math (ptoCounterStats /
+ *     coveredDaysInYear, dateRanges.ts; ptoWeekdaysCovered,
+ *     rulesEngine/workDays.ts) has NOTHING to clip — both already clip a
+ *     spanning range to its in-year days per-day, so letting the write span
+ *     the boundary is safe by construction, not by luck. `year` stays
+ *     required (not optional) so a call site cannot accidentally validate
+ *     range order while forgetting the year check entirely.
  *
  * Null while the range is INCOMPLETE (blank isn't wrong yet, just
- * unfinished) or while it's fully valid; either route's message still
- * surfaces verbatim in the drawer's add-error banner if either gate is ever
- * bypassed.
+ * unfinished), while `end < start`, or while it's fully valid; either
+ * route's message still surfaces verbatim in the drawer's add-error banner
+ * if either gate is ever bypassed.
  */
 export function dateRangeError(start: string, end: string, year: number): string | null {
   if (start === '' || end === '') return null;
   if (end < start) return 'End date must be on or after the start date.';
   const bounds = yearBounds(year);
-  if (start < bounds.start || start > bounds.end || end < bounds.start || end > bounds.end) {
-    return `Dates must fall within ${year}.`;
+  if (end < bounds.start || start > bounds.end) {
+    return `Dates must overlap ${year} to appear on this board.`;
   }
   return null;
 }

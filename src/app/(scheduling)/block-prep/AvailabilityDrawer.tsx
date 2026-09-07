@@ -11,13 +11,17 @@
 // Jan 1 - Dec 31 of the selected year (blockPrepView's `availabilityQueryUrl`
 // / `yearBounds` — an OVERLAP filter per the route: end_date >= from AND
 // start_date <= to), matching exactly what annualTally.ts counts for the
-// tally card. The same `yearBounds` clamp the add-form's date inputs, AND
-// `dateRangeError` is passed the year so it can independently reject an
-// out-of-year date (Fix 2, review 2026-09-07): `min`/`max` alone do NOT
-// clamp a date input's value per spec, and this form has no `<form>` for
-// native constraint validation to run against — without the explicit check
-// in `add()`, a typed/pasted out-of-year date still POSTs, still lands in
-// the DB, and still vanishes from the year-scoped refetch with no error.
+// tally card. `dateRangeError` mirrors that SAME overlap test client-side
+// (Fix 2, review 2026-09-07, corrected to overlap-not-containment in a
+// second pass) so an add that could never appear on this board — or on any
+// board, if typed dates land entirely in neither the previous nor the next
+// year — is caught before it silently POSTs, lands in the DB, and vanishes
+// from the year-scoped refetch with no error. A range spanning INTO the
+// neighboring year (a Dec 28 – Jan 5 holiday PTO block, the single most
+// common PTO shape in a hospital calendar) is explicitly ALLOWED — the fetch
+// would show it fine on either board, and the year-scoped downstream math
+// (ptoCounterStats / coveredDaysInYear, dateRanges.ts) already clips it to
+// each year's own days, so nothing is double-counted or dropped.
 //
 // Every successful write calls `onChanged()` so the host (the block-prep
 // page) bumps its refreshKey and the roster's PTO / off-day figures refetch —
@@ -132,11 +136,15 @@ export function AvailabilityDrawerBody({
             <option key={t} value={t}>{AVAILABILITY_TYPE_LABELS[t]}</option>
           ))}
         </select>
+        {/* No `min` on start / no `max` on end (review 2026-09-07, second
+            pass): the drawer accepts a range spanning into the neighboring
+            year (see dateRangeError's overlap doc), so only the corner that
+            remains a real constraint is bounded — a start after the year's
+            end, or an end before the year's start, can never overlap it. */}
         <input
           aria-label="Start date"
           type="date"
           value={start}
-          min={minDate}
           max={maxDate}
           onChange={e => onStartChange(e.target.value)}
           style={INPUT}
@@ -146,7 +154,6 @@ export function AvailabilityDrawerBody({
           type="date"
           value={end}
           min={minDate}
-          max={maxDate}
           onChange={e => onEndChange(e.target.value)}
           style={INPUT}
         />
