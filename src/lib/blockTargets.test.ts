@@ -206,23 +206,21 @@ describe('derivedTargetsFor', () => {
   });
 
   it('derives NEURO from the pattern bands, NOT the FTE formula', () => {
-    // BOUNDARY MOVED 0.75 → 0.6 (Gabriel 2026-07-27, second revision). His rule
-    // is "every call taker gets a neuro weekend call, EXCEPT for horan". At 0.75
-    // the bands created a second exception nobody asked for: Hussain is 0.66
-    // (a third of his time is ICU) and fell into the half band alongside Horan.
-    // Bands are now: 0.6+ → 1 full weekend, below → 0.5 (one weekend DAY).
+    // UNIVERSAL SINCE 2026-08-03. History: the rule was "every call taker gets
+    // a neuro weekend call, EXCEPT for horan", carried as two bands whose
+    // boundary moved 0.75 → 0.6 to stop Hussain (0.66) falling in with him.
+    // Gabriel's stated obligation table gives the 0.5 FTE "1 Neuro Weekend"
+    // like every other tier, so the exception is REVERSED and one band covers
+    // the roster.
     expect(derivedTargetsFor(1, PAOLI_BASIS)[NEURO_BUCKET]).toBe(1);
     expect(derivedTargetsFor(0.75, PAOLI_BASIS)[NEURO_BUCKET]).toBe(1);
-    expect(derivedTargetsFor(0.66, PAOLI_BASIS)[NEURO_BUCKET]).toBe(1); // Hussain — was 0.5
-    expect(derivedTargetsFor(0.5, PAOLI_BASIS)[NEURO_BUCKET]).toBe(0.5); // Horan, the sole exception
-    // Sharpest discriminator against the FTE formula: below the boundary the
-    // formula would say 11/11 × 0.58 = 0.58, the band says half a weekend.
-    expect(derivedTargetsFor(0.58, PAOLI_BASIS)[NEURO_BUCKET]).toBe(0.5);
-    // The EFFECTIVE floor is 0.59, not 0.6: owedUnitsFor clears a band when
-    // `fte + WEIGHT_EPSILON >= minFte`, and the house epsilon is 0.01. That is
-    // deliberate (the same stored-fraction tolerance used across the engine),
-    // and harmless here — real FTEs are quarters and thirds, nowhere near it.
-    expect(derivedTargetsFor(0.59, PAOLI_BASIS)[NEURO_BUCKET]).toBe(1);
+    expect(derivedTargetsFor(0.66, PAOLI_BASIS)[NEURO_BUCKET]).toBe(1);
+    expect(derivedTargetsFor(0.5, PAOLI_BASIS)[NEURO_BUCKET]).toBe(1); // Horan — was 0.5
+    // Still the sharpest discriminator against the FTE formula, and now a
+    // sharper one: the formula would say 11/11 × 0.58 = 0.58, the band says a
+    // whole weekend. Nothing about NEURO is a per-FTE share.
+    expect(derivedTargetsFor(0.58, PAOLI_BASIS)[NEURO_BUCKET]).toBe(1);
+    expect(derivedTargetsFor(0.25, PAOLI_BASIS)[NEURO_BUCKET]).toBe(1);
   });
 
   it('a site with no neuro requirement derives 0 units', () => {
@@ -684,12 +682,15 @@ describe('round trip: the panel manifest through the ENGINE', () => {
     expect([...steered.keys()].some(k => k.startsWith('prov-amusa'))).toBe(false);
   });
 
-  it("Horan: one Saturday C1, half a Sunday C1, one neuro weekend DAY", () => {
+  it("Horan: one Saturday C1, half a Sunday C1, a FULL neuro weekend", () => {
     const horan = projected.scenario!.providers.get('prov-horan')!;
     expect(horan.targets.get('SAT|C1')).toBe(1);
     expect(horan.targets.get('SUN|C1')).toBe(0.5); // the 12h daytime portion
     expect(horan.targets.get('MTH|C1')).toBe(2);   // derived, 44 ÷ 11 × 0.5
-    expect(horan.neuroTarget).toBe(0.5);
+    // Was 0.5 — one weekend DAY — until Gabriel's 2026-08-03 obligation table
+    // gave the 0.5 FTE a full neuro weekend like every other tier. The "except
+    // for horan" exception is reversed; he already holds a full pair live.
+    expect(horan.neuroTarget).toBe(1);
     const split = horan.linkages.find(l => l.kind === 'split-12h')!;
     expect(split.rawMembers).toEqual(['Horan', 'Havildar']);
     expect(split.members).toEqual([]); // provider names never parse as slots
@@ -811,10 +812,11 @@ describe('checkFeasibility', () => {
       PAOLI_BASIS.slotCounts,
     );
     const neuro = rows.find(r => r.bucket === NEURO_BUCKET)!;
-    // 9 docs at 1.0 unit + Horan 0.5 = 9.5 against 11 weekends. Hussain moved
-    // from 0.5 to 1.0 when the band boundary went 0.75 → 0.6 (2026-07-27) —
-    // Horan is now the only doc owing half a neuro weekend, which is the rule.
-    expect(neuro).toMatchObject({ slots: 11, stated: 9.5, status: 'under' });
+    // ALL 10 docs at 1.0 unit = 10 against 11 weekends (2026-08-03). It was 9.5
+    // while Horan owed half; his exception is reversed, so the band is now
+    // universal. Still `under`, and comfortably so — the remaining weekend is
+    // the paid-pickup layer, which is expected, never an error.
+    expect(neuro).toMatchObject({ slots: 11, stated: 10, status: 'under' });
   });
 
   it('returns one row per bucket, in BUCKET_KEYS order', () => {

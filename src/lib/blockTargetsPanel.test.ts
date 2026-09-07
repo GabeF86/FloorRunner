@@ -732,12 +732,14 @@ describe('his block, stated through the panel API', () => {
     expect(projected.warnings).toEqual([]);
     const scen = projected.scenario!;
 
-    // Horan: one Saturday, half a Sunday, one neuro weekend DAY (0.5 FTE band).
+    // Horan: one Saturday, half a Sunday, a FULL neuro weekend. It was one
+    // weekend DAY (0.5) until Gabriel's 2026-08-03 obligation table gave the
+    // 0.5 FTE a full neuro weekend like every other tier.
     const horan = scen.providers.get('p-horan')!;
     expect(horan.targets.get('SAT|C1')).toBe(1);
     expect(horan.targets.get('SUN|C1')).toBe(0.5);
     expect(horan.targets.get('MTH|C1')).toBe(2); // derived
-    expect(horan.neuroTarget).toBe(0.5);
+    expect(horan.neuroTarget).toBe(1);
     expect(horan.linkages.find(l => l.kind === 'split-12h')!.rawMembers)
       .toEqual(['Horan', 'Havildar']);
 
@@ -878,12 +880,13 @@ describe('only the stated providers are written (Gabriel 2026-07-27)', () => {
     const scen = projected.scenario!;
     expect(scen.providers.size).toBe(4);
 
-    // Horan: a Saturday, half a Sunday (the 12h daytime segment), half a neuro
-    // weekend — and the split linkage naming his partner.
+    // Horan: a Saturday, half a Sunday (the 12h daytime segment), a FULL neuro
+    // weekend (was half until 2026-08-03) — and the split linkage naming his
+    // partner.
     const horan = scen.providers.get('p-horan')!;
     expect(horan.targets.get('SAT|C1')).toBe(1);
     expect(horan.targets.get('SUN|C1')).toBe(0.5);
-    expect(horan.neuroTarget).toBe(0.5);
+    expect(horan.neuroTarget).toBe(1);
     expect(horan.linkages.find(l => l.kind === 'split-12h')!.rawMembers)
       .toEqual(['Horan', 'Havildar']);
 

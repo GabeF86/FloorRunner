@@ -398,6 +398,13 @@ function callCensusFromGrid(grid: GridData): CallObligationCensus {
     includedProviderIds: grid.schedule.included_provider_ids,
     profiles: grid.profiles || [],
     slots: grid.slots,
+    // The site's parsed pattern (2026-08-03). When it states obligation bands
+    // the census switches to STATED, PER-CATEGORY accounting — the same doc
+    // the engine builds to, so what the grid labels OVER and what the
+    // generator refused to place cannot disagree. Null (no pattern, or one
+    // that failed to parse — the grid route ships null) keeps the derived
+    // formula and the netted cover exactly as they were.
+    callPattern: grid.callPattern,
   });
 }
 
@@ -4996,7 +5003,10 @@ function CallCountsModal(
   // Deficit carry-forward is NOT included (we don't have historical data
   // here), so this can over-report for part-timers legitimately catching
   // up from a prior block. Documented in the column tooltip.
-  const rowObligation = (pid: string) => roundedObligation(rowExpected(pid));
+  // Single-homed in the census (2026-08-03): rounded under the derived
+  // formula, the band's own EXACT total under stated obligations — Paoli's
+  // 0.5 FTE owes 9.5, and re-rounding here would print 10.
+  const rowObligation = (pid: string) => census.obligationFor(pid);
   const rowOverBy = (pid: string) => census.overageFor(pid);
   const overIds = census.overParAssignmentIds;
   // Extra calls BY DAY TYPE (Gabriel 2026-07-28): an extra is a paid pickup and

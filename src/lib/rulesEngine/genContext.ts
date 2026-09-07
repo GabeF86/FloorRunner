@@ -30,7 +30,7 @@ import type {
   ProviderWorkDayBudget,
 } from './genTypes';
 
-import { CallPatternDocSchema, patternWarnings, callFillOrderWarnings, dayTypeFillOrderWarnings, neuroWeekendWarnings, type CallPatternDoc } from './callPattern';
+import { CallPatternDocSchema, patternWarnings, callFillOrderWarnings, dayTypeFillOrderWarnings, neuroWeekendWarnings, obligationWarnings, owedCallsFor, type CallPatternDoc } from './callPattern';
 import { projectScenario, applyScenarioBucketTargets, type ScenarioDoc } from './scenario';
 import { fetchCommittedAssignments, filterPublishedVersions } from './committedAssignments';
 import { embedArray } from '@/lib/embed';
@@ -116,6 +116,70 @@ export function floorBucketTargets(
   for (const [k, v] of targets) {
     const pid = k.slice(0, k.indexOf('|'));
     out.set(k, (fteById.get(pid) ?? 0) > 0 ? Math.max(1, v) : v);
+  }
+  return out;
+}
+
+/**
+ * Stated obligation bands override the FTE quota targets (Gabriel 2026-08-03).
+ *
+ * `targets` is the FLOORED map (`${pid}|${bucket}|${code}` -> target). Applied
+ * AFTER floorBucketTargets for the same reason the scenario override is: the
+ * floor lifts every positive-FTE provider to ≥ 1, and a band's stated ZERO is
+ * meaningful — Paoli's 0.7 band names no Friday C2, so Hussain owes none, and
+ * a floor of 1 would hand it straight back.
+ *
+ * WHICH KEYS IT GOVERNS — the band's own CODE UNIVERSE, and nothing else.
+ * A band states whole calls in the codes it names (C1 and C2 at Paoli). Every
+ * (bucket, code) key in those codes is set to the stated count, INCLUDING the
+ * ones the band leaves out, which become 0 — a band is exhaustive for its
+ * tier, which is the entire point of stating it rather than deriving it.
+ *
+ * Codes NO band mentions keep their formula target untouched. That is what
+ * protects neuro: C3 is owed in weekend UNITS by neuroWeekend.requirementBands
+ * and is deliberately absent from the bands (see callPattern's
+ * ObligationCallSchema header), so zeroing it here would set every neuro quota
+ * to 0 and starve the tier the pattern separately requires. Beeper/CB codes
+ * are protected by the same rule.
+ *
+ * A provider whose FTE clears no band keeps the formula entirely — never a
+ * silent zero. That case is surfaced at load time by obligationWarnings.
+ */
+export function applyObligationBandTargets(
+  targets: Map<string, number>,
+  providers: CandidateProvider[],
+  doc: CallPatternDoc,
+): Map<string, number> {
+  const bands = doc.obligations?.bands;
+  if (!bands || bands.length === 0) return targets;
+
+  const governedCodes = new Set<string>();
+  for (const band of bands) for (const c of band.calls) governedCodes.add(c.code);
+
+  // pid -> stated `${bucket}|${code}` map; absent = this provider clears no
+  // band and keeps the formula.
+  const owedByPid = new Map<string, Map<string, number>>();
+  for (const p of providers) {
+    const owed = owedCallsFor(doc, p.fte_value);
+    if (owed) owedByPid.set(p.id, owed);
+  }
+  if (owedByPid.size === 0) return targets;
+
+  const out = new Map(targets);
+  for (const key of targets.keys()) {
+    // `${pid}|${bucket}|${code}` — pid is a uuid and bucket is one of the four
+    // fairness buckets, so neither can contain a '|'.
+    const firstPipe = key.indexOf('|');
+    if (firstPipe < 0) continue;
+    const pid = key.slice(0, firstPipe);
+    const owed = owedByPid.get(pid);
+    if (!owed) continue;                       // no band for this FTE → formula
+    const bucketAndCode = key.slice(firstPipe + 1);
+    const lastPipe = bucketAndCode.lastIndexOf('|');
+    if (lastPipe < 0) continue;
+    const code = bucketAndCode.slice(lastPipe + 1);
+    if (!governedCodes.has(code)) continue;    // neuro, beeper, CB → untouched
+    out.set(key, owed.get(bucketAndCode) ?? 0);
   }
   return out;
 }
@@ -987,10 +1051,27 @@ export async function loadGenerationContext(
   // manifest IS the block's fair share). Non-manifest keys keep the
   // FTE-derived floored targets. Applied AFTER the floor so a stated 0 or
   // 0.5 survives.
+  // A roster FTE below every stated band keeps the DERIVED formula while the
+  // rest of the pool is on stated obligations — two obligation models on one
+  // roster, which is exactly the kind of thing that is invisible until payroll.
+  // Needs the pool's FTEs, so it warns here rather than at the pattern load.
+  if (callPattern) {
+    warnings.push(...obligationWarnings(callPattern, providers.map(p => p.fte_value)));
+  }
+
   const flooredTargets = floorBucketTargets(rawTargets, providers);
-  const bucketTarget = scenario
-    ? applyScenarioBucketTargets(flooredTargets, scenario)
+  // Stated obligation bands (2026-08-03) sit BETWEEN the floor and the
+  // scenario: the site's tier table is the standing default, a hand-entered
+  // Block Targets manifest is the per-block override, so the manifest wins.
+  // (They agree by construction anyway — the panel's derived column reads the
+  // same bands through blockTargets.derivedTargetsFor.) Inert when the pattern
+  // states no bands, which is every other site and every fixture.
+  const bandTargets = callPattern
+    ? applyObligationBandTargets(flooredTargets, providers, callPattern)
     : flooredTargets;
+  const bucketTarget = scenario
+    ? applyScenarioBucketTargets(bandTargets, scenario)
+    : bandTargets;
 
   // Coverage advisory: when the stored-par FTE-weighted targets across the
   // whole pool can't sum to a bucket's slot count (par above pool ΣFTE), the

@@ -1,5 +1,7 @@
 import { WEIGHT_EPSILON, callBurdenWeight, parentCallCodeOf } from './callBurden';
 import { dayTypeBucketOn } from './rulesEngine/shared';
+import { owedCallsFor, type CallPatternDoc } from './rulesEngine/callPattern';
+import { owedUnitsFor } from './rulesEngine/neuroWeekend';
 
 // The house FTE-weighted call-obligation formula (spec choice A):
 //   target = (slots in the bucket ÷ site call_par_level) × provider FTE.
@@ -462,6 +464,85 @@ export interface CallObligationCensusInput {
   includedProviderIds?: string[] | null; // schedule.included_provider_ids override pool
   profiles: CensusProfile[];
   slots: CensusSlot[];
+  /** The site's active CallPatternDoc (2026-08-03). When it states obligation
+   * bands the census switches to STATED, PER-CATEGORY accounting — see
+   * statedBucketObligations. Absent/null keeps the derived FTE formula and the
+   * netted minimal-weight cover exactly as they were. */
+  callPattern?: CallPatternDoc | null;
+}
+
+// ── Stated, per-category obligations (Gabriel 2026-08-03) ────────────────────
+//
+// "if someone is above any of their obligatory calls, it should show up in the
+// above obligatory column for that specific call, regardless if they are
+// missing a different type of call somewhere else."
+//
+// NO NETTING. Under the derived formula an overage was a single TOTAL number
+// and the selector picked the cheapest set of calls covering it, so a provider
+// over on two buckets and short on a third showed ONE extra. Farkas, live
+// 8/10–10/25 block: 5 M–Th C1 (owes 4) and 5 M–Th C2 (owes 4) but no Sunday
+// C2 (owes 1) — 17 held against 16 owed, and the old rule flagged exactly one
+// call. His rule flags TWO, and records the Sunday C2 as short. Σ extras can
+// therefore EXCEED the net overage, on purpose: the day types price
+// differently, so an extra weekday C1 and a missing Sunday C2 are not the same
+// money and must not cancel.
+//
+// WHAT EACH BUCKET OWES, in three tiers, because obligations are stated in
+// three different units and always have been:
+//   • a code the bands GOVERN (C1/C2 at Paoli) — the band's stated count, and
+//     ZERO for a bucket the band omits (a band is exhaustive for its tier).
+//   • the NEURO code — the pattern's requirement bands, in weekend UNITS,
+//     spread one call across each neuro day the block actually stands. Owed
+//     units are a weekend count; the extras column is a call count.
+//   • anything else (beeper/CB) — the derived FTE formula, untouched.
+//
+// Null when the pattern states no band covering this FTE: that provider keeps
+// the derived formula end to end rather than half-migrating.
+export function statedBucketObligations(
+  doc: CallPatternDoc,
+  fte: number,
+  bucketSlotWeight: ReadonlyMap<string, number>,
+  parLevel: number,
+): Map<string, number> | null {
+  const owed = owedCallsFor(doc, fte);
+  if (!owed) return null;
+
+  const governed = new Set<string>();
+  for (const band of doc.obligations?.bands ?? []) {
+    for (const c of band.calls) governed.add(c.code);
+  }
+  const neuroCode = doc.neuroWeekend?.code;
+  // The neuro days this block actually stands, so owed UNITS become owed CALLS
+  // on the right days. Read off the slot census rather than the chain shape:
+  // the block is the ground truth for which days carry neuro, and a retired
+  // Friday neuro still present in an old draft must still be counted.
+  const neuroBuckets = neuroCode
+    ? [...bucketSlotWeight.keys()].filter(k => k.endsWith(`|${neuroCode}`))
+    : [];
+  const neuroUnits = doc.neuroWeekend ? owedUnitsFor(fte, doc.neuroWeekend) : 0;
+
+  const out = new Map<string, number>();
+  for (const [key, slotWeight] of bucketSlotWeight) {
+    const lastPipe = key.lastIndexOf('|');
+    const code = key.slice(lastPipe + 1);
+    if (governed.has(code)) {
+      out.set(key, owed.get(key) ?? 0);
+    } else if (neuroCode && code === neuroCode) {
+      // One call per stood neuro day per owed weekend unit. A half unit (a
+      // pattern band stating 0.5) owes half a call on each day, which is what
+      // a lone weekend day is worth.
+      out.set(key, neuroBuckets.length > 0 ? neuroUnits : 0);
+    } else {
+      out.set(key, fteWeightedTarget(slotWeight, parLevel, fte));
+    }
+  }
+  // A band may state a bucket the block stands no slots for. Keep it: the
+  // provider is short there, and the shortfall is real information even though
+  // it can never produce an extra.
+  for (const [key, count] of owed) {
+    if (!out.has(key)) out.set(key, count);
+  }
+  return out;
 }
 
 export interface CallObligationCensus {
@@ -484,6 +565,17 @@ export interface CallObligationCensus {
   // MUST weight by this, never by fteFor.
   poolFteFor: (providerId: string) => number;
   totalExpectedFor: (providerId: string) => number;  // fractional — callers round via roundedObligation
+  // THE OBLIGATION TO DISPLAY AND BILL AGAINST (2026-08-03). Under the derived
+  // formula this is roundedObligation(totalExpectedFor) — the whole-number
+  // obligation that has always driven extra-call accounting. Under STATED
+  // bands it is the band's own total, UNROUNDED: rounding exists only because
+  // the formula produced fractions that had to be resolved into whole calls,
+  // and a stated table has already resolved them. Paoli's 0.5 FTE owes exactly
+  // 9.5 (he takes half of a 12h Saturday split); round-half-up would print 10
+  // and invent half a call of obligation nobody stated.
+  //
+  // Callers MUST use this rather than re-rounding totalExpectedFor.
+  obligationFor: (providerId: string) => number;
   actualCallsFor: (providerId: string) => number;
   // PER-BUCKET target (2026-07-29): (this bucket's slot weight ÷ effective par)
   // × POOL fte — the same fteWeightedTarget as everything else, one rung down
@@ -545,6 +637,10 @@ export function computeCallObligationCensus(input: CallObligationCensusInput): C
   const callRecords: OverParCall[] = [];
   const actualByPid = new Map<string, number>();
   const bucketSlotWeight = new Map<string, number>();
+  // pid -> bucket key -> weight HELD, for the per-category overage. Rides the
+  // same single pass as bucketSlotWeight so held and owed are measured off one
+  // walk of the slots and cannot disagree about bucketing.
+  const heldByPidBucket = new Map<string, Map<string, number>>();
   let everySlotBucketed = true;
   for (const slot of input.slots) {
     if (slot.shift_types?.category !== 'call') continue;
@@ -570,6 +666,12 @@ export function computeCallObligationCensus(input: CallObligationCensusInput): C
         bucket,
       });
       actualByPid.set(a.provider_id, (actualByPid.get(a.provider_id) || 0) + weight);
+      if (bucket) {
+        const key = overParBucketKey(bucket, parentCode);
+        let held = heldByPidBucket.get(a.provider_id);
+        if (!held) { held = new Map(); heldByPidBucket.set(a.provider_id, held); }
+        held.set(key, (held.get(key) || 0) + weight);
+      }
     }
   }
 
@@ -578,7 +680,32 @@ export function computeCallObligationCensus(input: CallObligationCensusInput): C
   // visiting doc outside the override) owes zero calls — every call they DO
   // hold is beyond obligation by definition (over-par selection sees it).
   const poolFteFor = (pid: string) => (poolPids.has(pid) ? fteByPid.get(pid)! : 0);
-  const totalExpectedFor = (pid: string) => fteWeightedTarget(totalCallSlots, effectivePar, poolFteFor(pid));
+
+  // STATED per-bucket obligations, per provider (2026-08-03). Null throughout
+  // when the site states no bands, or for a provider whose FTE clears none —
+  // that provider keeps the derived formula end to end. A NON-POOL provider is
+  // never given stated obligations: they owe zero calls, and handing them a
+  // tier table would invent an obligation for a day doc.
+  const statedByPid = new Map<string, Map<string, number>>();
+  if (input.callPattern?.obligations && everySlotBucketed) {
+    for (const pid of poolPids) {
+      const stated = statedBucketObligations(
+        input.callPattern, poolFteFor(pid), bucketSlotWeight, effectivePar);
+      if (stated) statedByPid.set(pid, stated);
+    }
+  }
+  const statedTotalFor = (pid: string): number | null => {
+    const stated = statedByPid.get(pid);
+    if (!stated) return null;
+    let total = 0;
+    for (const v of stated.values()) total += v;
+    return total;
+  };
+
+  const totalExpectedFor = (pid: string) =>
+    statedTotalFor(pid) ?? fteWeightedTarget(totalCallSlots, effectivePar, poolFteFor(pid));
+  const obligationFor = (pid: string) =>
+    statedTotalFor(pid) ?? roundedObligation(totalExpectedFor(pid));
   const actualCallsFor = (pid: string) => actualByPid.get(pid) || 0;
   // Same formula as totalExpectedFor, one rung down: this bucket's slots
   // instead of all of them. Null (→ no bucket preference) when any call slot
@@ -602,11 +729,73 @@ export function computeCallObligationCensus(input: CallObligationCensusInput): C
     fteFor,
     poolFteFor,
     totalExpectedFor,
+    obligationFor,
     actualCallsFor,
     bucketTargetFor,
-    overageFor: pid =>
-      callOverageWeight(actualCallsFor(pid), roundedObligation(totalExpectedFor(pid))),
-    overParAssignmentIds: selectOverParAssignmentIds(
-      callRecords, totalExpectedFor, bucketTargetFor ?? undefined),
+    // PER-CATEGORY when the site states bands: Σ over buckets of how far past
+    // that bucket's stated count the provider is, with under-filled buckets
+    // contributing NOTHING rather than offsetting. Otherwise the netted total
+    // overage, unchanged.
+    overageFor: pid => {
+      const stated = statedByPid.get(pid);
+      if (!stated) {
+        return callOverageWeight(actualCallsFor(pid), roundedObligation(totalExpectedFor(pid)));
+      }
+      let over = 0;
+      for (const [key, held] of heldByPidBucket.get(pid) ?? []) {
+        over += callOverageWeight(held, stated.get(key) ?? 0);
+      }
+      return over;
+    },
+    overParAssignmentIds: selectStatedOrNettedOverPar(
+      callRecords, statedByPid, totalExpectedFor, bucketTargetFor ?? undefined),
   };
+}
+
+/** Which assignments carry the OVER treatment, under whichever accounting the
+ * site is on.
+ *
+ * STATED: each (bucket × parent code) is judged ON ITS OWN against its stated
+ * count — the no-netting rule. The per-bucket selection reuses
+ * selectOverParCover with the bucket's own calls and its stated count as the
+ * obligation, so the within-bucket choice (minimal weight, then later dates)
+ * is the same tested machinery, one rung down. No bucket preference is passed:
+ * inside a single bucket there is nothing left to prefer.
+ *
+ * DERIVED: the pre-2026-08-03 whole-provider cover, untouched. */
+function selectStatedOrNettedOverPar(
+  callRecords: OverParCall[],
+  statedByPid: ReadonlyMap<string, ReadonlyMap<string, number>>,
+  totalExpectedFor: (pid: string) => number,
+  bucketTargetFor?: (pid: string, key: string) => number,
+): Set<string> {
+  if (statedByPid.size === 0) {
+    return selectOverParAssignmentIds(callRecords, totalExpectedFor, bucketTargetFor);
+  }
+  const netted: OverParCall[] = [];
+  const statedByPidBucket = new Map<string, Map<string, OverParCall[]>>();
+  for (const c of callRecords) {
+    if (!statedByPid.has(c.provider_id)) { netted.push(c); continue; }
+    const key = c.bucket
+      ? overParBucketKey(c.bucket, c.parent_code || c.shift_type_code)
+      : null;
+    // A call the census could not bucket cannot be judged per bucket; it falls
+    // to the netted path with the rest of its provider's un-bucketed calls
+    // rather than being silently exempted.
+    if (!key) { netted.push(c); continue; }
+    let byBucket = statedByPidBucket.get(c.provider_id);
+    if (!byBucket) { byBucket = new Map(); statedByPidBucket.set(c.provider_id, byBucket); }
+    const list = byBucket.get(key);
+    if (list) list.push(c); else byBucket.set(key, [c]);
+  }
+  const over = netted.length > 0
+    ? selectOverParAssignmentIds(netted, totalExpectedFor, bucketTargetFor)
+    : new Set<string>();
+  for (const [pid, byBucket] of statedByPidBucket) {
+    const stated = statedByPid.get(pid)!;
+    for (const [key, calls] of byBucket) {
+      for (const id of selectOverParCover(calls, stated.get(key) ?? 0).ids) over.add(id);
+    }
+  }
+  return over;
 }

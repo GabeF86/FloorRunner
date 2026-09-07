@@ -100,10 +100,15 @@ describe('computeCallChainConnectors — WEEKEND_V2_PATTERN against Paoli column
     expect(labelsOf(chains[2])).toEqual(['Sat C3', 'Sun C3']);
     expect(chains[2].columnIndices).toEqual([8, 9]);
     expect(chains[2].omitted).toEqual(['Fri D4']);
-    // The Sunday link is FTE-gated at 0.6 (sub-0.6 docs take Saturday alone),
-    // so the tooltip must not promise the pair to everybody.
+    // NO FTE GATE SINCE 2026-08-03. The Sunday link used to be gated at 0.6 —
+    // a sub-0.6 doc took Saturday alone — and the tooltip said "(FTE ≥ 0.6)"
+    // so it would not promise the pair to everybody. Gabriel's stated
+    // obligation table gives the 0.5 FTE a full neuro weekend like every other
+    // tier, so the gate is gone and the pair IS promised to everybody. The
+    // annotation must disappear with it: a tooltip naming a restriction the
+    // engine no longer applies is worse than none.
     expect(chains[2].description).toBe(
-      'Sat C3 · Sun C3 (FTE ≥ 0.6) — one provider. Also on this chain: Fri D4 — no column in this table.');
+      'Sat C3 · Sun C3 — one provider. Also on this chain: Fri D4 — no column in this table.');
   });
 
   it('draws the Sat C3 ↔ Sun C3 chain inside the NEURO group, not the day groups', () => {

@@ -123,6 +123,7 @@ import {
 import { compareChecksums, computeChecksums, type ChecksumRow } from '@/lib/paoliBlock/checksums';
 import { normalizeName } from '@/lib/paoliBlock/names';
 import { DEFAULT_SCENARIO_CODE_MAP, scenarioBucketOf, type ScenarioBucket } from '@/lib/rulesEngine/scenario';
+import { owedCallsFor, type CallPatternDoc, type PatternObligations } from '@/lib/rulesEngine/callPattern';
 import { dayTypeBucketOn } from '@/lib/rulesEngine/shared';
 import { owedUnitsFor, type NeuroWeekendConfig } from '@/lib/rulesEngine/neuroWeekend';
 import { fteWeightedTarget } from '@/lib/fteTarget';
@@ -260,15 +261,73 @@ export interface DerivationBasis {
   /** The site call pattern's `neuroWeekend`. null = the site states no neuro
    * requirement, and every derived NEURO_FSS is 0. */
   neuro: NeuroWeekendConfig | null;
+  /** The site call pattern's STATED obligation bands (Gabriel 2026-08-03).
+   * When a band covers the row's FTE it REPLACES the formula for the eight
+   * non-neuro buckets — see derivedTargetsFor. null/absent (every other site,
+   * every fixture) keeps the formula exactly as it was. */
+  obligations?: PatternObligations | null;
 }
 
-/** The derived (blank-cell) targets for one FTE. Non-neuro buckets use the
- * house FTE formula; NEURO_FSS uses the pattern's requirement bands. */
-export function derivedTargetsFor(fte: number, basis: DerivationBasis): BucketTargets {
+// Workbook bucket key -> the engine `${fairness bucket}|${code}` an obligation
+// band states. The inverse of ENGINE_BUCKET_TO_WORKBOOK, built once: the band
+// speaks the engine's vocabulary (weekday|C1) because it lives in the pattern
+// doc, and the panel speaks the workbook's (MTH_C1).
+const WORKBOOK_TO_ENGINE_BUCKET: Record<ScenarioBucket, string> = {
+  MTH: 'weekday', FRI: 'friday', SAT: 'saturday', SUN: 'sunday',
+};
+
+/** The stated targets for one FTE, or null when the pattern states no band
+ * covering it (caller keeps the formula).
+ *
+ * A band is EXHAUSTIVE for its tier: a (bucket, code) the band does not name
+ * is owed ZERO, not derived. That is the whole point of stating it — Paoli's
+ * 0.7 band names no Friday C2, and Hussain owes none. Deriving the unnamed
+ * cells would quietly hand him back the fractional obligation the band exists
+ * to replace.
+ *
+ * NEURO_FSS is never taken from here — it stays on requirementBands (see the
+ * ObligationCallSchema header: one home for that number). */
+function statedTargetsFor(
+  fte: number, obligations: PatternObligations, codeMap: Record<string, string>,
+): BucketTargets | null {
+  const owed = owedCallsFor({ obligations } as CallPatternDoc, fte);
+  if (!owed) return null;
   const out = zeroBuckets();
   for (const k of BUCKET_KEYS) {
     if (k === NEURO_BUCKET) continue;
-    out[k] = round6(fteWeightedTarget(basis.slotCounts[k] ?? 0, basis.parLevel, fte));
+    const [wbBucket, wbCode] = k.split('_') as [ScenarioBucket, 'C1' | 'C2'];
+    // Workbook code -> engine code, the same direction the rest of this module
+    // maps: a site whose C1 is named something else still resolves.
+    const engineCode = codeMap[wbCode] ?? wbCode;
+    out[k] = round6(owed.get(`${WORKBOOK_TO_ENGINE_BUCKET[wbBucket]}|${engineCode}`) ?? 0);
+  }
+  return out;
+}
+
+/** The derived (blank-cell) targets for one FTE.
+ *
+ * STATED BANDS WIN (2026-08-03). When the site's pattern states an obligation
+ * band covering this FTE, the eight non-neuro buckets come from the band
+ * verbatim; otherwise they use the house FTE formula, byte-identically to
+ * before this existed. NEURO_FSS always comes from the pattern's requirement
+ * bands either way — it is stated in weekend UNITS and has only ever had one
+ * home.
+ *
+ * Why the band outranks the formula rather than merging with it: they disagree
+ * ON PURPOSE. Gabriel's 0.75 tier owes 13 calls where the formula derives 12,
+ * because his model is whole CHAINS (a Friday C1 drags a Sunday C2) and the
+ * formula's model is fractional shares. A blend would produce a number neither
+ * of them means. */
+export function derivedTargetsFor(fte: number, basis: DerivationBasis): BucketTargets {
+  const stated = basis.obligations
+    ? statedTargetsFor(fte, basis.obligations, DEFAULT_SCENARIO_CODE_MAP)
+    : null;
+  const out = stated ?? zeroBuckets();
+  if (!stated) {
+    for (const k of BUCKET_KEYS) {
+      if (k === NEURO_BUCKET) continue;
+      out[k] = round6(fteWeightedTarget(basis.slotCounts[k] ?? 0, basis.parLevel, fte));
+    }
   }
   out[NEURO_BUCKET] = basis.neuro ? owedUnitsFor(fte, basis.neuro) : 0;
   return out;

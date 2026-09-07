@@ -54,10 +54,19 @@ export const WEEKEND_V2_PATTERN: CallPatternDoc = CallPatternDocSchema.parse({
       // Neuro block (2026-07-27): the neuro doc covers Sat + Sun C3 and works
       // the Friday D4 day shift when available — Friday NEURO CALL is now
       // cross-covered by the Friday C2 doc and has no slot of its own (the
-      // friday/C3 shift_templates row is deactivated in patch38). The Sunday
-      // partner is FTE-gated: 0.75+ docs take the pair, a sub-0.75 doc takes
-      // Saturday alone and the Sunday becomes a neuro remainder.
-      { trigger: 'C3', links: [{ offset: -1, code: 'D4' }, { offset: 1, code: 'C3', minFte: 0.6 }] },
+      // friday/C3 shift_templates row is deactivated in patch38).
+      //
+      // THE FTE GATE IS GONE (2026-08-03). It read `minFte: 0.6`, so a
+      // sub-0.6 doc took Saturday alone and the Sunday was minted as a neuro
+      // remainder — the "except for Horan" exception. Gabriel's stated
+      // obligation table reverses that: the 0.5 FTE owes "1 Neuro Weekend"
+      // like everyone else, and he already holds a full pair on the live
+      // block. The requirement band below moved to a single universal
+      // {minFte 0, units 1} to match, and the gate has to move with it: they
+      // are one decision (neuroWeekendWarnings warns when a link floor is not
+      // a band boundary, precisely to stop them splitting). An omitted minFte
+      // always fires, which is what "everyone takes the pair" means.
+      { trigger: 'C3', links: [{ offset: -1, code: 'D4' }, { offset: 1, code: 'C3' }] },
       { trigger: 'C1', links: [{ offset: -1, code: 'D2' }] },
       { trigger: 'C2', links: [{ offset: -1, code: 'C2' }, { offset: 1, code: 'C1' }] },
     ]},
@@ -162,11 +171,107 @@ export const WEEKEND_V2_PATTERN: CallPatternDoc = CallPatternDocSchema.parse({
   // so under scarcity Horan is the one who ends up with no neuro at all. Total
   // shortfall is identical either way — 0.5 units at N = 12 — so this is purely
   // about who absorbs it, and it is visible on the banner when it happens.
+  //
+  // ── UNIVERSAL SINCE 2026-08-03: THE HORAN EXCEPTION IS REVERSED ────────────
+  // Everything above is HISTORY. Gabriel's stated obligation table gives the
+  // 0.5 FTE "1 Neuro Weekend" like every other tier, so the two bands collapse
+  // to ONE universal band and the Sat → Sun chain gate above is dropped with
+  // it (they are one decision). He already holds a full Sat+Sun pair on the
+  // live 8/10–10/25 block, so this ratifies what the board already does.
+  //
+  // FEASIBILITY re-checked on the same 11-weekend arithmetic: demand is now
+  // N × 1.0 rather than (N−1) × 1.0 + 0.5, so it fits at N ≤ 11 and is short
+  // by 0.5 at exactly the roster Paoli runs today (10 call takers = 10.0 owed
+  // against 11.0 supply — comfortable). The shortfall stays REPORTED, never
+  // enforced: the eligibility remainder gate only ever refuses providers who
+  // are NOT short, and a universal band makes strictly more docs short, so it
+  // cannot strand a slot that used to fill.
   neuroWeekend: {
     code: 'C3',
     requirementBands: [
-      { minFte: 0.6, units: 1 },
-      { minFte: 0, units: 0.5 },
+      { minFte: 0, units: 1 },
+    ],
+  },
+  // ── Stated call obligations (Gabriel 2026-08-03) ──────────────────────────
+  // His table, verbatim, replacing the derived `slots ÷ par × FTE` share for
+  // the codes named here. See callPattern.ts's ObligationCallSchema header for
+  // why obligations are stated rather than derived; the short version is that
+  // his model is whole CHAINS and the formula's is fractional shares, and only
+  // the 1.0 tier is a number both agree on.
+  //
+  // THE WEEKEND ROWS ARE THIS DOC'S OWN CHAINS READ BACK. "1 Friday C1/Sunday
+  // C2 link" is the friday-anchored C1 chain (C1 → C2 at offset +2); "1 Friday
+  // C2 Sat C2 Sun C1 link" is the saturday-anchored C2 chain (C2 → Fri C2 at
+  // −1, Sun C1 at +1). So a band never invents structure — it says how many
+  // times a provider stands each anchor, and the chains above say what each
+  // one drags along.
+  //
+  // NEURO IS ABSENT ON PURPOSE: it is owed in weekend UNITS by
+  // requirementBands, and restating it here as a Sat C3 + Sun C3 pair would
+  // fork that number (obligationWarnings rejects the attempt loudly).
+  //
+  // TOTALS, neuro's 2 calls included: 1.0 → 16, 0.75 → 13, 0.7 → 11,
+  // 0.5 → 9.5. Verified against the live block, where the three part-FTE call
+  // takers hold EXACTLY their band (Simon 13/13, Havildar 13.5/13.5 with the
+  // shared 12h Saturday, Hussain 11/11).
+  //
+  // BLOCK-LENGTH SENSITIVE. "4 Weekday C1" is 44 M–Th C1 slots ÷ par 11; a
+  // block of a different length needs different weekday counts. That is why
+  // this is config a scheduler can edit and not a formula — but it does mean
+  // the weekday rows want a look when the block length changes.
+  obligations: {
+    bands: [
+      // "4 Weekday C1's and C2's, 1 Friday C1 & C2, 1 Saturday C1 & C2,
+      //  1 Sunday C1 & C2 and then a neuro Weekend" — 4 weekend obligations
+      //  (Fri/Sat/Sun C1 + the neuro pair), 16 calls.
+      { minFte: 1, calls: [
+        { dayType: 'weekday', code: 'C1', count: 4 },
+        { dayType: 'weekday', code: 'C2', count: 4 },
+        { dayType: 'friday', code: 'C1', count: 1 },
+        { dayType: 'friday', code: 'C2', count: 1 },
+        { dayType: 'saturday', code: 'C1', count: 1 },
+        { dayType: 'saturday', code: 'C2', count: 1 },
+        { dayType: 'sunday', code: 'C1', count: 1 },
+        { dayType: 'sunday', code: 'C2', count: 1 },
+      ] },
+      // "3 Weekday C1 and C2's, 1 Friday C1/Sunday C2 link, 1 Friday C2 Sat C2
+      //  Sun C1 link, and a neuro weekend" — 13 calls. Note this is ONE MORE
+      //  than the formula's 12: two whole chains beat 0.75 of everything.
+      //  One of the two 0.75s also carries half the 12h Saturday split shared
+      //  with the 0.5 FTE — that is per-PROVIDER, not per-tier, so it is not
+      //  in this band (see the Block Targets panel).
+      { minFte: 0.75, calls: [
+        { dayType: 'weekday', code: 'C1', count: 3 },
+        { dayType: 'weekday', code: 'C2', count: 3 },
+        { dayType: 'friday', code: 'C1', count: 1 },
+        { dayType: 'sunday', code: 'C2', count: 1 },
+        { dayType: 'friday', code: 'C2', count: 1 },
+        { dayType: 'saturday', code: 'C2', count: 1 },
+        { dayType: 'sunday', code: 'C1', count: 1 },
+      ] },
+      // "1 Friday and 1 Saturday C1 with associated backups + Neuro weekend,
+      //  and 3 Weekday C1's and C2's" — 11 calls. The Friday C1's "backup" is
+      //  its chain's Sunday C2; the Saturday C1 chain links only a Friday D2
+      //  day shift, so it drags no second call. Hussain holds exactly this.
+      { minFte: 0.7, calls: [
+        { dayType: 'weekday', code: 'C1', count: 3 },
+        { dayType: 'weekday', code: 'C2', count: 3 },
+        { dayType: 'friday', code: 'C1', count: 1 },
+        { dayType: 'sunday', code: 'C2', count: 1 },
+        { dayType: 'saturday', code: 'C1', count: 1 },
+      ] },
+      // "1.5 Saturday C1's, 2 Weekday C1 and C2's, a Friday and Sunday C2 and
+      //  1 Neuro Weekend" — 9.5 calls. The 1.5 is one whole Saturday C1 plus
+      //  half of the 12h split shared with a 0.75. minFte 0 makes the table
+      //  TOTAL: no roster FTE can fall through to the derived formula and run
+      //  a second obligation model alongside everyone else's.
+      { minFte: 0, calls: [
+        { dayType: 'weekday', code: 'C1', count: 2 },
+        { dayType: 'weekday', code: 'C2', count: 2 },
+        { dayType: 'saturday', code: 'C1', count: 1.5 },
+        { dayType: 'friday', code: 'C2', count: 1 },
+        { dayType: 'sunday', code: 'C2', count: 1 },
+      ] },
     ],
   },
 });

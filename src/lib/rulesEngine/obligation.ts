@@ -23,6 +23,8 @@
 // Call Counts modal so engine and UI can't drift.
 import { fteWeightedTarget, roundedObligation } from '@/lib/fteTarget';
 import { WEIGHT_EPSILON, callBurdenWeight } from '@/lib/callBurden';
+import { owedCallsFor, type CallPatternDoc } from './callPattern';
+import { owedUnitsFor } from './neuroWeekend';
 import type {
   GenerationContext, SolutionPlan, SeedAssignment, ShiftTypeInfo,
 } from './genTypes';
@@ -47,9 +49,54 @@ export function totalExpectedCalls(ctx: GenerationContext): Map<string, number> 
   }
   const out = new Map<string, number>();
   for (const p of ctx.providers) {
-    out.set(p.id, fteWeightedTarget(totalCallSlots, par, p.fte_value));
+    const stated = statedTotalFor(ctx, p.fte_value);
+    out.set(p.id, stated ?? fteWeightedTarget(totalCallSlots, par, p.fte_value));
   }
   return out;
+}
+
+// STATED OBLIGATION BANDS (Gabriel 2026-08-03) — the total a band adds up to,
+// or null when the site's pattern states no band covering this FTE (caller
+// keeps the derived formula, which is every other site and every fixture).
+//
+// TWO PARTS, because obligations are stated in two units and always have been:
+// the band's own per-bucket CALL counts, plus the neuro tier's weekend UNITS
+// from neuroWeekend.requirementBands. A unit is one Fri–Sun weekend carrying
+// the neuro code; at Paoli the pattern chains Sat C3 → Sun C3, so a unit is
+// TWO calls. That multiplier is read off the pattern's own block chains rather
+// than assumed: a site standing a single neuro day per weekend has a 1-call
+// unit, and hardcoding 2 would over-state its obligation by one call a head.
+//
+// This is NOT the FTE formula and is not meant to reconcile with it — his
+// 0.75 tier owes 13 where slots ÷ par × FTE derives 12, because the model is
+// whole chains rather than fractional shares (callPattern.ts states the case).
+function statedTotalFor(ctx: GenerationContext, fte: number): number | null {
+  const doc = ctx.callPattern;
+  if (!doc) return null;
+  const owed = owedCallsFor(doc, fte);
+  if (!owed) return null;
+  let total = 0;
+  for (const count of owed.values()) total += count;
+  const neuro = doc.neuroWeekend;
+  if (neuro) total += owedUnitsFor(fte, neuro) * neuroCallsPerUnit(doc);
+  return total;
+}
+
+// How many call slots one neuro WEEKEND UNIT is worth at this site: the neuro
+// code's own day count across the pattern's block chains. Paoli chains
+// C3 → C3 at offset +1 (Sat + Sun), so 2. A pattern whose neuro stands alone
+// is 1. Never hardcoded — see statedTotalFor.
+function neuroCallsPerUnit(doc: CallPatternDoc): number {
+  const code = doc.neuroWeekend?.code;
+  if (!code) return 0;
+  let best = 1; // the trigger day itself
+  for (const block of doc.blocks) {
+    for (const chain of block.chains) {
+      if (chain.trigger !== code) continue;
+      best = Math.max(best, 1 + chain.links.filter(l => l.code === code).length);
+    }
+  }
+  return best;
 }
 
 // pid -> whole-number obligatory call count (round-half-up of the total

@@ -341,6 +341,18 @@ export function normalizeWeekdays(v: unknown): boolean[] {
 
 // ── Bucket keys ────────────────────────────────────────────────────────────
 
+// THE OUTPUT DOMAIN of dayTypeBucketOn — the four fairness buckets a call can
+// actually be charged to. There is no 'holiday' member because the live rule
+// folds a holiday onto the day of the week it falls on (see dayTypeBucketOn),
+// so no slot ever lands in one. Homed HERE, beside the function that produces
+// it, rather than in a consumer: callCountDays.BUCKET_DAY_TYPES (the modal's
+// columns) and callPattern's obligation bands both name this same set, and a
+// consumer-owned copy would let the engine and the UI drift about which
+// buckets exist. Only dayTypeBucket's legacy 'holiday' output sits outside it,
+// and that function is frozen for golden parity.
+export const FAIRNESS_BUCKETS = ['weekday', 'friday', 'saturday', 'sunday'] as const;
+export type FairnessBucket = (typeof FAIRNESS_BUCKETS)[number];
+
 // Collapse day-of-week into the group used for FTE-proportional call-fairness
 // quotas. Saturday and Sunday each get their OWN bucket (they used to share a
 // merged 'weekend' bucket) so weekend fairness is tracked per-day: a provider's

@@ -15,7 +15,7 @@
 // renders; every domain rule routes through here → the shared helpers.
 
 import { requiredWorkDays } from './rulesEngine/workDays';
-import { dayTypeBucketOn } from './rulesEngine/shared';
+import { dayTypeBucketOn, FAIRNESS_BUCKETS, type FairnessBucket } from './rulesEngine/shared';
 import {
   creditedUnitsByProvider,
   type NeuroPlacement,
@@ -40,8 +40,11 @@ import {
 // out on a weekend Friday saturday or sunday, get included in the obligatory
 // weekend count, and those that fall out on weekdays do the same"). So Labor
 // Day, a Monday, is one of the block's M–Th days and its calls are M–Th calls.
-export const BUCKET_DAY_TYPES = ['weekday', 'friday', 'saturday', 'sunday'] as const;
-export type BucketDayType = (typeof BUCKET_DAY_TYPES)[number];
+// Re-exported from shared.ts (2026-08-03), which owns this list beside
+// dayTypeBucketOn — the function whose output domain it IS. The name stays for
+// the modal's callers; the values now cannot drift from the engine's.
+export const BUCKET_DAY_TYPES = FAIRNESS_BUCKETS;
+export type BucketDayType = FairnessBucket;
 
 // Distinct slot dates per bucket from the schedule's slots — "how many M–Th /
 // Fri / Sat / Sun days are in this block". Distinct by date so multi-slot days

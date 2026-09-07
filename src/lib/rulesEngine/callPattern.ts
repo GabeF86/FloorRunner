@@ -5,6 +5,9 @@
 // Spec: docs/superpowers/specs/2026-07-07-scheduling-v2-design.md §5.
 import { z } from 'zod';
 import { WEIGHT_EPSILON } from '@/lib/callBurden';
+// Value import, not a cycle: shared.ts imports only TYPES from genTypes, which
+// is erased at compile time, so nothing here imports back into this module.
+import { FAIRNESS_BUCKETS } from './shared';
 
 export const DAY_TYPES = [
   'weekday', 'friday', 'saturday', 'sunday', 'federal_holiday', 'major_holiday',
@@ -98,6 +101,103 @@ const NeuroWeekendSchema = z.object({
   });
 });
 
+// ── Stated call obligations (Gabriel 2026-08-03) ─────────────────────────────
+//
+// WHAT THIS REPLACES. Until now a provider's obligation was DERIVED:
+// `bucket slots ÷ stored par × FTE` (fteTarget.fteWeightedTarget). That is
+// still exactly right for a 1.0 FTE at Paoli — 44 M–Th C1 slots ÷ 11 = 4 — but
+// it is wrong for everyone else, because it hands out FRACTIONS of a call in
+// buckets that only stand whole ones. A 0.75 FTE derives to 0.75 of a Friday
+// C1, and there is no such thing as three quarters of a Friday call.
+//
+// Gabriel's model is CHAINS, not shares (verbatim, 2026-08-03): "The 0.75 FTE
+// are obligated to do 3 Weekday C1 and C2's, 1 Friday C1/Sunday C2 link, 1
+// Friday C2 Sat C2 Sun C1 link, and a neuro weekend" — 13 calls, where the
+// formula derives 12. So the obligation is STATED, and stated per FTE BAND:
+//
+//   1.0  → 4 M–Th C1, 4 M–Th C2, one of each weekend call        (16)
+//   0.75 → 3 + 3, the Fri C1 chain, the Sat C2 chain             (13)
+//   0.7  → 3 + 3, the Fri C1 chain, one Sat C1                   (11)
+//   0.5  → 2 + 2, 1.5 Sat C1, one Fri C2, one Sun C2             (9.5)
+//
+// The "links" are this doc's OWN block chains read back: Paoli's friday-anchored
+// C1 chain carries Sun C2 at offset +2, and its saturday-anchored C2 chain
+// carries Fri C2 and Sun C1. So a band is not a new vocabulary — it names how
+// many times a provider stands each (fairness bucket × call code), and the
+// chains say what each one drags along. Confirmed against the live 8/10–10/25
+// block: the three part-FTE call takers hold EXACTLY their band (Simon 13/13,
+// Havildar 13.5/13.5 with the shared 12h Saturday, Hussain 11/11).
+//
+// BANDS, NOT AN FTE MAP, mirroring neuroWeekend.requirementBands above:
+// `owedCallsFor` picks the HIGHEST band the FTE clears, so a roster FTE nobody
+// wrote a row for (0.67, 0.8) lands on the band below it rather than falling
+// through to nothing. Same resolution rule, same duplicate-minFte reject, and
+// the same reason for it — a duplicated-then-half-edited band would silently
+// change a real physician's clinical obligation.
+//
+// NEURO IS NOT HERE. It is already stated, in weekend UNITS, by
+// neuroWeekend.requirementBands, and blockTargets.derivedTargetsFor reads it
+// from there. Restating it as a Sat C3 + Sun C3 pair would fork that number
+// (see blockTargets.ts: "Do not restate these numbers anywhere").
+//
+// ABSENT = TODAY'S FORMULA, EXACTLY. A pattern with no `obligations` key
+// derives obligations the way it always has, so every other site, CLASSIC_PATTERN
+// and every engine fixture are byte-identical and golden parity is untouched.
+// This is the property that makes the change safe to ship ahead of the data.
+//
+// DAY TYPES ARE THE FOUR FAIRNESS BUCKETS (shared.FAIRNESS_BUCKETS), never a
+// holiday: dayTypeBucketOn folds a holiday onto the day of the week it falls
+// on, so a 'major_holiday' obligation row could never be charged against
+// anything and would sit permanently unmet.
+const ObligationCallSchema = z.object({
+  dayType: z.enum(FAIRNESS_BUCKETS),
+  // A PARENT call code (parentCallCodeOf) — an obligation is stated in whole
+  // calls, and a 12h segment counts under the call it is a piece of.
+  code: z.string().min(1),
+  // Fractional on purpose: Paoli's 0.5 FTE owes 1.5 Saturday C1 because he
+  // takes one whole one plus half of a 12h split shared with a 0.75.
+  count: z.number().min(0).max(50),
+}).strict();
+
+const ObligationBandSchema = z.object({
+  minFte: z.number().min(0).max(1),
+  calls: z.array(ObligationCallSchema).min(1),
+}).strict().superRefine((band, ctx) => {
+  const seenAt = new Map<string, number>();
+  band.calls.forEach((call, i) => {
+    const key = `${call.dayType}|${call.code}`;
+    const dupeAt = seenAt.get(key);
+    if (dupeAt !== undefined) {
+      ctx.addIssue({
+        code: 'custom',
+        message: `band minFte ${band.minFte} states ${key} twice (entries ${dupeAt} and ${i}) — `
+          + `obligations are read as a map, so one of these silently wins`,
+        path: ['calls', i],
+      });
+    } else {
+      seenAt.set(key, i);
+    }
+  });
+});
+
+const ObligationsSchema = z.object({
+  bands: z.array(ObligationBandSchema).min(1),
+}).strict().superRefine((doc, ctx) => {
+  const seenAt = new Map<number, number>();
+  doc.bands.forEach((band, i) => {
+    const dupeAt = seenAt.get(band.minFte);
+    if (dupeAt !== undefined) {
+      ctx.addIssue({
+        code: 'custom',
+        message: `obligations.bands has duplicate minFte ${band.minFte} (bands ${dupeAt} and ${i})`,
+        path: ['bands', i, 'minFte'],
+      });
+    } else {
+      seenAt.set(band.minFte, i);
+    }
+  });
+});
+
 export const CallPatternDocSchema = z.object({
   version: z.literal(1),
   blocks: z.array(z.object({
@@ -127,11 +227,49 @@ export const CallPatternDocSchema = z.object({
   // day type); callFillOrder orders call codes WITHIN a date.
   dayTypeFillOrder: z.array(z.string().min(1)).optional(),
   neuroWeekend: NeuroWeekendSchema.optional(),
+  obligations: ObligationsSchema.optional(),
 }).strict();
 
 export type CallPatternDoc = z.infer<typeof CallPatternDocSchema>;
 export type PatternDayChain = z.infer<typeof DayChainSchema>;
 export type PatternBlockLink = { offset: number; code: string; minFte?: number };
+export type ObligationBand = z.infer<typeof ObligationBandSchema>;
+export type PatternObligations = z.infer<typeof ObligationsSchema>;
+
+/** The obligation band an FTE falls in: the HIGHEST band whose minFte it
+ * clears, exactly as neuroWeekend's owedUnitsFor resolves its own bands. Null
+ * when the pattern states no obligations, or when the FTE clears no band at
+ * all (a roster FTE below every stated floor owes nothing from this feature
+ * and falls back to the derived formula — never silently zero).
+ *
+ * WEIGHT_EPSILON on the comparison for the same reason owedUnitsFor uses it: a
+ * stored 0.75 that arrives as 0.7499999 must still clear a 0.75 floor. */
+export function obligationBandFor(
+  doc: CallPatternDoc, fte: number,
+): ObligationBand | null {
+  const bands = doc.obligations?.bands;
+  if (!bands) return null;
+  let best: ObligationBand | null = null;
+  for (const band of bands) {
+    if (fte + WEIGHT_EPSILON < band.minFte) continue;
+    if (!best || band.minFte > best.minFte) best = band;
+  }
+  return best;
+}
+
+/** Stated calls owed per `${fairness bucket}|${parent code}` for this FTE, or
+ * null when the pattern states no band for it (caller keeps the derived
+ * formula). Excludes neuro, which is stated in weekend UNITS by
+ * neuroWeekend.requirementBands — see the ObligationCallSchema header. */
+export function owedCallsFor(
+  doc: CallPatternDoc, fte: number,
+): Map<string, number> | null {
+  const band = obligationBandFor(doc, fte);
+  if (!band) return null;
+  const out = new Map<string, number>();
+  for (const c of band.calls) out.set(`${c.dayType}|${c.code}`, c.count);
+  return out;
+}
 
 // The engine's historical hard-coded behavior, expressed as data. The patch18
 // seed and the golden-parity tests both mirror this constant — keep in sync.
@@ -220,6 +358,13 @@ export function referencedCodes(doc: CallPatternDoc): string[] {
   // shift-code reference like any other in the doc and belongs in the same
   // unknown-code warning.
   if (doc.neuroWeekend) codes.add(doc.neuroWeekend.code);
+  // Obligation band codes (2026-08-03). Same reasoning as neuroWeekend.code: a
+  // band naming a code that does not exist at the site states an obligation
+  // nothing can ever satisfy, so the provider reads as permanently short with
+  // nothing anywhere to explain it.
+  for (const band of doc.obligations?.bands ?? []) {
+    for (const c of band.calls) codes.add(c.code);
+  }
   return Array.from(codes).sort();
 }
 
@@ -278,6 +423,54 @@ export function dayTypeFillOrderWarnings(doc: CallPatternDoc): string[] {
 // would knock the whole pattern back to classic over an authoring choice that
 // parses fine. Compared with WEIGHT_EPSILON, the same tolerance owedUnitsFor
 // uses, so a floor that behaves identically to a boundary never warns.
+// Load-time sanity for obligation bands (2026-08-03). Two silent failures are
+// worth a warning, and NEITHER is a hard reject — the same rationale as
+// dayTypeFillOrderWarnings: knocking a whole pattern back to CLASSIC over an
+// authoring choice that parses fine is far worse than the mistake.
+//
+//   1. NO BOTTOM BAND. owedCallsFor returns null for an FTE below every stated
+//      minFte, and that provider silently keeps the derived FTE formula while
+//      everyone around them is on stated numbers — the one case where two
+//      obligation models run side by side on one roster. A band at minFte 0
+//      makes the table total.
+//   2. THE NEURO CODE IN A BAND. Neuro is owed in weekend UNITS via
+//      neuroWeekend.requirementBands; stating it here too double-counts it
+//      (once as units, once as a pair of calls) against the same holdings.
+//
+// Both take the pool's FTEs where the caller has them, so warning 1 names the
+// providers it actually strands rather than speaking in the abstract.
+export function obligationWarnings(
+  doc: CallPatternDoc,
+  fteValues: Iterable<number> = [],
+): string[] {
+  const bands = doc.obligations?.bands;
+  if (!bands || bands.length === 0) return [];
+  const out: string[] = [];
+
+  const floors = bands.map(b => b.minFte).sort((a, b) => a - b);
+  const uncovered = [...new Set(fteValues)]
+    .filter(fte => fte > 0 && obligationBandFor(doc, fte) === null)
+    .sort((a, b) => a - b);
+  if (uncovered.length > 0) {
+    out.push(
+      `obligations.bands states no band for FTE ${uncovered.join(', ')} (lowest band is minFte `
+      + `${floors[0]}) — those providers keep the DERIVED formula while the rest of the roster is on `
+      + `stated obligations. Add a band at minFte 0 to make the table total.`);
+  }
+
+  const neuroCode = doc.neuroWeekend?.code;
+  if (neuroCode) {
+    for (const band of bands) {
+      if (!band.calls.some(c => c.code === neuroCode)) continue;
+      out.push(
+        `obligations band minFte ${band.minFte} states the neuro code '${neuroCode}' as calls, but neuro is `
+        + `already owed in WEEKEND UNITS by neuroWeekend.requirementBands — it will be counted twice against `
+        + `the same assignments. Drop it from the band.`);
+    }
+  }
+  return out;
+}
+
 export function neuroWeekendWarnings(doc: CallPatternDoc): string[] {
   const cfg = doc.neuroWeekend;
   if (!cfg) return [];
