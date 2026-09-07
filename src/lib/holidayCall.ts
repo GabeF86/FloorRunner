@@ -96,6 +96,23 @@ function isThanksgiving(name: string | null | undefined): boolean {
 }
 
 /**
+ * Holidays whose EVE is worked as part of the block (Gabriel 2026-09-07: "add
+ * the day before thanksgiving as a holiday call... as well as new years eve").
+ *
+ * Both are heavy days that need covering and are staffed as part of the
+ * holiday, not as ordinary days: Thanksgiving Eve is always a Wednesday, and
+ * New Year's Eve is whatever weekday precedes Jan 1.
+ *
+ * Matching on the holiday NAME rather than the date keeps this working for
+ * any year without a lookup table, the same way isThanksgiving already does.
+ * `/new year/i` matches the seeded "New Year's Day" row; the calendar carries
+ * no separate "New Year's Eve" row for it to double-match.
+ */
+function hasWorkedEve(name: string | null | undefined): boolean {
+  return isThanksgiving(name) || (!!name && /new\s*year/i.test(name));
+}
+
+/**
  * Every day a holiday covers for call purposes (Gabriel 2026-09-06: "some
  * holidays stretch over a few days, like weekends").
  *
@@ -108,12 +125,16 @@ function isThanksgiving(name: string | null | undefined): boolean {
  *     Friday holiday pulls in the Saturday and Sunday behind it;
  *   • Thanksgiving additionally takes the Friday after (it is always a
  *     Thursday, and the Friday is worked as part of the holiday block), and
- *     the forward weekend walk then continues through that Friday.
+ *     the forward weekend walk then continues through that Friday;
+ *   • Thanksgiving and New Year's Day additionally take their EVE — the day
+ *     immediately before — and the backward weekend walk then continues
+ *     through it (Gabriel 2026-09-07). Both are heavy days staffed as part of
+ *     the holiday rather than as ordinary days.
  *
  * Worked examples on the seeded calendar (patch23):
- *   Thanksgiving  Thu 2026-11-26 → 11-26, 11-27, 11-28, 11-29
+ *   Thanksgiving  Thu 2026-11-26 → 11-25, 11-26, 11-27, 11-28, 11-29
  *   Christmas     Fri 2026-12-25 → 12-25, 12-26, 12-27
- *   New Year's    Fri 2027-01-01 → 01-01, 01-02, 01-03
+ *   New Year's    Fri 2027-01-01 → 2026-12-31, 01-01, 01-02, 01-03
  *   Memorial Day  Mon 2026-05-25 → 05-23, 05-24, 05-25
  *   Veterans Day  Wed 2026-11-11 → 11-11 alone
  *
@@ -121,7 +142,17 @@ function isThanksgiving(name: string | null | undefined): boolean {
  */
 export function holidayBlockDates(holidayDate: string, holidayName?: string | null): string[] {
   const before: string[] = [];
-  for (let d = addDays(holidayDate, -1); isWeekend(d); d = addDays(d, -1)) {
+  let backCursor = holidayDate;
+  // The eve comes first so the ordinary backward weekend walk carries on
+  // THROUGH it — a Monday New Year's Day takes Sunday as its eve and then
+  // still reaches back to the Saturday. When the eve is already a weekend day
+  // the walk would have taken it anyway, so this adds nothing and cannot
+  // duplicate.
+  if (hasWorkedEve(holidayName)) {
+    backCursor = addDays(backCursor, -1);
+    before.unshift(backCursor);
+  }
+  for (let d = addDays(backCursor, -1); isWeekend(d); d = addDays(d, -1)) {
     before.unshift(d);
   }
 

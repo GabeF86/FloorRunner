@@ -11,16 +11,38 @@ import {
 
 describe('holidayBlockDates', () => {
   // Dates below are the real patch23-seeded federal holidays.
-  it('takes the Friday after Thanksgiving and the weekend behind it', () => {
+  it('takes Thanksgiving Eve, the Friday after, and the weekend behind it', () => {
+    // Wed 11-25 is the eve (Gabriel 2026-09-07); Fri 11-27 the day after;
+    // then the ordinary weekend walk carries on through it.
     expect(holidayBlockDates('2026-11-26', 'Thanksgiving'))
-      .toEqual(['2026-11-26', '2026-11-27', '2026-11-28', '2026-11-29']);
+      .toEqual(['2026-11-25', '2026-11-26', '2026-11-27', '2026-11-28', '2026-11-29']);
+  });
+
+  it("takes New Year's Eve, even across the year boundary", () => {
+    // Fri 2027-01-01: the eve is Thu 2026-12-31, in the PREVIOUS calendar
+    // year. The route's availability window is the union of expanded days
+    // rather than the year, so a backward spill is already handled.
+    expect(holidayBlockDates('2027-01-01', "New Year's Day"))
+      .toEqual(['2026-12-31', '2027-01-01', '2027-01-02', '2027-01-03']);
+  });
+
+  it('does not duplicate an eve the weekend walk would already have taken', () => {
+    // A Monday New Year's Day: the eve IS the Sunday, and the walk then still
+    // reaches back to the Saturday. One Sunday, not two.
+    expect(holidayBlockDates('2029-01-01', "New Year's Day"))
+      .toEqual(['2028-12-30', '2028-12-31', '2029-01-01']);
+  });
+
+  it('gives no eve to a holiday that does not have one', () => {
+    // Christmas Eve is NOT part of the block — only Thanksgiving and New
+    // Year's were named. Fri 2026-12-25 keeps its trailing weekend only.
+    expect(holidayBlockDates('2026-12-25', 'Christmas Day'))
+      .toEqual(['2026-12-25', '2026-12-26', '2026-12-27']);
   });
 
   it('pulls the trailing weekend in for a Friday holiday', () => {
     expect(holidayBlockDates('2026-12-25', 'Christmas Day'))
       .toEqual(['2026-12-25', '2026-12-26', '2026-12-27']);
-    expect(holidayBlockDates('2027-01-01', "New Year's Day"))
-      .toEqual(['2027-01-01', '2027-01-02', '2027-01-03']);
   });
 
   it('pulls the leading weekend in for a Monday holiday', () => {
@@ -34,7 +56,10 @@ describe('holidayBlockDates', () => {
     // Tue/Wed/Thu holidays touch no weekend: Veterans Day 2026 is a
     // Wednesday, New Year's Day 2026 a Thursday.
     expect(holidayBlockDates('2026-11-11', 'Veterans Day')).toEqual(['2026-11-11']);
-    expect(holidayBlockDates('2026-01-01', "New Year's Day")).toEqual(['2026-01-01']);
+    // New Year's Day 2026 is a Thursday: no trailing weekend, but it DOES now
+    // take its Wednesday eve.
+    expect(holidayBlockDates('2026-01-01', "New Year's Day"))
+      .toEqual(['2025-12-31', '2026-01-01']);
   });
 
   it('extends a Saturday holiday forward only — Friday is a working day', () => {
@@ -64,8 +89,6 @@ describe('holidayBlockDates', () => {
     // Friday, so its trailing weekend must come back intact.
     expect(holidayBlockDates('2026-06-19', 'Juneteenth'))
       .toEqual(['2026-06-19', '2026-06-20', '2026-06-21']);
-    expect(holidayBlockDates('2027-01-01', "New Year's Day"))
-      .toEqual(['2027-01-01', '2027-01-02', '2027-01-03']);
   });
 });
 
