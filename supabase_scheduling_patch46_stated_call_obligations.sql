@@ -9,7 +9,15 @@
 -- PROJECT: apply ONLY to Supabase ref qhwdbtixhzdsgwwtcfrm ("Floor Runner").
 -- Site: 2ddd2427-22fb-4290-9c4c-03a957e5af4e (Paoli).
 --
--- STATUS: NOT YET APPLIED.
+-- STATUS: APPLIED 2026-09-07 to ref qhwdbtixhzdsgwwtcfrm, CODE-FIRST honoured:
+--         the deployed build (51a6313) was confirmed live and confirmed to
+--         carry the `obligations` key in CallPatternDocSchema BEFORE this ran,
+--         so the strict parser could not reject the doc and fall back to
+--         CLASSIC_PATTERN. Pre-flight found exactly 1 active Paoli pattern
+--         carrying neuroWeekend. The in-transaction post-assertion passed.
+--         Verified after: the stored doc's 11 top-level keys and every scalar
+--         and array among them match WEEKEND_V2_PATTERN exactly, and that
+--         pattern parses clean under the strict schema.
 --
 -- ── ORDER: CODE FIRST, AND THIS ONE REALLY MEANS IT ─────────────────────────
 -- This patch adds a KEY the deployed schema must already know: CallPatternDocSchema

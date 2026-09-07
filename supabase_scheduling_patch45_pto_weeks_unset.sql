@@ -4,7 +4,12 @@
 --
 -- PROJECT: apply ONLY to Supabase ref qhwdbtixhzdsgwwtcfrm ("Floor Runner").
 --
--- STATUS: NOT YET APPLIED.
+-- STATUS: APPLIED 2026-09-07 to ref qhwdbtixhzdsgwwtcfrm, after confirming the
+--         Vercel build was live (/block-prep returned 200 on commit 51a6313).
+--         Pre-flight found the roster exactly as authored: 78 zeros, 5 stated,
+--         0 null. Post-apply verification, all three checks from the block
+--         below: stated = 5 (unchanged), zeros = 0, null = 78, column_default
+--         = NULL. No stated value was touched.
 --
 -- ── ORDER: CODE FIRST ───────────────────────────────────────────────────────
 -- Not for a strict-schema reason (this is a plain nullable integer column with
