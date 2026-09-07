@@ -63,9 +63,21 @@ describe('sortRosterRows', () => {
 
   it('returns a single row unchanged', () => {
     const only = row({ provider_id: 'solo' });
-    const result = sortRosterRows([only]);
+    const input = [only];
+    const result = sortRosterRows(input);
     expect(result).toEqual([only]);
-    expect(result).not.toBe([only]); // still a new array wrapper
+    expect(result).not.toBe(input); // still a new array wrapper, not the same reference
+  });
+
+  // --- Fix C: blank-vs-zero is this module's entire thesis, so the one sort
+  // case that actually distinguishes a stated 0 from an unstated FTE is worth
+  // pinning directly, not just inferred from the null-vs-0.5 case above.
+  it('sorts a null (unstated) FTE after a stated zero — blank is not the same as zero', () => {
+    const rows = [
+      row({ provider_id: 'a', last_name: 'Alpha', fte_value: null }),
+      row({ provider_id: 'b', last_name: 'Beta', fte_value: 0 }),
+    ];
+    expect(sortRosterRows(rows).map(r => r.provider_id)).toEqual(['b', 'a']);
   });
 });
 
@@ -160,6 +172,10 @@ describe('coveredSpanLabel', () => {
   it('does not present a GAPPED range as continuous coverage', () => {
     // Two blocks at either end of the year with a five-month hole between
     // them. The bare range reads as near-total coverage; the label must not.
+    // Pinned with toBe (not just toContain) — the trailing "(N working days
+    // counted)" wording is the one place this branch differs from the
+    // single-segment branch's "(N working days)", and a toContain pair could
+    // let that difference get edited away silently.
     const label = coveredSpanLabel(span({
       start: '2026-01-05', end: '2026-12-20', workingDays: 130,
       segments: [
@@ -167,8 +183,9 @@ describe('coveredSpanLabel', () => {
         { start: '2026-09-07', end: '2026-12-20' },
       ],
     }));
-    expect(label).toContain('2 published blocks');
-    expect(label).toContain('gaps between them');
+    expect(label).toBe(
+      'Off days counted across 2 published blocks only, with gaps between them: '
+      + 'Jan 5 – Dec 20, 2026 (130 working days counted).');
   });
   it('distinguishes a block with no working days from nothing published', () => {
     const label = coveredSpanLabel(span({
@@ -181,32 +198,37 @@ describe('coveredSpanLabel', () => {
 });
 
 describe('parseFteInput', () => {
+  // Fix A: bounds and blank policy are now selected by a `kind` tag
+  // ('call' | 'workDays') rather than a hand-passed { allowBlank, max } bag,
+  // so a caller cannot pair the wrong bound with the wrong blank policy. The
+  // numbers themselves come from validation/providers.ts's FTE_MIN/FTE_MAX
+  // and WORK_DAYS_FTE_MIN/WORK_DAYS_FTE_MAX (0..2 and 0..1 respectively,
+  // matching the DB CHECK, the API validator and the profile editor).
   it('accepts a blank working-days FTE as "same as call FTE"', () => {
-    expect(parseFteInput('', { allowBlank: true, max: 1 })).toEqual({ ok: true, value: null });
+    expect(parseFteInput('', 'workDays')).toEqual({ ok: true, value: null });
   });
   it('rejects a blank call FTE', () => {
-    expect(parseFteInput('', { allowBlank: false, max: 2 }).ok).toBe(false);
+    expect(parseFteInput('', 'call').ok).toBe(false);
   });
   it('rejects a working-days FTE above 1', () => {
-    expect(parseFteInput('1.5', { allowBlank: true, max: 1 }).ok).toBe(false);
+    expect(parseFteInput('1.5', 'workDays').ok).toBe(false);
   });
   it('accepts a call FTE up to 2', () => {
-    expect(parseFteInput('1.5', { allowBlank: false, max: 2 })).toEqual({ ok: true, value: 1.5 });
+    expect(parseFteInput('1.5', 'call')).toEqual({ ok: true, value: 1.5 });
   });
   it('rejects a negative value and non-numbers', () => {
-    expect(parseFteInput('-1', { allowBlank: false, max: 2 }).ok).toBe(false);
-    expect(parseFteInput('abc', { allowBlank: false, max: 2 }).ok).toBe(false);
+    expect(parseFteInput('-1', 'call').ok).toBe(false);
+    expect(parseFteInput('abc', 'call').ok).toBe(false);
   });
 
   // --- Beyond the plan: a stated zero call FTE is legal (per diems have one)
   // and must be accepted, not rejected as if it were blank/invalid.
   it('accepts a stated zero call FTE — per diems have one', () => {
-    expect(parseFteInput('0', { allowBlank: false, max: 2 })).toEqual({ ok: true, value: 0 });
+    expect(parseFteInput('0', 'call')).toEqual({ ok: true, value: 0 });
   });
 
   it('trims surrounding whitespace before parsing', () => {
-    expect(parseFteInput('  0.75  ', { allowBlank: false, max: 2 }))
-      .toEqual({ ok: true, value: 0.75 });
+    expect(parseFteInput('  0.75  ', 'call')).toEqual({ ok: true, value: 0.75 });
   });
 });
 

@@ -24,6 +24,11 @@
 import type {
   CallCount, CoveredSpanInfo, OffDayBudget, PtoFigures,
 } from './annualTally';
+// FTE bounds are owned by validation/providers.ts (the DB CHECK, the API
+// validator and the profile editor all key off these two pairs) — imported
+// rather than hand-copied so the board is a fourth home wired to the same
+// numbers, not a fourth number that happens to agree today.
+import { FTE_MAX, FTE_MIN, WORK_DAYS_FTE_MAX, WORK_DAYS_FTE_MIN } from './validation/providers';
 
 export interface RosterRow {
   provider_id: string;
@@ -44,11 +49,17 @@ export interface RosterRow {
   callTotal: number;
 }
 
-/** FTE descending, then last name. A null FTE sorts last, not first. */
+/**
+ * FTE descending, then last name. A null (unstated) FTE sorts last, after
+ * even a stated 0 — a per diem is a known quantity; an unstated FTE is a data
+ * gap that belongs at the bottom where it reads as needing attention. Uses
+ * `Number.NEGATIVE_INFINITY` rather than a magic sentinel like `-1`, which
+ * would only happen to sort last because `FTE_MIN` is 0 today.
+ */
 export function sortRosterRows(rows: ReadonlyArray<RosterRow>): RosterRow[] {
   return [...rows].sort((a, b) => {
-    const fa = a.fte_value ?? -1;
-    const fb = b.fte_value ?? -1;
+    const fa = a.fte_value ?? Number.NEGATIVE_INFINITY;
+    const fb = b.fte_value ?? Number.NEGATIVE_INFINITY;
     if (fa !== fb) return fb - fa;
     return a.last_name.localeCompare(b.last_name);
   });
@@ -100,7 +111,16 @@ export function offDaysText(budget: OffDayBudget, used: number | null): string {
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
-function shortDate(iso: string): string {
+// Deliberately NOT named `shortDate` — src/lib/availableCalls.ts already
+// exports a `shortDate(iso)` with a different format ("10/17"); two
+// `shortDate`s in src/lib producing different strings would be a readability
+// trap. Pure string-splitting (no Date construction) so no timezone can shift
+// the label off the date the row actually belongs to — the same rationale
+// availableCalls.ts documents for its own. A reviewer found four other local
+// closures producing this same "Aug 10, 2026" shape elsewhere in the app;
+// this one is judged the best of the five for the same no-timezone reason,
+// but extracting a shared home is a refactor beyond this module's scope.
+function monthDayYear(iso: string): string {
   const [y, m, d] = iso.split('-');
   return `${MONTHS[Number(m) - 1]} ${Number(d)}, ${y}`;
 }
@@ -116,19 +136,31 @@ function shortDate(iso: string): string {
  * year read as "Jan 5 – Dec 20" while covering half the working days. So the
  * label must say how many blocks it counted whenever there is more than one
  * segment, and never present a gapped range as a continuous one.
+ *
+ * INVARIANT THIS RELIES ON (enforced by the caller, not here): `span` comes
+ * from `annualTally.coveredSpanFor`, which clips every segment to the
+ * requested calendar year before this function ever sees it — so
+ * `span.start` and `span.end` always share one year. The `.replace(/,
+ * \d{4}$/, '')` below, which drops the leading year off `start` so the range
+ * reads "Jan 5 – Dec 20, 2026" rather than "Jan 5, 2026 – Dec 20, 2026",
+ * depends on that: a span straddling a year boundary would render backwards
+ * ("Dec 28 – Jan 10, 2027"). Not reachable today because of the caller
+ * invariant, but this function does not itself check it.
  */
 export function coveredSpanLabel(span: CoveredSpanInfo | null): string {
   if (!span) {
     return 'No published blocks this year — off days show the budget only, with nothing counted against it.';
   }
-  // A published block that contains no working days (e.g. one clipped to a
-  // single major holiday) is NOT the same as nothing being published, and must
-  // not read as "0 days off taken".
+  // A published span that contains no working days (e.g. clipped to a single
+  // major holiday) is NOT the same as nothing being published, and must not
+  // read as "0 days off taken". Worded number-agnostically because this
+  // branch precedes the segments check below — a multi-block span can also
+  // clip to zero working days.
   if (span.workingDays === 0) {
-    return 'The published block covers no working days this year — nothing has been counted against the off-day budget.';
+    return 'The published coverage for this year includes no working days — nothing has been counted against the off-day budget.';
   }
-  const start = shortDate(span.start).replace(/, \d{4}$/, '');
-  const range = `${start} – ${shortDate(span.end)}`;
+  const start = monthDayYear(span.start).replace(/, \d{4}$/, '');
+  const range = `${start} – ${monthDayYear(span.end)}`;
   if (span.segments.length > 1) {
     return `Off days counted across ${span.segments.length} published blocks only, with gaps between them: `
       + `${range} (${span.workingDays} working days counted).`;
@@ -139,27 +171,53 @@ export function coveredSpanLabel(span: CoveredSpanInfo | null): string {
 export type ParseResult<T> = { ok: true; value: T } | { ok: false; error: string };
 
 /**
- * Parse an FTE cell. `max` is 2 for call FTE (FTE_MAX — the odd partner working
- * two jobs) and 1 for working-days FTE (nobody owes more days than the block
- * has). `allowBlank` is true only for working-days FTE, where blank means
- * "same as call FTE".
+ * Which FTE field is being parsed — selects both the bounds and the blank
+ * policy, so a caller cannot pass a mismatched pair (e.g. a call FTE's bounds
+ * with working-days FTE's blank-is-legal rule). `'call'` uses
+ * FTE_MIN..FTE_MAX (0..2, the "odd partner working two jobs" headroom) and is
+ * mandatory. `'workDays'` uses WORK_DAYS_FTE_MIN..WORK_DAYS_FTE_MAX (0..1,
+ * narrower because nobody owes more working days than a block has) and may
+ * be blank, meaning "same as call FTE".
  */
-export function parseFteInput(
-  raw: string, opts: { allowBlank: boolean; max: number },
-): ParseResult<number | null> {
+export type FteFieldKind = 'call' | 'workDays';
+
+const FTE_FIELD_BOUNDS: Record<FteFieldKind, { min: number; max: number; allowBlank: boolean }> = {
+  call: { min: FTE_MIN, max: FTE_MAX, allowBlank: false },
+  workDays: { min: WORK_DAYS_FTE_MIN, max: WORK_DAYS_FTE_MAX, allowBlank: true },
+};
+
+/**
+ * Parse an FTE cell. Bounds and blank policy come from `FTE_FIELD_BOUNDS`,
+ * itself sourced from validation/providers.ts's FTE_MIN/FTE_MAX and
+ * WORK_DAYS_FTE_MIN/WORK_DAYS_FTE_MAX — the same constants the DB CHECK, the
+ * API validator and the profile editor already key off, so this is a fourth
+ * home wired to one set of numbers rather than a fourth number.
+ */
+export function parseFteInput(raw: string, kind: FteFieldKind): ParseResult<number | null> {
+  const { min, max, allowBlank } = FTE_FIELD_BOUNDS[kind];
   const s = raw.trim();
   if (s === '') {
-    return opts.allowBlank
+    return allowBlank
       ? { ok: true, value: null }
       : { ok: false, error: 'FTE is required' };
   }
   const n = Number(s);
-  if (!Number.isFinite(n) || n < 0) return { ok: false, error: 'Must be a non-negative number' };
-  if (n > opts.max) return { ok: false, error: `Must be ${opts.max} or less` };
+  if (!Number.isFinite(n) || n < min) return { ok: false, error: `Must be ${min} or more` };
+  if (n > max) return { ok: false, error: `Must be ${max} or less` };
   return { ok: true, value: n };
 }
 
-/** Parse the PTO allotment cell. Blank -> null (not stated); "0" -> 0 (real). */
+/**
+ * Parse the PTO allotment cell. Blank -> null (not stated); "0" -> 0 (real).
+ *
+ * Mirrors validation/providers.ts's own check for `pto_weeks`
+ * (`!Number.isInteger(n) || n < 0`) rather than importing a constant, because
+ * there isn't one to import: that file has no dedicated FTE_MIN/FTE_MAX-style
+ * export for this field — its inline check is shared, un-exported, across
+ * several unrelated integer columns (pto_weeks, max_weekly_hours,
+ * max_monthly_calls, max_consecutive_calls, years_with_group). Checked as
+ * part of this fix; nothing to wire to.
+ */
 export function parseAllotmentInput(raw: string): ParseResult<number | null> {
   const s = raw.trim();
   if (s === '') return { ok: true, value: null };
