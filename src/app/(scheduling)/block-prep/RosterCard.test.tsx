@@ -15,12 +15,13 @@
  * whenever `loading` was false and nothing had loaded yet, which is exactly
  * Task 10's own first paint (its `loading` starts false).
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import type { ReactElement, ReactNode } from 'react';
 import RosterCard, {
-  rosterCellKey, applyFrozenOrder, commitDecision, revertDecision,
-  buildRosterTableRows, resolveDisplayRows, type RosterRowCallbacks,
+  rosterCellKey, applyFrozenOrder, commitDecision, revertDecision, commitPatch,
+  buildRosterTableRows, resolveDisplayRows,
+  type RosterRowCallbacks, type PatchResponseLike,
 } from './RosterCard';
 import { allotmentText, WORK_DAYS_FTE_PLACEHOLDER, type RosterRow } from '@/lib/blockPrepView';
 
@@ -242,6 +243,102 @@ describe('revertDecision (Fix R1: the post-failure counterpart to commitDecision
   it('carries no `to` on the "stay" variant — the payload only exists on "revert"', () => {
     const stayed = revertDecision(0.75, 1.2, 1);
     expect('to' in stayed).toBe(false);
+  });
+});
+
+/** A promise plus its resolve/reject, so a test can control exactly when an
+ *  injected `fetchFn` (or its `res.json()`) settles. */
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((res, rej) => { resolve = res; reject = rej; });
+  return { promise, resolve, reject };
+}
+
+/** Lets a pending microtask queue drain without resolving anything — used to
+ *  prove `onCommitted` has NOT fired yet while a controlled promise sits
+ *  unresolved. Multiple awaits because `commitPatch` chains more than one
+ *  microtask (the `fetchFn` call, then — on a non-ok response — its
+ *  `res.json()` call) before it would next observe our promise settling. */
+async function flushMicrotasks(times = 3) {
+  for (let i = 0; i < times; i++) await Promise.resolve();
+}
+
+describe('commitPatch (C1 regression, CRITICAL, round 6 review) — onCommitted must not fire before the PATCH settles', () => {
+  // Round 5 review accepted "this ordering can't be proven without jsdom" as
+  // a residual limitation. Round 6 correctly rejected that: this is async
+  // orchestration over an INJECTED fetch, not DOM interaction, and none of
+  // it needs a document. These tests hand commitPatch a fetchFn whose
+  // promise this test controls directly, so "onCommitted fires only after
+  // the fetch settles" is asserted, not just argued from reading the code.
+
+  it('does not call onCommitted while the fetch is pending, and calls it exactly once once the fetch resolves ok', async () => {
+    const { promise, resolve } = deferred<PatchResponseLike>();
+    const fetchFn = vi.fn(() => promise);
+    const onFailure = vi.fn();
+    const onCommitted = vi.fn();
+
+    const settled = commitPatch(fetchFn, {
+      providerId: 'p1', field: 'fte_value', value: 0.75, onFailure, onCommitted,
+    });
+
+    await flushMicrotasks();
+    expect(onCommitted).not.toHaveBeenCalled();
+    expect(onFailure).not.toHaveBeenCalled();
+
+    resolve({ ok: true, status: 200, json: async () => ({}) });
+    await settled;
+
+    expect(onCommitted).toHaveBeenCalledTimes(1);
+    expect(onFailure).not.toHaveBeenCalled();
+  });
+
+  it('does not call onCommitted while the fetch is pending, and calls onFailure + onCommitted once it rejects', async () => {
+    const { promise, reject } = deferred<PatchResponseLike>();
+    const fetchFn = vi.fn(() => promise);
+    const onFailure = vi.fn();
+    const onCommitted = vi.fn();
+
+    const settled = commitPatch(fetchFn, {
+      providerId: 'p1', field: 'fte_value', value: 0.75, onFailure, onCommitted,
+    });
+
+    await flushMicrotasks();
+    expect(onCommitted).not.toHaveBeenCalled();
+
+    reject(new Error('network down'));
+    await settled;
+
+    expect(onFailure).toHaveBeenCalledTimes(1);
+    expect(onFailure).toHaveBeenCalledWith('network down');
+    expect(onCommitted).toHaveBeenCalledTimes(1);
+  });
+
+  it('waits for a still-pending res.json() on a non-ok response before calling onCommitted — the nested-await half of the guarantee', async () => {
+    const body = deferred<{ error: string }>();
+    // The fetch itself resolves promptly; its BODY does not — this is the
+    // subtle half of the `finally` argument, since a naive implementation
+    // could plausibly call onCommitted right after the outer `await fetchFn`
+    // rather than after the inner `await res.json()` too.
+    const fetchFn = vi.fn(() => Promise.resolve<PatchResponseLike>({
+      ok: false, status: 422, json: () => body.promise,
+    }));
+    const onFailure = vi.fn();
+    const onCommitted = vi.fn();
+
+    const settled = commitPatch(fetchFn, {
+      providerId: 'p1', field: 'fte_value', value: 3, onFailure, onCommitted,
+    });
+
+    await flushMicrotasks();
+    expect(onCommitted).not.toHaveBeenCalled();
+    expect(onFailure).not.toHaveBeenCalled();
+
+    body.resolve({ error: 'Must be 2 or less' });
+    await settled;
+
+    expect(onFailure).toHaveBeenCalledWith('Must be 2 or less');
+    expect(onCommitted).toHaveBeenCalledTimes(1);
   });
 });
 

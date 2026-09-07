@@ -69,10 +69,16 @@ export default function SchedulesPage() {
     if (params.get('create') === '1') {
       setPresetSiteId(params.get('site_id') || '');
       setShowCreate(true);
-      // Strip ?create=1&site_id=... from the address bar once the modal is
-      // open — otherwise a refresh (or the back button landing here again)
-      // silently reopens Create Schedule with no user action.
-      window.history.replaceState(null, '', window.location.pathname);
+      // Strip create/site_id from the address bar once the modal is open —
+      // otherwise a refresh (or the back button landing here again) silently
+      // reopens Create Schedule with no user action. Delete only THESE two
+      // params rather than clearing the whole query string (round 6 nit 3) —
+      // any other params this page is ever linked with (a filter, an
+      // assistant target, ...) must survive the strip.
+      params.delete('create');
+      params.delete('site_id');
+      const qs = params.toString();
+      window.history.replaceState(null, '', window.location.pathname + (qs ? `?${qs}` : ''));
     }
   }, []);
   // Assistant reach (ui-v1 Task 8): the backend contract targets ONE schedule

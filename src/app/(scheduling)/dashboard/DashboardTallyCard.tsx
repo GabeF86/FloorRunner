@@ -17,6 +17,14 @@
 // while collapsed (the route computes roster and tally together): the
 // collapsed state is a plain static summary line, not a chip row.
 //
+// THE CONTROL ROW NEVER MOVES (round 6 nit 4): collapsed used to put Expand
+// inside a Card header while expanded floated the site picker + Collapse in
+// a bare div above a DIFFERENT Card (AnnualTallyCard's own) — the toggle
+// jumped position across the one interaction this component has. The title
+// + site picker + toggle now live in ONE row that renders identically either
+// way; only what's BELOW that row changes (a static hint Card, or the real
+// AnnualTallyCard).
+//
 // REAL ERROR HANDLING (I2, round 5 review, Important): the bootstrap org/site
 // fetch used to have no try/catch and no error state, so a failed request
 // silently rendered as "no sites" (with `sites.length > 1` false, that also
@@ -53,7 +61,8 @@ export default function DashboardTallyCard() {
           return;
         }
         const orgs = await orgRes.json();
-        if (!Array.isArray(orgs) || orgs.length === 0) return;
+        if (!Array.isArray(orgs)) { setError('Organizations response was malformed.'); return; }
+        if (orgs.length === 0) return;
         const res = await fetch(`/api/scheduling/sites?org_id=${orgs[0].id}`);
         if (!res.ok) {
           const body = await res.json().catch(() => ({}));
@@ -61,10 +70,9 @@ export default function DashboardTallyCard() {
           return;
         }
         const list = await res.json();
-        if (Array.isArray(list)) {
-          setSites(list);
-          if (list.length > 0) setSiteId(list[0].id);
-        }
+        if (!Array.isArray(list)) { setError('Sites response was malformed.'); return; }
+        setSites(list);
+        if (list.length > 0) setSiteId(list[0].id);
       } catch (e) {
         setError(e instanceof Error ? e.message : 'Network error loading sites');
       }
@@ -78,35 +86,38 @@ export default function DashboardTallyCard() {
     return <Card title="Annual tally"><Banner tone="error">{error}</Banner></Card>;
   }
 
-  if (!expanded) {
-    return (
-      <Card
-        title="Annual tally"
-        actions={<Button variant="secondary" size="sm" onClick={() => setExpanded(true)}>Expand</Button>}
-      >
-        <div style={{ fontSize: 'var(--fs-sm)', color: 'var(--text-muted)' }}>
-          {siteName
-            ? `${siteName}'s ${year} call, PTO and off-day running totals — expand to view.`
-            : 'Loading sites…'}
-        </div>
-      </Card>
-    );
-  }
-
   return (
     <div>
       <div style={{
-        display: 'flex', justifyContent: 'flex-end', alignItems: 'center',
+        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
         gap: 'var(--space-2)', marginBottom: 'var(--space-2)',
       }}>
-        {sites.length > 1 && (
-          <select aria-label="Site" value={siteId} onChange={e => setSiteId(e.target.value)} style={SELECT}>
-            {sites.map(s => <option key={s.id} value={s.id}>{s.short_name || s.name}</option>)}
-          </select>
-        )}
-        <Button variant="secondary" size="sm" onClick={() => setExpanded(false)}>Collapse</Button>
+        <div style={{ fontSize: 'var(--fs-md)', fontWeight: 700, color: 'var(--text-strong)' }}>
+          Annual tally
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
+          {expanded && sites.length > 1 && (
+            <select aria-label="Site" value={siteId} onChange={e => setSiteId(e.target.value)} style={SELECT}>
+              {sites.map(s => <option key={s.id} value={s.id}>{s.short_name || s.name}</option>)}
+            </select>
+          )}
+          <Button variant="secondary" size="sm" onClick={() => setExpanded(v => !v)}>
+            {expanded ? 'Collapse' : 'Expand'}
+          </Button>
+        </div>
       </div>
-      <AnnualTallyCard siteId={siteId || null} year={year} siteName={siteName} />
+
+      {expanded ? (
+        <AnnualTallyCard siteId={siteId || null} year={year} siteName={siteName} />
+      ) : (
+        <Card>
+          <div style={{ fontSize: 'var(--fs-sm)', color: 'var(--text-muted)' }}>
+            {siteName
+              ? `${siteName}'s ${year} call, PTO and off-day running totals — expand to view.`
+              : 'Loading sites…'}
+          </div>
+        </Card>
+      )}
     </div>
   );
 }

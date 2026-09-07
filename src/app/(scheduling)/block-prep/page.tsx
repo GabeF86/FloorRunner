@@ -104,6 +104,12 @@ export default function BlockPrepPage() {
   // array, and collapsing them would let a still-loading page claim a
   // confirmed "No sites" before it had looked (I2, round 5 review).
   const [sitesLoaded, setSitesLoaded] = useState(false);
+  // True once the org fetch succeeds but returns zero organizations (round 6
+  // nit 1): without this, the sites effect below never runs (it's gated on
+  // `orgId`), so `sitesLoaded` would stay false forever and the site select
+  // would read "Loading sites…" permanently instead of naming the real,
+  // if unlikely, degenerate config.
+  const [noOrg, setNoOrg] = useState(false);
   const [siteId, setSiteId] = useState('');
   const [year, setYear] = useState(new Date().getFullYear());
   // null = nothing loaded yet for the current (siteId, year) — drives the
@@ -128,7 +134,15 @@ export default function BlockPrepPage() {
           return;
         }
         const orgs = await res.json();
-        if (Array.isArray(orgs) && orgs.length > 0) setOrgId(orgs[0].id);
+        // Round 6 nit 2: a malformed (non-array) 200 must not silently fall
+        // through as though it were a confirmed empty list — that reads
+        // identically to "no organizations exist" downstream.
+        if (!Array.isArray(orgs)) {
+          setBootError('Organizations response was malformed.');
+          return;
+        }
+        if (orgs.length > 0) setOrgId(orgs[0].id);
+        else setNoOrg(true); // round 6 nit 1: name the degenerate case, don't leave the site select loading forever
       } catch (e) {
         setBootError(e instanceof Error ? e.message : 'Network error loading organizations');
       }
@@ -146,10 +160,15 @@ export default function BlockPrepPage() {
           return;
         }
         const list = await res.json();
-        if (Array.isArray(list)) {
-          setSites(list);
-          if (list.length > 0) setSiteId(prev => prev || list[0].id);
+        // Round 6 nit 2: same malformed-response guard as the org fetch —
+        // `sitesLoaded` must only ever mean "genuinely looked and this is
+        // what came back", never "got something, didn't check its shape".
+        if (!Array.isArray(list)) {
+          setBootError('Sites response was malformed.');
+          return;
         }
+        setSites(list);
+        if (list.length > 0) setSiteId(prev => prev || list[0].id);
         setSitesLoaded(true);
       } catch (e) {
         setBootError(e instanceof Error ? e.message : 'Network error loading sites');
@@ -251,12 +270,15 @@ export default function BlockPrepPage() {
 
       <div style={{ display: 'flex', gap: 'var(--space-2)', marginBottom: 'var(--space-5)', flexWrap: 'wrap' }}>
         <select aria-label="Site" value={siteId} onChange={e => setSiteId(e.target.value)} style={CONTROL}>
-          {/* I2: three distinguishable facts, never collapsed into one guess —
-              a fetch failure, "hasn't looked yet", and a genuinely confirmed
-              zero must not read as each other. */}
+          {/* I2 (+ round 6 nits 1/2): four distinguishable facts, never
+              collapsed into one guess — a fetch failure, no organization
+              configured at all, "hasn't looked yet", and a genuinely
+              confirmed zero sites must not read as each other. */}
           {sites.length === 0 && (
             <option value="">
-              {bootError ? 'Could not load sites' : sitesLoaded ? 'No sites' : 'Loading sites…'}
+              {bootError ? 'Could not load sites'
+                : noOrg ? 'No organization configured'
+                  : sitesLoaded ? 'No sites' : 'Loading sites…'}
             </option>
           )}
           {sites.map(s => <option key={s.id} value={s.id}>{s.short_name || s.name}</option>)}

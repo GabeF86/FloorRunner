@@ -156,16 +156,27 @@
 // also explains I5: `onFailure` ALSO calls `onSaved` (to revert), so a
 // rejected edit fired the page's refetch TWICE.
 //
-// The fix adds `onCommitted`, called ONLY from the `finally` block below —
-// i.e. only after `await fetch(...)` (and any `await res.json()` reading its
-// body) has fully settled, success or failure alike, and exactly once per
-// PATCH attempt. `onSaved` keeps doing the optimistic local update (instant
-// feel); `onCommitted` is the page's sole refetch trigger now. Because
-// `onCommitted` cannot run before the `try` block's promise chain resolves —
-// a JS `finally` is ordered strictly after everything in its `try`/`catch` —
-// the GET it triggers can never be dispatched while the PATCH is still in
-// flight. It is never called for `'skip'`, `'invalid'`, or `'noop'`, since
-// none of those ever reach the server and there is nothing new to refetch.
+// The fix adds `onCommitted`, called ONLY from a `finally` block — i.e. only
+// after `await fetch(...)` (and any `await res.json()` reading its body) has
+// fully settled, success or failure alike, and exactly once per PATCH
+// attempt. `onSaved` keeps doing the optimistic local update (instant feel);
+// `onCommitted` is the page's sole refetch trigger now. Because `onCommitted`
+// cannot run before the `try` block's promise chain resolves — a JS `finally`
+// is ordered strictly after everything in its `try`/`catch` — the GET it
+// triggers can never be dispatched while the PATCH is still in flight. It is
+// never called for `'skip'`, `'invalid'`, or `'noop'`, since none of those
+// ever reach the server and there is nothing new to refetch.
+//
+// Round 6 review pushed back on "this ordering can't be tested without
+// jsdom" — correctly: it's async orchestration, not DOM interaction, and
+// nothing about it needs a document. `commitPatch` below extracts the
+// PATCH-and-settle sequence with `fetch` itself INJECTED (the same
+// dependency-injection convention this repo already uses for every
+// DB-coupled module, an injected `sb` client, applied to `fetch` instead),
+// so RosterCard.test.tsx can hand it a controllable promise and assert
+// directly that `onCommitted` has not fired while it's pending. Moving
+// `onCommitted()` back onto the optimistic path — reproducing the original
+// C1 bug exactly — was verified to make that suite fail.
 
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import Link from 'next/link';
@@ -265,6 +276,65 @@ export function revertDecision(
   currentValue: number | null, attempted: number | null, original: number | null,
 ): RevertAction {
   return currentValue === attempted ? { kind: 'revert', to: original } : { kind: 'stay' };
+}
+
+/**
+ * Minimal shape `commitPatch` needs from a resolved fetch call — satisfied
+ * structurally by the real global `fetch`'s `Response` (which carries many
+ * more properties `commitPatch` never touches).
+ */
+export interface PatchResponseLike {
+  ok: boolean;
+  status: number;
+  json: () => Promise<unknown>;
+}
+
+export type PatchFetchFn = (input: string, init: RequestInit) => Promise<PatchResponseLike>;
+
+/**
+ * The PATCH-and-settle sequence behind a roster cell's commit, with the
+ * fetch itself INJECTED (round 6 review) — this is what lets C1's ordering
+ * guarantee be pinned by a plain node-environment test instead of resting on
+ * inspection alone. The reviewer was right to push back on "unprovable
+ * without jsdom": this is async orchestration, not DOM interaction, and
+ * nothing about it needs a document — the pattern is the same dependency-
+ * injection convention this repo already uses for every DB-coupled module
+ * (an injected `sb` client), applied to `fetch` instead of Supabase.
+ *
+ * `onCommitted` is called EXACTLY ONCE, in a `finally` — strictly after
+ * `fetchFn` (and, on a non-ok response, its error-body `res.json()`) has
+ * fully settled, success or failure alike. THIS ordering is C1's whole fix.
+ * RosterCard.test.tsx's `commitPatch` suite asserts `onCommitted` has NOT
+ * fired while `fetchFn`'s own promise is still pending, and separately while
+ * a non-ok response's `res.json()` promise is still pending (the nested-
+ * await half of the guarantee) — moving the `onCommitted()` call back onto
+ * the optimistic path (the original C1 bug) makes that suite fail.
+ */
+export async function commitPatch(
+  fetchFn: PatchFetchFn,
+  opts: {
+    providerId: string;
+    field: Field;
+    value: number | null;
+    onFailure: (message: string) => void;
+    onCommitted: () => void;
+  },
+): Promise<void> {
+  try {
+    const res = await fetchFn(`/api/scheduling/providers/${opts.providerId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ [opts.field]: opts.value }),
+    });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({})) as { error?: string };
+      opts.onFailure(body.error || `Save failed (${res.status})`);
+    }
+  } catch (e) {
+    opts.onFailure(e instanceof Error ? e.message : 'Network error');
+  } finally {
+    opts.onCommitted();
+  }
 }
 
 const CELL_INPUT: React.CSSProperties = {
@@ -374,26 +444,17 @@ function EditableCell({
         setText(action.to == null ? '' : String(action.to));
       }
     };
-    try {
-      const res = await fetch(`/api/scheduling/providers/${providerId}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ [field]: attempted }),
-      });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        onFailure(body.error || `Save failed (${res.status})`);
-      }
-    } catch (e) {
-      onFailure(e instanceof Error ? e.message : 'Network error');
-    } finally {
-      setSaving(false);
-      // C1: fires ONCE, and only once every await above (the fetch itself,
-      // plus a failed response's `res.json()`) has settled — a `finally`
-      // runs strictly after its `try`/`catch`, so the page's refetch this
-      // triggers can never be dispatched while the PATCH is still in flight.
-      onCommitted();
-    }
+    // C1: `commitPatch` (above) owns the ordering guarantee itself now —
+    // `onCommitted` fires inside ITS `finally`, strictly after `fetch` (and
+    // a non-ok response's `res.json()`) has settled, exactly once. That
+    // ordering is pinned by RosterCard.test.tsx's `commitPatch` suite
+    // against an injected, controllable `fetchFn`, independent of this
+    // component ever rendering. `setSaving(false)` runs after `commitPatch`
+    // resolves — its order relative to `onCommitted` (which already ran, by
+    // then, inside `commitPatch`'s own `finally`) is inconsequential: they
+    // are independent side effects on different components.
+    await commitPatch(fetch, { providerId, field, value: attempted, onFailure, onCommitted });
+    setSaving(false);
   };
 
   return (
