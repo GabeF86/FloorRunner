@@ -30,16 +30,21 @@
 // (the resync effect skips it because it's focused), `text` and `value`
 // diverge for a reason that has nothing to do with typing, and a plain
 // focus-then-blur reads as "dirty" and fires a PATCH nobody asked for. Fixed
-// by tracking an explicit `dirty` flag, set only in `onChange`.
+// by tracking an explicit `dirty` flag, set only in `onChange` — extracted as
+// `shouldCommit` below so the guard itself is unit-testable (round 2 review:
+// deleting the guard left all render tests green, since interaction can't be
+// exercised without jsdom).
 //
 // I1 (stale revert target). A failed commit used to revert to the `value`
 // captured at commit-start. If Task 10's post-edit refetch (fired after
 // EVERY commit, not just this one) lands a newer number for this same field
-// while this edit's own PATCH is still in flight, reverting to that
-// stale start-of-edit snapshot would stomp the newer value. `currentValueRef`
-// tracks the live prop on every change; a failure only reverts if nothing
-// has moved this field since OUR OWN optimistic write landed — otherwise
-// something newer already won and gets left alone.
+// while this edit's own PATCH is still in flight, reverting to that stale
+// start-of-edit snapshot would stomp the newer value. `currentValueRef`
+// tracks the live prop on every change; `shouldRevert` below only says yes
+// if nothing has moved this field since OUR OWN optimistic write landed —
+// otherwise something newer already won and gets left alone. Extracted for
+// the same reason as `shouldCommit` (forcing this guard to always return
+// true also left every test green).
 //
 // I2 (resort stealing focus). Table keys `<tr>` by array index
 // (components/ui/Table.tsx), not by provider, so the ONLY way to stop a
@@ -49,13 +54,36 @@
 // That fix is correct but has a cost: with several rows sharing an FTE
 // value, almost any FTE edit reorders the table, and a remount at the
 // FOCUSED cell's position drops focus to document.body mid-edit. Fixed by
-// freezing the displayed row order while any cell is focused or saving, and
-// only resorting once the roster goes idle — the reorder still happens
-// eventually, just never while someone's pointing at a row.
+// freezing the displayed row order while any cell is focused or saving
+// (`resolveDisplayRows` below), and only resorting once the roster goes
+// idle — the reorder still happens eventually, just never while someone's
+// pointing at a row. The unfreeze is deferred by a macrotask tick (plain
+// `setTimeout(0)`, cancelled on the next busy transition): a quick click
+// from one cell straight into another blurs the first (busy count 0 → 1 → 0)
+// before focusing the second, and an immediate unfreeze in that split-second
+// gap could apply a pending resort right as the second cell was about to
+// receive focus. A `setTimeout(0)` callback runs strictly after the current
+// synchronous event dispatch (and any batched updates from it), so a focus
+// event that follows synchronously — as it does for a plain click from one
+// cell to the next — gets to re-assert "busy" first. KNOWN RESIDUAL: this
+// mitigates the common case but is not proven, and cannot be, without
+// jsdom-based interaction testing (round 2 review) — React's passive-effect
+// flush timing relative to the browser's blur/focus pair isn't something
+// this project's render-only test strategy can pin down.
 //
-// I3 (Enter exiles the chief from the table). Enter used to call
-// `.blur()`, sending focus to document.body — the next Tab restarted from
-// the top of the document. Enter now commits directly without blurring.
+// I3 (Enter exiles the chief from the table). Enter used to call `.blur()`,
+// sending focus to document.body — the next Tab restarted from the top of
+// the document. Enter now commits directly without blurring.
+//
+// Fix A (round 3 review): removing the `.blur()` call fixed Enter on a
+// CLEAN cell, but not a DIRTY one — `commit()` on a dirty cell sets `saving`,
+// which drove `disabled={saving}`, and disabling a focused control is itself
+// what blurs it (the HTML focus-fixup rule), sending focus to document.body
+// anyway, with no restoration once `saving` clears. Switched to
+// `readOnly={saving}`: it blocks typing (`onChange` still can't fire
+// mid-save, so this doesn't reopen C2) while leaving the control focusable,
+// and reentrancy is already handled by the explicit `if (saving) return` at
+// the top of `commit()` — `disabled` was never load-bearing for that.
 //
 // I4 / I5 (unattributable errors, no screen-reader label). A card-level
 // banner used to say e.g. "Must be 2 or less" with no indication of WHICH
@@ -64,8 +92,25 @@
 // the field's label, and a failed cell keeps a `--danger` border until its
 // next edit. `aria-label` now names the row + column so a screen reader
 // doesn't announce eleven identical "Call FTE" fields.
+//
+// Fix D (round 3 review, minor): `commit()` used to gate ONLY on `dirty`,
+// never on whether the freshly PARSED value actually differs from the
+// current one — type a character and delete it and `dirty` stays true, and
+// through Task 10's post-edit refetch that turns into a full year-wide
+// `/block-prep` re-fetch for nothing. `isNoopEdit` compares the PARSED value
+// (not raw text, which would reopen C2) against the current prop.
+//
+// Fix B (round 3 review): the two fixes above (I2's provider-id-embedded
+// keys, and the frozen-order call) were both invisible to the test suite —
+// reverting the keys to a static string, or deleting the frozen-order call
+// entirely, left all tests green, because nothing exercised the actual
+// WIRING (as opposed to the standalone helpers, which were already tested).
+// `buildRosterTableRows` and `resolveDisplayRows` below exist so a test can
+// call the real call sites directly and inspect the result — including
+// `.key` on the returned React elements, which is a plain property on the
+// element object even though it never appears in rendered HTML.
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import Link from 'next/link';
 import { Badge, Banner, Button, Card, EmptyState, Table } from '@/components/ui';
 import { formatCallWeight } from '@/lib/callBurden';
@@ -95,9 +140,48 @@ const FIELD_TOOLTIPS: Record<Field, string> = {
  *  bleeding state across providers — see the file header) and as its busy-
  *  tracking id (see `onBusyChange`). Exported so a test can pin the scheme
  *  itself without needing to render anything (`key` never appears in
- *  rendered HTML — inspecting it via a snapshot of markup is not possible). */
+ *  rendered HTML — inspecting it via a snapshot of markup is not possible;
+ *  `buildRosterTableRows` below is what makes the ACTUAL call site
+ *  testable, by returning elements whose `.key` a test can read directly). */
 export function rosterCellKey(field: Field, providerId: string): string {
   return `${field}-${providerId}`;
+}
+
+/**
+ * C2's guard, pulled out of `commit()` so it is directly unit-testable —
+ * interaction itself needs jsdom, which this repo doesn't have (see the
+ * project testing conventions), so a mutation deleting the inline `if
+ * (!dirty) return` inside `commit()` is invisible to every render test.
+ * A commit should only proceed if the user actually typed something;
+ * comparing `text` to the CURRENT `value` prop instead (the original, buggy
+ * check) can read as "dirty" for reasons that have nothing to do with
+ * typing — see the C2 note in the file header.
+ */
+export function shouldCommit(dirty: boolean): boolean {
+  return dirty;
+}
+
+/**
+ * I1's guard, extracted for the same reason as `shouldCommit`. After a
+ * failed PATCH, only revert to the pre-edit value if nothing else has moved
+ * this field since OUR OWN optimistic write landed — `currentValue` is the
+ * live value at the moment of failure, `attempted` is the value THIS edit
+ * optimistically wrote. If they differ, something newer already won, and
+ * reverting would stomp it with a now-stale pre-edit snapshot.
+ */
+export function shouldRevert(currentValue: number | null, attempted: number | null): boolean {
+  return currentValue === attempted;
+}
+
+/**
+ * Fix D's guard, extracted alongside the other two for the same testability
+ * reason. True when the freshly PARSED value equals the current prop, even
+ * though `dirty` is true (a character typed then deleted) — comparing the
+ * PARSED value rather than raw text against a prop that may have moved is
+ * what keeps this from reopening C2.
+ */
+export function isNoopEdit(parsedValue: number | null, currentValue: number | null): boolean {
+  return parsedValue === currentValue;
 }
 
 const CELL_INPUT: React.CSSProperties = {
@@ -161,12 +245,7 @@ function EditableCell({
 
   const commit = async () => {
     if (saving) return;
-    // C2: the real question is "did the user type something", not "does the
-    // text differ from whatever the prop currently is" — the latter can be
-    // true for reasons that have nothing to do with this cell (see the
-    // resync effect above), and would otherwise fire a PATCH for a value
-    // nobody entered.
-    if (!dirty) return;
+    if (!shouldCommit(dirty)) return;
     // Clear any previous cell error before attempting this one, or a single
     // transient failure leaves the banner up for the rest of the session and
     // the chief can't tell whether their latest edit saved.
@@ -176,6 +255,13 @@ function EditableCell({
       onError(errorPrefix + parsed.error);
       setInvalid(true);
       setText(value == null ? '' : String(value));
+      setDirty(false);
+      return;
+    }
+    // Fix D: a character typed then deleted parses back to the CURRENT
+    // value — nothing actually changed, so skip the optimistic write, the
+    // PATCH, and the refetch it would trigger via Task 10's onPatched.
+    if (isNoopEdit(parsed.value, value)) {
       setDirty(false);
       return;
     }
@@ -194,11 +280,7 @@ function EditableCell({
         const body = await res.json().catch(() => ({}));
         onError(errorPrefix + (body.error || `Save failed (${res.status})`));
         setInvalid(true);
-        // I1: only revert if nothing else has moved this field since our own
-        // optimistic write landed. If it has (a refetch already brought in a
-        // newer number), that newer number wins — reverting to `original`
-        // here would stomp it with a now-stale pre-edit snapshot.
-        if (currentValueRef.current === parsed.value) {
+        if (shouldRevert(currentValueRef.current, parsed.value)) {
           onSaved(field, original);
           setText(original == null ? '' : String(original));
         }
@@ -206,7 +288,7 @@ function EditableCell({
     } catch (e) {
       onError(errorPrefix + (e instanceof Error ? e.message : 'Network error'));
       setInvalid(true);
-      if (currentValueRef.current === parsed.value) {
+      if (shouldRevert(currentValueRef.current, parsed.value)) {
         onSaved(field, original);
         setText(original == null ? '' : String(original));
       }
@@ -223,7 +305,14 @@ function EditableCell({
         border: invalid ? '1px solid var(--danger)' : CELL_INPUT.border,
       }}
       value={text}
-      disabled={saving}
+      // Fix A: NOT `disabled` — disabling a focused control blurs it (the
+      // HTML focus-fixup rule), sending focus to document.body with no way
+      // back once `saving` clears, which defeated the I3 fix for the exact
+      // case (a dirty cell) it existed for. `readOnly` blocks typing (and
+      // therefore `onChange`, so this can't reopen C2) while staying
+      // focusable. Reentrancy is guarded by `if (saving) return` in commit()
+      // regardless — `disabled` was never load-bearing for that.
+      readOnly={saving}
       aria-label={`${displayName} — ${FIELD_LABELS[field]}`}
       // The unstated-allotment affordance MUST come from allotmentText, not a
       // literal. It is the rendering of rule 1 (blank is not zero), and
@@ -285,13 +374,80 @@ export function applyFrozenOrder(sorted: RosterRow[], frozenOrder: string[] | nu
   return [...kept, ...added];
 }
 
+/**
+ * The ONE call site that combines a live sort with the I2 freeze — pulled
+ * out so a test can pin that this composition actually happens (round 3
+ * review: deleting the `applyFrozenOrder` call at this site left every test
+ * green, because `applyFrozenOrder` itself was already tested in isolation
+ * but nothing tested that the component actually calls it).
+ */
+export function resolveDisplayRows(
+  sorted: RosterRow[] | undefined, frozenOrder: string[] | null,
+): RosterRow[] | undefined {
+  return sorted ? applyFrozenOrder(sorted, frozenOrder) : undefined;
+}
+
+export interface RosterRowCallbacks {
+  /** Applies an edit to the parent's copy so the tally can refetch. */
+  onPatched: (providerId: string, field: Field, value: number | null) => void;
+  onCellError: (message: string | null) => void;
+  onBusyChange: (cellId: string, busy: boolean) => void;
+  onOpenDrawer: (row: RosterRow) => void;
+}
+
+/**
+ * Builds one Table row (a `ReactNode[]`) per roster row. Pulled out of the
+ * component body so a test can call it directly and inspect the returned
+ * elements' `.key` — a plain property on a React element object, readable
+ * without rendering anything, even though `key` never appears in the HTML a
+ * `renderToStaticMarkup` snapshot would show (round 3 review: reverting the
+ * three EditableCell keys to static per-column strings — silently
+ * reintroducing the cross-provider state bleed round 1 fixed — left every
+ * render test green, because nothing inspected the keys themselves).
+ */
+export function buildRosterTableRows(displayRows: RosterRow[], cb: RosterRowCallbacks): ReactNode[][] {
+  return displayRows.map(r => [
+    <div key="name" style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
+      <Link
+        href={`/providers/${r.provider_id}`}
+        style={{ fontWeight: 700, color: 'var(--text-strong)', textDecoration: 'none' }}
+      >
+        {r.display_name}
+      </Link>
+      {r.partial_call_taker && <Badge tone="warn">partial</Badge>}
+    </div>,
+    <EditableCell
+      key={rosterCellKey('fte_value', r.provider_id)}
+      value={r.fte_value} field="fte_value" providerId={r.provider_id} displayName={r.display_name}
+      onSaved={(f, v) => cb.onPatched(r.provider_id, f, v)} onError={cb.onCellError} onBusyChange={cb.onBusyChange}
+    />,
+    <EditableCell
+      key={rosterCellKey('work_days_fte', r.provider_id)}
+      value={r.work_days_fte} field="work_days_fte" providerId={r.provider_id} displayName={r.display_name}
+      onSaved={(f, v) => cb.onPatched(r.provider_id, f, v)} onError={cb.onCellError} onBusyChange={cb.onBusyChange}
+    />,
+    <EditableCell
+      key={rosterCellKey('pto_weeks', r.provider_id)}
+      value={r.pto_weeks} field="pto_weeks" providerId={r.provider_id} displayName={r.display_name}
+      onSaved={(f, v) => cb.onPatched(r.provider_id, f, v)} onError={cb.onCellError} onBusyChange={cb.onBusyChange}
+    />,
+    <span key="ptofig" style={{ fontSize: 'var(--fs-sm)' }}>{remainingText(r.pto)}</span>,
+    <span key="off" style={{ fontSize: 'var(--fs-sm)' }}>{offDaysText(r.offDayBudget, r.offDaysUsed)}</span>,
+    <span key="calls" style={{ fontWeight: 700 }}>{formatCallWeight(r.callTotal)}</span>,
+    <div key="actions" style={{ textAlign: 'right' }}>
+      <Button variant="ghost" size="sm" onClick={() => cb.onOpenDrawer(r)}>
+        PTO &amp; dates
+      </Button>
+    </div>,
+  ]);
+}
+
 export default function RosterCard({
   siteId, rows, error, onPatched, onOpenDrawer,
 }: {
   siteId: string | null;
   rows: RosterRow[] | null;
   error: string | null;
-  /** Applies an edit to the parent's copy so the tally can refetch. */
   onPatched: (providerId: string, field: Field, value: number | null) => void;
   onOpenDrawer: (row: RosterRow) => void;
 }) {
@@ -328,9 +484,16 @@ export default function RosterCard({
       // (e.g. this very edit's own optimistic update) re-freeze on a
       // now-reordered snapshot, which would defeat the freeze entirely.
       setFrozenOrder(prev => prev ?? (sorted ? sorted.map(r => r.provider_id) : null));
-    } else {
-      setFrozenOrder(null);
+      return;
     }
+    // Deferred by a tick (see the I2 note in the file header): a quick
+    // click from one cell straight into another blurs the first before
+    // focusing the second, transiently emptying the busy set in between. An
+    // immediate unfreeze here could apply a pending resort in that gap,
+    // right as the second cell was about to receive focus. Cancelled by the
+    // cleanup below if busy is re-asserted before this fires.
+    const t = setTimeout(() => setFrozenOrder(null), 0);
+    return () => clearTimeout(t);
     // `sorted` deliberately excluded — see the comment above.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [anyBusy]);
@@ -351,7 +514,7 @@ export default function RosterCard({
     return <Card title="Call takers" pad><Banner tone="error">{error}</Banner></Card>;
   }
 
-  const displayRows = sorted ? applyFrozenOrder(sorted, frozenOrder) : undefined;
+  const displayRows = resolveDisplayRows(sorted, frozenOrder);
 
   return (
     <Card title="Call takers" pad={false}>
@@ -363,40 +526,9 @@ export default function RosterCard({
       <Table
         headers={HEADERS}
         minWidth={980}
-        rows={displayRows === undefined ? undefined : displayRows.map(r => [
-          <div key="name" style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
-            <Link
-              href={`/providers/${r.provider_id}`}
-              style={{ fontWeight: 700, color: 'var(--text-strong)', textDecoration: 'none' }}
-            >
-              {r.display_name}
-            </Link>
-            {r.partial_call_taker && <Badge tone="warn">partial</Badge>}
-          </div>,
-          <EditableCell
-            key={rosterCellKey('fte_value', r.provider_id)}
-            value={r.fte_value} field="fte_value" providerId={r.provider_id} displayName={r.display_name}
-            onSaved={(f, v) => onPatched(r.provider_id, f, v)} onError={setCellError} onBusyChange={onBusyChange}
-          />,
-          <EditableCell
-            key={rosterCellKey('work_days_fte', r.provider_id)}
-            value={r.work_days_fte} field="work_days_fte" providerId={r.provider_id} displayName={r.display_name}
-            onSaved={(f, v) => onPatched(r.provider_id, f, v)} onError={setCellError} onBusyChange={onBusyChange}
-          />,
-          <EditableCell
-            key={rosterCellKey('pto_weeks', r.provider_id)}
-            value={r.pto_weeks} field="pto_weeks" providerId={r.provider_id} displayName={r.display_name}
-            onSaved={(f, v) => onPatched(r.provider_id, f, v)} onError={setCellError} onBusyChange={onBusyChange}
-          />,
-          <span key="ptofig" style={{ fontSize: 'var(--fs-sm)' }}>{remainingText(r.pto)}</span>,
-          <span key="off" style={{ fontSize: 'var(--fs-sm)' }}>{offDaysText(r.offDayBudget, r.offDaysUsed)}</span>,
-          <span key="calls" style={{ fontWeight: 700 }}>{formatCallWeight(r.callTotal)}</span>,
-          <div key="actions" style={{ textAlign: 'right' }}>
-            <Button variant="ghost" size="sm" onClick={() => onOpenDrawer(r)}>
-              PTO &amp; dates
-            </Button>
-          </div>,
-        ])}
+        rows={displayRows === undefined ? undefined : buildRosterTableRows(displayRows, {
+          onPatched, onCellError: setCellError, onBusyChange, onOpenDrawer,
+        })}
         empty={
           <EmptyState
             icon="◆"

@@ -17,7 +17,11 @@
  */
 import { describe, it, expect } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
-import RosterCard, { rosterCellKey, applyFrozenOrder } from './RosterCard';
+import type { ReactElement, ReactNode } from 'react';
+import RosterCard, {
+  rosterCellKey, applyFrozenOrder, shouldCommit, shouldRevert, isNoopEdit,
+  buildRosterTableRows, resolveDisplayRows, type RosterRowCallbacks,
+} from './RosterCard';
 import { allotmentText, WORK_DAYS_FTE_PLACEHOLDER, type RosterRow } from '@/lib/blockPrepView';
 
 // Provider, Call FTE, Work-days FTE, PTO weeks, PTO this year, Off days,
@@ -164,5 +168,98 @@ describe('applyFrozenOrder (Fix I2: freezing row order while a cell is busy)', (
   it('appends a row not present in the frozen order (e.g. added mid-session) rather than dropping it', () => {
     const live = [p1, p2, p3];
     expect(applyFrozenOrder(live, ['p1', 'p2'])).toEqual([p1, p2, p3]);
+  });
+});
+
+describe('shouldCommit (Fix C: the C2 guard, extracted so mutation of the inline check is visible)', () => {
+  it('refuses to commit when the user has not typed anything', () => {
+    expect(shouldCommit(false)).toBe(false);
+  });
+
+  it('commits once the user has typed something', () => {
+    expect(shouldCommit(true)).toBe(true);
+  });
+});
+
+describe('shouldRevert (Fix C: the I1 guard, extracted so mutation of the inline check is visible)', () => {
+  it('reverts when nothing has moved the field since our own optimistic write landed', () => {
+    expect(shouldRevert(1.2, 1.2)).toBe(true);
+  });
+
+  it('refuses to revert when an external update already moved the field past our optimistic write', () => {
+    // e.g. Task 10's post-edit refetch brought in a newer number while this
+    // edit's own PATCH was still in flight — reverting here would stomp it.
+    expect(shouldRevert(0.75, 1.2)).toBe(false);
+  });
+
+  it('treats two nulls (blank on both sides) as unmoved', () => {
+    expect(shouldRevert(null, null)).toBe(true);
+  });
+});
+
+describe('isNoopEdit (Fix D)', () => {
+  it('is a no-op when the parsed value equals the current prop', () => {
+    expect(isNoopEdit(1, 1)).toBe(true);
+  });
+
+  it('is not a no-op when the parsed value genuinely differs', () => {
+    expect(isNoopEdit(1.2, 1)).toBe(false);
+  });
+
+  it('treats blank staying blank (both null) as a no-op', () => {
+    expect(isNoopEdit(null, null)).toBe(true);
+  });
+});
+
+function noopCallbacks(): RosterRowCallbacks {
+  return { onPatched: () => {}, onCellError: () => {}, onBusyChange: () => {}, onOpenDrawer: () => {} };
+}
+
+/** React elements expose `.key` as a plain property — readable without
+ *  rendering anything, even though `key` never appears in rendered HTML. */
+function keyOf(node: ReactNode): React.Key | null {
+  return (node as ReactElement).key;
+}
+
+describe('buildRosterTableRows (Fix B: pinning the actual key-assignment call site)', () => {
+  it('embeds the row\'s provider id in all three editable cells\' keys', () => {
+    const [row] = buildRosterTableRows([rosterRow({ provider_id: 'p1' })], noopCallbacks());
+    // Cells: [name, fte, work-days fte, pto weeks, pto figure, off days, calls, actions].
+    expect(String(keyOf(row[1]))).toContain('p1');
+    expect(String(keyOf(row[2]))).toContain('p1');
+    expect(String(keyOf(row[3]))).toContain('p1');
+  });
+
+  it('gives two different providers two different keys in the same column — the cross-provider-bleed regression', () => {
+    const rows = buildRosterTableRows(
+      [rosterRow({ provider_id: 'p1' }), rosterRow({ provider_id: 'p2' })],
+      noopCallbacks(),
+    );
+    expect(keyOf(rows[0][1])).not.toBe(keyOf(rows[1][1]));
+  });
+
+  it('matches rosterCellKey\'s scheme exactly, not just "contains the id"', () => {
+    const [row] = buildRosterTableRows([rosterRow({ provider_id: 'p7' })], noopCallbacks());
+    expect(keyOf(row[1])).toBe(rosterCellKey('fte_value', 'p7'));
+    expect(keyOf(row[2])).toBe(rosterCellKey('work_days_fte', 'p7'));
+    expect(keyOf(row[3])).toBe(rosterCellKey('pto_weeks', 'p7'));
+  });
+});
+
+describe('resolveDisplayRows (Fix B: pinning the applyFrozenOrder call site)', () => {
+  const p1 = rosterRow({ provider_id: 'p1', display_name: 'One', last_name: 'One' });
+  const p2 = rosterRow({ provider_id: 'p2', display_name: 'Two', last_name: 'Two' });
+
+  it('passes through undefined when nothing has loaded', () => {
+    expect(resolveDisplayRows(undefined, null)).toBeUndefined();
+  });
+
+  it('returns the live order when nothing is frozen', () => {
+    expect(resolveDisplayRows([p1, p2], null)).toEqual([p1, p2]);
+  });
+
+  it('applies the frozen order over a differently-ordered live sort — this is the actual applyFrozenOrder call site', () => {
+    const live = [p2, p1]; // live sort has since reordered
+    expect(resolveDisplayRows(live, ['p1', 'p2'])).toEqual([p1, p2]);
   });
 });
