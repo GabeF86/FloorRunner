@@ -19,7 +19,7 @@ import { describe, it, expect } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import type { ReactElement, ReactNode } from 'react';
 import RosterCard, {
-  rosterCellKey, applyFrozenOrder, shouldCommit, shouldRevert, isNoopEdit,
+  rosterCellKey, applyFrozenOrder, commitDecision, revertDecision,
   buildRosterTableRows, resolveDisplayRows, type RosterRowCallbacks,
 } from './RosterCard';
 import { allotmentText, WORK_DAYS_FTE_PLACEHOLDER, type RosterRow } from '@/lib/blockPrepView';
@@ -171,43 +171,75 @@ describe('applyFrozenOrder (Fix I2: freezing row order while a cell is busy)', (
   });
 });
 
-describe('shouldCommit (Fix C: the C2 guard, extracted so mutation of the inline check is visible)', () => {
-  it('refuses to commit when the user has not typed anything', () => {
-    expect(shouldCommit(false)).toBe(false);
+// A minimal, fully-controlled stand-in for parseFteInput/parseAllotmentInput
+// — commitDecision takes the parser as a callback, so any function matching
+// its shape works here without dragging in FTE bounds irrelevant to these
+// tests. 'bad' always fails; blank means null; anything else is Number(raw).
+function fakeParse(raw: string) {
+  if (raw === 'bad') return { ok: false as const, error: 'invalid input' };
+  if (raw === '') return { ok: true as const, value: null };
+  return { ok: true as const, value: Number(raw) };
+}
+
+describe('commitDecision (Fix R1: the full pre-flight gate sequence, as one call)', () => {
+  it('skips while a save is already in flight, regardless of dirty or content', () => {
+    // dirty is true and the text would otherwise patch — an in-flight save
+    // must never be re-evaluated on top of itself.
+    expect(commitDecision({ saving: true, dirty: true, text: '2', value: 1 }, fakeParse))
+      .toEqual({ kind: 'skip' });
   });
 
-  it('commits once the user has typed something', () => {
-    expect(shouldCommit(true)).toBe(true);
+  it('ORDERING: dirty is checked before a parsed no-op is even considered', () => {
+    // text parses to the SAME value `value` already holds — a clean,
+    // untouched cell must report 'skip', not 'noop'. If the no-op check
+    // ran BEFORE the dirty check, this would (wrongly) come back 'noop'.
+    // 'skip' and 'noop' both currently no-op in commit(), but they are
+    // different facts (nothing was typed vs. something was typed and
+    // reverted), and this is the one test that can tell them apart.
+    const decision = commitDecision({ saving: false, dirty: false, text: '1', value: 1 }, fakeParse);
+    expect(decision.kind).toBe('skip');
+  });
+
+  it('reports invalid with the parser\'s own error message when the text fails to parse', () => {
+    expect(commitDecision({ saving: false, dirty: true, text: 'bad', value: 1 }, fakeParse))
+      .toEqual({ kind: 'invalid', error: 'invalid input' });
+  });
+
+  it('reports noop when the freshly parsed value equals the current one, even though dirty is true', () => {
+    // e.g. a character typed then deleted (Fix D).
+    expect(commitDecision({ saving: false, dirty: true, text: '1', value: 1 }, fakeParse))
+      .toEqual({ kind: 'noop' });
+  });
+
+  it('reports patch with the parsed value when it genuinely differs', () => {
+    expect(commitDecision({ saving: false, dirty: true, text: '1.5', value: 1 }, fakeParse))
+      .toEqual({ kind: 'patch', value: 1.5 });
+  });
+
+  it('treats blank staying blank (both null) as a noop, not a patch', () => {
+    expect(commitDecision({ saving: false, dirty: true, text: '', value: null }, fakeParse))
+      .toEqual({ kind: 'noop' });
   });
 });
 
-describe('shouldRevert (Fix C: the I1 guard, extracted so mutation of the inline check is visible)', () => {
-  it('reverts when nothing has moved the field since our own optimistic write landed', () => {
-    expect(shouldRevert(1.2, 1.2)).toBe(true);
+describe('revertDecision (Fix R1: the post-failure counterpart to commitDecision)', () => {
+  it('reverts to the original value when nothing has moved the field since our own optimistic write landed', () => {
+    expect(revertDecision(1.2, 1.2, 1)).toEqual({ kind: 'revert', to: 1 });
   });
 
-  it('refuses to revert when an external update already moved the field past our optimistic write', () => {
+  it('stays put when an external update already moved the field past our optimistic write', () => {
     // e.g. Task 10's post-edit refetch brought in a newer number while this
     // edit's own PATCH was still in flight — reverting here would stomp it.
-    expect(shouldRevert(0.75, 1.2)).toBe(false);
+    expect(revertDecision(0.75, 1.2, 1)).toEqual({ kind: 'stay' });
   });
 
-  it('treats two nulls (blank on both sides) as unmoved', () => {
-    expect(shouldRevert(null, null)).toBe(true);
-  });
-});
-
-describe('isNoopEdit (Fix D)', () => {
-  it('is a no-op when the parsed value equals the current prop', () => {
-    expect(isNoopEdit(1, 1)).toBe(true);
+  it('treats two nulls (blank on both sides) as unmoved, and reverts to the original', () => {
+    expect(revertDecision(null, null, 0)).toEqual({ kind: 'revert', to: 0 });
   });
 
-  it('is not a no-op when the parsed value genuinely differs', () => {
-    expect(isNoopEdit(1.2, 1)).toBe(false);
-  });
-
-  it('treats blank staying blank (both null) as a no-op', () => {
-    expect(isNoopEdit(null, null)).toBe(true);
+  it('carries no `to` on the "stay" variant — the payload only exists on "revert"', () => {
+    const stayed = revertDecision(0.75, 1.2, 1);
+    expect('to' in stayed).toBe(false);
   });
 });
 
@@ -246,20 +278,31 @@ describe('buildRosterTableRows (Fix B: pinning the actual key-assignment call si
   });
 });
 
-describe('resolveDisplayRows (Fix B: pinning the applyFrozenOrder call site)', () => {
-  const p1 = rosterRow({ provider_id: 'p1', display_name: 'One', last_name: 'One' });
-  const p2 = rosterRow({ provider_id: 'p2', display_name: 'Two', last_name: 'Two' });
+describe('resolveDisplayRows (Fix B/R2: the one call site for sortRosterRows + applyFrozenOrder)', () => {
+  // p2 outranks p1 on FTE, so the LIVE sort (descending FTE) puts p2 first —
+  // deliberately the OPPOSITE of the frozen order below, so a test can tell
+  // "sorted" apart from "sorted THEN frozen-reordered".
+  const p1 = rosterRow({ provider_id: 'p1', display_name: 'One', last_name: 'One', fte_value: 0.5 });
+  const p2 = rosterRow({ provider_id: 'p2', display_name: 'Two', last_name: 'Two', fte_value: 1 });
 
-  it('passes through undefined when nothing has loaded', () => {
-    expect(resolveDisplayRows(undefined, null)).toBeUndefined();
+  it('passes through undefined when nothing has loaded (rows === null)', () => {
+    expect(resolveDisplayRows(null, null)).toBeUndefined();
   });
 
-  it('returns the live order when nothing is frozen', () => {
-    expect(resolveDisplayRows([p1, p2], null)).toEqual([p1, p2]);
+  it('returns a genuine empty array, not undefined, once loaded with zero rows', () => {
+    expect(resolveDisplayRows([], null)).toEqual([]);
   });
 
-  it('applies the frozen order over a differently-ordered live sort — this is the actual applyFrozenOrder call site', () => {
-    const live = [p2, p1]; // live sort has since reordered
-    expect(resolveDisplayRows(live, ['p1', 'p2'])).toEqual([p1, p2]);
+  it('sorts by FTE descending when nothing is frozen — this call site owns the sort now (Fix R2)', () => {
+    // Raw input order (p1 first) must not matter — the sort decides.
+    expect(resolveDisplayRows([p1, p2], null)).toEqual([p2, p1]);
+  });
+
+  it('applies the frozen order OVER what the live sort would otherwise produce', () => {
+    // Absent a freeze this would sort to [p2, p1] (see above); the frozen
+    // order says p1 first, and must win. This is the exact composition a
+    // bypass like `const displayRows = sortRosterRows(rows);` (skipping
+    // applyFrozenOrder) would get wrong.
+    expect(resolveDisplayRows([p1, p2], ['p1', 'p2'])).toEqual([p1, p2]);
   });
 });

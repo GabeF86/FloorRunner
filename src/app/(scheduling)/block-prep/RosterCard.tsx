@@ -97,8 +97,9 @@
 // never on whether the freshly PARSED value actually differs from the
 // current one — type a character and delete it and `dirty` stays true, and
 // through Task 10's post-edit refetch that turns into a full year-wide
-// `/block-prep` re-fetch for nothing. `isNoopEdit` compares the PARSED value
-// (not raw text, which would reopen C2) against the current prop.
+// `/block-prep` re-fetch for nothing. Folded into `commitDecision` below as
+// the `'noop'` outcome (compares the PARSED value, not raw text, so this
+// can't reopen C2).
 //
 // Fix B (round 3 review): the two fixes above (I2's provider-id-embedded
 // keys, and the frozen-order call) were both invisible to the test suite —
@@ -109,6 +110,38 @@
 // call the real call sites directly and inspect the result — including
 // `.key` on the returned React elements, which is a plain property on the
 // element object even though it never appears in rendered HTML.
+//
+// Fix R1 (round 4 review): round 3 extracted C2's and I1's guards as named,
+// individually-tested booleans (`shouldCommit`, `shouldRevert`, plus Fix D's
+// `isNoopEdit`) — but each remained a SEPARATE `if` living inside the
+// untestable, interactive `commit()`. Mutation testing proved this still
+// didn't cover the WIRING, the same gap Fix B closed for the keys and the
+// freeze: deleting `if (!shouldCommit(dirty)) return;`, or forcing both
+// `if (shouldRevert(...))` call sites to `if (true)`, left all 29 tests
+// green, because a test on the boolean helper's OWN body can't see a
+// mutation of the call site that invokes it.
+//
+// The fix consolidates ALL FOUR pre-flight gates (saving, dirty, parse
+// validity, no-op) into ONE call, `commitDecision`, returning a
+// discriminated `CommitAction` — modeled on Modal.tsx's `modalCloseIntent`.
+// `commit()` becomes a thin dispatcher with no gate logic of its own left to
+// silently delete: the only way to reproduce "drop the dirty check" is to
+// mutate `commitDecision`'s OWN body, which IS covered directly, including
+// the gate ORDERING (dirty must be checked before a would-be no-op is even
+// evaluated, or a clean-but-untouched cell could report "noop" instead of
+// "skip" — same effect today, but a real divergence the moment either
+// branch grows its own side effects).
+//
+// The post-failure revert decision (I1) can't fold into the SAME call —
+// it needs the fetch's outcome and the live ref, neither known until after
+// the `await`. `revertDecision` gets the same treatment on its own: it
+// returns `{ kind: 'stay' }` or `{ kind: 'revert'; to }`, and `to` is only
+// reachable by narrowing `action.kind === 'revert'` first. That makes the
+// exact surviving mutation (collapsing the check to an unconditional
+// revert) a COMPILE ERROR rather than a silent behavior change — TypeScript
+// won't narrow `action` to the `'revert'` variant unless the condition
+// actually tests `action.kind`, so `action.to` doesn't exist otherwise.
+// `shouldCommit`, `shouldRevert`, and `isNoopEdit` are gone — folded in.
 
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import Link from 'next/link';
@@ -118,7 +151,7 @@ import {
   allotmentText, offDaysText, parseAllotmentInput, parseFteInput,
   remainingText, rosterFooterNote, sortRosterRows, WORK_DAYS_FTE_PLACEHOLDER,
   CALL_FTE_TOOLTIP, WORK_DAYS_FTE_TOOLTIP, PTO_ALLOTMENT_TOOLTIP,
-  type RosterRow,
+  type ParseResult, type RosterRow,
 } from '@/lib/blockPrepView';
 
 type Field = 'fte_value' | 'work_days_fte' | 'pto_weeks';
@@ -148,40 +181,66 @@ export function rosterCellKey(field: Field, providerId: string): string {
 }
 
 /**
- * C2's guard, pulled out of `commit()` so it is directly unit-testable —
- * interaction itself needs jsdom, which this repo doesn't have (see the
- * project testing conventions), so a mutation deleting the inline `if
- * (!dirty) return` inside `commit()` is invisible to every render test.
- * A commit should only proceed if the user actually typed something;
- * comparing `text` to the CURRENT `value` prop instead (the original, buggy
- * check) can read as "dirty" for reasons that have nothing to do with
- * typing — see the C2 note in the file header.
+ * The full pre-flight gate sequence for a commit attempt, as ONE opaque
+ * decision (Fix R1, round 4 review) — modeled on Modal.tsx's
+ * `modalCloseIntent`. `commit()` dispatches on the result and contains no
+ * gate logic of its own; see the Fix R1 note in the file header for why
+ * that matters (three separately-extracted booleans each still lived
+ * behind an individually-deletable `if` inside the untestable `commit()`).
+ *
+ * ORDER IS LOAD-BEARING and is exactly what this function's own tests pin:
+ * `saving` short-circuits before anything else (an in-flight save is never
+ * re-evaluated); `dirty` is checked BEFORE a parse is even attempted (C2 —
+ * a clean, untouched cell must report `'skip'`, never `'noop'`, even when
+ * `text` happens to parse to the same value `value` already holds); a parse
+ * failure is `'invalid'`; and only once parsing succeeds does a value equal
+ * to the current one become `'noop'` (Fix D) rather than `'patch'`.
  */
-export function shouldCommit(dirty: boolean): boolean {
-  return dirty;
+export type CommitAction =
+  | { kind: 'skip' }                      // saving, or not dirty
+  | { kind: 'invalid'; error: string }
+  | { kind: 'noop' }                      // parsed value equals the current one
+  | { kind: 'patch'; value: number | null };
+
+export function commitDecision(
+  s: { saving: boolean; dirty: boolean; text: string; value: number | null },
+  parse: (raw: string) => ParseResult<number | null>,
+): CommitAction {
+  if (s.saving) return { kind: 'skip' };
+  if (!s.dirty) return { kind: 'skip' };
+  const parsed = parse(s.text);
+  if (!parsed.ok) return { kind: 'invalid', error: parsed.error };
+  if (parsed.value === s.value) return { kind: 'noop' };
+  return { kind: 'patch', value: parsed.value };
 }
 
 /**
- * I1's guard, extracted for the same reason as `shouldCommit`. After a
- * failed PATCH, only revert to the pre-edit value if nothing else has moved
- * this field since OUR OWN optimistic write landed — `currentValue` is the
- * live value at the moment of failure, `attempted` is the value THIS edit
- * optimistically wrote. If they differ, something newer already won, and
- * reverting would stomp it with a now-stale pre-edit snapshot.
+ * The post-failure counterpart to `commitDecision` (I1, folded in per Fix
+ * R1) — evaluated once a PATCH has come back rejected or errored, so it
+ * can't be part of the same synchronous call: it needs the fetch's outcome
+ * and the LIVE value (`currentValue`, from `currentValueRef` — the only
+ * thing that survives the `await` `commitDecision`'s own inputs don't).
+ * `attempted` is the value THIS edit optimistically wrote; `original` is
+ * the value the edit started from. Reverting is only safe when nothing else
+ * has moved the field away from our own optimistic write since it landed —
+ * otherwise a newer external value already won, and stomping it with
+ * `original` would be the exact bug this function exists to prevent.
+ *
+ * Returns a value reachable only through the `'revert'` variant rather than
+ * a plain boolean deliberately: the round 3 mutation that survived —
+ * collapsing the caller's `if` to an unconditional revert — no longer
+ * compiles this way, because there is no `.to` to revert to on `'stay'`.
+ * TypeScript only narrows `action` to `'revert'` when the condition
+ * actually tests `action.kind`.
  */
-export function shouldRevert(currentValue: number | null, attempted: number | null): boolean {
-  return currentValue === attempted;
-}
+export type RevertAction =
+  | { kind: 'stay' }
+  | { kind: 'revert'; to: number | null };
 
-/**
- * Fix D's guard, extracted alongside the other two for the same testability
- * reason. True when the freshly PARSED value equals the current prop, even
- * though `dirty` is true (a character typed then deleted) — comparing the
- * PARSED value rather than raw text against a prop that may have moved is
- * what keeps this from reopening C2.
- */
-export function isNoopEdit(parsedValue: number | null, currentValue: number | null): boolean {
-  return parsedValue === currentValue;
+export function revertDecision(
+  currentValue: number | null, attempted: number | null, original: number | null,
+): RevertAction {
+  return currentValue === attempted ? { kind: 'revert', to: original } : { kind: 'stay' };
 }
 
 const CELL_INPUT: React.CSSProperties = {
@@ -243,55 +302,55 @@ function EditableCell({
 
   const errorPrefix = `${displayName} · ${FIELD_LABELS[field]}: `;
 
+  // A thin dispatcher over commitDecision/revertDecision — see the Fix R1
+  // note in the file header for why NO gate logic lives here directly.
   const commit = async () => {
-    if (saving) return;
-    if (!shouldCommit(dirty)) return;
-    // Clear any previous cell error before attempting this one, or a single
-    // transient failure leaves the banner up for the rest of the session and
-    // the chief can't tell whether their latest edit saved.
+    const decision = commitDecision({ saving, dirty, text, value }, parse);
+    if (decision.kind === 'skip') return;
+    // A genuine attempt is being made — clear any previous error before
+    // evaluating this one, or a single transient failure leaves the banner
+    // up for the rest of the session and the chief can't tell whether their
+    // latest edit saved.
     onError(null);
-    const parsed = parse(text);
-    if (!parsed.ok) {
-      onError(errorPrefix + parsed.error);
+    if (decision.kind === 'invalid') {
+      onError(errorPrefix + decision.error);
       setInvalid(true);
       setText(value == null ? '' : String(value));
       setDirty(false);
       return;
     }
-    // Fix D: a character typed then deleted parses back to the CURRENT
-    // value — nothing actually changed, so skip the optimistic write, the
-    // PATCH, and the refetch it would trigger via Task 10's onPatched.
-    if (isNoopEdit(parsed.value, value)) {
+    if (decision.kind === 'noop') {
       setDirty(false);
       return;
     }
+    // decision.kind === 'patch'
+    const attempted = decision.value;
     const original = value; // the value THIS edit is based on
     setSaving(true);
     setDirty(false);
     // Optimistic: show it now, roll back below if the PATCH is refused.
-    onSaved(field, parsed.value);
+    onSaved(field, attempted);
+    const onFailure = (message: string) => {
+      onError(errorPrefix + message);
+      setInvalid(true);
+      const action = revertDecision(currentValueRef.current, attempted, original);
+      if (action.kind === 'revert') {
+        onSaved(field, action.to);
+        setText(action.to == null ? '' : String(action.to));
+      }
+    };
     try {
       const res = await fetch(`/api/scheduling/providers/${providerId}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ [field]: parsed.value }),
+        body: JSON.stringify({ [field]: attempted }),
       });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
-        onError(errorPrefix + (body.error || `Save failed (${res.status})`));
-        setInvalid(true);
-        if (shouldRevert(currentValueRef.current, parsed.value)) {
-          onSaved(field, original);
-          setText(original == null ? '' : String(original));
-        }
+        onFailure(body.error || `Save failed (${res.status})`);
       }
     } catch (e) {
-      onError(errorPrefix + (e instanceof Error ? e.message : 'Network error'));
-      setInvalid(true);
-      if (shouldRevert(currentValueRef.current, parsed.value)) {
-        onSaved(field, original);
-        setText(original == null ? '' : String(original));
-      }
+      onFailure(e instanceof Error ? e.message : 'Network error');
     } finally {
       setSaving(false);
     }
@@ -380,11 +439,21 @@ export function applyFrozenOrder(sorted: RosterRow[], frozenOrder: string[] | nu
  * review: deleting the `applyFrozenOrder` call at this site left every test
  * green, because `applyFrozenOrder` itself was already tested in isolation
  * but nothing tested that the component actually calls it).
+ *
+ * Fix R2 (round 4 review): the sort itself used to be computed separately
+ * in the component (`const sorted = rows ? sortRosterRows(rows) : undefined`)
+ * and handed in here pre-sorted — leaving `const displayRows = sorted;` at
+ * the render call site a one-line, test-invisible way to silently bypass
+ * `applyFrozenOrder` entirely. Taking raw `rows` and doing the full
+ * `sortRosterRows` + `applyFrozenOrder` composition here shrinks the
+ * component's call site to `resolveDisplayRows(rows, frozenOrder)` — a
+ * single, unavoidable call with nothing left to substitute it with.
  */
 export function resolveDisplayRows(
-  sorted: RosterRow[] | undefined, frozenOrder: string[] | null,
+  rows: RosterRow[] | null, frozenOrder: string[] | null,
 ): RosterRow[] | undefined {
-  return sorted ? applyFrozenOrder(sorted, frozenOrder) : undefined;
+  if (!rows) return undefined;
+  return applyFrozenOrder(sortRosterRows(rows), frozenOrder);
 }
 
 export interface RosterRowCallbacks {
@@ -470,20 +539,17 @@ export default function RosterCard({
 
   const [frozenOrder, setFrozenOrder] = useState<string[] | null>(null);
 
-  // rows === null → not loaded yet; rows === [] → loaded, confirmed zero call
-  // takers. `sorted` preserves that distinction: `[]` is truthy in JS, so an
-  // already-loaded empty roster still produces `sorted = []`, never
-  // `undefined` — this alone is what Table's skeleton-vs-empty gate keys off,
-  // with no separate `loading` flag (see the C1 note in the file header).
-  const sorted = rows ? sortRosterRows(rows) : undefined;
-
   useEffect(() => {
     if (anyBusy) {
       // Capture the CURRENT order the first time we go busy; while already
       // busy, keep whatever was captured — don't let a later `rows` change
       // (e.g. this very edit's own optimistic update) re-freeze on a
-      // now-reordered snapshot, which would defeat the freeze entirely.
-      setFrozenOrder(prev => prev ?? (sorted ? sorted.map(r => r.provider_id) : null));
+      // now-reordered snapshot, which would defeat the freeze entirely. Sorts
+      // `rows` directly (rather than reading a shared `sorted` variable) now
+      // that the live-sort step lives inside `resolveDisplayRows` (Fix R2) —
+      // this is a snapshot of what order to freeze TO, a different question
+      // from what to render, so it stays a direct call here.
+      setFrozenOrder(prev => prev ?? (rows ? sortRosterRows(rows).map(r => r.provider_id) : null));
       return;
     }
     // Deferred by a tick (see the I2 note in the file header): a quick
@@ -494,7 +560,7 @@ export default function RosterCard({
     // cleanup below if busy is re-asserted before this fires.
     const t = setTimeout(() => setFrozenOrder(null), 0);
     return () => clearTimeout(t);
-    // `sorted` deliberately excluded — see the comment above.
+    // `rows` deliberately excluded — see the comment above.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [anyBusy]);
 
@@ -514,7 +580,7 @@ export default function RosterCard({
     return <Card title="Call takers" pad><Banner tone="error">{error}</Banner></Card>;
   }
 
-  const displayRows = resolveDisplayRows(sorted, frozenOrder);
+  const displayRows = resolveDisplayRows(rows, frozenOrder);
 
   return (
     <Card title="Call takers" pad={false}>
