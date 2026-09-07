@@ -188,14 +188,37 @@ ALTER TABLE scheduling.provider_employment_profiles
   ALTER COLUMN pto_weeks DROP DEFAULT;
 ```
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 7: Add the missing validator test**
+
+The whole feature now rests on `validateAndSplitPatch` mapping `''` and `null` to null for `pto_weeks` **while preserving a literal `0`**. That contract has no test, while its sibling field does: `src/lib/validation/providers.test.ts` carries a `describe('validateAndSplitPatch — work_days_fte')` block whose first case is named `'BLANK becomes NULL — the "same as FTE" state, never 0'`.
+
+Read that block and add a sibling `describe('validateAndSplitPatch — pto_weeks')` matching its shape and assertion idiom. Cover: blank string → null, explicit null → null, a stated `0` surviving as `0` and explicitly not null, and a positive integer passing through. The stated-zero case is the point of this task and nothing else pins it.
+
+Run: `npx vitest run src/lib/validation/providers.test.ts`
+Expected: PASS.
+
+- [ ] **Step 8: Add a hint to the PTO Weeks field**
+
+`src/app/(scheduling)/providers/[id]/page.tsx`, the `<Field label="PTO Weeks" ...>` around line 847, has no `hint` — while the `work_days_fte` field two lines above and the FTE field above that both explain their own blank conventions. This change makes blank load-bearing for the first time and the UI currently says nothing about it. Add a hint in the same style and with the same `·` separator, conveying: blank = not stated, 0 = genuinely no allotment.
+
+- [ ] **Step 9: Commit**
 
 ```bash
-git add "src/app/(scheduling)/providers/[id]/page.tsx" supabase_scheduling_patch45_pto_weeks_unset.sql
+git add "src/app/(scheduling)/providers/[id]/page.tsx" src/lib/validation/providers.test.ts supabase_scheduling_patch45_pto_weeks_unset.sql
 git commit -m "pto_weeks: blank means not stated, zero means zero"
 ```
 
 Do **not** apply the patch yet. It goes to the live DB only after this code is deployed.
+
+### Migration file requirements (learned in review — do not omit)
+
+The patch is the risky artifact in this task and must carry the sections every comparable patch in this repo carries. Beyond the header, WHY and EFFECT sections:
+
+- **An aborting pre-flight, not a bare SELECT.** A `SELECT` above `COMMIT;` in the same script reports its counts only after the UPDATE has already committed — it reads like a guard and is inert. Use a `DO $$ ... RAISE EXCEPTION` block in the style patch44 uses. Assert the known stated (`pto_weeks > 0`) rows still exist, so the patch refuses to run if someone has been editing allotments and the "these zeros carry no information" premise has expired. Do **not** assert that no nulls exist — CODE-FIRST legitimately allows genuine nulls to appear before the patch runs.
+- **`ALTER TABLE ... DROP DEFAULT` inside the transaction**, above `COMMIT;`. Postgres DDL is transactional. Left outside, an ALTER failure strands 78 nulls alongside a live `DEFAULT 0` that keeps feeding both insert paths — silently regenerating the exact problem the patch fixes.
+- **A ROLLBACK section**, with both caveats: it is faithful only if run before anyone states a new blank, and a code rollback without it is silently destructive (see Task 11 Step 6).
+- **A post-apply VERIFICATION section.**
+- **An honest no-loss claim.** "Nothing deliberately entered is lost" is true of the 78 rows as of authoring, but *not* of a real `0` typed between the code deploy and the patch. Say so, and say that real zeros are entered only afterwards.
 
 ---
 
@@ -2619,9 +2642,17 @@ git commit -m "patch45: record application"
 git push origin main
 ```
 
-- [ ] **Step 5: Restate the real zeros**
+- [ ] **Step 5: Restate the real zeros — and not before now**
 
 On `/block-prep`, type `0` into the PTO weeks cell for anyone who genuinely gets no allotment (Gorelick is the likely candidate — per diem). Everyone else stays blank until Gabriel states their number.
+
+**This must happen AFTER Step 3, never between Step 1 and Step 3.** CODE-FIRST puts the fixed editor live while the DB still holds 78 zeros, so a real `0` typed in that window is indistinguishable from a default and `WHERE pto_weeks = 0` wipes it. The patch's WHY section says so; this is the operational half of the same warning.
+
+- [ ] **Step 6: If you ever roll the code back, roll the DB back too**
+
+The highest-consequence failure mode of this change, and it is silent. Pre-change code renders `String(profile.pto_weeks ?? 0)`, so after the patch a Vercel rollback would display all 78 nulls as `0`, and the next save on any of those profiles writes `0` back — re-collapsing "not stated" into "gets none" one provider at a time, with nothing reporting it.
+
+A code rollback therefore requires the patch's ROLLBACK section to run as well. Never roll back one without the other.
 
 ---
 
