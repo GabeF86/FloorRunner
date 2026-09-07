@@ -24,7 +24,8 @@
  */
 import { describe, it, expect, vi } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
-import BlockPrepPage, { freshFor, tallyCardProps } from './page';
+import BlockPrepPage from './page';
+import { freshFor, tallyCardProps } from './pageData';
 import type { BlockPrepData } from '@/app/api/scheduling/block-prep/route.helpers';
 
 vi.mock('next/navigation', () => ({ useRouter: () => ({ push: () => {} }) }));

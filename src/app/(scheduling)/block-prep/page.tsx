@@ -15,6 +15,7 @@ import { Banner, Button, PageHeader } from '@/components/ui';
 import AnnualTallyCard from '@/components/AnnualTallyCard';
 import { useOrgAndSites } from '@/components/useOrgAndSites';
 import type { BlockPrepData } from '@/app/api/scheduling/block-prep/route.helpers';
+import { freshFor, tallyCardProps } from './pageData';
 import {
   blockPrepYearOptions, siteBootstrapText,
   CREATE_SCHEDULE_TOOLTIP, CREATE_SCHEDULE_NO_SITE_TOOLTIP,
@@ -53,41 +54,6 @@ function loadFailure(siteId: string, year: number, message: string): BlockPrepDa
     coveredSpan: null,
     unrosteredProviderIds: null,
   };
-}
-
-/**
- * C2 fix (CRITICAL, round 5 review): `data` alone is not enough to render —
- * it may still be the PREVIOUS site/year's payload while a fresh fetch for
- * the current one is in flight (deliberately kept on screen; see the
- * onCommitted/onPatched split below for why). `AnnualTallyCard` already
- * guards its OWN rendering against exactly this with an identical check; this
- * gives `RosterCard` the same guard on the same payload, so the two cards can
- * never disagree about which site is on screen — either both show fresh data
- * for `(siteId, year)`, or both fall back to their loading/pick-a-site state.
- * Uses the stamps the route puts on every shape it returns, INCLUDING every
- * failure panel (`loadFailure` above stamps them too), so a route-level
- * failure for the CURRENT site/year still passes this check and renders its
- * error, while a stale payload for a DIFFERENT site/year does not.
- */
-export function freshFor(data: BlockPrepData | null, siteId: string, year: number): BlockPrepData | null {
-  return data && data.site_id === siteId && data.year === year ? data : null;
-}
-
-/**
- * The exact prop object handed to `AnnualTallyCard` on this page — pulled out
- * so a test can pin that `data` is ALWAYS included (I6, round 5 review):
- * omitting `data` flips `AnnualTallyCard` into its self-fetch branch,
- * reintroducing the duplicate year-wide query this task exists to prevent,
- * and that mutation previously typechecked clean and left every test green.
- * Spread at the JSX call site below (`{...tallyCardProps(...)}`) rather than
- * writing the props out by hand there, so there is one call whose return
- * value a test can inspect directly — same pattern as RosterCard's
- * `buildRosterTableRows` / `resolveDisplayRows`.
- */
-export function tallyCardProps(
-  fresh: BlockPrepData | null, siteId: string, year: number, siteName: string | undefined,
-): { siteId: string | null; year: number; siteName: string | undefined; data: BlockPrepData | null } {
-  return { siteId: siteId || null, year, siteName, data: fresh };
 }
 
 export default function BlockPrepPage() {
