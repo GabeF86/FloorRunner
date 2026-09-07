@@ -539,6 +539,33 @@ describe('computeAnnualTally', () => {
     expect(t.providers.get('p1')!.offDaysUsed).toBe(2);
   });
 
+  it('splits a block that straddles New Year by slot_date', () => {
+    // This coverage lives HERE, not in annualCallCounts — the year filter is
+    // computeAnnualTally's. Gabriel 2026-09-06: "a call on 1/5 counts toward
+    // 2027." The same two slots must land in different years.
+    const slots = [
+      slot('2026-12-28', 'C1', 'p1', 'weekday'),
+      slot('2027-01-05', 'C1', 'p1', 'weekday'),
+    ];
+    expect(computeAnnualTally({ ...base, year: 2026, slots }).providers.get('p1')!.callTotal).toBe(1);
+    expect(computeAnnualTally({
+      ...base, year: 2027, slots, holidays: [{ holiday_date: '2027-01-01', is_major_holiday: true }],
+    }).providers.get('p1')!.callTotal).toBe(1);
+  });
+
+  it('counts calls even when no block is published that year', () => {
+    // computeScheduleActuals must be called unconditionally: gating it on
+    // coveredSpan would zero every call in a year with nothing published.
+    const t = computeAnnualTally({
+      ...base,
+      coveredSpans: [],
+      slots: [slot('2026-06-08', 'C1', 'p1', 'weekday')],
+    });
+    expect(t.coveredSpan).toBeNull();
+    expect(t.providers.get('p1')!.callTotal).toBe(1);
+    expect(t.providers.get('p1')!.offDaysUsed).toBeNull();
+  });
+
   it('clips the covered span to the requested year', () => {
     const t = computeAnnualTally({
       ...base,
@@ -669,15 +696,22 @@ export function computeAnnualTally(input: AnnualTallyInput): AnnualTally {
     workingDays: coveredDates.length,
   };
 
-  const counts = annualCallCounts(slots, shiftTypes, year);
-
-  // Worked-day credit across the covered span only. computeScheduleActuals
-  // clips to the working-day set it is handed, and returns assigned /
-  // post-call-rest / ICU as three DISJOINT sets, so their sizes simply add.
+  // ONE walk over the slots, feeding both halves of the tally.
+  // computeScheduleActuals owns the fill predicate, the embed normalization and
+  // the date-aware bucketing; annualCallCounts folds split segments over its raw
+  // per-code counts, and the off-days math below reads its three DISJOINT
+  // worked-day sets (assigned / post-call rest / ICU), so their sizes simply add.
+  //
+  // The year filter lives HERE, not inside annualCallCounts — this is the line
+  // that makes a block straddling New Year split between two calendar years.
+  //
+  // Called UNCONDITIONALLY, even when nothing is published: its callCounts
+  // accumulation never consults the working-day set (plannerMath.ts:400-410), so
+  // an empty coveredWorkingDays still yields correct call counts. Gating it on
+  // coveredSpan would zero out every call in a year with no published block.
   const yearSlots = slots.filter(s => s.slot_date.startsWith(`${year}-`));
-  const actuals = coveredSpan
-    ? computeScheduleActuals(yearSlots, availability, coveredWorkingDays, holidays)
-    : {};
+  const actuals = computeScheduleActuals(yearSlots, availability, coveredWorkingDays, holidays);
+  const counts = annualCallCounts(actuals, shiftTypes);
 
   // Group availability once rather than rescanning the whole roster's rows per
   // provider (annualTally.availabilityByProvider).
@@ -1064,7 +1098,12 @@ const SITE = 'site-1';
  * every builder method returns `this` so any chain of .select/.eq/.in/.gte/.lte
  * /.order resolves to the same envelope. `await`-ability comes from `then`.
  */
-function fakeClient(tables: Record<string, { data?: unknown; error?: { message: string } }>) {
+function fakeClient(tables: Record<string, {
+  data?: unknown;
+  error?: { message: string };
+  /** Set HIGHER than data.length to simulate a PostgREST 1000-row truncation. */
+  count?: number;
+}>) {
   const calls: Array<{ table: string; filters: Array<[string, unknown]> }> = [];
   const client = {
     calls,
@@ -1074,7 +1113,13 @@ function fakeClient(tables: Record<string, { data?: unknown; error?: { message: 
       const res = tables[table] ?? { data: [] };
       const builder: Record<string, unknown> = {
         then(resolve: (v: unknown) => unknown) {
-          return Promise.resolve({ data: res.data ?? null, error: res.error ?? null }).then(resolve);
+          return Promise.resolve({
+            data: res.data ?? null,
+            error: res.error ?? null,
+            // Default the count to the row count — i.e. NOT truncated — so only
+            // a test that explicitly sets a higher count exercises the guard.
+            count: res.count ?? (Array.isArray(res.data) ? res.data.length : 0),
+          }).then(resolve);
         },
       };
       for (const m of ['select', 'eq', 'in', 'gte', 'lte', 'order', 'or', 'not']) {
@@ -1147,6 +1192,37 @@ describe('loadBlockPrepData', () => {
     const out = await loadBlockPrepData(sb, SITE, 2026);
     expect(out.roster.data).toBeNull();
     expect(out.roster.error).toContain('avail down');
+  });
+
+  it('errors rather than under-counting when the slot read is truncated', async () => {
+    // PostgREST caps un-ranged selects at 1000 rows with no error. A short read
+    // against a larger exact count must surface as an error — never as a
+    // confident, wrong call tally.
+    const sb = fakeClient({
+      provider_employment_profiles: { data: PROFILES },
+      holiday_calendars: { data: [] },
+      shift_types: { data: [] },
+      provider_availability: { data: [] },
+      schedule_slots: { data: [], count: 1200 },
+      schedules: { data: [] },
+    });
+    const out = await loadBlockPrepData(sb, SITE, 2026);
+    expect(out.roster.data).toBeNull();
+    expect(out.roster.error).toMatch(/truncated/i);
+  });
+
+  it('errors rather than showing full PTO balances when availability is truncated', async () => {
+    const sb = fakeClient({
+      provider_employment_profiles: { data: PROFILES },
+      holiday_calendars: { data: [] },
+      shift_types: { data: [] },
+      provider_availability: { data: [], count: 1200 },
+      schedule_slots: { data: [] },
+      schedules: { data: [] },
+    });
+    const out = await loadBlockPrepData(sb, SITE, 2026);
+    expect(out.roster.data).toBeNull();
+    expect(out.roster.error).toMatch(/truncated/i);
   });
 
   it('filters slots to published versions', async () => {
@@ -1236,6 +1312,19 @@ function msg(e: unknown, what: string): string {
   return `${what} could not be loaded${m ? `: ${m}` : '.'}`;
 }
 
+const TRUNCATED_MSG = (what: string) =>
+  `${what} could not be loaded in full — the read was truncated, so the numbers `
+  + 'below would be wrong. This usually means the year has more rows than a single '
+  + 'request returns; narrow the year or page the read.';
+
+// PostgREST silently caps un-ranged selects at 1000 rows and reports NO error.
+// Same predicate as planner/route.ts:92-97 — a short read against an exact
+// count is a truncation, and a truncation must never be rendered as data.
+function truncated(res: { data: unknown; count?: number | null }): boolean {
+  const len = Array.isArray(res.data) ? res.data.length : 0;
+  return res.count != null && len < res.count;
+}
+
 export async function loadBlockPrepData(
   sb: SchedulingClient, siteId: string, year: number,
 ): Promise<BlockPrepData> {
@@ -1294,17 +1383,27 @@ export async function loadBlockPrepData(
   const providerIds = rows.map(r => r.provider_id as string);
 
   // Both of these depend on the roster ids, so they run after it.
+  //
+  // BOTH CARRY AN EXACT COUNT. PostgREST silently caps an un-ranged select at
+  // 1000 rows with NO error, and both of these are year-wide: measured against
+  // the live DB on 2026-09-06 there are 717 published 2026 slot rows for Paoli
+  // across a single published block (9.3 rows/day), so a SECOND published block
+  // crosses the cap and the tally starts silently under-counting calls. The
+  // planner route already hardened against exactly this — see `truncated()` in
+  // `src/app/api/scheduling/planner/route.ts:92-97` and its test
+  // "truncated slot reads are a 500, never wrong actuals".
   const [availRes, slotsRes] = await Promise.all([
     providerIds.length === 0
-      ? Promise.resolve({ data: [], error: null })
+      ? Promise.resolve({ data: [], error: null, count: 0 })
       : sb.from('provider_availability')
-        .select('provider_id, availability_type, start_date, end_date, approval_status, reason_code')
+        .select('provider_id, availability_type, start_date, end_date, approval_status, reason_code',
+          { count: 'exact' })
         .in('provider_id', providerIds)
         .lte('start_date', to)
         .gte('end_date', from),
     filterPublishedVersions(
       sb.from('schedule_slots')
-        .select(SLOT_COLUMNS)
+        .select(SLOT_COLUMNS, { count: 'exact' })
         .eq('site_id', siteId)
         .gte('slot_date', from)
         .lte('slot_date', to),
@@ -1317,6 +1416,15 @@ export async function loadBlockPrepData(
   }
   if (slotsRes.error) {
     return { site_id: siteId, year, roster: { data: null, error: msg(slotsRes.error, 'Published assignments') }, blocks, coveredSpan: null };
+  }
+  // A truncated read becomes an ERROR, never an undercount rendered as fact.
+  // This is the display-layer form of invariant 6: the board must not report a
+  // confident number it could not actually compute.
+  if (truncated(availRes)) {
+    return { site_id: siteId, year, roster: { data: null, error: TRUNCATED_MSG('Availability') }, blocks, coveredSpan: null };
+  }
+  if (truncated(slotsRes)) {
+    return { site_id: siteId, year, roster: { data: null, error: TRUNCATED_MSG('Published assignments') }, blocks, coveredSpan: null };
   }
 
   const profiles: TallyProfile[] = rows.map(r => ({
