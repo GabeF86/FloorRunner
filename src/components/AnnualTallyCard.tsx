@@ -87,7 +87,12 @@ import { BUCKET_DAY_TYPES } from '@/lib/callCountDays';
 import { BUCKET_LABELS } from '@/lib/callCountColumns';
 import {
   coveredSpanLabel, offDaysText, remainingText, sortRosterRows, unrosteredFootnote,
+  NO_CALL_TAKERS_HINT,
 } from '@/lib/blockPrepView';
+// callTotal owns "sum of weighted counts" (Fix 5, round 7 review) — this
+// card used to re-type its exact body inline for the per-bucket cell total
+// instead of calling the function annualTally.ts already exports for it.
+import { callTotal } from '@/lib/annualTally';
 import type { BlockPrepData } from '@/app/api/scheduling/block-prep/route.helpers';
 
 type AnnualTallyCardProps = {
@@ -233,11 +238,12 @@ export default function AnnualTallyCard(props: AnnualTallyCardProps) {
                 {r.display_name}
               </Link>,
               ...BUCKET_DAY_TYPES.map(b => {
-                // Plain aggregation over already-weighted counts (no rule of
-                // its own) — a bucket can hold more than one parent call code.
-                const total = r.callCounts
-                  .filter(c => c.bucket === b)
-                  .reduce((n, c) => n + c.count, 0);
+                // Aggregation over already-weighted counts for ONE bucket —
+                // a bucket can hold more than one parent call code, so this
+                // still needs its own filter, but the SUMMING itself is
+                // callTotal's job (Fix 5, round 7 review), not a re-typed
+                // reduce living here as a second copy of the same one-liner.
+                const total = callTotal(r.callCounts.filter(c => c.bucket === b));
                 return total === 0
                   // Fix 7 (review, a11y): the dash alone reads to a screen
                   // reader as "em dash", not "0 calls" — name it explicitly.
@@ -268,7 +274,13 @@ export default function AnnualTallyCard(props: AnnualTallyCardProps) {
               <EmptyState
                 icon="∑"
                 title="No call takers at this site"
-                hint="Mark a provider as a call taker with this site as their home site and they'll appear here."
+                // Fix 3 (round 7 review): this used to say "Mark a provider
+                // as a call taker with this site as their home site" — the
+                // route ALSO requires `providers.status = 'active'`, so a
+                // chief following that instruction on an inactive provider
+                // saw nothing happen. Shared with RosterCard's identical
+                // empty state so the two can't drift apart again.
+                hint={NO_CALL_TAKERS_HINT}
               />
             }
           />

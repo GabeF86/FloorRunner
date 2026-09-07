@@ -13,15 +13,15 @@ import { useCallback, useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Banner, Button, PageHeader } from '@/components/ui';
 import AnnualTallyCard from '@/components/AnnualTallyCard';
+import { useOrgAndSites } from '@/components/useOrgAndSites';
 import type { BlockPrepData } from '@/app/api/scheduling/block-prep/route.helpers';
 import {
-  blockPrepYearOptions, CREATE_SCHEDULE_TOOLTIP, CREATE_SCHEDULE_NO_SITE_TOOLTIP,
+  blockPrepYearOptions, siteBootstrapText,
+  CREATE_SCHEDULE_TOOLTIP, CREATE_SCHEDULE_NO_SITE_TOOLTIP,
   type RosterRow,
 } from '@/lib/blockPrepView';
 import RosterCard from './RosterCard';
 import AvailabilityDrawer from './AvailabilityDrawer';
-
-interface Site { id: string; name: string; short_name: string | null }
 
 const CONTROL: React.CSSProperties = {
   padding: '8px 12px', borderRadius: 'var(--radius-sm)',
@@ -92,25 +92,13 @@ export function tallyCardProps(
 
 export default function BlockPrepPage() {
   const router = useRouter();
-  const [orgId, setOrgId] = useState('');
-  const [sites, setSites] = useState<Site[]>([]);
-  // Set when the bootstrap org/site fetch itself fails — kept separate from
-  // `sites` being genuinely empty (I2, round 5 review): a failed fetch must
-  // never render "No sites" as though it successfully looked and found none.
-  const [bootError, setBootError] = useState<string | null>(null);
-  // True only once the sites fetch has genuinely completed (successfully).
-  // Distinguishes "hasn't looked yet" from "looked and found zero" in the
-  // site select's placeholder — both start from the same empty `sites`
-  // array, and collapsing them would let a still-loading page claim a
-  // confirmed "No sites" before it had looked (I2, round 5 review).
-  const [sitesLoaded, setSitesLoaded] = useState(false);
-  // True once the org fetch succeeds but returns zero organizations (round 6
-  // nit 1): without this, the sites effect below never runs (it's gated on
-  // `orgId`), so `sitesLoaded` would stay false forever and the site select
-  // would read "Loading sites…" permanently instead of naming the real,
-  // if unlikely, degenerate config.
-  const [noOrg, setNoOrg] = useState(false);
-  const [siteId, setSiteId] = useState('');
+  // Org→sites bootstrap (round 7 review, Fix 2): was a hand-duplicated pair
+  // of effects here and in DashboardTallyCard, and a fix (the `noOrg` guard)
+  // landed in only this copy — see useOrgAndSites's own header. Renamed to
+  // `bootError` at destructure time to keep it visually distinct from
+  // `loadFailure` below, which builds an unrelated per-request failure (the
+  // `/block-prep` GET, not the org/sites bootstrap) into a BlockPrepData.
+  const { sites, siteId, setSiteId, error: bootError, noOrg, sitesLoaded } = useOrgAndSites();
   const [year, setYear] = useState(new Date().getFullYear());
   // null = nothing loaded yet for the current (siteId, year) — drives the
   // skeleton in both RosterCard and AnnualTallyCard (rows undefined until
@@ -123,58 +111,6 @@ export default function BlockPrepPage() {
   // Bumped after a PATCH has actually SETTLED (see onCommitted below) so the
   // roster and tally card refetch together.
   const [refreshKey, setRefreshKey] = useState(0);
-
-  useEffect(() => {
-    (async () => {
-      try {
-        const res = await fetch('/api/scheduling/organizations');
-        if (!res.ok) {
-          const body = await res.json().catch(() => ({}));
-          setBootError(body.error || `Could not load organizations (${res.status})`);
-          return;
-        }
-        const orgs = await res.json();
-        // Round 6 nit 2: a malformed (non-array) 200 must not silently fall
-        // through as though it were a confirmed empty list — that reads
-        // identically to "no organizations exist" downstream.
-        if (!Array.isArray(orgs)) {
-          setBootError('Organizations response was malformed.');
-          return;
-        }
-        if (orgs.length > 0) setOrgId(orgs[0].id);
-        else setNoOrg(true); // round 6 nit 1: name the degenerate case, don't leave the site select loading forever
-      } catch (e) {
-        setBootError(e instanceof Error ? e.message : 'Network error loading organizations');
-      }
-    })();
-  }, []);
-
-  useEffect(() => {
-    if (!orgId) return;
-    (async () => {
-      try {
-        const res = await fetch(`/api/scheduling/sites?org_id=${orgId}`);
-        if (!res.ok) {
-          const body = await res.json().catch(() => ({}));
-          setBootError(body.error || `Could not load sites (${res.status})`);
-          return;
-        }
-        const list = await res.json();
-        // Round 6 nit 2: same malformed-response guard as the org fetch —
-        // `sitesLoaded` must only ever mean "genuinely looked and this is
-        // what came back", never "got something, didn't check its shape".
-        if (!Array.isArray(list)) {
-          setBootError('Sites response was malformed.');
-          return;
-        }
-        setSites(list);
-        if (list.length > 0) setSiteId(prev => prev || list[0].id);
-        setSitesLoaded(true);
-      } catch (e) {
-        setBootError(e instanceof Error ? e.message : 'Network error loading sites');
-      }
-    })();
-  }, [orgId]);
 
   const load = useCallback(async () => {
     if (!siteId) { setData(null); return; }
@@ -270,16 +206,12 @@ export default function BlockPrepPage() {
 
       <div style={{ display: 'flex', gap: 'var(--space-2)', marginBottom: 'var(--space-5)', flexWrap: 'wrap' }}>
         <select aria-label="Site" value={siteId} onChange={e => setSiteId(e.target.value)} style={CONTROL}>
-          {/* I2 (+ round 6 nits 1/2): four distinguishable facts, never
-              collapsed into one guess — a fetch failure, no organization
-              configured at all, "hasn't looked yet", and a genuinely
-              confirmed zero sites must not read as each other. */}
+          {/* I2 (+ round 6 nits 1/2, round 7 Fix 2): four distinguishable
+              facts, never collapsed into one guess — a fetch failure, no
+              organization configured at all, "hasn't looked yet", and a
+              genuinely confirmed zero sites must not read as each other. */}
           {sites.length === 0 && (
-            <option value="">
-              {bootError ? 'Could not load sites'
-                : noOrg ? 'No organization configured'
-                  : sitesLoaded ? 'No sites' : 'Loading sites…'}
-            </option>
+            <option value="">{siteBootstrapText({ error: bootError, noOrg, sitesLoaded })}</option>
           )}
           {sites.map(s => <option key={s.id} value={s.id}>{s.short_name || s.name}</option>)}
         </select>
@@ -293,6 +225,7 @@ export default function BlockPrepPage() {
           siteId={siteId || null}
           rows={fresh?.roster.data ?? null}
           error={fresh?.roster.error ?? null}
+          coveredSpan={fresh?.coveredSpan ?? null}
           onPatched={onPatched}
           onCommitted={onCommitted}
           onOpenDrawer={setDrawerRow}

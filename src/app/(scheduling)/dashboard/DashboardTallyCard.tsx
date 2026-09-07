@@ -25,18 +25,21 @@
 // way; only what's BELOW that row changes (a static hint Card, or the real
 // AnnualTallyCard).
 //
-// REAL ERROR HANDLING (I2, round 5 review, Important): the bootstrap org/site
-// fetch used to have no try/catch and no error state, so a failed request
-// silently rendered as "no sites" (with `sites.length > 1` false, that also
-// hid the site picker entirely) — an empty state instructing the chief to use
-// a control that wasn't on screen, with an unhandled promise rejection to
-// boot. A failure now renders a distinguishable error Banner instead.
+// ORG/SITES BOOTSTRAP (round 7 review, Fix 2): this used to carry its OWN
+// copy of the org→sites fetch sequence — the exact same one page.tsx has —
+// and round 6's `noOrg` fix landed in page.tsx alone. This component still
+// read "Loading sites…" forever whenever the organizations list came back
+// empty, with its site picker gated behind `expanded && sites.length > 1`
+// and therefore not even on screen to explain why. `useOrgAndSites` is now
+// the ONE place either host reads from, and `siteBootstrapText` the one
+// place that turns its three booleans into words, so a future fix can't
+// land in only one copy again.
 
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
+import { useOrgAndSites } from '@/components/useOrgAndSites';
 import { Banner, Button, Card } from '@/components/ui';
 import AnnualTallyCard from '@/components/AnnualTallyCard';
-
-interface Site { id: string; name: string; short_name: string | null }
+import { siteBootstrapText } from '@/lib/blockPrepView';
 
 const SELECT: React.CSSProperties = {
   padding: '6px 10px', borderRadius: 'var(--radius-sm)',
@@ -45,39 +48,9 @@ const SELECT: React.CSSProperties = {
 };
 
 export default function DashboardTallyCard() {
-  const [sites, setSites] = useState<Site[]>([]);
-  const [siteId, setSiteId] = useState('');
-  const [error, setError] = useState<string | null>(null);
+  const { sites, siteId, setSiteId, error, noOrg, sitesLoaded } = useOrgAndSites();
   const [expanded, setExpanded] = useState(false);
   const year = new Date().getFullYear();
-
-  useEffect(() => {
-    (async () => {
-      try {
-        const orgRes = await fetch('/api/scheduling/organizations');
-        if (!orgRes.ok) {
-          const body = await orgRes.json().catch(() => ({}));
-          setError(body.error || `Could not load organizations (${orgRes.status})`);
-          return;
-        }
-        const orgs = await orgRes.json();
-        if (!Array.isArray(orgs)) { setError('Organizations response was malformed.'); return; }
-        if (orgs.length === 0) return;
-        const res = await fetch(`/api/scheduling/sites?org_id=${orgs[0].id}`);
-        if (!res.ok) {
-          const body = await res.json().catch(() => ({}));
-          setError(body.error || `Could not load sites (${res.status})`);
-          return;
-        }
-        const list = await res.json();
-        if (!Array.isArray(list)) { setError('Sites response was malformed.'); return; }
-        setSites(list);
-        if (list.length > 0) setSiteId(list[0].id);
-      } catch (e) {
-        setError(e instanceof Error ? e.message : 'Network error loading sites');
-      }
-    })();
-  }, []);
 
   const site = sites.find(s => s.id === siteId);
   const siteName = site?.short_name || site?.name;
@@ -114,7 +87,11 @@ export default function DashboardTallyCard() {
           <div style={{ fontSize: 'var(--fs-sm)', color: 'var(--text-muted)' }}>
             {siteName
               ? `${siteName}'s ${year} call, PTO and off-day running totals — expand to view.`
-              : 'Loading sites…'}
+              // `error` is handled by the early return above, so it's
+              // deliberately not passed here — this call only ever needs to
+              // distinguish "no organization" / "hasn't looked yet" /
+              // "genuinely zero sites" for its own fallback text.
+              : siteBootstrapText({ error: null, noOrg, sitesLoaded })}
           </div>
         </Card>
       )}

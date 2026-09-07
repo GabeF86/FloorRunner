@@ -6,6 +6,7 @@ import {
   availabilityStatusBadge, rosterFooterNote, WORK_DAYS_FTE_PLACEHOLDER,
   liveBlockingRows, sellbackStandaloneNote, availabilityTypeHint, dateRangeError,
   yearBounds, availabilityQueryUrl, removalConfirmMessage, blockPrepYearOptions,
+  siteBootstrapText,
   type RosterRow, type AvailabilityLikeRow, type AddableAvailabilityType,
 } from './blockPrepView';
 // CoveredSpanInfo is annualTally's exported span shape — used below by
@@ -156,6 +157,18 @@ describe('offDaysText', () => {
     expect(offDaysText({ kind: 'days', days: 62 }, 0))
       .not.toBe(offDaysText({ kind: 'days', days: 62 }, null));
   });
+
+  // Fix 4 (round 7 review, minor): the module's own header rule — "AN
+  // OVERDRAWN BALANCE IS SHOWN, NOT CLAMPED... reads '5 over'" — used to be
+  // implemented in remainingText (PTO) alone. An off-days overdraw silently
+  // read as a bare "14 of 12 used" with nothing flagging it, while the
+  // adjacent PTO column for the same overdraw read "25 of 20 used · 5 over".
+  it('shows an overdrawn off-day balance the same way the PTO column shows one — "· N over", not clamped', () => {
+    expect(offDaysText({ kind: 'days', days: 12 }, 14)).toBe('14 of 12 used · 2 over');
+  });
+  it('does not add an "over" tail when used is exactly at budget', () => {
+    expect(offDaysText({ kind: 'days', days: 12 }, 12)).toBe('12 of 12 used');
+  });
 });
 
 describe('coveredSpanLabel', () => {
@@ -167,11 +180,13 @@ describe('coveredSpanLabel', () => {
 
   it('names the span the off-day figure was counted over', () => {
     expect(coveredSpanLabel(span()))
-      .toBe('Off days counted across published blocks only: Aug 10 – Oct 25, 2026 (55 working days).');
+      .toBe('The off-day budget is for the full year; days used are counted only across the published block: '
+        + 'Aug 10 – Oct 25, 2026 (55 working days).');
   });
   it('says plainly that nothing is published', () => {
     expect(coveredSpanLabel(null))
-      .toBe('No published blocks this year — off days show the budget only, with nothing counted against it.');
+      .toBe('The off-day budget is for the full year — no published block exists yet, so nothing has been '
+        + 'examined and no days are counted as used.');
   });
   it('does not present a GAPPED range as continuous coverage', () => {
     // Two blocks at either end of the year with a five-month hole between
@@ -188,8 +203,8 @@ describe('coveredSpanLabel', () => {
       ],
     }));
     expect(label).toBe(
-      'Off days counted across 2 published blocks only, with gaps between them: '
-      + 'Jan 5 – Dec 20, 2026 (130 working days counted).');
+      'The off-day budget is for the full year; days used are counted only across 2 published blocks, '
+      + 'with gaps between them: Jan 5 – Dec 20, 2026 (130 working days counted).');
   });
   it('distinguishes a block with no working days from nothing published', () => {
     const label = coveredSpanLabel(span({
@@ -198,6 +213,20 @@ describe('coveredSpanLabel', () => {
     }));
     expect(label).toContain('no working days');
     expect(label).not.toBe(coveredSpanLabel(null));
+  });
+
+  // Fix 1 (round 7 review, IMPORTANT): every branch must say BOTH that the
+  // budget is annual AND that the used figure is span-scoped — naming just
+  // the span (the pre-fix wording) is the root confusion this caveat exists
+  // to close. At Paoli today (one published 2026 block, ~54 of ~255 working
+  // days) a 0.7 FTE's "10 of 76 used" reads as "66 off days left this year"
+  // without this sentence saying the 76 and the 10 are measured over
+  // different periods.
+  it('states the annual/span time-scale mismatch in every branch, not just the span', () => {
+    expect(coveredSpanLabel(span())).toContain('full year');
+    expect(coveredSpanLabel(null)).toContain('full year');
+    expect(coveredSpanLabel(span({ workingDays: 0, segments: [{ start: '2026-01-01', end: '2026-01-01' }] })))
+      .toContain('full year');
   });
 });
 
@@ -695,5 +724,24 @@ describe('removalConfirmMessage', () => {
 describe('blockPrepYearOptions', () => {
   it('offers last year, this year, and next year, in that order', () => {
     expect(blockPrepYearOptions(2026)).toEqual([2025, 2026, 2027]);
+  });
+});
+
+describe('siteBootstrapText (Fix 2, round 7 review)', () => {
+  // Four distinguishable facts — a real ordering test matters here as much
+  // as the individual strings: `error` must win over everything else (a
+  // failed fetch is never a confirmed anything), and `noOrg` must win over
+  // `sitesLoaded` (an empty org list means the sites fetch never even ran).
+  it('an error wins over every other state', () => {
+    expect(siteBootstrapText({ error: 'boom', noOrg: true, sitesLoaded: true })).toBe('Could not load sites');
+  });
+  it('no organization at all is named, not conflated with "hasn\'t looked yet"', () => {
+    expect(siteBootstrapText({ error: null, noOrg: true, sitesLoaded: false })).toBe('No organization configured');
+  });
+  it('a genuinely confirmed empty list reads "No sites"', () => {
+    expect(siteBootstrapText({ error: null, noOrg: false, sitesLoaded: true })).toBe('No sites');
+  });
+  it('the default, pre-fetch state reads "Loading sites…", never a confirmed empty state', () => {
+    expect(siteBootstrapText({ error: null, noOrg: false, sitesLoaded: false })).toBe('Loading sites…');
   });
 });

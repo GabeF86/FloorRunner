@@ -12,171 +12,74 @@
 //
 // Every string and every parse rule comes from lib/blockPrepView.ts.
 //
-// Review round 2 fixes (2026-09-06) — kept documented here because every one
-// of them was a real, reachable bug found by tracing render/interaction
-// paths, not a hypothetical:
+// WHY THE COMMIT/REVERT LOGIC LOOKS LIKE THIS (prior review rounds found
+// every one of these by tracing render/interaction paths, not hypothetically
+// — pruned hard, round 7 review, to the CURRENT shape rather than a history
+// of every renaming since):
 //
-// C1 (loading prop). `rows={loading && !sorted ? undefined : (sorted ?? [])}`
-// rendered the EMPTY STATE, not a skeleton, whenever `loading` was false and
-// nothing had loaded yet — exactly Task 10's own first paint (its `loading`
-// starts false and only flips true after two chained fetches) and exactly
-// the defect AnnualTallyCard's header documents having found and removed for
-// the identical reason. There is no `loading` prop anymore: `rows` alone
-// (null vs [] vs an array) already carries the distinction Table wants.
+// - `rows` alone (null vs [] vs an array) drives the Table's skeleton/empty/
+//   loaded states — no separate `loading` prop. A `loading &&` gate reliably
+//   mis-renders the empty state on first paint, before an effect has had a
+//   chance to flip it (same defect class AnnualTallyCard's header documents).
+// - Dirty tracking is explicit (`dirty`, set only in `onChange`) rather than
+//   comparing `text` to the `value` prop at commit time — an external
+//   refetch changing `value` while a cell sits focused-but-untouched must
+//   never read as "dirty" and fire a PATCH nobody asked for.
+// - A failed commit reverts via `currentValueRef` (the LIVE prop, not a
+//   value snapshotted at commit-start) and `revertDecision`'s check that
+//   nothing else moved the field since our own optimistic write landed —
+//   otherwise a newer value that arrived while our PATCH was in flight would
+//   get stomped by a now-stale revert target.
+// - Row order freezes (`resolveDisplayRows`) while any cell is focused or
+//   saving, because Table keys `<tr>` by array index, so a resort mid-edit
+//   would otherwise remount the FOCUSED cell (dropping focus) or bleed one
+//   provider's mid-flight state onto another's position. The unfreeze is
+//   deferred one macrotask tick so a click straight from one cell to the
+//   next re-asserts "busy" before a pending unfreeze can apply. KNOWN
+//   RESIDUAL: mitigates the common case but isn't provable without
+//   jsdom-based interaction testing, which this repo doesn't have.
+// - Enter commits WITHOUT blurring (a `.blur()` call used to exile focus to
+//   document.body). A dirty cell stays FOCUSABLE during a save via
+//   `readOnly`, not `disabled` — disabling a focused control blurs it too
+//   (the HTML focus-fixup rule), which defeated the same fix for the one
+//   case (a dirty Enter) it existed for.
+// - Errors are prefixed with the provider's name and the field's label (a
+//   bare "Must be 2 or less" on a card-level banner can't be attributed to
+//   one of eleven rows), and `aria-label` names the row + column.
+// - `commitDecision` consolidates ALL FOUR pre-flight gates (saving, dirty,
+//   parse validity, whether the parsed value is actually a no-op) into ONE
+//   discriminated return, and `commitPatch` (below) owns the PATCH-and-
+//   settle sequence — `commit()` itself is a thin dispatcher over both, with
+//   no gate or ordering logic of its own left to silently delete. Both were
+//   extracted specifically because a mutation deleting an inline `if` inside
+//   `commit()` is invisible to a render-only test; a mutation to
+//   `commitDecision`'s/`commitPatch`'s own body is not.
 //
-// C2 (phantom PATCH on an untouched cell). The old dirty check compared
-// `text` against the CURRENT `value` prop at commit time — but if an
-// external refetch changes `value` while a cell sits focused-but-untouched
-// (the resync effect skips it because it's focused), `text` and `value`
-// diverge for a reason that has nothing to do with typing, and a plain
-// focus-then-blur reads as "dirty" and fires a PATCH nobody asked for. Fixed
-// by tracking an explicit `dirty` flag, set only in `onChange` — extracted as
-// `shouldCommit` below so the guard itself is unit-testable (round 2 review:
-// deleting the guard left all render tests green, since interaction can't be
-// exercised without jsdom).
+// C1 (CRITICAL, round 5-6 review) — the one bug in this file worth its own
+// section, because it was the most user-visible and the hardest to pin down.
+// The post-edit refetch used to fire from `onSaved`, called OPTIMISTICALLY
+// before `await fetch(PATCH)` even starts. Nothing sequenced the resulting
+// GET against the PATCH it was meant to follow: the GET's profile read could
+// reach the DB before the PATCH's UPDATE committed, land the PRE-EDIT value,
+// and the resync effect above would silently rewrite the input back to it —
+// the chief types 0.75, tabs out, and watches it snap back to 0.70, with no
+// further refetch ever scheduled to self-correct. (The same bug made a
+// failed edit refetch TWICE, since `onFailure` also called `onSaved`.)
 //
-// I1 (stale revert target). A failed commit used to revert to the `value`
-// captured at commit-start. If Task 10's post-edit refetch (fired after
-// EVERY commit, not just this one) lands a newer number for this same field
-// while this edit's own PATCH is still in flight, reverting to that stale
-// start-of-edit snapshot would stomp the newer value. `currentValueRef`
-// tracks the live prop on every change; `shouldRevert` below only says yes
-// if nothing has moved this field since OUR OWN optimistic write landed —
-// otherwise something newer already won and gets left alone. Extracted for
-// the same reason as `shouldCommit` (forcing this guard to always return
-// true also left every test green).
-//
-// I2 (resort stealing focus). Table keys `<tr>` by array index
-// (components/ui/Table.tsx), not by provider, so the ONLY way to stop a
-// resort from bleeding one provider's mid-flight cell state onto another's
-// (see the provider-id-embedded EditableCell keys below) is to force React
-// to unmount/remount whenever the provider at a given position changes.
-// That fix is correct but has a cost: with several rows sharing an FTE
-// value, almost any FTE edit reorders the table, and a remount at the
-// FOCUSED cell's position drops focus to document.body mid-edit. Fixed by
-// freezing the displayed row order while any cell is focused or saving
-// (`resolveDisplayRows` below), and only resorting once the roster goes
-// idle — the reorder still happens eventually, just never while someone's
-// pointing at a row. The unfreeze is deferred by a macrotask tick (plain
-// `setTimeout(0)`, cancelled on the next busy transition): a quick click
-// from one cell straight into another blurs the first (busy count 0 → 1 → 0)
-// before focusing the second, and an immediate unfreeze in that split-second
-// gap could apply a pending resort right as the second cell was about to
-// receive focus. A `setTimeout(0)` callback runs strictly after the current
-// synchronous event dispatch (and any batched updates from it), so a focus
-// event that follows synchronously — as it does for a plain click from one
-// cell to the next — gets to re-assert "busy" first. KNOWN RESIDUAL: this
-// mitigates the common case but is not proven, and cannot be, without
-// jsdom-based interaction testing (round 2 review) — React's passive-effect
-// flush timing relative to the browser's blur/focus pair isn't something
-// this project's render-only test strategy can pin down.
-//
-// I3 (Enter exiles the chief from the table). Enter used to call `.blur()`,
-// sending focus to document.body — the next Tab restarted from the top of
-// the document. Enter now commits directly without blurring.
-//
-// Fix A (round 3 review): removing the `.blur()` call fixed Enter on a
-// CLEAN cell, but not a DIRTY one — `commit()` on a dirty cell sets `saving`,
-// which drove `disabled={saving}`, and disabling a focused control is itself
-// what blurs it (the HTML focus-fixup rule), sending focus to document.body
-// anyway, with no restoration once `saving` clears. Switched to
-// `readOnly={saving}`: it blocks typing (`onChange` still can't fire
-// mid-save, so this doesn't reopen C2) while leaving the control focusable,
-// and reentrancy is already handled by the explicit `if (saving) return` at
-// the top of `commit()` — `disabled` was never load-bearing for that.
-//
-// I4 / I5 (unattributable errors, no screen-reader label). A card-level
-// banner used to say e.g. "Must be 2 or less" with no indication of WHICH
-// provider or column, while the offending cell had already snapped back
-// with no visual trace. Errors are now prefixed with the provider's name and
-// the field's label, and a failed cell keeps a `--danger` border until its
-// next edit. `aria-label` now names the row + column so a screen reader
-// doesn't announce eleven identical "Call FTE" fields.
-//
-// Fix D (round 3 review, minor): `commit()` used to gate ONLY on `dirty`,
-// never on whether the freshly PARSED value actually differs from the
-// current one — type a character and delete it and `dirty` stays true, and
-// through Task 10's post-edit refetch that turns into a full year-wide
-// `/block-prep` re-fetch for nothing. Folded into `commitDecision` below as
-// the `'noop'` outcome (compares the PARSED value, not raw text, so this
-// can't reopen C2).
-//
-// Fix B (round 3 review): the two fixes above (I2's provider-id-embedded
-// keys, and the frozen-order call) were both invisible to the test suite —
-// reverting the keys to a static string, or deleting the frozen-order call
-// entirely, left all tests green, because nothing exercised the actual
-// WIRING (as opposed to the standalone helpers, which were already tested).
-// `buildRosterTableRows` and `resolveDisplayRows` below exist so a test can
-// call the real call sites directly and inspect the result — including
-// `.key` on the returned React elements, which is a plain property on the
-// element object even though it never appears in rendered HTML.
-//
-// Fix R1 (round 4 review): round 3 extracted C2's and I1's guards as named,
-// individually-tested booleans (`shouldCommit`, `shouldRevert`, plus Fix D's
-// `isNoopEdit`) — but each remained a SEPARATE `if` living inside the
-// untestable, interactive `commit()`. Mutation testing proved this still
-// didn't cover the WIRING, the same gap Fix B closed for the keys and the
-// freeze: deleting `if (!shouldCommit(dirty)) return;`, or forcing both
-// `if (shouldRevert(...))` call sites to `if (true)`, left all 29 tests
-// green, because a test on the boolean helper's OWN body can't see a
-// mutation of the call site that invokes it.
-//
-// The fix consolidates ALL FOUR pre-flight gates (saving, dirty, parse
-// validity, no-op) into ONE call, `commitDecision`, returning a
-// discriminated `CommitAction` — modeled on Modal.tsx's `modalCloseIntent`.
-// `commit()` becomes a thin dispatcher with no gate logic of its own left to
-// silently delete: the only way to reproduce "drop the dirty check" is to
-// mutate `commitDecision`'s OWN body, which IS covered directly, including
-// the gate ORDERING (dirty must be checked before a would-be no-op is even
-// evaluated, or a clean-but-untouched cell could report "noop" instead of
-// "skip" — same effect today, but a real divergence the moment either
-// branch grows its own side effects).
-//
-// The post-failure revert decision (I1) can't fold into the SAME call —
-// it needs the fetch's outcome and the live ref, neither known until after
-// the `await`. `revertDecision` gets the same treatment on its own: it
-// returns `{ kind: 'stay' }` or `{ kind: 'revert'; to }`, and `to` is only
-// reachable by narrowing `action.kind === 'revert'` first. That makes the
-// exact surviving mutation (collapsing the check to an unconditional
-// revert) a COMPILE ERROR rather than a silent behavior change — TypeScript
-// won't narrow `action` to the `'revert'` variant unless the condition
-// actually tests `action.kind`, so `action.to` doesn't exist otherwise.
-// `shouldCommit`, `shouldRevert`, and `isNoopEdit` are gone — folded in.
-//
-// C1 / I5 (round 5 review, CRITICAL): Task 10 used to trigger its post-edit
-// refetch from `onSaved` — called OPTIMISTICALLY, before `await fetch(PATCH)`
-// even starts. Nothing sequenced the resulting GET against the PATCH it was
-// meant to follow: the GET's profile read could reach the DB before the
-// PATCH's UPDATE committed, land the PRE-EDIT value, and the resync effect
-// above would then silently rewrite the input back to it — the chief types
-// 0.75, tabs out, and watches it snap back to 0.70, with no further refetch
-// ever scheduled to self-correct. Comparable to the standalone helpers
-// above: page.tsx observes only `onSaved`, so this defect lived at the
-// call-site level, not inside any single unit-tested function. The same bug
-// also explains I5: `onFailure` ALSO calls `onSaved` (to revert), so a
-// rejected edit fired the page's refetch TWICE.
-//
-// The fix adds `onCommitted`, called ONLY from a `finally` block — i.e. only
-// after `await fetch(...)` (and any `await res.json()` reading its body) has
-// fully settled, success or failure alike, and exactly once per PATCH
-// attempt. `onSaved` keeps doing the optimistic local update (instant feel);
-// `onCommitted` is the page's sole refetch trigger now. Because `onCommitted`
-// cannot run before the `try` block's promise chain resolves — a JS `finally`
-// is ordered strictly after everything in its `try`/`catch` — the GET it
-// triggers can never be dispatched while the PATCH is still in flight. It is
-// never called for `'skip'`, `'invalid'`, or `'noop'`, since none of those
-// ever reach the server and there is nothing new to refetch.
-//
-// Round 6 review pushed back on "this ordering can't be tested without
-// jsdom" — correctly: it's async orchestration, not DOM interaction, and
-// nothing about it needs a document. `commitPatch` below extracts the
-// PATCH-and-settle sequence with `fetch` itself INJECTED (the same
-// dependency-injection convention this repo already uses for every
-// DB-coupled module, an injected `sb` client, applied to `fetch` instead),
-// so RosterCard.test.tsx can hand it a controllable promise and assert
-// directly that `onCommitted` has not fired while it's pending. Moving
-// `onCommitted()` back onto the optimistic path — reproducing the original
-// C1 bug exactly — was verified to make that suite fail.
+// The fix is `onCommitted`, fired from `commitPatch`'s `finally` — i.e. only
+// after `fetchFn` (and, on a non-ok response, its error-body `res.json()`)
+// has fully settled, success or failure alike, exactly once per genuine
+// PATCH attempt, never for a skipped/invalid/no-op commit. `onSaved` keeps
+// doing the optimistic local update; `onCommitted` is the page's sole
+// refetch trigger. `commitPatch` takes `fetch` itself as an INJECTED
+// parameter (the same DI convention this repo uses for every DB-coupled
+// module, an injected `sb` client, applied to `fetch` instead) specifically
+// so this ordering — async orchestration, not DOM interaction — can be
+// pinned by a plain node-environment test against a controllable promise,
+// rather than resting on code inspection alone. RosterCard.test.tsx's
+// `commitPatch` suite asserts `onCommitted` has NOT fired while the fetch
+// (or its nested `res.json()`) is still pending; moving the call back onto
+// the optimistic path reproduces C1 exactly and was verified to fail it.
 
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import Link from 'next/link';
@@ -186,8 +89,10 @@ import {
   allotmentText, offDaysText, parseAllotmentInput, parseFteInput,
   remainingText, rosterFooterNote, sortRosterRows, WORK_DAYS_FTE_PLACEHOLDER,
   CALL_FTE_TOOLTIP, WORK_DAYS_FTE_TOOLTIP, PTO_ALLOTMENT_TOOLTIP,
+  coveredSpanLabel, NO_CALL_TAKERS_HINT,
   type ParseResult, type RosterRow,
 } from '@/lib/blockPrepView';
+import type { CoveredSpanInfo } from '@/lib/annualTally';
 
 type Field = 'fte_value' | 'work_days_fte' | 'pto_weeks';
 
@@ -231,7 +136,10 @@ export function rosterCellKey(field: Field, providerId: string): string {
  * failure is `'invalid'`; and only once parsing succeeds does a value equal
  * to the current one become `'noop'` (Fix D) rather than `'patch'`.
  */
-export type CommitAction =
+// NOT exported (round 7 review, Fix 5): nothing outside this file imports it
+// — commitDecision's own callers rely on TS inferring its return type, which
+// needs no explicit import of the type name.
+type CommitAction =
   | { kind: 'skip' }                      // saving, or not dirty
   | { kind: 'invalid'; error: string }
   | { kind: 'noop' }                      // parsed value equals the current one
@@ -268,7 +176,8 @@ export function commitDecision(
  * TypeScript only narrows `action` to `'revert'` when the condition
  * actually tests `action.kind`.
  */
-export type RevertAction =
+// NOT exported (round 7 review, Fix 5) — same reasoning as CommitAction.
+type RevertAction =
   | { kind: 'stay' }
   | { kind: 'revert'; to: number | null };
 
@@ -289,7 +198,11 @@ export interface PatchResponseLike {
   json: () => Promise<unknown>;
 }
 
-export type PatchFetchFn = (input: string, init: RequestInit) => Promise<PatchResponseLike>;
+// NOT exported (round 7 review, Fix 5) — `PatchResponseLike` above stays
+// exported (RosterCard.test.tsx imports it to type its fake responses), but
+// nothing imports `PatchFetchFn` itself; commitPatch's own signature is
+// enough for callers.
+type PatchFetchFn = (input: string, init: RequestInit) => Promise<PatchResponseLike>;
 
 /**
  * The PATCH-and-settle sequence behind a roster cell's commit, with the
@@ -621,11 +534,22 @@ export function buildRosterTableRows(displayRows: RosterRow[], cb: RosterRowCall
 }
 
 export default function RosterCard({
-  siteId, rows, error, onPatched, onCommitted, onOpenDrawer,
+  siteId, rows, error, coveredSpan, onPatched, onCommitted, onOpenDrawer,
 }: {
   siteId: string | null;
   rows: RosterRow[] | null;
   error: string | null;
+  /**
+   * The published-blocks span the roster's off-days-used figures were
+   * counted over (Fix 1, round 7 review) — null when nothing is published
+   * this year. Rendered via `coveredSpanLabel` in the footer, same as
+   * AnnualTallyCard: without it, this card renders the identical
+   * span-scoped-numerator / annual-denominator fraction `offDaysText`
+   * produces with NO caption explaining the mismatch, which is exactly what
+   * made a Paoli 0.7 FTE's "10 of 76 used" read as "66 off days left this
+   * year" when 201 of those working days were never examined.
+   */
+  coveredSpan: CoveredSpanInfo | null;
   /** Optimistic local update only — see RosterRowCallbacks.onPatched. */
   onPatched: (providerId: string, field: Field, value: number | null) => void;
   /** Fires once per settled PATCH (success or failure) — the host's cue to
@@ -713,7 +637,10 @@ export default function RosterCard({
           <EmptyState
             icon="◆"
             title="No call takers at this site"
-            hint="A provider appears here when they are active, marked as a call taker, and this site is their home site."
+            // Fix 3 (round 7 review): shared with AnnualTallyCard's identical
+            // empty state — see NO_CALL_TAKERS_HINT's own doc for why the two
+            // used to say different, and one of them wrong, things.
+            hint={NO_CALL_TAKERS_HINT}
           />
         }
       />
@@ -721,7 +648,17 @@ export default function RosterCard({
         padding: 'var(--space-3)', fontSize: 'var(--fs-xs)',
         color: 'var(--text-muted)', lineHeight: 1.5, borderTop: '1px solid var(--border-faint)',
       }}>
-        {rosterFooterNote()}
+        <div>{rosterFooterNote()}</div>
+        {/* Fix 1 (round 7 review): the off-days column's honesty caveat,
+            previously rendered ONLY by AnnualTallyCard even though RosterCard
+            shows the identical span-scoped-numerator / annual-denominator
+            fraction. Gated on `displayRows !== undefined` — only once the
+            roster has genuinely loaded is there anything honest to say about
+            what was counted, same gate AnnualTallyCard uses for its own
+            covered-span caption. */}
+        {displayRows !== undefined && (
+          <div style={{ marginTop: 'var(--space-2)' }}>{coveredSpanLabel(coveredSpan)}</div>
+        )}
       </div>
     </Card>
   );

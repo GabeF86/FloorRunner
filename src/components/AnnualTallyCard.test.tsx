@@ -92,6 +92,19 @@ describe('AnnualTallyCard — empty roster', () => {
     // Not a loading skeleton — the roster genuinely loaded empty.
     expect(html.match(/fr-skeleton/g) ?? []).toHaveLength(0);
   });
+
+  // Fix 3 (round 7 review): this used to say "Mark a provider as a call
+  // taker with this site as their home site" — the route ALSO requires
+  // `providers.status = 'active'`, an instruction that does nothing for an
+  // inactive provider. Pinned on the SHARED constant so RosterCard's
+  // identical empty state can never drift from this one again.
+  it('names all three requirements (active, call taker, home site), not just two', () => {
+    const html = renderToStaticMarkup(
+      <AnnualTallyCard siteId="site-1" year={2026} data={blockPrepData()} />,
+    );
+    expect(html).toContain('active, marked as a call taker, and this site is their home site');
+    expect(html).not.toContain('Mark a provider as a call taker');
+  });
 });
 
 describe('AnnualTallyCard — roster.error and blocks.error are separate panels', () => {

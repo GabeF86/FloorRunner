@@ -23,7 +23,8 @@ import RosterCard, {
   buildRosterTableRows, resolveDisplayRows,
   type RosterRowCallbacks, type PatchResponseLike,
 } from './RosterCard';
-import { allotmentText, WORK_DAYS_FTE_PLACEHOLDER, type RosterRow } from '@/lib/blockPrepView';
+import { allotmentText, coveredSpanLabel, WORK_DAYS_FTE_PLACEHOLDER, type RosterRow } from '@/lib/blockPrepView';
+import type { CoveredSpanInfo } from '@/lib/annualTally';
 
 // Provider, Call FTE, Work-days FTE, PTO weeks, PTO this year, Off days,
 // Calls, and the trailing blank actions column.
@@ -53,7 +54,7 @@ const noop = () => {};
 describe('RosterCard — loading (Fix C1 regression)', () => {
   it('rows=null renders a skeleton, never "No call takers at this site" — this is the case the removed `loading` prop got wrong', () => {
     const html = renderToStaticMarkup(
-      <RosterCard siteId="site-1" rows={null} error={null} onPatched={noop} onCommitted={noop} onOpenDrawer={noop} />,
+      <RosterCard siteId="site-1" rows={null} error={null} coveredSpan={null} onPatched={noop} onCommitted={noop} onOpenDrawer={noop} />,
     );
     const skeletons = html.match(/fr-skeleton/g) ?? [];
     expect(skeletons.length).toBe(3 * HEADER_COUNT);
@@ -64,7 +65,7 @@ describe('RosterCard — loading (Fix C1 regression)', () => {
 describe('RosterCard — no site picked', () => {
   it('shows a "Pick a site" prompt, not a permanent skeleton, when siteId is null', () => {
     const html = renderToStaticMarkup(
-      <RosterCard siteId={null} rows={null} error={null} onPatched={noop} onCommitted={noop} onOpenDrawer={noop} />,
+      <RosterCard siteId={null} rows={null} error={null} coveredSpan={null} onPatched={noop} onCommitted={noop} onOpenDrawer={noop} />,
     );
     expect(html).toContain('Pick a site');
     expect(html.match(/fr-skeleton/g) ?? []).toHaveLength(0);
@@ -74,10 +75,60 @@ describe('RosterCard — no site picked', () => {
 describe('RosterCard — empty roster', () => {
   it('renders the empty state once loaded with zero call takers, not a skeleton', () => {
     const html = renderToStaticMarkup(
-      <RosterCard siteId="site-1" rows={[]} error={null} onPatched={noop} onCommitted={noop} onOpenDrawer={noop} />,
+      <RosterCard siteId="site-1" rows={[]} error={null} coveredSpan={null} onPatched={noop} onCommitted={noop} onOpenDrawer={noop} />,
     );
     expect(html).toContain('No call takers at this site');
     expect(html.match(/fr-skeleton/g) ?? []).toHaveLength(0);
+  });
+
+  // Fix 3 (round 7 review): AnnualTallyCard's empty state used to say "Mark a
+  // provider as a call taker with this site as their home site" — the route
+  // ALSO requires `providers.status = 'active'`, so a chief following that
+  // instruction on an inactive provider would see nothing happen. Both cards
+  // must read the same, correct sentence.
+  it('names all three requirements (active, call taker, home site) in its empty-state hint', () => {
+    const html = renderToStaticMarkup(
+      <RosterCard siteId="site-1" rows={[]} error={null} coveredSpan={null} onPatched={noop} onCommitted={noop} onOpenDrawer={noop} />,
+    );
+    expect(html).toContain('active, marked as a call taker, and this site is their home site');
+  });
+});
+
+describe('RosterCard — the off-days honesty caveat (Fix 1, round 7 review, IMPORTANT)', () => {
+  const span: CoveredSpanInfo = {
+    start: '2026-08-10', end: '2026-10-25', workingDays: 55,
+    segments: [{ start: '2026-08-10', end: '2026-10-25' }],
+  };
+
+  it('renders coveredSpanLabel once the roster has genuinely loaded — this is the caveat AnnualTallyCard shows and RosterCard used to omit entirely', () => {
+    const html = renderToStaticMarkup(
+      <RosterCard
+        siteId="site-1"
+        rows={[rosterRow()]}
+        error={null}
+        coveredSpan={span}
+        onPatched={noop} onCommitted={noop} onOpenDrawer={noop}
+      />,
+    );
+    expect(html).toContain(coveredSpanLabel(span));
+    // The two halves of the fraction offDaysText renders are measured over
+    // different periods — the caveat must say so explicitly, not just name
+    // the span (the root of the confusion per the review that flagged this).
+    expect(html).toContain('full year');
+  });
+
+  it('still renders the caveat (the null-span wording) for a genuinely empty, loaded roster', () => {
+    const html = renderToStaticMarkup(
+      <RosterCard siteId="site-1" rows={[]} error={null} coveredSpan={null} onPatched={noop} onCommitted={noop} onOpenDrawer={noop} />,
+    );
+    expect(html).toContain(coveredSpanLabel(null));
+  });
+
+  it('does NOT render the caveat while still loading (rows === null) — nothing has been examined yet to caption', () => {
+    const html = renderToStaticMarkup(
+      <RosterCard siteId="site-1" rows={null} error={null} coveredSpan={span} onPatched={noop} onCommitted={noop} onOpenDrawer={noop} />,
+    );
+    expect(html).not.toContain(coveredSpanLabel(span));
   });
 });
 
@@ -88,6 +139,7 @@ describe('RosterCard — error', () => {
         siteId="site-1"
         rows={[rosterRow({ display_name: 'SHOULD NOT APPEAR' })]}
         error="Roster boom"
+        coveredSpan={null}
         onPatched={noop}
         onCommitted={noop}
         onOpenDrawer={noop}
@@ -105,6 +157,7 @@ describe('RosterCard — a populated row\'s editable cells', () => {
       siteId="site-1"
       rows={[rosterRow({ provider_id: 'p1', pto_weeks: null, work_days_fte: null })]}
       error={null}
+      coveredSpan={null}
       onPatched={noop}
       onCommitted={noop}
       onOpenDrawer={noop}

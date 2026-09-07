@@ -5,12 +5,13 @@
 // FAIL-SOFT, NEVER FAKE ZEROS. Each panel carries { data, error }; a failed
 // query surfaces its message on that panel and the page renders a Banner. A
 // failed availability read fails the WHOLE roster panel, not just its PTO
-// columns — coarser than the design spec's finer-grained wording ("a failed
-// availability read shows an error in the PTO columns"), which is deliberately
-// NOT implemented here: this route's fail-soft grain is per DATA SOURCE
-// (roster / blocks), not per COLUMN. Splitting the roster panel into
-// column-level sub-panels would be a real feature, not a one-line fix, and the
-// spec text is being reconciled separately — don't take it as the contract.
+// columns — this route's fail-soft grain is per DATA SOURCE (roster /
+// blocks), not per COLUMN, matching the design spec's contract ("The roster
+// fails as one panel rather than degrading column by column: ... a row
+// showing a name and an FTE beside three blank columns invites the reader to
+// treat the blanks as zeros"). Splitting the roster into a profile panel and
+// a figures panel is a reasonable future refinement, not the shipped
+// contract.
 //
 // PUBLISHED ONLY (clinical invariant 3). Slot reads go through
 // filterPublishedVersions, the single home of that predicate — never re-inline
@@ -40,7 +41,13 @@ import type { PlannerAvailabilityRow, PlannerHoliday, PlannerSlotRow } from '@/l
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type SchedulingClient = any;
 
-export interface Panel<T> {
+// NOT exported (round 7 review, Fix 5): byte-identical to
+// dashboard/queries.ts's own `Panel<T>`, and nothing outside this file ever
+// imported it — only `BlockPrepData`/`PublishedBlock` cross that boundary.
+// Kept as a local shape rather than importing the dashboard's copy, which
+// would wire an API route's data layer to a page's query module for a
+// two-line generic.
+interface Panel<T> {
   data: T | null;
   error: string | null;
 }
@@ -310,11 +317,20 @@ export async function loadBlockPrepData(
 
   if (availRes.error) return fail(availRes.error, blocks);
 
-  const profiles: TallyProfile[] = rows.map(r => ({
-    provider_id: r.provider_id as string,
+  // Coerced ONCE per row (round 7 review, Fix 5) — `profiles` and `roster`
+  // below both need the same three Postgres `numeric` columns as real
+  // numbers (they arrive over the wire as strings), and this used to
+  // re-apply the identical `== null ? null : Number(...)` three times in
+  // each of two separate `rows.map(...)` calls.
+  const numbers = new Map(rows.map(r => [r.provider_id as string, {
     fte_value: r.fte_value == null ? null : Number(r.fte_value),
     work_days_fte: r.work_days_fte == null ? null : Number(r.work_days_fte),
     pto_weeks: r.pto_weeks == null ? null : Number(r.pto_weeks),
+  }]));
+
+  const profiles: TallyProfile[] = rows.map(r => ({
+    provider_id: r.provider_id as string,
+    ...numbers.get(r.provider_id as string)!,
   }));
 
   const shiftTypes = new Map<string, TallyShiftType>(
@@ -345,9 +361,7 @@ export async function loadBlockPrepData(
       provider_id: pid,
       display_name: (p.short_display_name as string) || (p.last_name as string) || pid,
       last_name: (p.last_name as string) || '',
-      fte_value: r.fte_value == null ? null : Number(r.fte_value),
-      work_days_fte: r.work_days_fte == null ? null : Number(r.work_days_fte),
-      pto_weeks: r.pto_weeks == null ? null : Number(r.pto_weeks),
+      ...numbers.get(pid)!,
       call_taker: !!r.call_taker,
       partial_call_taker: !!r.partial_call_taker,
       pto: figures.pto,

@@ -124,14 +124,25 @@ export function remainingText(pto: PtoFigures): string {
  * a real span was examined and the provider took none of their budgeted off
  * days across it. "0 of N used" is therefore the correct, honest string —
  * pinned by a test, not left to drift into a "not counted" reading.
+ *
+ * OVERDRAWN IS SHOWN, NOT CLAMPED (Fix 4, round 7 review) — this module's own
+ * rule at the top of the file, but it used to be implemented in
+ * `remainingText` (PTO) alone: a provider 2 days past their off-day budget
+ * read as a bare "14 of 12 used", with nothing telling the reader that's an
+ * overdraw, while the adjacent PTO column for the same overdraw reads
+ * "25 of 20 used · 5 over". Mirrors that exact "· N over" tail so the two
+ * adjacent columns read consistently.
  */
 export function offDaysText(budget: OffDayBudget, used: number | null): string {
   switch (budget.kind) {
     case 'unknown':        return 'FTE not stated';
     case 'not-applicable': return 'n/a';
     case 'none':           return 'none';
-    case 'days':
-      return used == null ? `${budget.days} budgeted` : `${used} of ${budget.days} used`;
+    case 'days': {
+      if (used == null) return `${budget.days} budgeted`;
+      const over = used - budget.days;
+      return over > 0 ? `${used} of ${budget.days} used · ${over} over` : `${used} of ${budget.days} used`;
+    }
   }
 }
 
@@ -146,7 +157,12 @@ const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', '
 // closures producing this same "Aug 10, 2026" shape elsewhere in the app;
 // this one is judged the best of the five for the same no-timezone reason,
 // but extracting a shared home is a refactor beyond this module's scope.
-function monthDayYear(iso: string): string {
+//
+// EXPORTED (round 7 review) — AvailabilityDrawer.tsx needs this exact
+// formatting and was told it was already exported; it wasn't. If you're
+// reading this while `AvailabilityDrawer.tsx` still carries its own local
+// stopgap copy, that copy is meant to be deleted in favor of this import.
+export function monthDayYear(iso: string): string {
   const [y, m, d] = iso.split('-');
   return `${MONTHS[Number(m) - 1]} ${Number(d)}, ${y}`;
 }
@@ -155,6 +171,18 @@ function monthDayYear(iso: string): string {
  * The honesty caveat under the off-days column. Off days can only be counted
  * where a schedule exists; this names the span so nobody reads the figure as a
  * full-year number.
+ *
+ * THE TWO TIME SCALES ARE THE ROOT CONFUSION THIS EXISTS TO NAME (Fix 1, round
+ * 7 review). `offDaysText` renders "{used} of {budget} used", but the
+ * NUMERATOR is counted only across published blocks while the DENOMINATOR is
+ * the full calendar year — at Paoli today (one published 2026 block, Aug
+ * 10 – Oct 25, ~54 of ~255 working days) a 0.7 FTE reads "10 of 76 used",
+ * which reads as "66 off days left this year" when 201 working days were
+ * never examined at all. Every branch below therefore says BOTH halves
+ * explicitly — "the budget is for the full year" AND "used is counted only
+ * across published blocks" — rather than naming just the span, which is what
+ * this function used to do and why the confusion survived a caption right
+ * next to the number it was supposed to explain.
  *
  * THE GAP CASE IS THE WHOLE POINT. When the year's published blocks are
  * disjoint — a draft block sitting between two published ones is enough — the
@@ -172,10 +200,16 @@ function monthDayYear(iso: string): string {
  * depends on that: a span straddling a year boundary would render backwards
  * ("Dec 28 – Jan 10, 2027"). Not reachable today because of the caller
  * invariant, but this function does not itself check it.
+ *
+ * Rendered by BOTH cards that show the off-days column (AnnualTallyCard and,
+ * as of Fix 1, RosterCard) — a caveat this load-bearing must appear
+ * everywhere the fraction it explains does, not just wherever it happened to
+ * be added first.
  */
 export function coveredSpanLabel(span: CoveredSpanInfo | null): string {
   if (!span) {
-    return 'No published blocks this year — off days show the budget only, with nothing counted against it.';
+    return 'The off-day budget is for the full year — no published block exists yet, so nothing has been '
+      + 'examined and no days are counted as used.';
   }
   // A published span that contains no working days (e.g. clipped to a single
   // major holiday) is NOT the same as nothing being published, and must not
@@ -183,15 +217,17 @@ export function coveredSpanLabel(span: CoveredSpanInfo | null): string {
   // branch precedes the segments check below — a multi-block span can also
   // clip to zero working days.
   if (span.workingDays === 0) {
-    return 'The published coverage for this year includes no working days — nothing has been counted against the off-day budget.';
+    return 'The off-day budget is for the full year — the published coverage here includes no working days, '
+      + 'so nothing has been examined and no days are counted as used.';
   }
   const start = monthDayYear(span.start).replace(/, \d{4}$/, '');
   const range = `${start} – ${monthDayYear(span.end)}`;
   if (span.segments.length > 1) {
-    return `Off days counted across ${span.segments.length} published blocks only, with gaps between them: `
-      + `${range} (${span.workingDays} working days counted).`;
+    return `The off-day budget is for the full year; days used are counted only across ${span.segments.length} `
+      + `published blocks, with gaps between them: ${range} (${span.workingDays} working days counted).`;
   }
-  return `Off days counted across published blocks only: ${range} (${span.workingDays} working days).`;
+  return `The off-day budget is for the full year; days used are counted only across the published block: `
+    + `${range} (${span.workingDays} working days).`;
 }
 
 /**
@@ -722,3 +758,41 @@ export function blockPrepYearOptions(thisYear: number): number[] {
 
 export const CREATE_SCHEDULE_TOOLTIP = 'Create a schedule for this site';
 export const CREATE_SCHEDULE_NO_SITE_TOOLTIP = 'Pick a site first';
+
+/**
+ * The "no call takers" empty-state hint, shared by RosterCard and
+ * AnnualTallyCard (Fix 3, round 7 review) — they used to carry two DIFFERENT
+ * sentences. AnnualTallyCard's said "Mark a provider as a call taker with
+ * this site as their home site and they'll appear here", but the route ALSO
+ * requires `providers.status = 'active'` — a chief following that instruction
+ * on an inactive provider sees nothing happen. RosterCard's own hint already
+ * named all three requirements correctly. Production has a site with zero
+ * call takers today (Jefferson Navy Yard), so this empty state is reachable
+ * on day one, not a hypothetical.
+ */
+export const NO_CALL_TAKERS_HINT =
+  'A provider appears here when they are active, marked as a call taker, and this site is their home site.';
+
+/**
+ * The site-picker's placeholder text for the "nothing to list yet" case —
+ * four distinguishable facts, never collapsed into one guess: a fetch
+ * failure, no organization configured at all, "hasn't looked yet", and a
+ * genuinely confirmed zero sites.
+ *
+ * Shared by /block-prep's site select and /dashboard's DashboardTallyCard
+ * (Fix 2, round 7 review) — the `noOrg` guard was added to /block-prep alone
+ * in round 6 (without it, an empty organizations list left the site select
+ * reading "Loading sites…" forever, since the sites fetch is gated on having
+ * an org id), and DashboardTallyCard kept its own hand-duplicated copy of the
+ * same bootstrap sequence without it. Centralizing the WORDING here, on top
+ * of `useOrgAndSites` centralizing the FETCHING, is what stops a future fix
+ * from landing in only one of two copies again.
+ */
+export function siteBootstrapText(
+  state: { error: string | null; noOrg: boolean; sitesLoaded: boolean },
+): string {
+  if (state.error) return 'Could not load sites';
+  if (state.noOrg) return 'No organization configured';
+  if (state.sitesLoaded) return 'No sites';
+  return 'Loading sites…';
+}
