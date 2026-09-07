@@ -5,7 +5,7 @@ import {
   ADDABLE_AVAILABILITY_TYPES, icuPairsFor, icuRowLockInfo, availabilityTypeTone,
   availabilityStatusBadge, rosterFooterNote, WORK_DAYS_FTE_PLACEHOLDER,
   liveBlockingRows, sellbackStandaloneNote, availabilityTypeHint, dateRangeError,
-  yearBounds, availabilityQueryUrl, removalConfirmMessage,
+  yearBounds, availabilityQueryUrl, removalConfirmMessage, blockPrepYearOptions,
   type RosterRow, type AvailabilityLikeRow, type AddableAvailabilityType,
 } from './blockPrepView';
 // CoveredSpanInfo is annualTally's exported span shape — used below by
@@ -689,5 +689,11 @@ describe('removalConfirmMessage', () => {
     });
     expect(msg).toContain('2026-08-10');
     expect(msg).not.toContain('→');
+  });
+});
+
+describe('blockPrepYearOptions', () => {
+  it('offers last year, this year, and next year, in that order', () => {
+    expect(blockPrepYearOptions(2026)).toEqual([2025, 2026, 2027]);
   });
 });

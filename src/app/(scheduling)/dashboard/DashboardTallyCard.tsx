@@ -5,59 +5,108 @@
 // the choice to the shared AnnualTallyCard. The card itself is identical to the
 // one on /block-prep — same component, same route, same numbers.
 //
-// Self-fetch mode: `data` and `refreshKey` are both omitted, so AnnualTallyCard
-// issues its own /block-prep request for whichever site is picked here. There
-// is no roster or write flow on this page for the card's own refetch to race
-// with, so there is nothing here to bump a refreshKey for.
+// COLLAPSED BY DEFAULT (I3, round 5 review, Important): AnnualTallyCard
+// self-fetches /block-prep, which route.helpers.ts's own header describes as
+// the slowest query in the app — year-wide, three embeds, paged past the
+// 1000-row cap. /dashboard is `force-dynamic` and is the landing page, so
+// mounting AnnualTallyCard unconditionally would pay that cost on every
+// dashboard load whether or not anyone looks at it. AnnualTallyCard is not
+// mounted at all until the chief expands the card — same "collapsed by
+// default" posture PhysicianPlannerCard already uses directly below it,
+// adapted for the fact that this card has no cheaper partial query to show
+// while collapsed (the route computes roster and tally together): the
+// collapsed state is a plain static summary line, not a chip row.
+//
+// REAL ERROR HANDLING (I2, round 5 review, Important): the bootstrap org/site
+// fetch used to have no try/catch and no error state, so a failed request
+// silently rendered as "no sites" (with `sites.length > 1` false, that also
+// hid the site picker entirely) — an empty state instructing the chief to use
+// a control that wasn't on screen, with an unhandled promise rejection to
+// boot. A failure now renders a distinguishable error Banner instead.
 
 import { useEffect, useState } from 'react';
+import { Banner, Button, Card } from '@/components/ui';
 import AnnualTallyCard from '@/components/AnnualTallyCard';
 
 interface Site { id: string; name: string; short_name: string | null }
 
+const SELECT: React.CSSProperties = {
+  padding: '6px 10px', borderRadius: 'var(--radius-sm)',
+  border: '1px solid var(--border)', background: 'var(--bg-deep)',
+  color: 'var(--text)', fontSize: 'var(--fs-sm)', cursor: 'pointer',
+};
+
 export default function DashboardTallyCard() {
   const [sites, setSites] = useState<Site[]>([]);
   const [siteId, setSiteId] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  const [expanded, setExpanded] = useState(false);
   const year = new Date().getFullYear();
 
   useEffect(() => {
     (async () => {
-      const orgRes = await fetch('/api/scheduling/organizations');
-      const orgs = await orgRes.json();
-      if (!Array.isArray(orgs) || orgs.length === 0) return;
-      const res = await fetch(`/api/scheduling/sites?org_id=${orgs[0].id}`);
-      const list = await res.json();
-      if (Array.isArray(list)) {
-        setSites(list);
-        if (list.length > 0) setSiteId(list[0].id);
+      try {
+        const orgRes = await fetch('/api/scheduling/organizations');
+        if (!orgRes.ok) {
+          const body = await orgRes.json().catch(() => ({}));
+          setError(body.error || `Could not load organizations (${orgRes.status})`);
+          return;
+        }
+        const orgs = await orgRes.json();
+        if (!Array.isArray(orgs) || orgs.length === 0) return;
+        const res = await fetch(`/api/scheduling/sites?org_id=${orgs[0].id}`);
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({}));
+          setError(body.error || `Could not load sites (${res.status})`);
+          return;
+        }
+        const list = await res.json();
+        if (Array.isArray(list)) {
+          setSites(list);
+          if (list.length > 0) setSiteId(list[0].id);
+        }
+      } catch (e) {
+        setError(e instanceof Error ? e.message : 'Network error loading sites');
       }
     })();
   }, []);
 
   const site = sites.find(s => s.id === siteId);
+  const siteName = site?.short_name || site?.name;
+
+  if (error) {
+    return <Card title="Annual tally"><Banner tone="error">{error}</Banner></Card>;
+  }
+
+  if (!expanded) {
+    return (
+      <Card
+        title="Annual tally"
+        actions={<Button variant="secondary" size="sm" onClick={() => setExpanded(true)}>Expand</Button>}
+      >
+        <div style={{ fontSize: 'var(--fs-sm)', color: 'var(--text-muted)' }}>
+          {siteName
+            ? `${siteName}'s ${year} call, PTO and off-day running totals — expand to view.`
+            : 'Loading sites…'}
+        </div>
+      </Card>
+    );
+  }
 
   return (
     <div>
-      {sites.length > 1 && (
-        <div style={{ marginBottom: 'var(--space-2)' }}>
-          <select
-            value={siteId}
-            onChange={e => setSiteId(e.target.value)}
-            style={{
-              padding: '6px 10px', borderRadius: 'var(--radius-sm)',
-              border: '1px solid var(--border)', background: 'var(--bg-deep)',
-              color: 'var(--text)', fontSize: 'var(--fs-sm)', cursor: 'pointer',
-            }}
-          >
+      <div style={{
+        display: 'flex', justifyContent: 'flex-end', alignItems: 'center',
+        gap: 'var(--space-2)', marginBottom: 'var(--space-2)',
+      }}>
+        {sites.length > 1 && (
+          <select aria-label="Site" value={siteId} onChange={e => setSiteId(e.target.value)} style={SELECT}>
             {sites.map(s => <option key={s.id} value={s.id}>{s.short_name || s.name}</option>)}
           </select>
-        </div>
-      )}
-      <AnnualTallyCard
-        siteId={siteId || null}
-        year={year}
-        siteName={site?.short_name || site?.name}
-      />
+        )}
+        <Button variant="secondary" size="sm" onClick={() => setExpanded(false)}>Collapse</Button>
+      </div>
+      <AnnualTallyCard siteId={siteId || null} year={year} siteName={siteName} />
     </div>
   );
 }

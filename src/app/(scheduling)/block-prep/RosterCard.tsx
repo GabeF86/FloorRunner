@@ -142,6 +142,30 @@
 // won't narrow `action` to the `'revert'` variant unless the condition
 // actually tests `action.kind`, so `action.to` doesn't exist otherwise.
 // `shouldCommit`, `shouldRevert`, and `isNoopEdit` are gone — folded in.
+//
+// C1 / I5 (round 5 review, CRITICAL): Task 10 used to trigger its post-edit
+// refetch from `onSaved` — called OPTIMISTICALLY, before `await fetch(PATCH)`
+// even starts. Nothing sequenced the resulting GET against the PATCH it was
+// meant to follow: the GET's profile read could reach the DB before the
+// PATCH's UPDATE committed, land the PRE-EDIT value, and the resync effect
+// above would then silently rewrite the input back to it — the chief types
+// 0.75, tabs out, and watches it snap back to 0.70, with no further refetch
+// ever scheduled to self-correct. Comparable to the standalone helpers
+// above: page.tsx observes only `onSaved`, so this defect lived at the
+// call-site level, not inside any single unit-tested function. The same bug
+// also explains I5: `onFailure` ALSO calls `onSaved` (to revert), so a
+// rejected edit fired the page's refetch TWICE.
+//
+// The fix adds `onCommitted`, called ONLY from the `finally` block below —
+// i.e. only after `await fetch(...)` (and any `await res.json()` reading its
+// body) has fully settled, success or failure alike, and exactly once per
+// PATCH attempt. `onSaved` keeps doing the optimistic local update (instant
+// feel); `onCommitted` is the page's sole refetch trigger now. Because
+// `onCommitted` cannot run before the `try` block's promise chain resolves —
+// a JS `finally` is ordered strictly after everything in its `try`/`catch` —
+// the GET it triggers can never be dispatched while the PATCH is still in
+// flight. It is never called for `'skip'`, `'invalid'`, or `'noop'`, since
+// none of those ever reach the server and there is nothing new to refetch.
 
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import Link from 'next/link';
@@ -250,13 +274,24 @@ const CELL_INPUT: React.CSSProperties = {
 };
 
 function EditableCell({
-  value, field, providerId, displayName, onSaved, onError, onBusyChange,
+  value, field, providerId, displayName, onSaved, onCommitted, onError, onBusyChange,
 }: {
   value: number | null;
   field: Field;
   providerId: string;
   displayName: string;
+  /** Optimistic local UI update — called immediately, before the PATCH is
+   *  even sent, so the cell feels instant. Must NOT be used to trigger a
+   *  refetch (see the C1 note in the file header) — that is `onCommitted`'s
+   *  job, fired only once the PATCH has actually settled. */
   onSaved: (field: Field, value: number | null) => void;
+  /** Fires exactly once per genuine PATCH attempt, AFTER it has settled
+   *  (success or failure) — see the C1 / I5 note in the file header. This is
+   *  the only place the parent should trigger a post-edit refetch; doing so
+   *  from `onSaved` instead re-races the refetch against the PATCH it was
+   *  meant to follow. Never fired for a skipped, invalid, or no-op commit —
+   *  nothing reached the server, so there is nothing new to refetch. */
+  onCommitted: () => void;
   /** null clears the banner — called at the start of every commit attempt. */
   onError: (message: string | null) => void;
   /** Reports focused-or-saving transitions so the parent can freeze row
@@ -353,6 +388,11 @@ function EditableCell({
       onFailure(e instanceof Error ? e.message : 'Network error');
     } finally {
       setSaving(false);
+      // C1: fires ONCE, and only once every await above (the fetch itself,
+      // plus a failed response's `res.json()`) has settled — a `finally`
+      // runs strictly after its `try`/`catch`, so the page's refetch this
+      // triggers can never be dispatched while the PATCH is still in flight.
+      onCommitted();
     }
   };
 
@@ -457,8 +497,13 @@ export function resolveDisplayRows(
 }
 
 export interface RosterRowCallbacks {
-  /** Applies an edit to the parent's copy so the tally can refetch. */
+  /** Applies an edit to the parent's copy for INSTANT local feedback. Does
+   *  NOT trigger a refetch — see `onCommitted` below (C1: sequencing the
+   *  refetch off this optimistic callback let it race the PATCH). */
   onPatched: (providerId: string, field: Field, value: number | null) => void;
+  /** Fires once a PATCH has actually settled (success or failure) — the
+   *  page's cue to refetch so PTO / off-day / call figures catch up. */
+  onCommitted: () => void;
   onCellError: (message: string | null) => void;
   onBusyChange: (cellId: string, busy: boolean) => void;
   onOpenDrawer: (row: RosterRow) => void;
@@ -488,17 +533,20 @@ export function buildRosterTableRows(displayRows: RosterRow[], cb: RosterRowCall
     <EditableCell
       key={rosterCellKey('fte_value', r.provider_id)}
       value={r.fte_value} field="fte_value" providerId={r.provider_id} displayName={r.display_name}
-      onSaved={(f, v) => cb.onPatched(r.provider_id, f, v)} onError={cb.onCellError} onBusyChange={cb.onBusyChange}
+      onSaved={(f, v) => cb.onPatched(r.provider_id, f, v)} onCommitted={cb.onCommitted}
+      onError={cb.onCellError} onBusyChange={cb.onBusyChange}
     />,
     <EditableCell
       key={rosterCellKey('work_days_fte', r.provider_id)}
       value={r.work_days_fte} field="work_days_fte" providerId={r.provider_id} displayName={r.display_name}
-      onSaved={(f, v) => cb.onPatched(r.provider_id, f, v)} onError={cb.onCellError} onBusyChange={cb.onBusyChange}
+      onSaved={(f, v) => cb.onPatched(r.provider_id, f, v)} onCommitted={cb.onCommitted}
+      onError={cb.onCellError} onBusyChange={cb.onBusyChange}
     />,
     <EditableCell
       key={rosterCellKey('pto_weeks', r.provider_id)}
       value={r.pto_weeks} field="pto_weeks" providerId={r.provider_id} displayName={r.display_name}
-      onSaved={(f, v) => cb.onPatched(r.provider_id, f, v)} onError={cb.onCellError} onBusyChange={cb.onBusyChange}
+      onSaved={(f, v) => cb.onPatched(r.provider_id, f, v)} onCommitted={cb.onCommitted}
+      onError={cb.onCellError} onBusyChange={cb.onBusyChange}
     />,
     <span key="ptofig" style={{ fontSize: 'var(--fs-sm)' }}>{remainingText(r.pto)}</span>,
     <span key="off" style={{ fontSize: 'var(--fs-sm)' }}>{offDaysText(r.offDayBudget, r.offDaysUsed)}</span>,
@@ -512,12 +560,17 @@ export function buildRosterTableRows(displayRows: RosterRow[], cb: RosterRowCall
 }
 
 export default function RosterCard({
-  siteId, rows, error, onPatched, onOpenDrawer,
+  siteId, rows, error, onPatched, onCommitted, onOpenDrawer,
 }: {
   siteId: string | null;
   rows: RosterRow[] | null;
   error: string | null;
+  /** Optimistic local update only — see RosterRowCallbacks.onPatched. */
   onPatched: (providerId: string, field: Field, value: number | null) => void;
+  /** Fires once per settled PATCH (success or failure) — the host's cue to
+   *  refetch. See the C1 note in the file header for why this must be kept
+   *  separate from `onPatched`. */
+  onCommitted: () => void;
   onOpenDrawer: (row: RosterRow) => void;
 }) {
   const [cellError, setCellError] = useState<string | null>(null);
@@ -593,7 +646,7 @@ export default function RosterCard({
         headers={HEADERS}
         minWidth={980}
         rows={displayRows === undefined ? undefined : buildRosterTableRows(displayRows, {
-          onPatched, onCellError: setCellError, onBusyChange, onOpenDrawer,
+          onPatched, onCommitted, onCellError: setCellError, onBusyChange, onOpenDrawer,
         })}
         empty={
           <EmptyState

@@ -69,6 +69,10 @@ export default function SchedulesPage() {
     if (params.get('create') === '1') {
       setPresetSiteId(params.get('site_id') || '');
       setShowCreate(true);
+      // Strip ?create=1&site_id=... from the address bar once the modal is
+      // open — otherwise a refresh (or the back button landing here again)
+      // silently reopens Create Schedule with no user action.
+      window.history.replaceState(null, '', window.location.pathname);
     }
   }, []);
   // Assistant reach (ui-v1 Task 8): the backend contract targets ONE schedule

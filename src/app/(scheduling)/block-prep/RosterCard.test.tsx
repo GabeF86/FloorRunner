@@ -52,7 +52,7 @@ const noop = () => {};
 describe('RosterCard — loading (Fix C1 regression)', () => {
   it('rows=null renders a skeleton, never "No call takers at this site" — this is the case the removed `loading` prop got wrong', () => {
     const html = renderToStaticMarkup(
-      <RosterCard siteId="site-1" rows={null} error={null} onPatched={noop} onOpenDrawer={noop} />,
+      <RosterCard siteId="site-1" rows={null} error={null} onPatched={noop} onCommitted={noop} onOpenDrawer={noop} />,
     );
     const skeletons = html.match(/fr-skeleton/g) ?? [];
     expect(skeletons.length).toBe(3 * HEADER_COUNT);
@@ -63,7 +63,7 @@ describe('RosterCard — loading (Fix C1 regression)', () => {
 describe('RosterCard — no site picked', () => {
   it('shows a "Pick a site" prompt, not a permanent skeleton, when siteId is null', () => {
     const html = renderToStaticMarkup(
-      <RosterCard siteId={null} rows={null} error={null} onPatched={noop} onOpenDrawer={noop} />,
+      <RosterCard siteId={null} rows={null} error={null} onPatched={noop} onCommitted={noop} onOpenDrawer={noop} />,
     );
     expect(html).toContain('Pick a site');
     expect(html.match(/fr-skeleton/g) ?? []).toHaveLength(0);
@@ -73,7 +73,7 @@ describe('RosterCard — no site picked', () => {
 describe('RosterCard — empty roster', () => {
   it('renders the empty state once loaded with zero call takers, not a skeleton', () => {
     const html = renderToStaticMarkup(
-      <RosterCard siteId="site-1" rows={[]} error={null} onPatched={noop} onOpenDrawer={noop} />,
+      <RosterCard siteId="site-1" rows={[]} error={null} onPatched={noop} onCommitted={noop} onOpenDrawer={noop} />,
     );
     expect(html).toContain('No call takers at this site');
     expect(html.match(/fr-skeleton/g) ?? []).toHaveLength(0);
@@ -88,6 +88,7 @@ describe('RosterCard — error', () => {
         rows={[rosterRow({ display_name: 'SHOULD NOT APPEAR' })]}
         error="Roster boom"
         onPatched={noop}
+        onCommitted={noop}
         onOpenDrawer={noop}
       />,
     );
@@ -104,6 +105,7 @@ describe('RosterCard — a populated row\'s editable cells', () => {
       rows={[rosterRow({ provider_id: 'p1', pto_weeks: null, work_days_fte: null })]}
       error={null}
       onPatched={noop}
+      onCommitted={noop}
       onOpenDrawer={noop}
     />,
   );
@@ -244,7 +246,7 @@ describe('revertDecision (Fix R1: the post-failure counterpart to commitDecision
 });
 
 function noopCallbacks(): RosterRowCallbacks {
-  return { onPatched: () => {}, onCellError: () => {}, onBusyChange: () => {}, onOpenDrawer: () => {} };
+  return { onPatched: () => {}, onCommitted: () => {}, onCellError: () => {}, onBusyChange: () => {}, onOpenDrawer: () => {} };
 }
 
 /** React elements expose `.key` as a plain property — readable without

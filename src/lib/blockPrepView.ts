@@ -704,3 +704,21 @@ export function availabilityStatusBadge(
     default:           return { tone: 'neutral', label: approvalStatus };
   }
 }
+
+// ── Block Prep page (Task 10) ───────────────────────────────────────────────
+// The page itself is fetch/state/markup only; the one thing it decides —
+// which years to offer — and its chief-facing button copy live here so a
+// review of "what does this page assume" doesn't require reading JSX.
+
+/**
+ * The year picker's options for the Block Prep board: last year (checking a
+ * just-finished block), this year, and next year (prepping ahead) — no
+ * further-out years, since nothing this board shows (PTO, off days, calls)
+ * exists yet beyond next year's horizon.
+ */
+export function blockPrepYearOptions(thisYear: number): number[] {
+  return [thisYear - 1, thisYear, thisYear + 1];
+}
+
+export const CREATE_SCHEDULE_TOOLTIP = 'Create a schedule for this site';
+export const CREATE_SCHEDULE_NO_SITE_TOOLTIP = 'Pick a site first';
