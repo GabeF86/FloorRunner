@@ -390,6 +390,17 @@ export interface CoveredSpanInfo {
    * near-total coverage when five months in between were never built.
    * Any label built from this MUST either walk `segments` or say "and gaps
    * in between" — never print `start`–`end` alone when `segments.length > 1`.
+   *
+   * Adjacency is CALENDAR-based, not working-day-based: two blocks separated
+   * only by a weekend (one ends Friday, the next starts Monday) are NOT
+   * touching by calendar date, so they land in separate segments even though
+   * their WORKING-DAY coverage is identical to the truly-adjacent case (no
+   * working day in between either way). That reads as "gaps between them"
+   * for a pair that missed nothing — an over-cautious label, not a wrong
+   * number, and the safe direction to err in. Left as-is deliberately: every
+   * published block observed in practice (Paoli's back-to-back Mon-Sun
+   * blocks) starts the calendar day after the previous one ends, so this
+   * never fires there.
    */
   segments: Array<{ start: string; end: string }>;
 }

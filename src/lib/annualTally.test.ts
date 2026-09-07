@@ -437,6 +437,23 @@ describe('coveredSpanFor', () => {
     expect(span!.segments).toEqual([{ start: '2026-01-05', end: '2026-06-07' }]);
   });
 
+  it('does not let a WHOLLY-CONTAINED span shrink the merged segment', () => {
+    // Without the `s.end > last.end` containment guard, merging the shorter
+    // contained span second would overwrite last.end DOWN to 2026-06-01,
+    // silently discarding 2026-06-02..2026-09-30 from coverage and
+    // under-reporting both workingDays and offDaysUsed. Reachable when a
+    // short special-purpose schedule is published inside a long block, or a
+    // corrected block is republished overlapping an older one.
+    const { span } = coveredSpanFor(
+      [
+        { date_start: '2026-03-01', date_end: '2026-09-30' },
+        { date_start: '2026-05-01', date_end: '2026-06-01' }, // wholly inside the first
+      ],
+      workingDaySet, 2026,
+    );
+    expect(span!.segments).toEqual([{ start: '2026-03-01', end: '2026-09-30' }]);
+  });
+
   it('merges the same way regardless of input order', () => {
     const outOfOrder = coveredSpanFor(
       [
