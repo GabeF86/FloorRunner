@@ -4,7 +4,8 @@ import {
   coveredSpanLabel, unrosteredFootnote, parseFteInput, parseAllotmentInput,
   ADDABLE_AVAILABILITY_TYPES, icuPairsFor, icuRowLockInfo, availabilityTypeTone,
   availabilityStatusBadge, rosterFooterNote, WORK_DAYS_FTE_PLACEHOLDER,
-  liveBlockingRows, sellbackStandaloneNote, availabilityTypeHint, dateRangeError,
+  liveBlockingRows, sellbackStandaloneNote, availabilityTypeHint,
+  availabilityTypeDisplayLabel, dateRangeError,
   yearBounds, availabilityQueryUrl, removalConfirmMessage, blockPrepYearOptions,
   siteBootstrapText,
   type RosterRow, type AvailabilityLikeRow, type AddableAvailabilityType,
@@ -616,6 +617,26 @@ describe('availabilityTypeHint', () => {
   it('returns null for every other type — no elaboration needed', () => {
     expect(availabilityTypeHint('pto')).toBeNull();
     expect(availabilityTypeHint('unavailable')).toBeNull();
+  });
+});
+
+describe('availabilityTypeDisplayLabel', () => {
+  // Fix 5 (Minor, review 2026-09-07), moved here from AvailabilityDrawer.tsx
+  // once this file was free (fourth pass) — a chief-facing vocabulary
+  // decision belongs in the module that owns those, with its own test,
+  // rather than as a local override buried in a component.
+  it('overrides unavailable to "Days Off" — the profile\'s category-level term, not its per-row "Unavailable" badge', () => {
+    expect(availabilityTypeDisplayLabel('unavailable')).toBe('Days Off');
+  });
+
+  it('falls back to the shared AVAILABILITY_TYPE_LABELS for every non-overridden type', () => {
+    expect(availabilityTypeDisplayLabel('pto')).toBe('PTO');
+    expect(availabilityTypeDisplayLabel('pto_sellback')).toBe('PTO Sell-Back');
+    expect(availabilityTypeDisplayLabel('blocked')).toBe('Blocked');
+  });
+
+  it('falls back to the raw string for a type not in the shared map at all', () => {
+    expect(availabilityTypeDisplayLabel('some_future_type')).toBe('some_future_type');
   });
 });
 

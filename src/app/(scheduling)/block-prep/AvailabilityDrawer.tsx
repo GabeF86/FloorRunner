@@ -72,32 +72,15 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { Badge, Banner, Button, EmptyState, Modal } from '@/components/ui';
-import {
-  AVAILABILITY_TYPE_LABELS, reasonCodeLabel, type AvailabilityType,
-} from '@/lib/validation/providers';
+import { reasonCodeLabel } from '@/lib/validation/providers';
 import { isDismissedAvailability } from '@/lib/rulesEngine/shared';
 import {
   ADDABLE_AVAILABILITY_TYPES, availabilityQueryUrl, availabilityStatusBadge,
-  availabilityTypeHint, availabilityTypeTone, dateRangeError, icuPairsFor,
-  icuRowLockInfo, liveBlockingRows, removalConfirmMessage,
-  sellbackStandaloneNote, yearBounds, type AddableAvailabilityType,
+  availabilityTypeDisplayLabel, availabilityTypeHint, availabilityTypeTone,
+  dateRangeError, icuPairsFor, icuRowLockInfo, liveBlockingRows, monthDayYear,
+  removalConfirmMessage, sellbackStandaloneNote, yearBounds,
+  type AddableAvailabilityType,
 } from '@/lib/blockPrepView';
-
-// STOPGAP (review 2026-09-07 third pass): the fix note asked for
-// blockPrepView.ts's `monthDayYear` — same formatter `coveredSpanLabel`
-// already uses — but as of this commit it is declared there WITHOUT
-// `export` (verified: `grep -n monthDayYear src/lib/blockPrepView.ts` shows
-// a bare `function`, not `export function`). blockPrepView.ts is owned by
-// another agent this round, so it cannot be added here. Duplicated
-// byte-for-byte (same MONTHS table, same split-not-Date-construction
-// approach, for the same no-timezone reason) so behaviour is correct either
-// way; DELETE this block and import the real one the moment it's exported —
-// two sources of the same formatter must not both survive.
-const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-function monthDayYear(iso: string): string {
-  const [y, m, d] = iso.split('-');
-  return `${MONTHS[Number(m) - 1]} ${Number(d)}, ${y}`;
-}
 
 /** The provider_availability columns this drawer reads and renders. */
 export interface AvailabilityDrawerRow {
@@ -119,33 +102,6 @@ const INPUT: React.CSSProperties = {
   border: '1px solid var(--border)', background: 'var(--bg-deep)',
   color: 'var(--text)', fontSize: 'var(--fs-sm)', fontFamily: 'inherit',
 };
-
-/**
- * Fix 5 (Minor, review 2026-09-07): the profile's OWN vocabulary for
- * availability_type 'unavailable' is "Days Off" at the category level — its
- * section title, its counter ("Total Days Off"), and the public intake
- * form's field are all named that way — even though the profile's per-row
- * badge still literally reads "Unavailable" (AVAILABILITY_TYPE_LABELS,
- * validation/providers.ts, shared across the whole app). This drawer has no
- * per-type sections, so its badge/picker option IS the category label a
- * chief reads — and this drawer's own empty-state hint already promised
- * "days off", so leaving the badge at "Unavailable" disagreed with the
- * drawer's OWN wording, not just the profile's.
- *
- * Overridden LOCALLY rather than in the shared AVAILABILITY_TYPE_LABELS map:
- * that map is a foundational, cross-cutting export many unrelated surfaces
- * still key off verbatim, and retargeting it is out of scope for this
- * drawer's fix. Flagged for a shared home if a second surface ever needs the
- * same override.
- */
-const TYPE_DISPLAY_OVERRIDES: Partial<Record<string, string>> = {
-  unavailable: 'Days Off',
-};
-function displayLabel(availabilityType: string): string {
-  return TYPE_DISPLAY_OVERRIDES[availabilityType]
-    ?? AVAILABILITY_TYPE_LABELS[availabilityType as AvailabilityType]
-    ?? availabilityType;
-}
 
 /** One row's date range, formatted the way the profile does (Fix 3, review
  *  2026-09-07: raw ISO read as a database dump, not a chief-facing date) —
@@ -246,7 +202,7 @@ export function AvailabilityDrawerBody({
         >
           {editError && <Banner tone="error">{editError}</Banner>}
           <div style={{ display: 'flex', gap: 'var(--space-2)', alignItems: 'center', flexWrap: 'wrap' }}>
-            <Badge tone={availabilityTypeTone(r.availability_type)}>{displayLabel(r.availability_type)}</Badge>
+            <Badge tone={availabilityTypeTone(r.availability_type)}>{availabilityTypeDisplayLabel(r.availability_type)}</Badge>
             <input
               aria-label="Edit start date"
               type="date"
@@ -279,7 +235,7 @@ export function AvailabilityDrawerBody({
       );
     }
 
-    const typeLabel = displayLabel(r.availability_type);
+    const typeLabel = availabilityTypeDisplayLabel(r.availability_type);
     // ICU rows carry availability_type 'blocked' — the type badge alone
     // reads as an opaque hard block. reason_code already distinguishes
     // icu_week / icu_post_call; reasonCodeLabel is the single home for that
@@ -368,7 +324,7 @@ export function AvailabilityDrawerBody({
           style={{ ...INPUT, cursor: 'pointer' }}
         >
           {ADDABLE_AVAILABILITY_TYPES.map(t => (
-            <option key={t} value={t}>{displayLabel(t)}</option>
+            <option key={t} value={t}>{availabilityTypeDisplayLabel(t)}</option>
           ))}
         </select>
         {/* No `min` on start / no `max` on end (a range spanning into the
@@ -532,7 +488,7 @@ export default function AvailabilityDrawer({
   };
 
   const remove = async (row: AvailabilityDrawerRow) => {
-    const label = displayLabel(row.availability_type);
+    const label = availabilityTypeDisplayLabel(row.availability_type);
     // Destructive and possibly load-bearing for a published schedule — name
     // exactly what's being removed, including WHO, rather than a generic
     // "are you sure?" (this drawer's whole premise is editing eleven people

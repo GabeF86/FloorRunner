@@ -29,7 +29,8 @@ import type {
 // rather than hand-copied so the board is a fourth home wired to the same
 // numbers, not a fourth number that happens to agree today.
 import {
-  FTE_MAX, FTE_MIN, WORK_DAYS_FTE_MAX, WORK_DAYS_FTE_MIN, type AvailabilityType,
+  AVAILABILITY_TYPE_LABELS, FTE_MAX, FTE_MIN, WORK_DAYS_FTE_MAX, WORK_DAYS_FTE_MIN,
+  type AvailabilityType,
 } from './validation/providers';
 // ICU rotation rows are PAIRED (a week row + its post-call Monday).
 // icuRowLockInfo below routes the actual pairing decision through
@@ -594,6 +595,36 @@ export function sellbackStandaloneNote(
 export function availabilityTypeHint(availabilityType: string): string | null {
   if (availabilityType !== 'pto_sellback') return null;
   return 'The provider IS WORKING these dates — the group bought the PTO back.';
+}
+
+/**
+ * Fix 5 (Minor, review 2026-09-07): the profile's OWN vocabulary for
+ * availability_type 'unavailable' is "Days Off" at the category level — its
+ * section title, its counter ("Total Days Off"), and the public intake
+ * form's field are all named that way — even though the profile's per-row
+ * badge still literally reads "Unavailable" (AVAILABILITY_TYPE_LABELS,
+ * validation/providers.ts, shared across the whole app). The block-prep
+ * drawer has no per-type sections, so its badge/picker option IS the
+ * category label a chief reads, and its own empty-state hint already
+ * promised "days off" — leaving the badge at "Unavailable" disagreed with
+ * the drawer's OWN wording, not just the profile's.
+ *
+ * A LOCAL override rather than a change to AVAILABILITY_TYPE_LABELS itself:
+ * that map is a foundational, cross-cutting export many unrelated surfaces
+ * still key off verbatim (the profile's own per-row badge among them), and
+ * retargeting it would relabel every one of those. Lives HERE, not in the
+ * drawer component, because it's a chief-facing vocabulary DECISION — moved
+ * from AvailabilityDrawer.tsx once this file was free to take it (review
+ * 2026-09-07, fourth pass) — exactly what this module exists to hold and
+ * test rather than bury in JSX.
+ */
+const AVAILABILITY_TYPE_DISPLAY_OVERRIDES: Partial<Record<string, string>> = {
+  unavailable: 'Days Off',
+};
+export function availabilityTypeDisplayLabel(availabilityType: string): string {
+  return AVAILABILITY_TYPE_DISPLAY_OVERRIDES[availabilityType]
+    ?? AVAILABILITY_TYPE_LABELS[availabilityType as AvailabilityType]
+    ?? availabilityType;
 }
 
 export interface YearBounds { start: string; end: string }
