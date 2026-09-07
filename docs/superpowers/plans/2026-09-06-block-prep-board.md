@@ -176,99 +176,18 @@ The patch is the risky artifact in this task and must carry the sections every c
 
 - [ ] **Step 1: Write the failing test**
 
-Create `src/lib/annualTally.test.ts`:
+The shipped test file is `src/lib/annualTally.test.ts` — read it rather than re-authoring from a
+listing here. An earlier draft of this plan inlined the tests and they drifted twice under review;
+the committed file is the reference.
 
-```ts
-// Annual tally math. Fixtures mirror the live Paoli roster shape: a 1.0 FTE
-// with a stated allotment, a partial-call doc whose WORKING-days FTE is 1.00
-// (Hussain), and a call taker with no allotment stated at all.
-import { describe, it, expect } from 'vitest';
-import { ptoFiguresFor, offDayBudgetFor, type TallyProfile } from './annualTally';
-import type { PlannerAvailabilityRow } from './plannerMath';
-
-const profile = (over: Partial<TallyProfile> = {}): TallyProfile => ({
-  provider_id: 'p1',
-  fte_value: 1,
-  work_days_fte: null,
-  pto_weeks: 4,
-  ...over,
-});
-
-const pto = (start: string, end: string, over: Partial<PlannerAvailabilityRow> = {}): PlannerAvailabilityRow => ({
-  provider_id: 'p1',
-  availability_type: 'pto',
-  start_date: start,
-  end_date: end,
-  approval_status: 'approved',
-  ...over,
-});
-
-describe('ptoFiguresFor', () => {
-  it('counts weekdays used and subtracts them from the allotment', () => {
-    // Mon 2026-06-08 .. Fri 2026-06-12 = 5 weekdays.
-    const f = ptoFiguresFor(profile({ pto_weeks: 4 }), [pto('2026-06-08', '2026-06-12')], 2026);
-    expect(f.usedWeekdays).toBe(5);
-    expect(f.allotmentDays).toBe(20);
-    expect(f.remainingDays).toBe(15);
-  });
-
-  it('counts sold-back days as USED — selling back never refunds the pool', () => {
-    const rows = [
-      pto('2026-06-08', '2026-06-12'),
-      { ...pto('2026-06-08', '2026-06-09'), availability_type: 'pto_sellback' },
-    ];
-    const f = ptoFiguresFor(profile({ pto_weeks: 4 }), rows, 2026);
-    expect(f.usedWeekdays).toBe(5);
-    expect(f.soldWeekdays).toBe(2);
-    expect(f.remainingDays).toBe(15);
-  });
-
-  it('reports NO remaining figure when the allotment is unstated', () => {
-    const f = ptoFiguresFor(profile({ pto_weeks: null }), [pto('2026-06-08', '2026-06-12')], 2026);
-    expect(f.usedWeekdays).toBe(5);
-    expect(f.allotmentDays).toBeNull();
-    expect(f.remainingDays).toBeNull();
-  });
-
-  it('treats a stated zero as a real zero, not as unstated', () => {
-    const f = ptoFiguresFor(profile({ pto_weeks: 0 }), [], 2026);
-    expect(f.allotmentDays).toBe(0);
-    expect(f.remainingDays).toBe(0);
-  });
-
-  it('ignores denied and canceled rows', () => {
-    const rows = [pto('2026-06-08', '2026-06-12', { approval_status: 'denied' })];
-    expect(ptoFiguresFor(profile(), rows, 2026).usedWeekdays).toBe(0);
-  });
-
-  it('counts only the requested year for a range that straddles New Year', () => {
-    // 2026-12-30..2027-01-02: 2026 weekdays are Wed 30 + Thu 31 = 2.
-    const f = ptoFiguresFor(profile(), [pto('2026-12-30', '2027-01-02')], 2026);
-    expect(f.usedWeekdays).toBe(2);
-  });
-});
-
-describe('offDayBudgetFor', () => {
-  it('gives a full-timer zero off days', () => {
-    expect(offDayBudgetFor(profile({ fte_value: 1 }), 250)).toBe(0);
-  });
-
-  it('gives a 0.75 FTE a quarter of the working days', () => {
-    // 250 - round(187.5) = 250 - 188 = 62. entitledOffDays rounds half UP, and
-    // that rounding is the engine's — match it, never "fix" it here.
-    expect(offDayBudgetFor(profile({ fte_value: 0.75 }), 250)).toBe(62);
-  });
-
-  it('keys off WORKING-days FTE, not call FTE (the Hussain case)', () => {
-    // Call FTE 0.70 but work_days_fte 1.00 — he works full days, so zero off days.
-    expect(offDayBudgetFor(profile({ fte_value: 0.7, work_days_fte: 1 }), 250)).toBe(0);
-  });
-
-  it('treats a null FTE as zero rather than throwing', () => {
-    expect(offDayBudgetFor(profile({ fte_value: null }), 250)).toBe(250);
-  });
-});
-```
+Cover at minimum: weekdays used subtracted from the allotment; sold-back days counted as USED
+(selling back never refunds the pool); a null allotment yielding NO remaining figure; a stated `0`
+treated as a real zero; denied/canceled rows ignored; a range straddling New Year counted only in the
+requested year; another provider's rows ignored (this filter is load-bearing for Task 4, which passes
+the whole roster's rows in a loop — it was untested at first and a mutation proved all tests stayed
+green without it); a row with no `provider_id`; and for `offDayBudgetFor` — a full-timer at zero, a
+0.75 FTE, the Hussain case (call FTE 0.70 with work-days FTE 1.00 → zero), and null / non-finite /
+negative FTE all returning null.
 
 - [ ] **Step 2: Run test to verify it fails**
 
@@ -277,116 +196,34 @@ Expected: FAIL — `Failed to resolve import "./annualTally"`.
 
 - [ ] **Step 3: Write the implementation**
 
-Create `src/lib/annualTally.ts`:
+The shipped module is `src/lib/annualTally.ts` — read it. Its header states the routing table, the
+"tally is a view, never an input" decision, and the blank-is-not-zero doctrine; those comments are
+load-bearing and were written deliberately.
 
-```ts
-// Annual tally — the calendar-year figures behind the Block Prep board's
-// roster columns and the AnnualTallyCard mounted on it and on /dashboard.
-//
-// THIS MODULE ASSEMBLES; IT DOES NOT DERIVE. Every rule routes to the helper
-// that already owns it:
-//   - PTO used / sold-back      → plannerMath.plannerYearCounters, which is
-//     itself dateRanges.ptoCounterStats over liveAvailabilityRows
-//   - off-day BUDGET            → rulesEngine/workDays.entitledOffDays
-//   - PTO netting inside a span → rulesEngine/workDays.ptoWeekdaysCovered
-//   - worked-day credit         → plannerMath.computeScheduleActuals
-//   - fairness bucket           → rulesEngine/shared.dayTypeBucketOn (DATE-aware:
-//     a Monday holiday is a M-Th call)
-//   - call split weighting      → callBurden.callBurdenWeight / parentCallCodeOf
-//
-// THE TALLY IS A VIEW, NEVER AN INPUT (Gabriel 2026-09-06, verbatim: "I want
-// each call block to be its own calculation... it wont matter what happened the
-// previous block, the number of calls given out will depend on the FTE status").
-// Nothing here is read by the engine. There is deliberately NO annual call
-// obligation: obligations are per-block, from the stated FTE bands, and an
-// annual over/under figure would be a second obligation model running beside
-// them. Call counts here are COUNTS. Only PTO and off days, which have real
-// annual denominators, carry a "remaining".
-//
-// BLANK IS NOT ZERO. A null pto_weeks means nobody has stated the allotment and
-// yields a null remaining — never 0, never negative. A stated 0 is a real zero
-// (Gabriel: "0 is a real number for some of them").
+**Exported surface after review:**
 
-import {
-  liveAvailabilityRows,
-  plannerYearCounters,
-  type PlannerAvailabilityRow,
-} from './plannerMath';
-import { entitledOffDays } from './rulesEngine/workDays';
-
-// Working days consumed per week of PTO. Deliberately a local constant rather
-// than an import from gridCalculator/providerProfile.ts, which holds its own
-// copy for its simulator: CLAUDE.md keeps gridCalculator a sibling engine that
-// does not share code with the scheduling path, and one definitional integer is
-// a smaller cost than crossing that boundary.
-export const PTO_WORK_DAYS_PER_WEEK = 5;
-
-/** The employment-profile fields this module needs. */
-export interface TallyProfile {
-  provider_id: string;
-  /** Call FTE. Null on a legacy profile — treated as 0. */
-  fte_value: number | null;
-  /** Working-days FTE (patch43). Null means "same as fte_value". */
-  work_days_fte: number | null;
-  /** Annual PTO allotment in weeks. NULL means NOT STATED; 0 is a real zero. */
-  pto_weeks: number | null;
-}
-
-export interface PtoFigures {
-  /** Weekdays consumed from the pool this year, sold-back days INCLUDED. */
-  usedWeekdays: number;
-  /** Of those, how many were also sold back (worked at premium). Informational. */
-  soldWeekdays: number;
-  /** pto_weeks x 5, or null when the allotment is unstated. */
-  allotmentDays: number | null;
-  /** allotmentDays - usedWeekdays, or null when the allotment is unstated. */
-  remainingDays: number | null;
-}
-
-/**
- * One provider's annual PTO figures. `rows` may be the whole roster's
- * availability; only this provider's rows are used, and dismissed
- * (denied/canceled) rows are ignored by plannerYearCounters.
- */
-export function ptoFiguresFor(
-  profile: TallyProfile,
-  rows: ReadonlyArray<PlannerAvailabilityRow>,
-  year: number,
-): PtoFigures {
-  const mine = rows.filter(r => r.provider_id === profile.provider_id);
-  const counters = plannerYearCounters(mine, year);
-  const allotmentDays = profile.pto_weeks == null
-    ? null
-    : profile.pto_weeks * PTO_WORK_DAYS_PER_WEEK;
-  return {
-    usedWeekdays: counters.pto.weekdaysBooked,
-    soldWeekdays: counters.pto.weekdaysSold,
-    allotmentDays,
-    remainingDays: allotmentDays == null ? null : allotmentDays - counters.pto.weekdaysBooked,
-  };
-}
-
-/**
- * The off-day BUDGET: working days the provider is not obligated to work,
- * because their working-days FTE is below 1. Independent of PTO — a PTO day is
- * not an off day, it is a paid absence from an obligated day.
- *
- * Note this is NOT the same thing as `availability_type = 'unavailable'` rows,
- * which the provider profile labels "Days Off". Those are typed entries; this
- * is a contractual entitlement.
- */
-export function offDayBudgetFor(profile: TallyProfile, workingDaysInYear: number): number {
-  return entitledOffDays(
-    Number(profile.fte_value ?? 0), workingDaysInYear, profile.work_days_fte);
-}
-
-/** Live (non-dismissed) rows for one provider — shared by the callers below. */
-export function liveRowsFor(
-  providerId: string, rows: ReadonlyArray<PlannerAvailabilityRow>,
-): PlannerAvailabilityRow[] {
-  return liveAvailabilityRows(rows.filter(r => r.provider_id === providerId));
-}
 ```
+TallyProfile      { provider_id, fte_value, work_days_fte, pto_weeks }  — all but provider_id nullable
+PtoFigures        { usedWeekdays, soldWeekdays, allotmentDays, remainingDays }
+                    allotmentDays and remainingDays are null together or not at all
+ptoFiguresFor(profile, rows, year): PtoFigures
+offDayBudgetFor(profile, workingDaysInYear): number | null
+availabilityByProvider(rows): Map<string, PlannerAvailabilityRow[]>
+```
+
+Three things the review established that a re-implementation must preserve:
+
+- **`offDayBudgetFor` returns null for an unknown FTE** (null, non-finite, or negative — mirroring
+  `effectiveWorkDaysFte`'s guard at `rulesEngine/workDays.ts:193`). It deliberately does NOT use the
+  `|| 1` coercion the rest of the codebase applies, because that also swallows a stated `0`. A stated
+  `0` delegates to `entitledOffDays` normally. Coerce with `Number()` BEFORE the finite check — a
+  Postgres `numeric` arrives as a string, and `'0.75'` must still yield a budget.
+- **`PTO_WORK_DAYS_PER_WEEK` lives in `src/lib/dateRanges.ts`**, beside the `ptoCounterStats`
+  semantics that produce the `weekdaysBooked` it is subtracted from. It is imported here, not
+  redeclared. gridCalculator keeps its own separate copies per the sibling-engine rule.
+- **`availabilityByProvider` does no status filtering.** Dismissal is owned downstream by
+  `ptoWeekdaysCovered` and `plannerYearCounters`; a second filter in front of them would silently
+  under-count if the two ever diverged.
 
 - [ ] **Step 4: Run test to verify it passes**
 
