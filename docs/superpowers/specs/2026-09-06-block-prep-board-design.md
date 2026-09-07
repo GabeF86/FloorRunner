@@ -65,7 +65,17 @@ Built as `src/components/AnnualTallyCard.tsx` so the identical component mounts 
 
 ## The numbers — contract
 
-Every figure routes through the helper that already owns it. This board re-derives nothing; that is what keeps it from disagreeing with the grid.
+Every figure routes through the helper that already owns it, so that this board and the grid cannot drift.
+
+**A correction to an earlier draft of this line.** It used to claim the board "re-derives nothing", and that overstates what is actually guaranteed. The board's call counts come from `plannerMath.computeScheduleActuals`; the Call Counts modal's come from `callCountColumns.computeCallCountColumns` and `fteTarget.actualCallsFor`. Those are **independent implementations**, and their predicates differ in three ways:
+
+| | Board (`plannerMath`) | Modal (`callCountColumns`) |
+|---|---|---|
+| What counts as a call | `shift_types.category === 'call'` | `isCallCountCode(parentCode)` — C1/C2/C3 only |
+| Filled predicate | excludes `canceled` / `declined` | requires a `provider_id` |
+| Null `derived_day_type` | falls back to `derivedDayTypeFor` | dropped |
+
+Verified against the live database: every Paoli call code folds to C1/C2/C3, there are no null `derived_day_type` rows in 2026, and only `assigned` and `open` are ever written. **So the two surfaces agree on every number they can currently produce — by coincidence, not by construction.** A future divergence would be silent. What *is* structurally guaranteed is narrower and still worth having: the bucketing, the split-call weighting, the PTO netting, the working-day arithmetic and the published-only predicate are each single-homed and shared.
 
 | Figure | Definition | Owning helper |
 |---|---|---|
@@ -80,7 +90,7 @@ Every figure routes through the helper that already owns it. This board re-deriv
 | Off days used | Working days inside published blocks at the site, minus credited worked days, minus PTO weekdays | `computeScheduleActuals` (assigned ∪ post-call ∪ ICU, disjoint) |
 | Required working days | `round(workFte × WD) − PTO`, floored at 0 | `workDays.requiredWorkDays` |
 
-`computeScheduleActuals` returns raw per-code counts; the burden weighting and parent folding are applied on top by `annualTally.ts`, the same order `callCountDays.ts` applies them.
+`computeScheduleActuals` returns raw per-code counts; the burden weighting and parent folding are applied on top by `annualTally.ts`. (An earlier draft said this matched "the order `callCountDays.ts` applies them" — `callCountDays.ts` computes no call counts at all. See the correction above.)
 
 **Three figures carry an explicit honesty caveat and must render it:**
 
