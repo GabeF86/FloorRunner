@@ -81,7 +81,7 @@ interface EmploymentProfile {
   is_partner_track: boolean;
   is_day_doc: boolean;
   is_icu_doc: boolean;
-  pto_weeks: number;
+  pto_weeks: number | null;
   max_weekly_hours: number | null;
   max_monthly_calls: number | null;
   call_taker: boolean;
@@ -164,7 +164,7 @@ const EMPTY_PROFILE: EmploymentProfile = {
   is_partner_track: false,
   is_day_doc: false,
   is_icu_doc: false,
-  pto_weeks: 0,
+  pto_weeks: null,
   max_weekly_hours: null,
   max_monthly_calls: null,
   call_taker: false,
@@ -656,7 +656,10 @@ function SchedulingTab({ profile, sites, saveState, onSave }: { profile: Employm
   // would silently leave a stale frozen copy behind.
   const [workDaysFte, setWorkDaysFte] = useState(
     profile.work_days_fte == null ? '' : String(profile.work_days_fte));
-  const [ptoWeeks, setPtoWeeks] = useState(String(profile.pto_weeks ?? 0));
+  // Blank means NOT STATED, 0 means a real zero (Gabriel 2026-09-06: "0 is a
+  // real number for some of them"). Mirrors the work_days_fte field above.
+  const [ptoWeeks, setPtoWeeks] = useState(
+    profile.pto_weeks == null ? '' : String(profile.pto_weeks));
   const [maxWeeklyHours, setMaxWeeklyHours] = useState(profile.max_weekly_hours == null ? '' : String(profile.max_weekly_hours));
   const [isPartner, setIsPartner] = useState(profile.is_shareholder);
   const [isPartnerTrack, setIsPartnerTrack] = useState(profile.is_partner_track);
@@ -696,7 +699,7 @@ function SchedulingTab({ profile, sites, saveState, onSave }: { profile: Employm
     setEmpStatus(profile.employment_status);
     setFte(String(profile.fte_value));
     setWorkDaysFte(profile.work_days_fte == null ? '' : String(profile.work_days_fte));
-    setPtoWeeks(String(profile.pto_weeks ?? 0));
+    setPtoWeeks(profile.pto_weeks == null ? '' : String(profile.pto_weeks));
     setMaxWeeklyHours(profile.max_weekly_hours == null ? '' : String(profile.max_weekly_hours));
     setIsPartner(profile.is_shareholder);
     setIsPartnerTrack(profile.is_partner_track);
@@ -782,7 +785,7 @@ function SchedulingTab({ profile, sites, saveState, onSave }: { profile: Employm
       // working days at all"). Same blank-means-formula convention as the
       // Limits tab.
       work_days_fte: workDaysFte.trim() === '' ? null : workDaysFteNum,
-      pto_weeks: ptoWeeks === '' ? 0 : parseInt(ptoWeeks, 10),
+      pto_weeks: ptoWeeks.trim() === '' ? null : parseInt(ptoWeeks, 10),
       max_weekly_hours: maxWeeklyHours === '' ? null : parseInt(maxWeeklyHours, 10),
       is_shareholder: isPartner, is_partner_track: isPartnerTrack,
       is_day_doc: isDayDoc,
