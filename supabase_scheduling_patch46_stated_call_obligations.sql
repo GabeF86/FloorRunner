@@ -1,4 +1,8 @@
--- supabase_scheduling_patch44_stated_call_obligations.sql
+-- supabase_scheduling_patch46_stated_call_obligations.sql
+-- (Renumbered from patch44 on 2026-09-07: patch44 was taken by
+--  supabase_scheduling_patch44_holiday_call.sql, which landed on main
+--  while this sat uncommitted. patch45 is the pto_weeks one. Nothing
+--  about this patch changed -- only its number.)
 -- Paoli: STATED per-FTE call obligations, and a universal neuro weekend.
 -- (Gabriel 2026-08-03.)
 --
@@ -82,7 +86,7 @@ DO $$ DECLARE n int; BEGIN
      AND status = 'active'
      AND definition->'neuroWeekend' IS NOT NULL;
   IF n <> 1 THEN
-    RAISE EXCEPTION 'patch44: expected 1 active Paoli pattern carrying neuroWeekend, found % — apply patch38/40 first. Aborting', n;
+    RAISE EXCEPTION 'patch46: expected 1 active Paoli pattern carrying neuroWeekend, found % — apply patch38/40 first. Aborting', n;
   END IF;
 END $$;
 
@@ -112,7 +116,7 @@ DO $$ DECLARE n int; BEGIN
      AND definition->'blocks' @> '[{"anchorDayType":"saturday","chains":[{"trigger":"C3","links":[{"offset":1,"code":"C3"}]}]}]'::jsonb
      AND NOT definition->'blocks' @> '[{"anchorDayType":"saturday","chains":[{"trigger":"C3","links":[{"minFte":0.6}]}]}]'::jsonb;
   IF n <> 1 THEN
-    RAISE EXCEPTION 'patch44: active doc did not take the stated obligations + universal neuro weekend (matched % rows) — aborting', n;
+    RAISE EXCEPTION 'patch46: active doc did not take the stated obligations + universal neuro weekend (matched % rows) — aborting', n;
   END IF;
 END $$;
 
