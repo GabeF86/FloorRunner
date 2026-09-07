@@ -983,7 +983,7 @@ describe('offDaysText', () => {
 });
 
 describe('coveredSpanLabel', () => {
-  const span = (over: Partial<CoveredSpanView> = {}): CoveredSpanView => ({
+  const span = (over: Partial<CoveredSpanInfo> = {}): CoveredSpanInfo => ({
     start: '2026-08-10', end: '2026-10-25', workingDays: 55,
     segments: [{ start: '2026-08-10', end: '2026-10-25' }],
     ...over,
@@ -1082,20 +1082,12 @@ Create `src/lib/blockPrepView.ts`:
 // 3. AN OVERDRAWN BALANCE IS SHOWN, NOT CLAMPED. Someone 5 days past their
 //    allotment reads "5 over", because that is a thing a chief needs to see.
 
-import type { CallCount, OffDayBudget, PtoFigures } from './annualTally';
-
-/**
- * The covered-span shape this module renders. Structurally the `coveredSpan`
- * field of `AnnualTally` — imported as a type rather than restated once Task 4
- * exports it. `segments` carries the individual published blocks so a gapped
- * range can never be rendered as continuous coverage.
- */
-export interface CoveredSpanView {
-  start: string;
-  end: string;
-  workingDays: number;
-  segments: Array<{ start: string; end: string }>;
-}
+// CoveredSpanInfo is Task 4's exported span shape { start, end, workingDays,
+// segments }. Imported, never restated — `segments` carries the individual
+// published blocks so a gapped range can never render as continuous coverage.
+import type {
+  CallCount, CoveredSpanInfo, OffDayBudget, PtoFigures,
+} from './annualTally';
 
 export interface RosterRow {
   provider_id: string;
@@ -1181,7 +1173,7 @@ function shortDate(iso: string): string {
  * label must say how many blocks it counted whenever there is more than one
  * segment, and never present a gapped range as a continuous one.
  */
-export function coveredSpanLabel(span: CoveredSpanView | null): string {
+export function coveredSpanLabel(span: CoveredSpanInfo | null): string {
   if (!span) {
     return 'No published blocks this year — off days show the budget only, with nothing counted against it.';
   }
