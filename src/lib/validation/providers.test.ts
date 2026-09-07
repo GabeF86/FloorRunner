@@ -172,3 +172,56 @@ describe('validateAndSplitPatch — work_days_fte', () => {
     expect(FTE_MAX).toBe(2); // unchanged — the call FTE keeps its headroom
   });
 });
+
+// ── pto_weeks, blank vs. stated zero (patch45) ──────────────────────────────
+// The write gate this task depends on: BLANK has to reach the DB as a real
+// NULL ("not stated"), while a STATED 0 has to survive as 0, never collapsing
+// to NULL — 0 is a real allotment for some providers (per-diem call takers).
+// Losing either direction breaks the feature.
+describe('validateAndSplitPatch — pto_weeks', () => {
+  const split = (v: unknown) => validateAndSplitPatch({ pto_weeks: v });
+
+  it('routes to the employment profile, not the providers table', () => {
+    expect(PROFILE_COLUMNS as readonly string[]).toContain('pto_weeks');
+    expect(PROVIDER_COLUMNS as readonly string[]).not.toContain('pto_weeks');
+    const r = split(3);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.profileFields).toEqual({ pto_weeks: 3 });
+    expect(r.providerFields).toEqual({});
+  });
+
+  it('BLANK becomes NULL — "not stated", never 0', () => {
+    for (const blank of ['', null]) {
+      const r = split(blank);
+      expect(r.ok).toBe(true);
+      if (!r.ok) return;
+      expect(r.profileFields.pto_weeks).toBeNull();
+      expect(r.profileFields.pto_weeks).not.toBe(0);
+    }
+  });
+
+  it('a STATED zero survives as 0 — never collapsed to null', () => {
+    const r = split(0);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.profileFields.pto_weeks).toBe(0);
+    expect(r.profileFields.pto_weeks).not.toBeNull();
+  });
+
+  it('accepts a normal positive integer, coercing numeric strings', () => {
+    for (const v of [1, 6, '9']) {
+      const r = split(v);
+      expect(r.ok, String(v)).toBe(true);
+      if (r.ok) expect(typeof r.profileFields.pto_weeks).toBe('number');
+    }
+  });
+
+  it('rejects negative and non-integer values', () => {
+    expect(split(-1).ok).toBe(false);
+    expect(split(2.5).ok).toBe(false);
+    expect(split('abc').ok).toBe(false);
+    const r = split(-1);
+    if (!r.ok) expect(r.error).toContain('pto_weeks');
+  });
+});

@@ -844,7 +844,11 @@ function SchedulingTab({ profile, sites, saveState, onSave }: { profile: Employm
           value={workDaysFte} onChange={setWorkDaysFte} error={errors.workDaysFte}
           hint={'Blank = same as FTE \u00b7 share of working days they must be scheduled'}
         />
-        <Field label="PTO Weeks" value={ptoWeeks} onChange={setPtoWeeks} error={errors.ptoWeeks} />
+        <Field
+          label="PTO Weeks"
+          value={ptoWeeks} onChange={setPtoWeeks} error={errors.ptoWeeks}
+          hint={'Blank = not stated · 0 = genuinely no allotment'}
+        />
         <Field label="Max Weekly Hours" value={maxWeeklyHours} onChange={setMaxWeeklyHours} error={errors.maxWeeklyHours} />
         <div style={{ gridColumn: '1 / -1' }}>
           <label style={fieldLabelStyle}>Home Hospital / Surgery Center</label>
