@@ -33,6 +33,7 @@ import {
   rangeComposition,
   type PlannerAvailabilityRow,
   type PlannerHoliday,
+  type PlannerSlotRow,
   type ProviderActuals,
 } from './plannerMath';
 import {
@@ -41,7 +42,7 @@ import {
   ptoWeekdaysCovered,
   PTO_NETTING_TYPES,
 } from './rulesEngine/workDays';
-import { BLOCKING_AVAIL, isDismissedAvailability } from './rulesEngine/shared';
+import { addDays, BLOCKING_AVAIL, isDismissedAvailability } from './rulesEngine/shared';
 import { PTO_WORK_DAYS_PER_WEEK } from './dateRanges';
 import {
   callBurdenWeight,
@@ -275,16 +276,6 @@ export function callTotal(counts: ReadonlyArray<CallCount>): number {
 
 // ── Off days used, and the covered span (Task 4) ────────────────────────────
 
-/**
- * One slot row as `plannerMath.computeScheduleActuals` expects it — derived
- * structurally from its own parameter type rather than importing
- * `PlannerSlotRow` by name. Task 3's refold moved all slot-walking (the fill
- * predicate, the assignments-embed normalization, the date-aware bucketing)
- * into `computeScheduleActuals` itself; this module calls that function but
- * has no reason to re-acquire its input type's name into its own import list.
- */
-type TallySlotRow = Parameters<typeof computeScheduleActuals>[0][number];
-
 // Absence types that EXPLAIN an unworked day without it being a day off
 // (Gabriel 2026-09-06: "dont count sick days as off days").
 //
@@ -332,11 +323,25 @@ export interface AnnualTallyInput {
   profiles: ReadonlyArray<TallyProfile>;
   /** Whole-roster availability rows; each MUST carry provider_id. */
   availability: ReadonlyArray<PlannerAvailabilityRow>;
-  /** PUBLISHED slots at the site, any date — filtered to the year here. */
-  slots: ReadonlyArray<TallySlotRow>;
+  /**
+   * PUBLISHED slots at the site, any date — filtered to the year here.
+   * MUST be drawn from the SAME published-version set as `coveredSpans`
+   * below: if a slot's version isn't one of the versions `coveredSpans` was
+   * built from (or vice versa), a provider's calls and their off-days-used
+   * figure would be scoped to two different realities — e.g. a call counted
+   * from a version whose block isn't in `coveredSpans` would inflate
+   * `callTotal` without ever being eligible to explain an off day, or the
+   * reverse, a `coveredSpans` block with no matching slots would charge every
+   * working day in it as an off day for everyone.
+   */
+  slots: ReadonlyArray<PlannerSlotRow>;
   holidays: ReadonlyArray<PlannerHoliday>;
   shiftTypes: ReadonlyMap<string, TallyShiftType>;
-  /** Date ranges of the published blocks at the site that overlap the year. */
+  /**
+   * Date ranges of the published blocks at the site that overlap the year.
+   * MUST derive from the same published-version set as `slots` above — see
+   * its doc comment.
+   */
   coveredSpans: ReadonlyArray<CoveredSpan>;
 }
 
@@ -349,26 +354,137 @@ export interface ProviderAnnualFigures {
    */
   offDayBudget: OffDayBudget;
   /**
-   * Off days consumed, counted ONLY across `coveredSpan`. Null when no
-   * published block covers any of the year — an unbuilt month is not a month
-   * of days off, and must never be rendered as one.
+   * Off days consumed, counted ONLY across `coveredSpan`. Null in TWO cases,
+   * and both must render as "nothing counted", never as a plausible-looking
+   * 0 ("took no days off"):
+   *   - no published block covers any of the year at all (`coveredSpan` is
+   *     null) — an unbuilt month is not a month of days off; or
+   *   - a published block exists but clips to ZERO working days in the year
+   *     (`coveredSpan.workingDays === 0`, e.g. a block running
+   *     2025-11-01..2026-01-01 clips for 2026 to a single date that is a
+   *     major holiday) — nothing was examined, so nothing was counted; `0`
+   *     here would read as "took no days off all year", which is false.
    */
   offDaysUsed: number | null;
   callCounts: CallCount[];
   callTotal: number;
 }
 
+/**
+ * The published blocks' outer bounds for the year, plus the disjoint
+ * ranges that make them up.
+ */
+export interface CoveredSpanInfo {
+  /** Earliest clipped-to-year start across every segment. */
+  start: string;
+  /** Latest clipped-to-year end across every segment. */
+  end: string;
+  /** Working days inside the union of segments — what offDaysUsed counts
+   *  against. Can be 0 (see ProviderAnnualFigures.offDaysUsed). */
+  workingDays: number;
+  /**
+   * The published blocks' own clipped ranges, ascending, adjacent/overlapping
+   * ones merged. `segments.length > 1` means the coverage has GAPS and the
+   * bare start–end range OVERSTATES it — e.g. a Jan–Mar block and a
+   * Sep–Dec block collapse to a bare "start: Jan, end: Dec" that reads as
+   * near-total coverage when five months in between were never built.
+   * Any label built from this MUST either walk `segments` or say "and gaps
+   * in between" — never print `start`–`end` alone when `segments.length > 1`.
+   */
+  segments: Array<{ start: string; end: string }>;
+}
+
+export interface CoveredSpanResult {
+  /** Null ONLY when nothing overlaps the year at all — never for a published
+   *  block that clips to zero working days (see CoveredSpanInfo.workingDays). */
+  span: CoveredSpanInfo | null;
+  /** Working days in `workingDaySet` covered by `span`'s segments. Empty set
+   *  when `span` is null. */
+  coveredWorkingDays: Set<string>;
+}
+
+/**
+ * Clips `coveredSpans` to the requested year, merges adjacent (touching, no
+ * gap) or overlapping ranges into disjoint segments, and intersects the
+ * result with `workingDaySet` (the year's full working-day set).
+ *
+ * A malformed span (`date_start > date_end`, before or after clipping) is
+ * silently dropped — same posture as a span with no overlap in the year, and
+ * consistent with the module's swallow-bad-input-rather-than-throw stance
+ * elsewhere (offDayBudgetFor's unknown-FTE handling).
+ *
+ * `span` is null ONLY when nothing published overlaps the year at all. It is
+ * deliberately NOT null when a published block clips to zero working days —
+ * a block running 2025-11-01..2026-01-01 clips for 2026 to a single date
+ * that is a major holiday, and that block is still genuinely published;
+ * asserting `span: null` there would claim "nothing is published in 2026",
+ * which is false. `span.workingDays === 0` is how that case is told apart
+ * from "no schedule exists" — see ProviderAnnualFigures.offDaysUsed for how
+ * callers must render the difference.
+ */
+export function coveredSpanFor(
+  coveredSpans: ReadonlyArray<CoveredSpan>,
+  workingDaySet: ReadonlySet<string>,
+  year: number,
+): CoveredSpanResult {
+  const yearStart = `${year}-01-01`;
+  const yearEnd = `${year}-12-31`;
+  const clipped = coveredSpans
+    .map(s => ({
+      start: s.date_start < yearStart ? yearStart : s.date_start,
+      end: s.date_end > yearEnd ? yearEnd : s.date_end,
+    }))
+    .filter(s => s.start <= s.end) // no overlap in the year, or malformed input
+    .sort((a, b) => a.start.localeCompare(b.start) || a.end.localeCompare(b.end));
+
+  // Merge adjacent-or-overlapping ranges into disjoint segments. String
+  // YYYY-MM-DD comparison sorts identically to calendar order, so this needs
+  // no Date objects. `s.start <= addDays(last.end, 1)` catches BOTH cases in
+  // one test: overlap (s.start <= last.end) and touching-with-no-gap
+  // (s.start === last.end + 1 day).
+  const segments: Array<{ start: string; end: string }> = [];
+  for (const s of clipped) {
+    const last = segments[segments.length - 1];
+    if (last && s.start <= addDays(last.end, 1)) {
+      if (s.end > last.end) last.end = s.end;
+    } else {
+      segments.push({ ...s });
+    }
+  }
+
+  const coveredWorkingDays = new Set<string>();
+  for (const d of workingDaySet) {
+    if (segments.some(s => d >= s.start && d <= s.end)) coveredWorkingDays.add(d);
+  }
+
+  if (segments.length === 0) return { span: null, coveredWorkingDays };
+  return {
+    span: {
+      start: segments[0].start,
+      end: segments[segments.length - 1].end,
+      workingDays: coveredWorkingDays.size,
+      segments,
+    },
+    coveredWorkingDays,
+  };
+}
+
 export interface AnnualTally {
   year: number;
   /** Weekdays in the year minus MAJOR holidays (workDays.ts contract). */
   workingDaysInYear: number;
-  /**
-   * The union of published block ranges, clipped to the year, expressed as its
-   * outer bounds plus the working-day count actually used for offDaysUsed.
-   * Null when nothing is published in the year.
-   */
-  coveredSpan: { start: string; end: string; workingDays: number } | null;
+  /** See CoveredSpanInfo. Null when nothing is published in the year. */
+  coveredSpan: CoveredSpanInfo | null;
   providers: Map<string, ProviderAnnualFigures>;
+  /**
+   * Provider ids with published call assignments in the year that are NOT in
+   * `profiles` (e.g. someone who went inactive mid-year, or a roster query
+   * that missed them). Their calls are counted in NEITHER `providers` NOR
+   * anywhere else — exposed here, sorted, so a caller can footnote them
+   * rather than silently losing the count. Empty array, never undefined,
+   * when there are none.
+   */
+  unrosteredProviderIds: ReadonlyArray<string>;
 }
 
 /**
@@ -383,31 +499,8 @@ export function computeAnnualTally(input: AnnualTallyInput): AnnualTally {
   // (400), comfortably above a 366-day year.
   const comp = rangeComposition(`${year}-01-01`, `${year}-12-31`, holidays);
 
-  // The published blocks' CALENDAR bounds, clipped to the year — NOT derived
-  // from which of their dates happen to be working days. A block that runs
-  // Mon..Sun must report its Sunday as the span's end; deriving start/end
-  // from the working-day set would silently truncate it to the preceding
-  // Friday, misrepresenting the block boundary the honesty caveat names.
-  const yearStart = `${year}-01-01`;
-  const yearEnd = `${year}-12-31`;
-  const clippedSpans = coveredSpans
-    .map(s => ({
-      start: s.date_start < yearStart ? yearStart : s.date_start,
-      end: s.date_end > yearEnd ? yearEnd : s.date_end,
-    }))
-    .filter(s => s.start <= s.end); // drop spans with no overlap in the year
-
-  // Working days inside a published block, clipped to the year — this set (not
-  // the span's calendar bounds above) is what offDaysUsed below counts against.
-  const coveredWorkingDays = new Set<string>();
-  for (const d of comp.workingDaySet) {
-    if (clippedSpans.some(s => d >= s.start && d <= s.end)) coveredWorkingDays.add(d);
-  }
-  const coveredSpan = clippedSpans.length === 0 ? null : {
-    start: clippedSpans.reduce((min, s) => (s.start < min ? s.start : min), clippedSpans[0].start),
-    end: clippedSpans.reduce((max, s) => (s.end > max ? s.end : max), clippedSpans[0].end),
-    workingDays: coveredWorkingDays.size,
-  };
+  const { span: coveredSpan, coveredWorkingDays } =
+    coveredSpanFor(coveredSpans, comp.workingDaySet, year);
 
   // ONE walk over the slots, feeding both halves of the tally.
   // computeScheduleActuals owns the fill predicate, the embed normalization and
@@ -427,16 +520,22 @@ export function computeAnnualTally(input: AnnualTallyInput): AnnualTally {
   const counts = annualCallCounts(actuals, shiftTypes);
 
   // Group availability once rather than rescanning the whole roster's rows per
-  // provider (annualTally.availabilityByProvider).
+  // provider — feeds BOTH the off-days math below and ptoFiguresFor, which
+  // would otherwise re-filter the whole roster's rows down to `pid` itself.
   const byProvider = availabilityByProvider(availability);
 
   const providers = new Map<string, ProviderAnnualFigures>();
   for (const profile of profiles) {
     const pid = profile.provider_id;
     const myCounts = counts.get(pid) ?? [];
+    const rows = byProvider.get(pid) ?? [];
 
+    // Null when no published block covers the year AT ALL, or when one does
+    // but clips to zero working days in it (coveredSpan.workingDays === 0,
+    // e.g. clipping to a single major holiday) — nothing was examined either
+    // way, so nothing is counted. See ProviderAnnualFigures.offDaysUsed.
     let offDaysUsed: number | null = null;
-    if (coveredSpan) {
+    if (coveredSpan && coveredSpan.workingDays > 0) {
       // A working day is an OFF DAY only if nothing else explains it
       // (Gabriel 2026-09-06: "dont count sick days as off days").
       //
@@ -444,7 +543,6 @@ export function computeAnnualTally(input: AnnualTallyInput): AnnualTally {
       // subtractions, because the sets overlap: an ICU `blocked` row is both
       // credited-as-worked AND a blocking absence, so subtracting counts would
       // charge it twice and under-report off days.
-      const rows = byProvider.get(pid) ?? [];
       const a = actuals[pid];
       const explained = new Set<string>();
       // 1. Credited as worked — assignment, post-call rest, ICU. Already
@@ -452,6 +550,14 @@ export function computeAnnualTally(input: AnnualTallyInput): AnnualTally {
       //    three sets are disjoint by construction.
       for (const d of a?.assignedWorkdays ?? []) explained.add(d);
       for (const d of a?.postCallRestWorkdays ?? []) explained.add(d);
+      // ICU-credited days are ALWAYS a subset of nonEntitlementAbsenceDates
+      // below: creditsAsWorkedAvailability requires availability_type ===
+      // 'blocked' (icuRotation's ICU_WEEK_REASON/ICU_POST_CALL_REASON rows),
+      // and 'blocked' is itself in NON_ENTITLEMENT_ABSENCE_TYPES. This line
+      // therefore changes nothing about `explained`'s SIZE — it is kept for
+      // INTENT, so "ICU time is credited work" is stated explicitly here
+      // rather than left to be inferred from two unrelated-looking sets
+      // happening to overlap.
       for (const d of a?.icuWorkdays ?? []) explained.add(d);
       // 2. PTO-netting leave, sell-back aware.
       for (const d of ptoWeekdaysCovered(rows, coveredWorkingDays)) explained.add(d);
@@ -460,11 +566,20 @@ export function computeAnnualTally(input: AnnualTallyInput): AnnualTally {
       //    entitlement being consumed, so they must stay countable.
       for (const d of nonEntitlementAbsenceDates(rows, coveredWorkingDays)) explained.add(d);
 
-      offDaysUsed = Math.max(0, coveredSpan.workingDays - explained.size);
+      // No Math.max(0, ...) clamp: every contributor to `explained` above is
+      // either filtered by `coveredWorkingDays` or intersected against it,
+      // and coveredSpan.workingDays IS coveredWorkingDays.size (coveredSpanFor
+      // constructs them together) — so explained.size <= coveredSpan.workingDays
+      // holds by construction, always. A clamp here would silently turn a
+      // future bug that leaks the wrong working-day set into one of these
+      // contributors into a plausible-looking 0 ("took no days off") instead
+      // of an obviously-wrong negative number — exactly the silent-clean
+      // failure invariant 6 exists to prevent.
+      offDaysUsed = coveredSpan.workingDays - explained.size;
     }
 
     providers.set(pid, {
-      pto: ptoFiguresFor(profile, availability, year),
+      pto: ptoFiguresFor(profile, rows, year),
       offDayBudget: offDayBudgetFor(profile, comp.workingDays),
       offDaysUsed,
       callCounts: myCounts,
@@ -472,5 +587,17 @@ export function computeAnnualTally(input: AnnualTallyInput): AnnualTally {
     });
   }
 
-  return { year, workingDaysInYear: comp.workingDays, coveredSpan, providers };
+  // Providers with counted calls but no roster profile — see
+  // AnnualTally.unrosteredProviderIds. Cheap: `counts` and `profiles` are
+  // both already in hand.
+  const rosterIds = new Set(profiles.map(p => p.provider_id));
+  const unrosteredProviderIds = [...counts.keys()].filter(pid => !rosterIds.has(pid)).sort();
+
+  return {
+    year,
+    workingDaysInYear: comp.workingDays,
+    coveredSpan,
+    providers,
+    unrosteredProviderIds,
+  };
 }

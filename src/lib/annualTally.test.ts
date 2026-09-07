@@ -4,10 +4,10 @@
 import { describe, it, expect } from 'vitest';
 import {
   ptoFiguresFor, offDayBudgetFor, availabilityByProvider, annualCallCounts, callTotal,
-  computeAnnualTally, NON_ENTITLEMENT_ABSENCE_TYPES,
+  computeAnnualTally, coveredSpanFor, NON_ENTITLEMENT_ABSENCE_TYPES,
   type TallyProfile, type TallyShiftType,
 } from './annualTally';
-import { computeScheduleActuals } from './plannerMath';
+import { computeScheduleActuals, rangeComposition } from './plannerMath';
 import { formatCallWeight } from './callBurden';
 import { ICU_WEEK_REASON } from './icuRotation';
 import type { PlannerAvailabilityRow, PlannerHoliday, PlannerSlotRow } from './plannerMath';
@@ -384,6 +384,106 @@ const HOLIDAYS_2026: PlannerHoliday[] = [
   { holiday_date: '2026-12-25', is_major_holiday: true },
 ];
 
+describe('coveredSpanFor', () => {
+  const workingDaySet = rangeComposition('2026-01-01', '2026-12-31', HOLIDAYS_2026).workingDaySet;
+
+  it('gives one segment for a single block', () => {
+    const { span } = coveredSpanFor(
+      [{ date_start: '2026-06-08', date_end: '2026-06-14' }], workingDaySet, 2026);
+    expect(span).toEqual({
+      start: '2026-06-08', end: '2026-06-14', workingDays: 5,
+      segments: [{ start: '2026-06-08', end: '2026-06-14' }],
+    });
+  });
+
+  it('keeps two disjoint blocks as TWO segments — the bare start/end range must not overstate coverage', () => {
+    // Jan-Mar and Sep-Dec, a five-month gap. The bare start/end alone would
+    // read as "Jan-Dec covered", which is false — Task 5's label must walk
+    // `segments` (or say "and gaps in between") whenever segments.length > 1.
+    const { span } = coveredSpanFor(
+      [
+        { date_start: '2026-01-05', date_end: '2026-03-22' },
+        { date_start: '2026-09-07', date_end: '2026-12-20' },
+      ],
+      workingDaySet, 2026,
+    );
+    expect(span!.segments).toEqual([
+      { start: '2026-01-05', end: '2026-03-22' },
+      { start: '2026-09-07', end: '2026-12-20' },
+    ]);
+    expect(span!.start).toBe('2026-01-05');
+    expect(span!.end).toBe('2026-12-20');
+  });
+
+  it('merges two ADJACENT blocks (no gap between them) into one segment', () => {
+    const { span } = coveredSpanFor(
+      [
+        { date_start: '2026-01-05', date_end: '2026-03-22' },
+        { date_start: '2026-03-23', date_end: '2026-06-07' }, // starts the day after
+      ],
+      workingDaySet, 2026,
+    );
+    expect(span!.segments).toEqual([{ start: '2026-01-05', end: '2026-06-07' }]);
+  });
+
+  it('merges two OVERLAPPING blocks into one segment', () => {
+    const { span } = coveredSpanFor(
+      [
+        { date_start: '2026-01-05', date_end: '2026-03-22' },
+        { date_start: '2026-03-01', date_end: '2026-06-07' }, // overlaps the first
+      ],
+      workingDaySet, 2026,
+    );
+    expect(span!.segments).toEqual([{ start: '2026-01-05', end: '2026-06-07' }]);
+  });
+
+  it('merges the same way regardless of input order', () => {
+    const outOfOrder = coveredSpanFor(
+      [
+        { date_start: '2026-09-07', date_end: '2026-12-20' },
+        { date_start: '2026-01-05', date_end: '2026-03-22' },
+      ],
+      workingDaySet, 2026,
+    );
+    expect(outOfOrder.span!.segments).toEqual([
+      { start: '2026-01-05', end: '2026-03-22' },
+      { start: '2026-09-07', end: '2026-12-20' },
+    ]);
+  });
+
+  it('drops a span with no overlap in the requested year', () => {
+    const { span } = coveredSpanFor(
+      [{ date_start: '2025-01-01', date_end: '2025-06-01' }], workingDaySet, 2026);
+    expect(span).toBeNull();
+  });
+
+  it('drops a malformed span (start after end) rather than producing a negative range', () => {
+    const { span } = coveredSpanFor(
+      [{ date_start: '2026-06-10', date_end: '2026-06-01' }], workingDaySet, 2026);
+    expect(span).toBeNull();
+  });
+
+  it('returns null (not a zero-day span) when given no spans at all', () => {
+    expect(coveredSpanFor([], workingDaySet, 2026).span).toBeNull();
+  });
+
+  it('keeps a genuinely published block that clips to ZERO working days — NEVER null', () => {
+    // Runs into 2026 for exactly one date (2026-01-01), which is a major
+    // holiday. A block IS published; asserting `span: null` here would claim
+    // "nothing published in 2026", which is false. `workingDays: 0` is how
+    // this is told apart from "no schedule exists" (see
+    // ProviderAnnualFigures.offDaysUsed for how callers must render it).
+    const { span, coveredWorkingDays } = coveredSpanFor(
+      [{ date_start: '2025-11-01', date_end: '2026-01-01' }], workingDaySet, 2026);
+    expect(span).not.toBeNull();
+    expect(span).toEqual({
+      start: '2026-01-01', end: '2026-01-01', workingDays: 0,
+      segments: [{ start: '2026-01-01', end: '2026-01-01' }],
+    });
+    expect(coveredWorkingDays.size).toBe(0);
+  });
+});
+
 describe('computeAnnualTally', () => {
   const base = {
     year: 2026,
@@ -419,7 +519,10 @@ describe('computeAnnualTally', () => {
         slot('2026-06-10', 'C1', 'p1', 'weekday'),
       ],
     });
-    expect(t.coveredSpan).toEqual({ start: '2026-06-08', end: '2026-06-14', workingDays: 5 });
+    expect(t.coveredSpan).toEqual({
+      start: '2026-06-08', end: '2026-06-14', workingDays: 5,
+      segments: [{ start: '2026-06-08', end: '2026-06-14' }],
+    });
     // 2026-06-08 is a call with requires_post_call_rule unset in the fixture,
     // so only the two assigned days are credited.
     expect(t.providers.get('p1')!.offDaysUsed).toBe(3);
@@ -558,5 +661,105 @@ describe('computeAnnualTally', () => {
       }],
     });
     expect(t.providers.get('p1')!.offDaysUsed).toBe(4);
+  });
+
+  it('scopes non-entitlement absences to EACH PROVIDER, never the whole roster', () => {
+    // If `rows` inside the off-days loop ever degenerated to the whole-roster
+    // `availability` array instead of that provider's own rows, BOTH
+    // providers would be charged for BOTH sick days. This is the off-days
+    // analogue of the provider-filter regression ptoFiguresFor's tests above
+    // already guard (a mutation there proved all tests stayed green without
+    // that filter) — this path never had that coverage.
+    const t = computeAnnualTally({
+      ...base,
+      profiles: [
+        profile({ provider_id: 'p1', fte_value: 1, pto_weeks: 4 }),
+        profile({ provider_id: 'p2', fte_value: 1, pto_weeks: 4 }),
+      ],
+      coveredSpans: [{ date_start: '2026-06-08', date_end: '2026-06-14' }],
+      availability: [
+        {
+          provider_id: 'p1', availability_type: 'sick',
+          start_date: '2026-06-09', end_date: '2026-06-09', approval_status: 'approved',
+        },
+        {
+          provider_id: 'p2', availability_type: 'sick',
+          start_date: '2026-06-11', end_date: '2026-06-11', approval_status: 'approved',
+        },
+      ],
+    });
+    // Each provider's OWN sick day explains 1 of their 5 working days -> 4
+    // off days each. Neither is charged for the OTHER's sick day too (which
+    // would produce 3 for both under the regression).
+    expect(t.providers.get('p1')!.offDaysUsed).toBe(4);
+    expect(t.providers.get('p2')!.offDaysUsed).toBe(4);
+  });
+
+  it('yields a null offDaysUsed when the covered span clips to ZERO working days — even though a block IS published', () => {
+    // The block runs into 2026 for exactly one date, 2026-01-01, a major
+    // holiday. A block IS genuinely published for the year (coveredSpan is
+    // non-null, per coveredSpanFor's contract), but nothing was examined, so
+    // offDaysUsed must read as "nothing counted" (null), never as a
+    // plausible-looking 0 — Task 5 would otherwise render "0 of 62 used",
+    // which claims a full year of perfect attendance that was never checked.
+    const t = computeAnnualTally({
+      ...base,
+      coveredSpans: [{ date_start: '2025-11-01', date_end: '2026-01-01' }],
+    });
+    expect(t.coveredSpan).toEqual({
+      start: '2026-01-01', end: '2026-01-01', workingDays: 0,
+      segments: [{ start: '2026-01-01', end: '2026-01-01' }],
+    });
+    expect(t.providers.get('p1')!.offDaysUsed).toBeNull();
+  });
+
+  it('does not let an assignment OUTSIDE the covered span inflate offDaysUsed, though it still counts toward callTotal', () => {
+    // Covered span is one full working week (Mon-Fri, 5 working days); the
+    // assignment below falls in a different month entirely, outside it.
+    const t = computeAnnualTally({
+      ...base,
+      coveredSpans: [{ date_start: '2026-06-08', date_end: '2026-06-12' }],
+      slots: [slot('2026-07-01', 'C1', 'p1', 'weekday')],
+    });
+    expect(t.coveredSpan!.workingDays).toBe(5);
+    // No assignment falls INSIDE the span, so all 5 days are off days — the
+    // out-of-span call must not explain any of them.
+    expect(t.providers.get('p1')!.offDaysUsed).toBe(5);
+    // The call itself is still counted: callTotal is not scoped to the span
+    // (computeScheduleActuals is called unconditionally over the whole year).
+    expect(t.providers.get('p1')!.callTotal).toBe(1);
+  });
+
+  it('does not let a sell-back cancel an UNRELATED sick-day explanation on the same date', () => {
+    // The PTO is sold back (removed from PTO-netting — the day is owed
+    // again), but the provider was ALSO sick that day. nonEntitlementAbsenceDates
+    // explains the date independently of ptoWeekdaysCovered's sell-back
+    // override — they are separate contributors to the union, not a pipeline
+    // where selling back a day cancels an unrelated sickness explanation too.
+    const t = computeAnnualTally({
+      ...base,
+      coveredSpans: [{ date_start: '2026-06-08', date_end: '2026-06-12' }],
+      availability: [
+        pto('2026-06-09', '2026-06-09'),
+        { ...pto('2026-06-09', '2026-06-09'), availability_type: 'pto_sellback' },
+        {
+          provider_id: 'p1', availability_type: 'sick',
+          start_date: '2026-06-09', end_date: '2026-06-09', approval_status: 'approved',
+        },
+      ],
+    });
+    // 5 working days, 06-09 explained via sick (not via the sold-back PTO) ->
+    // 4 off days, not 5.
+    expect(t.providers.get('p1')!.offDaysUsed).toBe(4);
+  });
+
+  it('lists provider ids with published calls but no roster profile, without losing the count anywhere else', () => {
+    const t = computeAnnualTally({
+      ...base,
+      profiles: [profile({ provider_id: 'p1' })], // p9 is NOT in the roster
+      slots: [slot('2026-06-08', 'C1', 'p9', 'weekday')],
+    });
+    expect(t.unrosteredProviderIds).toEqual(['p9']);
+    expect(t.providers.has('p9')).toBe(false);
   });
 });
