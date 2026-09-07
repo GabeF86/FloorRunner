@@ -1,6 +1,6 @@
 /**
  * Availability drawer — render smoke tests (Task 9, 2026-09-06; revised
- * 2026-09-07 after review — see the Critical/Important fixes below).
+ * 2026-09-07 across three review passes — see the fix notes throughout).
  *
  * Same strategy as components/ui/Modal.test.tsx and schedules/[id]/
  * BlockTargetsTab.test.tsx: react-dom/server renderToStaticMarkup in the node
@@ -11,6 +11,12 @@
  * standalone detection, date-range validation, the confirm/query-url text)
  * lives in blockPrepView.ts and is tested there — this file only pins that
  * the component actually WIRES those decisions into the markup.
+ *
+ * NOT testable here, by construction: the removal-confirmation TEXT (built
+ * inside the default export's `remove()` closure, including the Fix 2
+ * "submitted through a request window" addendum) and the PATCH/POST/DELETE
+ * network calls themselves — both live in the effectful default export,
+ * which this file deliberately never renders (see below).
  *
  * IMPORTANT — why this imports `AvailabilityDrawerBody`, not the default
  * export: the default-exported `AvailabilityDrawer` wraps everything in
@@ -38,6 +44,7 @@ function row(over: Partial<AvailabilityDrawerRow> = {}): AvailabilityDrawerRow {
     end_date: '2026-08-14',
     approval_status: 'approved',
     reason_code: null,
+    source: null,
     ...over,
   };
 }
@@ -48,15 +55,26 @@ interface BodyProps {
   addError: string | null;
   deleteError: string | null;
   year: number;
+  today: string;
   type: AddableAvailabilityType;
   start: string;
   end: string;
   saving: boolean;
+  editingRowId: string | null;
+  editStart: string;
+  editEnd: string;
+  editSaving: boolean;
+  editError: string | null;
   onTypeChange: (t: AddableAvailabilityType) => void;
   onStartChange: (v: string) => void;
   onEndChange: (v: string) => void;
   onAdd: () => void;
   onRemove: (row: AvailabilityDrawerRow) => void;
+  onEditRow: (row: AvailabilityDrawerRow) => void;
+  onEditStartChange: (v: string) => void;
+  onEditEndChange: (v: string) => void;
+  onSaveEdit: () => void;
+  onCancelEdit: () => void;
 }
 
 function render(over: Partial<BodyProps> = {}): string {
@@ -66,15 +84,28 @@ function render(over: Partial<BodyProps> = {}): string {
     addError: null,
     deleteError: null,
     year: 2026,
+    // Safely before every fixture date above so existing tests never land in
+    // the "Past" group by accident; Fix 4's own tests set this explicitly.
+    today: '2000-01-01',
     type: 'pto',
     start: '',
     end: '',
     saving: false,
+    editingRowId: null,
+    editStart: '',
+    editEnd: '',
+    editSaving: false,
+    editError: null,
     onTypeChange: () => {},
     onStartChange: () => {},
     onEndChange: () => {},
     onAdd: () => {},
     onRemove: () => {},
+    onEditRow: () => {},
+    onEditStartChange: () => {},
+    onEditEndChange: () => {},
+    onSaveEdit: () => {},
+    onCancelEdit: () => {},
     ...over,
   };
   return renderToStaticMarkup(<AvailabilityDrawerBody {...props} />);
@@ -98,15 +129,19 @@ describe('AvailabilityDrawerBody — loading / empty / populated', () => {
     expect(html).not.toContain('No dates in 2026');
   });
 
-  it('lists a populated row with its type label and date range', () => {
+  it('lists a populated row with its type label and formatted date range (Fix 3)', () => {
     const html = render({
       rows: [row({ id: 'p1', availability_type: 'pto', start_date: '2026-08-10', end_date: '2026-08-14' })],
     });
     expect(html).not.toContain('No dates in');
     expect(html).not.toContain('Loading…');
     expect(html).toContain('PTO');
-    expect(html).toContain('2026-08-10');
-    expect(html).toContain('2026-08-14');
+    // Fix 3 (Minor, review 2026-09-07): formatted like the profile
+    // ("Aug 10, 2026"), not the raw ISO a chief would read as a DB dump.
+    expect(html).toContain('Aug 10, 2026');
+    expect(html).toContain('Aug 14, 2026');
+    expect(html).not.toContain('2026-08-10');
+    expect(html).not.toContain('2026-08-14');
   });
 
   it('lists every row when several are present', () => {
@@ -116,18 +151,37 @@ describe('AvailabilityDrawerBody — loading / empty / populated', () => {
         row({ id: 'r2', availability_type: 'unavailable', start_date: '2026-03-02', end_date: '2026-03-02' }),
       ],
     });
-    expect(html).toContain('2026-01-05');
-    expect(html).toContain('2026-03-02');
-    expect(html).toContain('Unavailable');
+    expect(html).toContain('Jan 5, 2026');
+    expect(html).toContain('Mar 2, 2026');
+    expect(html).toContain('Days Off');
   });
 
-  it('names only what this drawer can actually ADD in the empty-state hint (Fix 3)', () => {
+  it('names only what this drawer can actually ADD in the empty-state hint', () => {
     // An earlier edit swapped an accurate clause ("no-call requests", addable
     // at the time) for an inaccurate one ("ICU rotation dates") — ICU rows
     // specifically cannot be added from here. The hint must never claim that.
     const html = render({ rows: [] });
     expect(html).toContain('PTO, sell-back and days off');
     expect(html).not.toContain('ICU rotation dates');
+  });
+});
+
+describe('AvailabilityDrawerBody — date formatting (Fix 3, review 2026-09-07 third pass)', () => {
+  it('collapses a same-day range to ONE formatted date, no arrow', () => {
+    const html = render({
+      rows: [row({ id: 's1', start_date: '2026-05-01', end_date: '2026-05-01' })],
+    });
+    expect(html).toContain('May 1, 2026');
+    // A same-day range must read as one date, not "May 1, 2026 → May 1, 2026".
+    const occurrences = (html.match(/May 1, 2026/g) ?? []).length;
+    expect(occurrences).toBe(1);
+  });
+
+  it('formats a multi-day range as "Mon D, YYYY → Mon D, YYYY"', () => {
+    const html = render({
+      rows: [row({ id: 'm1', start_date: '2026-11-03', end_date: '2026-11-07' })],
+    });
+    expect(html).toContain('Nov 3, 2026 → Nov 7, 2026');
   });
 });
 
@@ -173,6 +227,17 @@ describe('AvailabilityDrawerBody — errors are shown in the RIGHT banner (Fix I
     expect(html).toContain('Could not load dates (500)');
     expect(html).toContain('availability_type must be one of');
     expect(html).toContain('Could not delete (500)');
+  });
+
+  it('surfaces an edit (PATCH) error inline within the row being edited', () => {
+    const html = render({
+      rows: [row({ id: 'e1' })],
+      editingRowId: 'e1',
+      editStart: '2026-08-10',
+      editEnd: '2026-08-14',
+      editError: 'end_date must be on or after start_date',
+    });
+    expect(html).toContain('end_date must be on or after start_date');
   });
 });
 
@@ -262,7 +327,7 @@ describe('AvailabilityDrawerBody — pending is visibly live, approved is not', 
   });
 });
 
-describe('AvailabilityDrawerBody — ICU pairing (Fix I5 + M10: correct lock, correct wording, correct label)', () => {
+describe('AvailabilityDrawerBody — ICU pairing (correct lock, correct wording, correct label)', () => {
   it('offers Remove for an ordinary non-ICU row', () => {
     const html = render({ rows: [row({ id: 'ord1', reason_code: null })] });
     expect(html).toContain('Remove');
@@ -280,8 +345,9 @@ describe('AvailabilityDrawerBody — ICU pairing (Fix I5 + M10: correct lock, co
       start_date: '2026-06-15', end_date: '2026-06-15',
     });
     const html = render({ rows: [week, monday] });
-    // Both halves locked: no Remove offered for either.
+    // Both halves locked: no Remove (or Edit) offered for either.
     expect(html).not.toContain('>Remove<');
+    expect(html).not.toContain('>Edit<');
     const icuPairedCount = (html.match(/ICU-paired/g) ?? []).length;
     expect(icuPairedCount).toBe(2);
     // The bug this fixes: ONE fixed string used to say "paired with a
@@ -332,7 +398,7 @@ describe('AvailabilityDrawerBody — ICU pairing (Fix I5 + M10: correct lock, co
     expect(html).not.toContain('ICU Post-Call');
   });
 
-  // ── Fix 1 (CRITICAL, review 2026-09-07) ───────────────────────────────────
+  // ── Year boundary (CRITICAL, review 2026-09-07 second pass) ───────────────
   // The first version of the year-scoped fix trusted "partner absent from
   // THIS render's `rows`" as "partner does not exist" — wrong, because `rows`
   // is a year-scoped fetch. These exercise the fix end-to-end through the
@@ -377,11 +443,231 @@ describe('AvailabilityDrawerBody — ICU pairing (Fix I5 + M10: correct lock, co
   });
 });
 
+describe('AvailabilityDrawerBody — inline edit (Fix 1, review 2026-09-07 third pass)', () => {
+  // Fix 1 (Important): the product ask was PTO/off/holiday dates be
+  // "editable"; the drawer shipped POST/DELETE only, so "editing" meant
+  // Remove-then-Add — lossy, since POST defaults approval_status to
+  // 'approved' (silently promoting a pending request) and the add body never
+  // carried notes/reason_code/source (dropping a window-sourced row's tag).
+  // The fix is a real inline edit that PATCHes start_date/end_date only.
+  it('offers an Edit affordance alongside Remove for an ordinary row', () => {
+    const html = render({ rows: [row({ id: 'ord1' })] });
+    expect(html).toContain('Edit');
+    expect(html).toContain('Remove');
+  });
+
+  it('replaces the normal row with an inline edit form when it is the one being edited', () => {
+    const html = render({
+      rows: [row({ id: 'e1', start_date: '2026-08-10', end_date: '2026-08-14' })],
+      editingRowId: 'e1',
+      editStart: '2026-08-10',
+      editEnd: '2026-08-14',
+    });
+    expect(html).toContain('aria-label="Edit start date"');
+    expect(html).toContain('aria-label="Edit end date"');
+    expect(html).toContain('Save');
+    expect(html).toContain('Cancel');
+    // The normal view's Edit/Remove buttons are gone while editing this row.
+    expect(html).not.toContain('>Edit<');
+    expect(html).not.toContain('>Remove<');
+  });
+
+  it('does not disturb OTHER rows\' normal Edit/Remove buttons while one row is being edited', () => {
+    const html = render({
+      rows: [
+        row({ id: 'e1', start_date: '2026-08-10', end_date: '2026-08-14' }),
+        row({ id: 'other1', start_date: '2026-09-01', end_date: '2026-09-05' }),
+      ],
+      editingRowId: 'e1',
+      editStart: '2026-08-10',
+      editEnd: '2026-08-14',
+    });
+    expect(html).toContain('>Edit<');
+    expect(html).toContain('>Remove<');
+  });
+
+  it('never offers Edit on a locked ICU row, same carve-out as Remove', () => {
+    const week = row({
+      id: 'week1', availability_type: 'blocked', reason_code: 'icu_week',
+      start_date: '2026-06-08', end_date: '2026-06-12',
+    });
+    const monday = row({
+      id: 'mon1', availability_type: 'blocked', reason_code: 'icu_post_call',
+      start_date: '2026-06-15', end_date: '2026-06-15',
+    });
+    const html = render({ rows: [week, monday] });
+    expect(html).not.toContain('>Edit<');
+  });
+
+  it('disables Save when the edit range is backwards, and shows the same range error the add form uses', () => {
+    const html = render({
+      rows: [row({ id: 'e1' })],
+      editingRowId: 'e1',
+      editStart: '2026-08-14',
+      editEnd: '2026-08-10',
+    });
+    expect(html).toContain('End date must be on or after the start date.');
+    expect(html).toContain('disabled');
+  });
+
+  it('disables Save when the edit range has no overlap with the board year', () => {
+    const html = render({
+      rows: [row({ id: 'e1' })],
+      editingRowId: 'e1',
+      editStart: '2027-06-01',
+      editEnd: '2027-06-05',
+      year: 2026,
+    });
+    expect(html).toContain('Dates must overlap 2026 to appear on this board.');
+    expect(html).toContain('disabled');
+  });
+
+  it('allows an edit range spanning into the next year, same overlap rule the add form uses', () => {
+    const html = render({
+      // start/end given here too (unrelated to the edit form) so the ADD
+      // button's OWN blank-fields disabled state can't leak a false
+      // "disabled" match into this assertion.
+      start: '2026-01-01', end: '2026-01-05',
+      rows: [row({ id: 'e1' })],
+      editingRowId: 'e1',
+      editStart: '2026-12-28',
+      editEnd: '2027-01-05',
+      year: 2026,
+    });
+    expect(html).not.toContain('Dates must overlap');
+    expect(html).not.toContain('disabled');
+  });
+
+  it('reads "Saving…" and disables Save while an edit is in flight', () => {
+    const html = render({
+      rows: [row({ id: 'e1' })],
+      editingRowId: 'e1',
+      editStart: '2026-08-10',
+      editEnd: '2026-08-14',
+      editSaving: true,
+    });
+    expect(html).toContain('Saving…');
+    expect(html).toContain('disabled');
+  });
+
+  it('carries the year bounds onto the edit form\'s own date inputs (Fix 2\'s min/max asymmetry applies here too)', () => {
+    const html = render({
+      rows: [row({ id: 'e1' })],
+      editingRowId: 'e1',
+      editStart: '2026-08-10',
+      editEnd: '2026-08-14',
+      year: 2026,
+    });
+    // React emits a controlled <input>'s `value` last regardless of JSX prop
+    // order, so the bound and the seeded value are checked separately rather
+    // than as one contiguous substring.
+    expect(html).toContain('aria-label="Edit start date" type="date" max="2026-12-31"');
+    expect(html).toContain('aria-label="Edit end date" type="date" min="2026-01-01"');
+    const startInput = html.match(/aria-label="Edit start date"[^>]*\/>/)?.[0] ?? '';
+    const endInput = html.match(/aria-label="Edit end date"[^>]*\/>/)?.[0] ?? '';
+    expect(startInput).toContain('value="2026-08-10"');
+    expect(endInput).toContain('value="2026-08-14"');
+  });
+});
+
+describe('AvailabilityDrawerBody — provenance / Window badge (Fix 2, review 2026-09-07 third pass)', () => {
+  // Fix 2 (Important): production has 26 live source='request_window' rows —
+  // submitted by a provider, not typed by a chief. The drawer showed nothing
+  // to distinguish them, so a chief could one-click Remove a physician's
+  // submitted request with no indication it was ever submitted.
+  it('shows a Window badge for a row sourced from a request window', () => {
+    const html = render({ rows: [row({ id: 'w1', source: 'request_window' })] });
+    expect(html).toContain('Window');
+  });
+
+  it('shows no Window badge for a row a chief typed directly (source null)', () => {
+    const html = render({ rows: [row({ id: 'm1', source: null })] });
+    expect(html).not.toContain('Window');
+  });
+
+  it('shows no Window badge for a row with some other, non-window source', () => {
+    const html = render({ rows: [row({ id: 'm2', source: 'manual' })] });
+    expect(html).not.toContain('Window');
+  });
+
+  it('uses the design system\'s info tone (a CSS var), not a hardcoded hex, for the Window badge', () => {
+    const html = render({ rows: [row({ id: 'w1', source: 'request_window' })] });
+    expect(html).toContain('var(--info-bg)');
+    expect(html).toContain('var(--info)');
+    expect(html).not.toMatch(/#[0-9a-fA-F]{3,6}/);
+  });
+});
+
+describe('AvailabilityDrawerBody — past / upcoming split (Fix 4, review 2026-09-07 third pass)', () => {
+  // Fix 4 (Minor): the profile separates current-and-upcoming from past and
+  // dims the past (SectionRows, providers/[id]/page.tsx). In September a
+  // year-scoped view would otherwise put ~8 months of stale rows above the
+  // ones actually being planned.
+  it('renders an upcoming row (end_date on/after today) at full opacity with no "Past" label', () => {
+    const html = render({
+      today: '2026-09-01',
+      rows: [row({ id: 'u1', start_date: '2026-09-10', end_date: '2026-09-14' })],
+    });
+    expect(html).not.toContain('Past');
+    expect(html).toMatch(/border-radius:var\(--radius-sm\);opacity:1"/);
+  });
+
+  it('renders a past row (end_date before today) dimmed, under a "Past" label', () => {
+    const html = render({
+      today: '2026-09-01',
+      rows: [row({ id: 'p1', start_date: '2026-01-05', end_date: '2026-01-09' })],
+    });
+    expect(html).toContain('Past');
+    expect(html).toMatch(/border-radius:var\(--radius-sm\);opacity:0\.55"/);
+  });
+
+  it('shows both groups, upcoming BEFORE the Past label, when both exist', () => {
+    const html = render({
+      today: '2026-09-01',
+      rows: [
+        row({ id: 'u1', start_date: '2026-10-01', end_date: '2026-10-05' }),
+        row({ id: 'p1', start_date: '2026-01-05', end_date: '2026-01-09' }),
+      ],
+    });
+    const pastLabelIndex = html.indexOf('Past');
+    const upcomingDateIndex = html.indexOf('Oct 1, 2026');
+    const pastDateIndex = html.indexOf('Jan 5, 2026');
+    expect(pastLabelIndex).toBeGreaterThan(-1);
+    expect(upcomingDateIndex).toBeLessThan(pastLabelIndex);
+    expect(pastDateIndex).toBeGreaterThan(pastLabelIndex);
+  });
+
+  it('treats a row ending exactly today as upcoming, not past (boundary is >=)', () => {
+    const html = render({
+      today: '2026-09-01',
+      rows: [row({ id: 'edge1', start_date: '2026-08-28', end_date: '2026-09-01' })],
+    });
+    expect(html).not.toContain('Past');
+  });
+
+  it('a dismissed (denied) row that is ALSO past dims once, not twice (no compounded opacity)', () => {
+    const html = render({
+      today: '2026-09-01',
+      rows: [row({
+        id: 'pd1', approval_status: 'denied', start_date: '2026-01-05', end_date: '2026-01-09',
+      })],
+    });
+    expect(html).toMatch(/border-radius:var\(--radius-sm\);opacity:0\.55"/);
+    expect(html).not.toContain('opacity:0.3025');
+  });
+});
+
 describe('AvailabilityDrawerBody — add-form validation and addable types', () => {
   it('offers exactly the three types this surface can create correctly', () => {
     const html = render();
     expect(html).toContain('PTO Sell-Back');
-    expect(html).toContain('Unavailable');
+    // Fix 5 (Minor, review 2026-09-07 third pass): the profile's own
+    // vocabulary for 'unavailable' is "Days Off" (its section title, its
+    // counter, the intake form's field) even though its per-row badge still
+    // says "Unavailable" — this drawer's empty state already promised "days
+    // off", so the picker/badge must match that, not the per-row label.
+    expect(html).toContain('Days Off');
+    expect(html).not.toContain('>Unavailable<');
     // Fix C1 (Critical, review 2026-09-07): no_call_request used to be
     // offered here. The profile creates it through a DIFFERENT route
     // (/api/requests/submit/{token}) that tags rows for the per-window cap
@@ -395,6 +681,12 @@ describe('AvailabilityDrawerBody — add-form validation and addable types', () 
     expect(html).not.toContain('FMLA');
     expect(html).not.toContain('Military Leave');
     expect(html).not.toContain('>Blocked<');
+  });
+
+  it('labels an unavailable-type ROW as "Days Off" too, not just the picker option', () => {
+    const html = render({ rows: [row({ id: 'u1', availability_type: 'unavailable' })] });
+    expect(html).toContain('Days Off');
+    expect(html).not.toContain('>Unavailable<');
   });
 
   it('flags an end date before the start date and disables Add, without waiting for the server', () => {
@@ -432,17 +724,17 @@ describe('AvailabilityDrawerBody — add-form validation and addable types', () 
     expect(html).not.toContain('2026-01-01');
   });
 
-  // ── Fix 2 (Important, review 2026-09-07) ──────────────────────────────────
+  // ── Fix 2 (Important, review 2026-09-07 second pass) ──────────────────────
   // min/max alone do not clamp a date input's value and this form has no
   // <form> for native constraint validation to run against, so a range with
   // NO overlap with the board year at all must be caught by the SAME
   // rangeError path that already disables Add for a backwards range — not
   // just decorated with an attribute a typed/pasted date can ignore.
   //
-  // OVERLAP, NOT CONTAINMENT (second-pass fix): a range spanning INTO the
-  // neighboring year (the single most common PTO shape in a hospital
-  // calendar — a holiday block crossing New Year) must be ACCEPTED, not
-  // rejected — the fetch would show it fine on this board.
+  // OVERLAP, NOT CONTAINMENT: a range spanning INTO the neighboring year (the
+  // single most common PTO shape in a hospital calendar — a holiday block
+  // crossing New Year) must be ACCEPTED, not rejected — the fetch would show
+  // it fine on this board.
   it('accepts a range spanning into the NEXT year — the fetch would show it fine on this board', () => {
     const html = render({ start: '2026-12-28', end: '2027-01-05' });
     expect(html).not.toContain('Dates must overlap');
