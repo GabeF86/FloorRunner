@@ -523,9 +523,13 @@ import {
   callBurdenWeight, parentCallCodeOf,
   type BurdenWeighted, type ParentCoded,
 } from './callBurden';
+import { embedArray } from './embed';
+import { derivedDayTypeFor } from './templateSlots';
 ```
 
 (That replaces the earlier `plannerMath` import block and the `workDays` line — keep one import statement per module.)
+
+`embedArray` and `derivedDayTypeFor` are both single-homed helpers this module must route through rather than re-implement: `src/lib/embed.ts` owns the PostgREST one-or-many embed shape ("every consumer of an `assignments(...)` embed off schedule_slots must normalize through this helper at its parse seam"), and `src/lib/templateSlots.ts` owns date → day-type derivation.
 
 Append to `src/lib/annualTally.ts`:
 
@@ -540,15 +544,6 @@ export interface CallCount {
   code: string;
   /** Weighted: a 12h segment is 0.5, a whole call is 1. */
   count: number;
-}
-
-// PostgREST embeds slot->assignments as an ARRAY on databases without the
-// UNIQUE(schedule_slot_id) constraint and as a single OBJECT on those with it.
-// Both shapes are normalized here, same as the dashboard's queries.ts.
-function assignmentsOf(slot: PlannerSlotRow): Array<{ provider_id: string | null; assignment_status: string }> {
-  const a = slot.assignments;
-  if (a == null) return [];
-  return Array.isArray(a) ? a : [a];
 }
 
 /**
@@ -575,11 +570,22 @@ export function annualCallCounts(
     if (!slot.slot_date.startsWith(prefix)) continue;
 
     const meta = shiftTypes.get(st.code);
-    const bucket = dayTypeBucketOn(slot.derived_day_type || 'weekday', slot.slot_date);
+    // Stored derived_day_type wins; a legacy row without one falls back to the
+    // single-homed date->day-type derivation, NOT to a hardcoded 'weekday'.
+    // dayTypeBucket only consults the date for HOLIDAY types (shared.ts:415),
+    // so a wrong day type wins outright — a hardcoded 'weekday' would charge a
+    // Saturday call to the M-Th bucket. Holidays need not be threaded here:
+    // dayTypeBucketOn already re-buckets a holiday to its day of the week, so
+    // the DOW derivation lands on the same answer.
+    const dayType = slot.derived_day_type || derivedDayTypeFor(slot.slot_date, undefined);
+    const bucket = dayTypeBucketOn(dayType, slot.slot_date);
     const code = parentCallCodeOf(st.code, meta);
     const weight = callBurdenWeight(meta);
 
-    for (const a of assignmentsOf(slot)) {
+    // embedArray is the single home for the slot->assignments embed shape
+    // (see src/lib/embed.ts — PostgREST returns an object or an array
+    // depending on the UNIQUE constraint). Never re-inline that normalization.
+    for (const a of embedArray(slot.assignments)) {
       if (!assignmentFills(a)) continue;
       const pid = a.provider_id as string;
       let counts = byProvider.get(pid);
@@ -773,8 +779,12 @@ export interface AnnualTallyInput {
 
 export interface ProviderAnnualFigures {
   pto: PtoFigures;
-  /** Contractual off-day entitlement for the whole year. */
-  offDayBudget: number;
+  /**
+   * Contractual off-day entitlement for the whole year. NULL when the
+   * provider's FTE is unknown — this module refuses to guess an FTE, unlike
+   * the `|| 1` coercion used elsewhere (see offDayBudgetFor).
+   */
+  offDayBudget: number | null;
   /**
    * Off days consumed, counted ONLY across `coveredSpan`. Null when no
    * published block covers any of the year — an unbuilt month is not a month
@@ -832,6 +842,10 @@ export function computeAnnualTally(input: AnnualTallyInput): AnnualTally {
     ? computeScheduleActuals(yearSlots, availability, coveredWorkingDays, holidays)
     : {};
 
+  // Group availability once rather than rescanning the whole roster's rows per
+  // provider (annualTally.availabilityByProvider).
+  const byProvider = availabilityByProvider(availability);
+
   const providers = new Map<string, ProviderAnnualFigures>();
   for (const profile of profiles) {
     const pid = profile.provider_id;
@@ -843,7 +857,14 @@ export function computeAnnualTally(input: AnnualTallyInput): AnnualTally {
       const credited = a
         ? a.assignedWorkdays.length + a.postCallRestWorkdays.length + a.icuWorkdays.length
         : 0;
-      const ptoInSpan = ptoWeekdaysCovered(liveRowsFor(pid, availability), coveredWorkingDays).size;
+      // ONLY PTO nets here, matching workDays.ts's PTO_NETTING_TYPES. Sick,
+      // jury duty and plain `blocked` days deliberately do NOT net (see the
+      // comment on isBlockingAvailability) — they surface as an honest "under"
+      // rather than shrinking an obligation. The consequence to be aware of:
+      // a provider out sick for two weeks reads as having consumed 10 off
+      // days. That is the engine's existing stance carried through, not a new
+      // decision made here.
+      const ptoInSpan = ptoWeekdaysCovered(byProvider.get(pid) ?? [], coveredWorkingDays).size;
       offDaysUsed = Math.max(0, coveredSpan.workingDays - credited - ptoInSpan);
     }
 
@@ -970,13 +991,16 @@ describe('remainingText', () => {
 
 describe('offDaysText', () => {
   it('shows the budget alone when nothing is built', () => {
-    expect(offDaysText(63, null)).toBe('63 budgeted');
+    expect(offDaysText(62, null)).toBe('62 budgeted');
   });
   it('shows used against budget when blocks exist', () => {
-    expect(offDaysText(63, 20)).toBe('20 of 63 used');
+    expect(offDaysText(62, 20)).toBe('20 of 62 used');
   });
   it('shows a full-timer as having none', () => {
     expect(offDaysText(0, null)).toBe('none');
+  });
+  it('says the FTE is not stated rather than inventing a budget', () => {
+    expect(offDaysText(null, null)).toBe('FTE not stated');
   });
 });
 
@@ -1065,7 +1089,8 @@ export interface RosterRow {
   call_taker: boolean;
   partial_call_taker: boolean;
   pto: PtoFigures;
-  offDayBudget: number;
+  /** Null when the provider's FTE is unknown — never guessed. */
+  offDayBudget: number | null;
   offDaysUsed: number | null;
   callCounts: CallCount[];
   callTotal: number;
@@ -1089,16 +1114,21 @@ export function allotmentText(ptoWeeks: number | null): string {
 /** The PTO cell caption. */
 export function remainingText(pto: PtoFigures): string {
   const sold = pto.soldWeekdays > 0 ? ` (incl. ${pto.soldWeekdays} sold back)` : '';
-  if (pto.allotmentDays == null) {
+  // allotmentDays and remainingDays are null together or not at all — the
+  // invariant PtoFigures documents. No `?? 0` fallback here: a fallback could
+  // only fire if that invariant were broken, and it would silently print
+  // "0 left" instead of failing loudly.
+  if (pto.allotmentDays == null || pto.remainingDays == null) {
     return `${pto.usedWeekdays} used${sold} · allotment not stated`;
   }
-  const rem = pto.remainingDays ?? 0;
+  const rem = pto.remainingDays;
   const tail = rem < 0 ? `${Math.abs(rem)} over` : `${rem} left`;
   return `${pto.usedWeekdays} of ${pto.allotmentDays} used${sold} · ${tail}`;
 }
 
-/** The off-days cell. */
-export function offDaysText(budget: number, used: number | null): string {
+/** The off-days cell. A null budget means the FTE is unknown — say so. */
+export function offDaysText(budget: number | null, used: number | null): string {
+  if (budget == null) return 'FTE not stated';
   if (budget === 0) return 'none';
   if (used == null) return `${budget} budgeted`;
   return `${used} of ${budget} used`;
