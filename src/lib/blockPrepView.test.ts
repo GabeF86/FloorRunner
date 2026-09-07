@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   sortRosterRows, allotmentText, remainingText, offDaysText,
-  coveredSpanLabel, parseFteInput, parseAllotmentInput,
+  coveredSpanLabel, unrosteredFootnote, parseFteInput, parseAllotmentInput,
   type RosterRow,
 } from './blockPrepView';
 // CoveredSpanInfo is annualTally's exported span shape — used below by
@@ -194,6 +194,34 @@ describe('coveredSpanLabel', () => {
     }));
     expect(label).toContain('no working days');
     expect(label).not.toBe(coveredSpanLabel(null));
+  });
+});
+
+describe('unrosteredFootnote', () => {
+  // Fix 3 (AnnualTallyCard review, 2026-09-06): this sentence used to be
+  // assembled inline in JSX with three pluralization branches — moved here so
+  // it is testable and so the card only ever renders a string, never builds one.
+
+  it('renders nothing when the roster read failed (null)', () => {
+    expect(unrosteredFootnote(null)).toBeNull();
+  });
+
+  it('renders nothing when nobody was excluded ([])', () => {
+    expect(unrosteredFootnote([])).toBeNull();
+  });
+
+  it('singularizes for exactly one provider', () => {
+    expect(unrosteredFootnote(['p1'])).toBe(
+      '1 provider holds published call at this site but is not on the roster above — '
+      + 'inactive, based at another site, or not marked a call taker. Those calls are not shown in '
+      + 'any row.');
+  });
+
+  it('pluralizes for two or more providers', () => {
+    expect(unrosteredFootnote(['p1', 'p2'])).toBe(
+      '2 providers hold published call at this site but are not on the roster above — '
+      + 'inactive, based at another site, or not marked a call taker. Those calls are not shown in '
+      + 'any row.');
   });
 });
 

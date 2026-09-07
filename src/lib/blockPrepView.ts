@@ -168,6 +168,31 @@ export function coveredSpanLabel(span: CoveredSpanInfo | null): string {
   return `Off days counted across published blocks only: ${range} (${span.workingDays} working days).`;
 }
 
+/**
+ * The unrostered-provider footnote (AnnualTallyCard, Fix 3 2026-09-06): the
+ * only thing standing between a chief and a silently vanished call count. Ids
+ * come from `BlockPrepData.unrosteredProviderIds` — providers with published
+ * call at the site who have no row on the roster (inactive mid-year, based
+ * elsewhere, or not flagged a call taker; live example: Orji at Paoli).
+ *
+ * Null for null (the roster read failed — `unrosteredProviderIds` carries no
+ * information in that case, there is nothing honest to footnote) AND for an
+ * empty array (loaded fine, nobody was excluded). Those are different facts
+ * one level up (`BlockPrepData` distinguishes them deliberately), but
+ * downstream of THIS function they render identically: no footnote. Only a
+ * non-empty array produces a sentence.
+ */
+export function unrosteredFootnote(ids: ReadonlyArray<string> | null): string | null {
+  if (!ids || ids.length === 0) return null;
+  const n = ids.length;
+  const provider = n === 1 ? 'provider' : 'providers';
+  const hold = n === 1 ? 'holds' : 'hold';
+  const is = n === 1 ? 'is' : 'are';
+  return `${n} ${provider} ${hold} published call at this site but ${is} not on the roster above — `
+    + 'inactive, based at another site, or not marked a call taker. Those calls are not shown in '
+    + 'any row.';
+}
+
 export type ParseResult<T> = { ok: true; value: T } | { ok: false; error: string };
 
 /**

@@ -17,15 +17,19 @@
 // weighted counts (no business rule, no rounding decision of its own) —
 // formatCallWeight still owns turning that raw float into text.
 //
-// Three deliberate departures from the plan's original snippet, made while
-// implementing (see AnnualTallyCard's task report for the fuller rationale):
+// Departures from the plan's original snippet, all found by tracing render
+// paths (see the task reports for the fuller rationale; render-path coverage
+// lives in AnnualTallyCard.test.tsx, per Modal.test.tsx's renderToStaticMarkup
+// strategy — useEffect never fires under SSR, so pre-fetched mode and the
+// pre-effect self-fetch paint are both exercised there):
 //   1. The Table's `rows` prop is driven ONLY by `rows === undefined` — not by
 //      an extra `loading` flag. `rows` already IS undefined exactly when
-//      nothing has loaded yet, on both the self-fetch and pre-fetched paths;
-//      gating on `loading` too broke the pre-fetched path, where a host that
-//      passes `data={null}` while its own fetch is in flight never toggles
-//      `loading` at all (this component's fetch never runs for it), so the
-//      card rendered the EMPTY state ("No call takers") instead of a skeleton.
+//      nothing has loaded yet, on both the self-fetch and pre-fetched paths.
+//      The plan's `loading && !rows` gate broke BOTH: in pre-fetched mode
+//      `loading` never toggles at all (this component's own fetch never runs
+//      for it), and on /dashboard's self-fetch it flashed the EMPTY state
+//      ("No call takers") on every first paint, before the effect had a
+//      chance to set `loading` true.
 //   2. Fairness-bucket columns (M–Th / Fri / Sat / Sun) always render, rather
 //      than being filtered to buckets with a non-zero count. Filtering tied
 //      the table HEADER to `rows`, which is undefined while loading, so the
@@ -44,49 +48,78 @@
 //      byproducts of the same annual-tally computation the roster read feeds
 //      (the route nulls both out whenever the roster read fails, so there is
 //      nothing honest to show there regardless).
+//   4. Fix 1 (review): decoupling #3 alone made a FAILED BLOCKS read render
+//      TWICE — route.helpers.ts deliberately sets roster.error to the exact
+//      same string as blocks.error when a blocks failure is what took the
+//      roster down with it ("A FAILED BLOCKS READ MUST FAIL THE ROSTER TOO"),
+//      and the nested plan layout absorbed that into a single banner; fully
+//      decoupled, the two panels rendered the identical message stacked. The
+//      blocks banner is now suppressed exactly when its message byte-matches
+//      the roster's — every OTHER blocks failure still gets its own banner.
+//   5. Fix 5 (review): a payload for the wrong (site, year) is treated as "not
+//      loaded" rather than rendered, so a late self-fetch response after the
+//      user switched sites, or a pre-fetched host handing over the previous
+//      site's data while its own new fetch is in flight, shows a skeleton
+//      instead of one site's numbers under another site's title.
+//   6. Fix 6 (review): `data` and `refreshKey` are a discriminated union —
+//      `refreshKey` only means anything in self-fetch mode (see its own doc
+//      comment), and passing both was a silent no-op trap. Now a type error.
 
 import { useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
 import { Banner, Card, EmptyState, Table } from '@/components/ui';
 import { formatCallWeight } from '@/lib/callBurden';
 import { FAIRNESS_BUCKETS } from '@/lib/rulesEngine/shared';
-import { coveredSpanLabel, offDaysText, remainingText, sortRosterRows } from '@/lib/blockPrepView';
+// The Call Counts modal's own column labels (Fix 4, review) — this card's
+// whole purpose is to point at that modal, so the two are MEANT to agree, and
+// a local copy could silently drift from it. `BUCKET_LABELS` is a
+// `Record<BucketDayType, string>` (BucketDayType = FairnessBucket), so it is
+// exhaustive by construction: a fifth bucket would fail THAT map to compile
+// rather than render an un-labelled raw key here.
+import { BUCKET_LABELS } from '@/lib/callCountColumns';
+import {
+  coveredSpanLabel, offDaysText, remainingText, sortRosterRows, unrosteredFootnote,
+} from '@/lib/blockPrepView';
 import type { BlockPrepData } from '@/app/api/scheduling/block-prep/route.helpers';
 
-const BUCKET_LABELS: Record<string, string> = {
-  weekday: 'M–Th',
-  friday: 'Fri',
-  saturday: 'Sat',
-  sunday: 'Sun',
-};
-
-export default function AnnualTallyCard({
-  siteId,
-  year,
-  siteName,
-  /** Bumped by the host after an edit so the card refetches. Ignored when
-   *  `data` is supplied — the host owns reloading in that case. */
-  refreshKey = 0,
-  /**
-   * Pre-fetched payload. When the host has already loaded `/block-prep` for
-   * this (site, year) — as /block-prep itself has, for its roster — it passes
-   * the data in and the card renders from it instead of issuing a SECOND
-   * identical request. Without this the board would fire two year-wide slot
-   * queries on every load and two more on every inline edit, against exactly
-   * the read we just had to add an exact-count truncation guard to.
-   *
-   * Pass `null` (not `undefined`) while the host's own fetch is still in
-   * flight — that renders the loading skeleton here too. Omit the prop
-   * entirely on /dashboard, where the card is standalone and self-fetches.
-   */
-  data: providedData,
-}: {
+type AnnualTallyCardProps = {
   siteId: string | null;
   year: number;
   siteName?: string;
-  refreshKey?: number;
-  data?: BlockPrepData | null;
-}) {
+} & (
+  | {
+      /**
+       * Pre-fetched payload. When the host has already loaded `/block-prep`
+       * for this (site, year) — as /block-prep itself has, for its roster —
+       * it passes the data in and the card renders from it instead of
+       * issuing a SECOND identical request. Without this the board would
+       * fire two year-wide slot queries on every load and two more on every
+       * inline edit, against exactly the read we just had to add an
+       * exact-count truncation guard to.
+       *
+       * Pass `null` (not `undefined`) while the host's own fetch is still in
+       * flight — that renders the loading skeleton here too. Omit `data`
+       * entirely (see the other branch) on /dashboard, where the card is
+       * standalone and self-fetches.
+       *
+       * `refreshKey` is not accepted alongside `data` — the host owns
+       * reloading in this mode (it refetches and passes a new `data`), so a
+       * `refreshKey` here would be silently ignored (Fix 6, review: this is
+       * now a type error instead of a silent no-op).
+       */
+      data: BlockPrepData | null;
+      refreshKey?: undefined;
+    }
+  | {
+      data?: undefined;
+      /** Bumped by the host after an edit so the card refetches. Only
+       *  meaningful in self-fetch mode (no `data` prop) — see above. */
+      refreshKey?: number;
+    }
+);
+
+export default function AnnualTallyCard(props: AnnualTallyCardProps) {
+  const { siteId, year, siteName, data: providedData, refreshKey = 0 } = props;
   const [fetched, setFetched] = useState<BlockPrepData | null>(null);
   const [fatal, setFatal] = useState<string | null>(null);
   const selfFetch = providedData === undefined;
@@ -131,23 +164,48 @@ export default function AnnualTallyCard({
     return <Card title={title}><Banner tone="error">{fatal}</Banner></Card>;
   }
 
-  const roster = data?.roster;
-  // undefined => nothing has loaded yet (true for BOTH: self-fetch before its
-  // first response, and pre-fetched mode while the host still holds `data`
-  // at null). [] => loaded, genuinely zero call takers. Array => loaded rows.
-  // This alone is what the Table below keys its skeleton off of.
+  // Fix 5 (review): a payload stamped for a DIFFERENT (site, year) than what
+  // this render is asking for is treated exactly like "not loaded yet" —
+  // never rendered as-is. Reachable two ways: a self-fetch response that
+  // lands late, after the user has already moved on to another site or year;
+  // or a pre-fetched host hasn't updated `data` yet for a new siteId/year it
+  // already passed down (Task 10 makes this a real, not theoretical, case).
+  // `BlockPrepData.site_id`/`.year` are stamped on every shape the route
+  // returns, including every failure panel, so this guard is orthogonal to
+  // roster/blocks success or failure.
+  const loaded = data && data.site_id === siteId && data.year === year ? data : null;
+
+  const roster = loaded?.roster;
+  // undefined => nothing has loaded yet for THIS (site, year) — true for: not
+  // yet fetched, a pre-fetched host still holding null, or a stale payload
+  // just discarded above. [] => loaded, genuinely zero call takers. Array =>
+  // loaded rows. This alone is what the Table below keys its skeleton off of.
   const rows = roster?.data ? sortRosterRows(roster.data) : undefined;
 
   const headers = [
     'Provider',
-    ...FAIRNESS_BUCKETS.map(b => BUCKET_LABELS[b] ?? b),
+    ...FAIRNESS_BUCKETS.map(b => BUCKET_LABELS[b]),
     'Calls',
     'PTO',
     'Off days',
   ];
 
-  const blocks = data?.blocks;
-  const showBlocksPanel = !!blocks?.error || (blocks?.data?.length ?? 0) > 0;
+  const blocks = loaded?.blocks;
+  // Fix 1 (review): suppress the blocks banner ONLY when it is byte-identical
+  // to the roster's — the signature of the cascade where a failed blocks read
+  // took the roster down with it (route.helpers.ts's `fail(blocks.error,
+  // blocks)`). Any other blocks failure (a different message, or one with no
+  // corresponding roster failure) still renders its own banner — the
+  // decoupling above stays in force for every other case.
+  const blocksError = blocks?.error && blocks.error !== roster?.error ? blocks.error : null;
+  const showBlocksPanel = !!blocksError || (blocks?.data?.length ?? 0) > 0;
+
+  // Fix 3 (review): the sentence lives in lib, not assembled here — this is
+  // the only line standing between a chief and a silently vanished call
+  // count, and inline pluralization branches are exactly what zero-inline-
+  // strings prohibits. Null for both "roster failed" and "nobody excluded";
+  // only a non-empty array produces text (see unrosteredFootnote's own doc).
+  const footnote = unrosteredFootnote(loaded?.unrosteredProviderIds ?? null);
 
   return (
     <Card title={title} pad={false}>
@@ -173,7 +231,9 @@ export default function AnnualTallyCard({
                   .filter(c => c.bucket === b)
                   .reduce((n, c) => n + c.count, 0);
                 return total === 0
-                  ? <span key={b} style={{ color: 'var(--text-dim)' }}>—</span>
+                  // Fix 7 (review, a11y): the dash alone reads to a screen
+                  // reader as "em dash", not "0 calls" — name it explicitly.
+                  ? <span key={b} title="0 calls" aria-label="0 calls" style={{ color: 'var(--text-dim)' }}>—</span>
                   : <span key={b}>{formatCallWeight(total)}</span>;
               }),
               <span key="total" style={{ fontWeight: 700 }}>{formatCallWeight(r.callTotal)}</span>,
@@ -199,25 +259,17 @@ export default function AnnualTallyCard({
       {rows !== undefined && (
         <div style={{ padding: '0 var(--space-4) var(--space-4)' }}>
           <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', lineHeight: 1.5 }}>
-            {coveredSpanLabel(data?.coveredSpan ?? null)}
+            {coveredSpanLabel(loaded?.coveredSpan ?? null)}
           </div>
 
-          {/* Providers with published call at this site who have NO ROW above —
-              a mid-year status change, cross-site coverage, or someone simply
-              not flagged as a call taker. Their calls are counted by the tally
-              but belong to nobody on screen, so the count would vanish silently
-              without this line. There is a live instance at Paoli (Orji holds a
-              published 2026 call and is not flagged a call taker). The ids come
-              from annualTally, which exposes them for exactly this purpose.
-              `null` (roster read failed) vs `[]` (nobody excluded) are
-              different facts; only a non-empty ARRAY renders this line. */}
-          {(data?.unrosteredProviderIds?.length ?? 0) > 0 && (
-            <div style={{ marginTop: 'var(--space-2)', fontSize: 'var(--fs-xs)', color: 'var(--warn)', lineHeight: 1.5 }}>
-              {data!.unrosteredProviderIds!.length} provider
-              {data!.unrosteredProviderIds!.length === 1 ? ' holds' : 's hold'} published call at this
-              site but {data!.unrosteredProviderIds!.length === 1 ? 'is' : 'are'} not on the roster
-              above — inactive, based at another site, or not marked a call taker. Those calls are
-              not shown in any row.
+          {footnote && (
+            // Fix 7 (review, a11y): role="note" so its only warning signal
+            // isn't colour alone.
+            <div
+              role="note"
+              style={{ marginTop: 'var(--space-2)', fontSize: 'var(--fs-xs)', color: 'var(--warn)', lineHeight: 1.5 }}
+            >
+              {footnote}
             </div>
           )}
         </div>
@@ -225,11 +277,12 @@ export default function AnnualTallyCard({
 
       {/* Independent of the roster panel above: a failed roster read must not
           hide a blocks list that loaded fine, and vice versa (each panel
-          reports what it knows). */}
+          reports what it knows) — except the identical-message case Fix 1
+          suppresses, which the roster banner above already shows. */}
       {showBlocksPanel && (
         <div style={{ padding: 'var(--space-3) var(--space-4)', borderTop: '1px solid var(--border-faint)' }}>
-          {blocks?.error ? (
-            <Banner tone="error">{blocks.error}</Banner>
+          {blocksError ? (
+            <Banner tone="error">{blocksError}</Banner>
           ) : (
             <>
               <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', marginBottom: 'var(--space-2)' }}>
