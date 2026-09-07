@@ -391,7 +391,7 @@ export function liveRowsFor(
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `npx vitest run src/lib/annualTally.test.ts`
-Expected: PASS, 10 tests.
+Expected: PASS, all tests in the file green (the count grows as later steps add cases).
 
 - [ ] **Step 5: Commit**
 
@@ -614,7 +614,7 @@ export function callTotal(counts: ReadonlyArray<CallCount>): number {
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `npx vitest run src/lib/annualTally.test.ts`
-Expected: PASS, 17 tests.
+Expected: PASS, all tests in the file green.
 
 - [ ] **Step 5: Commit**
 
@@ -884,7 +884,7 @@ export function computeAnnualTally(input: AnnualTallyInput): AnnualTally {
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `npx vitest run src/lib/annualTally.test.ts`
-Expected: PASS, 23 tests.
+Expected: PASS, all tests in the file green.
 
 If the "counts working days in the year" test disagrees, print `comp.workingDays` and check 2026's weekday count and which majors land on weekends before changing the expectation — the arithmetic is `isWorkingDay`'s, and it is the engine's.
 
@@ -1192,7 +1192,7 @@ export function parseAllotmentInput(raw: string): ParseResult<number | null> {
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `npx vitest run src/lib/blockPrepView.test.ts`
-Expected: PASS, 22 tests.
+Expected: PASS, all tests in the file green.
 
 - [ ] **Step 5: Commit**
 
@@ -1543,7 +1543,7 @@ export async function loadBlockPrepData(
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `npx vitest run src/app/api/scheduling/block-prep/route.helpers.test.ts`
-Expected: PASS, 4 tests.
+Expected: PASS, all tests in the file green.
 
 - [ ] **Step 5: Write the route handler**
 

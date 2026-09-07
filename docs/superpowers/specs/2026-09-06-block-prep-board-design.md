@@ -75,19 +75,24 @@ Every figure routes through the helper that already owns it. This board re-deriv
 | — its weight | C1N12 = 0.5 of a C1; segments fold under the parent code | `callBurden.callBurdenWeight` / `parentCallCodeOf` |
 | — its visibility | **Published versions only** (invariant 3) | `committedAssignments.filterPublishedVersions` |
 | PTO used | Weekdays covered by PTO rows in the year, **sold-back days included** | `dateRanges.ptoCounterStats(...).weekdaysBooked` |
-| PTO remaining | `pto_weeks × 5 − weekdaysBooked`; **omitted entirely when `pto_weeks` is null** | `gridCalculator.WORK_DAYS_PER_PTO_WEEK` |
+| PTO remaining | `pto_weeks × 5 − weekdaysBooked`; **omitted entirely when `pto_weeks` is null** | `dateRanges.PTO_WORK_DAYS_PER_WEEK` |
 | Off-day budget | `WD − round(effectiveWorkDaysFte × WD)`, independent of PTO | `workDays.entitledOffDays` |
 | Off days used | Working days inside published blocks at the site, minus credited worked days, minus PTO weekdays | `computeScheduleActuals` (assigned ∪ post-call ∪ ICU, disjoint) |
 | Required working days | `round(workFte × WD) − PTO`, floored at 0 | `workDays.requiredWorkDays` |
 
 `computeScheduleActuals` returns raw per-code counts; the burden weighting and parent folding are applied on top by `annualTally.ts`, the same order `callCountDays.ts` applies them.
 
-**Two figures carry an explicit honesty caveat and must render it:**
+**Three figures carry an explicit honesty caveat and must render it:**
 
 1. **Off days used** can only be counted where a schedule exists. Half of 2027 is unbuilt. The column reads as *"N used, through the blocks that exist"* and names the covered span — it must never treat unbuilt months as days off.
 2. **PTO remaining** is absent, not zero, when `pto_weeks` is null. The used figure still shows.
+3. **The off-day budget** is absent, not zero, when the provider's FTE is unknown. `offDayBudgetFor` returns null for a null or non-finite `fte_value` and the column reads *"FTE not stated"*. This is a deliberate divergence from the rest of the codebase, which coerces a missing FTE with `|| 1` (`fteTarget.ts:606`, `dayShiftAutoGen.ts:367`) — a coercion that also swallows a stated `0`. Those call sites feed the engine and must keep moving; a read-only board can afford to refuse to guess, and given the whole feature exists to distinguish "not stated" from "genuinely none", guessing here would undercut it.
 
-`entitledOffDays` already handles the case that motivated this: it keys off `effectiveWorkDaysFte`, so Hussain — call FTE 0.70, working-days FTE 1.00 — is entitled to **zero** off days despite a partial call contract, and a 1.0 FTE is likewise zero. No new arithmetic.
+A stated `0` is a different matter and is NOT null: it delegates to `entitledOffDays` like any other number. `entitledOffDays` already handles the case that motivated this whole column: it keys off `effectiveWorkDaysFte`, so Hussain — call FTE 0.70, working-days FTE 1.00 — is entitled to **zero** off days despite a partial call contract, and a 1.0 FTE is likewise zero. No new arithmetic.
+
+**Open question (Gabriel, asked 2026-09-06):** a per-diem at a *stated* 0.00 FTE computes to a budget of every working day in the year (256 for 2026) — literally correct, since they owe no working days, but uninformative next to the Physician Planner card, which coerces the same provider to 1.0 FTE and shows zero. Whether that column should read the full number or "n/a" is unresolved; `annualTally.ts` carries a `TODO(gabriel)` at the branch.
+
+**What does NOT net against off days:** only PTO. Sick, jury duty and plain `blocked` days are deliberately excluded from `PTO_NETTING_TYPES` (`workDays.ts`) so they surface as an honest "under" rather than shrinking an obligation. The consequence, carried through here rather than re-decided: a provider out sick for two weeks reads as having consumed 10 off days. Also raised with Gabriel 2026-09-06.
 
 **Cross-site:** call counts are **this site's call only**, matching the per-site obligation bands. A provider taking call at another site does not appear in this site's tally.
 
