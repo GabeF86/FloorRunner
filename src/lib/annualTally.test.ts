@@ -116,6 +116,14 @@ describe('offDayBudgetFor', () => {
     expect(offDayBudgetFor(bad, 250)).toBeNull();
   });
 
+  it('returns null for a negative FTE rather than inverting the subtraction', () => {
+    // Mirrors effectiveWorkDaysFte's own `< 0` guard (workDays.ts:193). Not
+    // reachable through the app (range-checked at the write gates) — this
+    // pins the defence-in-depth, not a live path. Without the guard,
+    // entitledOffDays(-1, 250) = 250 - round(-250) = 500: twice the year.
+    expect(offDayBudgetFor(profile({ fte_value: -1 }), 250)).toBeNull();
+  });
+
   it('treats a stated zero FTE as a real answer, not as unknown', () => {
     // A stated 0 is not blank — it delegates to entitledOffDays like any
     // other finite FTE (see the TODO in annualTally.ts on whether the FULL

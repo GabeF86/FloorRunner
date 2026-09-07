@@ -35,7 +35,8 @@ import { PTO_WORK_DAYS_PER_WEEK } from './dateRanges';
 /** The employment-profile fields this module needs. */
 export interface TallyProfile {
   provider_id: string;
-  /** Call FTE. Null on a legacy profile — treated as 0. */
+  /** Call FTE. NULL means NOT STATED — offDayBudgetFor returns null rather
+   *  than guessing; it is never treated as 0. */
   fte_value: number | null;
   /** Working-days FTE (patch43). Null means "same as fte_value". */
   work_days_fte: number | null;
@@ -108,7 +109,13 @@ export function offDayBudgetFor(profile: TallyProfile, workingDaysInYear: number
   // work_days_fte's string coercion happens later, inside entitledOffDays'
   // effectiveWorkDaysFte, and pto_weeks needs none (it's int4).
   const fte = Number(profile.fte_value);
-  if (!Number.isFinite(fte)) return null; // unparseable — unknown, never a guessed 0
+  // Mirrors effectiveWorkDaysFte's guard (workDays.ts:193) so the two never
+  // diverge on what counts as garbage: non-finite OR negative. Not reachable
+  // through the app today (validateAndSplitPatch range-checks fte_value, plus
+  // a DB CHECK) — defence-in-depth, not a live bug. Without the `< 0` half, a
+  // negative FTE would flow into entitledOffDays and invert its subtraction
+  // (fte=-1, WD=250 → 250 - round(-250) = 500 — twice the working year).
+  if (!Number.isFinite(fte) || fte < 0) return null; // unparseable/negative — unknown, never a guessed 0
   // TODO(gabriel): a stated 0.00-FTE per diem falls through to here and gets
   // the FULL working-day count as their off-day budget (entitledOffDays(0, WD)
   // = WD). Is that the number the board should show for a per diem, or should
