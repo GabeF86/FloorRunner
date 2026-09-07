@@ -74,6 +74,14 @@ export function allotmentText(ptoWeeks: number | null): string {
   return ptoWeeks == null ? '—' : String(ptoWeeks);
 }
 
+// Shared verbatim between remainingText below and rosterFooterNote further
+// down, so the roster card's legend can describe what the annual tally says
+// without a second copy of the phrase drifting from this one (Fix M1,
+// review 2026-09-06 — the footer used to claim the tally prints an em dash,
+// which nothing does; remainingText is what the tally's PTO column actually
+// calls).
+const ALLOTMENT_NOT_STATED = 'allotment not stated';
+
 /** The PTO cell caption. */
 export function remainingText(pto: PtoFigures): string {
   const sold = pto.soldWeekdays > 0 ? ` (incl. ${pto.soldWeekdays} sold back)` : '';
@@ -82,7 +90,7 @@ export function remainingText(pto: PtoFigures): string {
   // only fire if that invariant were broken, and it would silently print
   // "0 left" instead of failing loudly.
   if (pto.allotmentDays == null || pto.remainingDays == null) {
-    return `${pto.usedWeekdays} used${sold} · allotment not stated`;
+    return `${pto.usedWeekdays} used${sold} · ${ALLOTMENT_NOT_STATED}`;
   }
   const rem = pto.remainingDays;
   const tail = rem < 0 ? `${Math.abs(rem)} over` : `${rem} left`;
@@ -253,6 +261,41 @@ export function parseAllotmentInput(raw: string): ParseResult<number | null> {
   const n = Number(s);
   if (!Number.isInteger(n) || n < 0) return { ok: false, error: 'Must be a whole number of weeks' };
   return { ok: true, value: n };
+}
+
+// ── Roster card editable-cell copy (Task 8, Fix M1 review) ─────────────────
+// Chief-facing wording for RosterCard.tsx's three inline-editable columns —
+// tooltip prose and the working-days blank placeholder — pulled out of the
+// component so it lives in the one file that owns chief-facing wording,
+// alongside the parse rules the tooltips describe.
+
+export const CALL_FTE_TOOLTIP = 'Call FTE — pro-rates the call obligation.';
+
+export const WORK_DAYS_FTE_TOOLTIP =
+  'Working-days FTE — the share of working days owed. Blank means the same as call FTE.';
+
+export const PTO_ALLOTMENT_TOOLTIP =
+  'Annual PTO allotment in weeks. Blank means not stated; 0 means genuinely none.';
+
+/** The working-days FTE cell's placeholder when blank — the existing "same as
+ *  call FTE" convention (validation/providers.ts's work_days_fte comment,
+ *  patch43). */
+export const WORK_DAYS_FTE_PLACEHOLDER = 'same';
+
+/**
+ * The roster card's footer legend. Fix M1 (review, 2026-09-06): the original
+ * sentence claimed a blank PTO allotment "shows — in the tally" — false.
+ * Nothing in AnnualTallyCard renders `allotmentText`; its PTO column calls
+ * `remainingText`, which prints "allotment not stated" (ALLOTMENT_NOT_STATED
+ * above — shared with this function so the two can't drift apart again). The
+ * em dash is real, but it is what the ROSTER's OWN blank cell shows, not
+ * something the tally prints — the corrected sentence says both, and gets
+ * the em dash itself from `allotmentText(null)` rather than a second literal.
+ */
+export function rosterFooterNote(): string {
+  return 'Blank work-days FTE means the same as call FTE. A blank PTO weeks cell means no '
+    + `allotment has been stated — shown as "${allotmentText(null)}" here and as `
+    + `"${ALLOTMENT_NOT_STATED}" in the annual tally; a typed 0 means genuinely none.`;
 }
 
 // ── Availability drawer (Task 9) ────────────────────────────────────────────

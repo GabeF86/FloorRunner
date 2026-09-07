@@ -3,7 +3,7 @@ import {
   sortRosterRows, allotmentText, remainingText, offDaysText,
   coveredSpanLabel, unrosteredFootnote, parseFteInput, parseAllotmentInput,
   ADDABLE_AVAILABILITY_TYPES, isPairedIcuRow, availabilityTypeTone,
-  availabilityStatusBadge,
+  availabilityStatusBadge, rosterFooterNote, WORK_DAYS_FTE_PLACEHOLDER,
   type RosterRow,
 } from './blockPrepView';
 // CoveredSpanInfo is annualTally's exported span shape — used below by
@@ -280,6 +280,38 @@ describe('parseAllotmentInput', () => {
   });
   it('rejects a non-numeric string', () => {
     expect(parseAllotmentInput('abc').ok).toBe(false);
+  });
+});
+
+describe('rosterFooterNote (Fix M1 regression: what the tally actually says)', () => {
+  it('does not claim the tally prints an em dash — nothing in AnnualTallyCard calls allotmentText', () => {
+    const note = rosterFooterNote();
+    expect(note).not.toContain('shows — in the tally');
+  });
+
+  it('names the tally\'s actual wording, "allotment not stated" — the same phrase remainingText prints', () => {
+    // Pinned against the LIVE output of remainingText for an unstated
+    // allotment, not a second copy of the phrase, so the two can't drift
+    // apart the way the original footer text did.
+    const tallyWording = remainingText({ usedWeekdays: 2, soldWeekdays: 0, allotmentDays: null, remainingDays: null });
+    expect(tallyWording).toContain('allotment not stated');
+    expect(rosterFooterNote()).toContain('allotment not stated');
+  });
+
+  it('names the roster\'s own blank placeholder via allotmentText(null), not a hardcoded em dash', () => {
+    expect(rosterFooterNote()).toContain(allotmentText(null));
+  });
+
+  it('still states the two blank-vs-zero conventions the columns rely on', () => {
+    const note = rosterFooterNote();
+    expect(note).toContain('same as call FTE');
+    expect(note).toContain('genuinely none');
+  });
+});
+
+describe('WORK_DAYS_FTE_PLACEHOLDER', () => {
+  it('is the literal string a blank working-days FTE cell shows', () => {
+    expect(WORK_DAYS_FTE_PLACEHOLDER).toBe('same');
   });
 });
 
