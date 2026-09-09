@@ -78,7 +78,11 @@ export function employmentStatusLabel(v: string): string {
 export function employmentStatusOptions(
   current: string,
 ): Array<{ value: string; label: string }> {
-  const opts = EMPLOYMENT_STATUSES.map(v => ({ value: v, label: employmentStatusLabel(v) }));
+  // Annotated rather than inferred: mapping over the `as const` tuple would
+  // narrow `value` to the eight literals, and the legacy push below is by
+  // definition a value that is NOT one of them.
+  const opts: Array<{ value: string; label: string }> =
+    EMPLOYMENT_STATUSES.map(v => ({ value: v, label: employmentStatusLabel(v) }));
   if (current && !(EMPLOYMENT_STATUSES as readonly string[]).includes(current)) {
     opts.push({ value: current, label: `${employmentStatusLabel(current)} (legacy)` });
   }

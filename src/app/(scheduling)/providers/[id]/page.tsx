@@ -15,6 +15,14 @@ import {
 } from '@/lib/validation/providers';
 import { formatBreakdown, type BreakdownRow } from '@/lib/callCodeBreakdown';
 import {
+  employmentSavePayload,
+  employmentStatusLabel,
+  employmentStatusOptions,
+  partnershipFromProfile,
+  type EmploymentFormState,
+  type Partnership,
+} from '@/lib/providerEmploymentForm';
+import {
   icuWeekEnd,
   pairIcuRows,
   planIcuEntry,
@@ -81,21 +89,18 @@ interface EmploymentProfile {
   work_days_fte: number | null;
   is_shareholder: boolean;
   is_partner_track: boolean;
+  // Third partnership standing (patch47), mutually exclusive with the two
+  // above. The form holds one value and derives all three — see
+  // providerEmploymentForm.Partnership.
+  is_employed_call_taker: boolean;
   is_day_doc: boolean;
   is_icu_doc: boolean;
   pto_weeks: number | null;
+  // Column name unchanged; the field is labelled "Weekly Hours" in the UI
+  // (Gabriel 2026-09-09).
   max_weekly_hours: number | null;
-  max_monthly_calls: number | null;
   call_taker: boolean;
   partial_call_taker: boolean;
-  holiday_call_eligible: boolean;
-  weekend_call_eligible: boolean;
-  night_call_eligible: boolean;
-  backup_call_eligible: boolean;
-  late_shift_eligible: boolean;
-  can_supervise_crnas: boolean;
-  can_work_solo: boolean;
-  can_cover_offsite: boolean;
   home_site_id: string | null;
   fellowship_primary: string | null;
   fellowships: string[];
@@ -104,15 +109,6 @@ interface EmploymentProfile {
   undesired_assignments: string[];
   preferred_sites: string[];
   undesired_sites: string[];
-  trauma_eligible: boolean;
-  ob_eligible: boolean;
-  cardiac_eligible: boolean;
-  endo_eligible: boolean;
-  ep_eligible: boolean;
-  max_consecutive_calls: number | null;
-  weekend_frequency_target: number | null;
-  holiday_frequency_target: number | null;
-  friday_frequency_target: number | null;
   blocked_dates: string[];
   scheduling_notes: string | null;
   // 7-element boolean array indexed Sun..Sat (matches JS Date.getDay).
@@ -164,21 +160,13 @@ const EMPTY_PROFILE: EmploymentProfile = {
   work_days_fte: null,
   is_shareholder: false,
   is_partner_track: false,
+  is_employed_call_taker: false,
   is_day_doc: false,
   is_icu_doc: false,
   pto_weeks: null,
   max_weekly_hours: null,
-  max_monthly_calls: null,
   call_taker: false,
   partial_call_taker: false,
-  holiday_call_eligible: true,
-  weekend_call_eligible: true,
-  night_call_eligible: true,
-  backup_call_eligible: true,
-  late_shift_eligible: true,
-  can_supervise_crnas: false,
-  can_work_solo: false,
-  can_cover_offsite: false,
   home_site_id: null,
   fellowship_primary: null,
   fellowships: [],
@@ -187,30 +175,11 @@ const EMPTY_PROFILE: EmploymentProfile = {
   undesired_assignments: [],
   preferred_sites: [],
   undesired_sites: [],
-  trauma_eligible: false,
-  ob_eligible: false,
-  cardiac_eligible: false,
-  endo_eligible: false,
-  ep_eligible: false,
-  max_consecutive_calls: null,
-  weekend_frequency_target: null,
-  holiday_frequency_target: null,
-  friday_frequency_target: null,
   blocked_dates: [],
   scheduling_notes: null,
   available_weekdays: [true, true, true, true, true, true, true],
   preferred_day_shift_types: [],
   days_per_week: null,
-};
-
-const EMPLOYMENT_LABELS: Record<string, string> = {
-  full_time: 'Full Time',
-  part_time: 'Part Time',
-  per_diem: 'Per Diem',
-  locums: 'Locums',
-  contract: 'Contract',
-  retired: 'Retired',
-  terminated: 'Terminated',
 };
 
 // Keep the array reference stable so the `asArray` helper below can normalize
@@ -395,7 +364,7 @@ export default function ProviderDetailPage({ params }: { params: { id: string } 
               bg={provider.status === 'active' ? 'rgba(16,185,129,0.12)' : 'rgba(100,116,139,0.12)'}
             />
             {prof?.fellowship_primary && <ChipPill text={prof.fellowship_primary} fg="#534AB7" bg="rgba(83,74,183,0.10)" />}
-            {prof?.employment_status && <ChipPill text={EMPLOYMENT_LABELS[prof.employment_status] || prof.employment_status} fg="#0C447C" bg="rgba(14,165,233,0.10)" />}
+            {prof?.employment_status && <ChipPill text={employmentStatusLabel(prof.employment_status)} fg="#0C447C" bg="rgba(14,165,233,0.10)" />}
           </div>
         </div>
         <SaveIndicator state={saveState} />
@@ -669,31 +638,15 @@ function SchedulingTab({ profile, sites, saveState, onSave }: { profile: Employm
   // real number for some of them"). Mirrors the work_days_fte field above.
   const [ptoWeeks, setPtoWeeks] = useState(
     profile.pto_weeks == null ? '' : String(profile.pto_weeks));
-  const [maxWeeklyHours, setMaxWeeklyHours] = useState(profile.max_weekly_hours == null ? '' : String(profile.max_weekly_hours));
-  const [isPartner, setIsPartner] = useState(profile.is_shareholder);
-  const [isPartnerTrack, setIsPartnerTrack] = useState(profile.is_partner_track);
+  // Column is still max_weekly_hours; the label is "Weekly Hours".
+  const [weeklyHours, setWeeklyHours] = useState(profile.max_weekly_hours == null ? '' : String(profile.max_weekly_hours));
+  // Partner / Partner Track / Employed Call Taker are mutually exclusive, so
+  // this is ONE value rather than three booleans — no handler can leave two set.
+  const [partnership, setPartnership] = useState<Partnership>(partnershipFromProfile(profile));
   const [isDayDoc, setIsDayDoc] = useState(profile.is_day_doc);
   const [isIcuDoc, setIsIcuDoc] = useState(profile.is_icu_doc);
   const [callTaker, setCallTaker] = useState(profile.call_taker);
   const [partialCall, setPartialCall] = useState(profile.partial_call_taker);
-  const [weekendElig, setWeekendElig] = useState(profile.weekend_call_eligible);
-  const [holidayElig, setHolidayElig] = useState(profile.holiday_call_eligible);
-  const [nightElig, setNightElig] = useState(profile.night_call_eligible);
-  const [backupElig, setBackupElig] = useState(profile.backup_call_eligible);
-  const [lateElig, setLateElig] = useState(profile.late_shift_eligible);
-  const [canSupervise, setCanSupervise] = useState(profile.can_supervise_crnas);
-  const [canSolo, setCanSolo] = useState(profile.can_work_solo);
-  const [canOffsite, setCanOffsite] = useState(profile.can_cover_offsite);
-  const [traumaElig, setTraumaElig] = useState(profile.trauma_eligible);
-  const [obElig, setObElig] = useState(profile.ob_eligible);
-  const [cardiacElig, setCardiacElig] = useState(profile.cardiac_eligible);
-  const [endoElig, setEndoElig] = useState(profile.endo_eligible);
-  const [epElig, setEpElig] = useState(profile.ep_eligible);
-  const [maxCalls, setMaxCalls] = useState(profile.max_monthly_calls == null ? '' : String(profile.max_monthly_calls));
-  const [maxConsec, setMaxConsec] = useState(profile.max_consecutive_calls == null ? '' : String(profile.max_consecutive_calls));
-  const [weekendTarget, setWeekendTarget] = useState(profile.weekend_frequency_target == null ? '' : String(profile.weekend_frequency_target));
-  const [holidayTarget, setHolidayTarget] = useState(profile.holiday_frequency_target == null ? '' : String(profile.holiday_frequency_target));
-  const [fridayTarget, setFridayTarget] = useState(profile.friday_frequency_target == null ? '' : String(profile.friday_frequency_target));
   const [schedulingNotes, setSchedulingNotes] = useState(profile.scheduling_notes || '');
   const [homeSite, setHomeSite] = useState(profile.home_site_id || '');
   // 7 booleans indexed Sun..Sat. Null/missing from the DB is normalized to
@@ -709,31 +662,12 @@ function SchedulingTab({ profile, sites, saveState, onSave }: { profile: Employm
     setFte(String(profile.fte_value));
     setWorkDaysFte(profile.work_days_fte == null ? '' : String(profile.work_days_fte));
     setPtoWeeks(profile.pto_weeks == null ? '' : String(profile.pto_weeks));
-    setMaxWeeklyHours(profile.max_weekly_hours == null ? '' : String(profile.max_weekly_hours));
-    setIsPartner(profile.is_shareholder);
-    setIsPartnerTrack(profile.is_partner_track);
+    setWeeklyHours(profile.max_weekly_hours == null ? '' : String(profile.max_weekly_hours));
+    setPartnership(partnershipFromProfile(profile));
     setIsDayDoc(profile.is_day_doc);
     setIsIcuDoc(profile.is_icu_doc);
     setCallTaker(profile.call_taker);
     setPartialCall(profile.partial_call_taker);
-    setWeekendElig(profile.weekend_call_eligible);
-    setHolidayElig(profile.holiday_call_eligible);
-    setNightElig(profile.night_call_eligible);
-    setBackupElig(profile.backup_call_eligible);
-    setLateElig(profile.late_shift_eligible);
-    setCanSupervise(profile.can_supervise_crnas);
-    setCanSolo(profile.can_work_solo);
-    setCanOffsite(profile.can_cover_offsite);
-    setTraumaElig(profile.trauma_eligible);
-    setObElig(profile.ob_eligible);
-    setCardiacElig(profile.cardiac_eligible);
-    setEndoElig(profile.endo_eligible);
-    setEpElig(profile.ep_eligible);
-    setMaxCalls(profile.max_monthly_calls == null ? '' : String(profile.max_monthly_calls));
-    setMaxConsec(profile.max_consecutive_calls == null ? '' : String(profile.max_consecutive_calls));
-    setWeekendTarget(profile.weekend_frequency_target == null ? '' : String(profile.weekend_frequency_target));
-    setHolidayTarget(profile.holiday_frequency_target == null ? '' : String(profile.holiday_frequency_target));
-    setFridayTarget(profile.friday_frequency_target == null ? '' : String(profile.friday_frequency_target));
     setSchedulingNotes(profile.scheduling_notes || '');
     setHomeSite(profile.home_site_id || '');
     setAvailableWeekdays(normalizeWeekdays(profile.available_weekdays));
@@ -758,71 +692,34 @@ function SchedulingTab({ profile, sites, saveState, onSave }: { profile: Employm
     const n = Number(s);
     if (!Number.isInteger(n) || n < 0) errors[key] = 'Must be a non-negative integer';
   };
-  const checkNum = (s: string, key: string) => {
-    if (!s) return;
-    const n = Number(s);
-    if (!Number.isFinite(n) || n < 0) errors[key] = 'Must be a non-negative number';
-  };
   checkInt(ptoWeeks, 'ptoWeeks');
-  checkInt(maxWeeklyHours, 'maxWeeklyHours');
-  checkInt(maxCalls, 'maxCalls');
-  checkInt(maxConsec, 'maxConsec');
-  checkNum(weekendTarget, 'weekendTarget');
-  checkNum(holidayTarget, 'holidayTarget');
-  checkNum(fridayTarget, 'fridayTarget');
+  checkInt(weeklyHours, 'weeklyHours');
 
   const canSave = Object.keys(errors).length === 0;
 
-  // Checking either call-taker flag means the provider takes every call type
-  // at the normal FTE-driven volume. We only auto-enable on check (not
-  // auto-disable on uncheck) so admins can still restrict types manually
-  // afterwards without having those edits undone.
-  const enableAllCallTypes = () => {
-    setWeekendElig(true);
-    setHolidayElig(true);
-    setNightElig(true);
-    setBackupElig(true);
-    setLateElig(true);
+  // The payload shape lives in @/lib/providerEmploymentForm so it can be
+  // tested — in particular that the eighteen retired columns stay OUT of it.
+  const formState: EmploymentFormState = {
+    employmentStatus: empStatus,
+    fte,
+    workDaysFte,
+    ptoWeeks,
+    weeklyHours,
+    partnership,
+    isDayDoc,
+    isIcuDoc,
+    callTaker,
+    partialCallTaker: partialCall,
+    homeSiteId: homeSite,
+    schedulingNotes,
+    availableWeekdays,
+    preferredDayShiftTypes: preferredDayShifts,
+    daysPerWeek,
   };
 
   const handleSave = () => {
     if (!canSave) return;
-    onSave({
-      employment_status: empStatus,
-      fte_value: fteNum,
-      // Blank → real NULL ("same as FTE"), never 0 (which would mean "owes no
-      // working days at all"). Same blank-means-formula convention as the
-      // Limits tab.
-      work_days_fte: workDaysFte.trim() === '' ? null : workDaysFteNum,
-      pto_weeks: ptoWeeks.trim() === '' ? null : parseInt(ptoWeeks, 10),
-      max_weekly_hours: maxWeeklyHours === '' ? null : parseInt(maxWeeklyHours, 10),
-      is_shareholder: isPartner, is_partner_track: isPartnerTrack,
-      is_day_doc: isDayDoc,
-      is_icu_doc: isIcuDoc,
-      call_taker: callTaker, partial_call_taker: partialCall,
-      weekend_call_eligible: weekendElig, holiday_call_eligible: holidayElig,
-      night_call_eligible: nightElig, backup_call_eligible: backupElig,
-      late_shift_eligible: lateElig, can_supervise_crnas: canSupervise,
-      can_work_solo: canSolo, can_cover_offsite: canOffsite,
-      trauma_eligible: traumaElig,
-      ob_eligible: obElig, cardiac_eligible: cardiacElig,
-      endo_eligible: endoElig, ep_eligible: epElig,
-      max_monthly_calls: maxCalls === '' ? null : parseInt(maxCalls, 10),
-      max_consecutive_calls: maxConsec === '' ? null : parseInt(maxConsec, 10),
-      weekend_frequency_target: weekendTarget === '' ? null : Number(weekendTarget),
-      holiday_frequency_target: holidayTarget === '' ? null : Number(holidayTarget),
-      friday_frequency_target: fridayTarget === '' ? null : Number(fridayTarget),
-      scheduling_notes: schedulingNotes.trim() || null,
-      home_site_id: homeSite || null,
-      // Day-Doc-only fields. When the role isn't Day Doc we reset them so a
-      // former Day Doc who gets promoted to call doesn't carry stale
-      // Mon/Tue/Wed-only days or a "3 days/week" cap.
-      available_weekdays: isDayDoc
-        ? availableWeekdays
-        : [true, true, true, true, true, true, true],
-      preferred_day_shift_types: isDayDoc ? preferredDayShifts : [],
-      days_per_week: isDayDoc ? (daysPerWeek === '' ? null : parseInt(daysPerWeek, 10)) : null,
-    });
+    onSave(employmentSavePayload(formState));
   };
 
   return (
@@ -831,9 +728,13 @@ function SchedulingTab({ profile, sites, saveState, onSave }: { profile: Employm
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12, marginBottom: 12 }}>
         <div>
           <label style={fieldLabelStyle}>Employment Status</label>
+          {/* An off-list current value is offered as "(legacy)" rather than
+              dropped — the DB enum carries `employed`, which the validator does
+              not allow, and a select with no matching option would leave that
+              provider permanently unsaveable. */}
           <select value={empStatus} onChange={e => setEmpStatus(e.target.value)} style={fieldInputStyle}>
-            {EMPLOYMENT_STATUSES.map(s => (
-              <option key={s} value={s}>{EMPLOYMENT_LABELS[s] || s}</option>
+            {employmentStatusOptions(empStatus).map(o => (
+              <option key={o.value} value={o.value}>{o.label}</option>
             ))}
           </select>
         </div>
@@ -858,7 +759,7 @@ function SchedulingTab({ profile, sites, saveState, onSave }: { profile: Employm
           value={ptoWeeks} onChange={setPtoWeeks} error={errors.ptoWeeks}
           hint={'Blank = not stated · 0 = genuinely no allotment'}
         />
-        <Field label="Max Weekly Hours" value={maxWeeklyHours} onChange={setMaxWeeklyHours} error={errors.maxWeeklyHours} />
+        <Field label="Weekly Hours" value={weeklyHours} onChange={setWeeklyHours} error={errors.weeklyHours} />
         <div style={{ gridColumn: '1 / -1' }}>
           <label style={fieldLabelStyle}>Home Hospital / Surgery Center</label>
           <select value={homeSite} onChange={e => setHomeSite(e.target.value)} style={fieldInputStyle}>
@@ -871,8 +772,23 @@ function SchedulingTab({ profile, sites, saveState, onSave }: { profile: Employm
       </div>
 
       <div style={{ display: 'flex', gap: 16, marginBottom: 16, flexWrap: 'wrap' }}>
-        <Toggle label="Partner" checked={isPartner} onChange={(v) => { setIsPartner(v); if (v) setIsPartnerTrack(false); }} />
-        <Toggle label="Partner Track" checked={isPartnerTrack} onChange={(v) => { setIsPartnerTrack(v); if (v) setIsPartner(false); }} />
+        {/* One value, three checkboxes: picking any clears the others, and
+            unchecking the one that is set returns to "none stated". */}
+        <Toggle
+          label="Partner"
+          checked={partnership === 'partner'}
+          onChange={(v) => setPartnership(v ? 'partner' : null)}
+        />
+        <Toggle
+          label="Partner Track"
+          checked={partnership === 'partner_track'}
+          onChange={(v) => setPartnership(v ? 'partner_track' : null)}
+        />
+        <Toggle
+          label="Employed Call Taker"
+          checked={partnership === 'employed_call_taker'}
+          onChange={(v) => setPartnership(v ? 'employed_call_taker' : null)}
+        />
         {/* Day Doc is mutually exclusive with the call-taker flags — you're
             either in the call rotation or you're a scheduled-shift day doc. */}
         <Toggle
@@ -892,38 +808,17 @@ function SchedulingTab({ profile, sites, saveState, onSave }: { profile: Employm
       </div>
 
       <SectionLabel>Call Eligibility</SectionLabel>
-      <div style={{ fontSize: 11, color: 'var(--text-dim)', marginBottom: 10, marginTop: -4 }}>
-        Checking Call Taker or Partial Call Taker auto-enables all call types below.
-        Uncheck individual types to restrict after.
-      </div>
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 16 }}>
         <Toggle
           label="Call Taker"
           checked={callTaker}
-          onChange={(v) => {
-            setCallTaker(v);
-            if (v) {
-              enableAllCallTypes();
-              setIsDayDoc(false);
-            }
-          }}
+          onChange={(v) => { setCallTaker(v); if (v) setIsDayDoc(false); }}
         />
         <Toggle
           label="Partial Call Taker"
           checked={partialCall}
-          onChange={(v) => {
-            setPartialCall(v);
-            if (v) {
-              enableAllCallTypes();
-              setIsDayDoc(false);
-            }
-          }}
+          onChange={(v) => { setPartialCall(v); if (v) setIsDayDoc(false); }}
         />
-        <Toggle label="Weekend Call" checked={weekendElig} onChange={setWeekendElig} />
-        <Toggle label="Holiday Call" checked={holidayElig} onChange={setHolidayElig} />
-        <Toggle label="Night Call" checked={nightElig} onChange={setNightElig} />
-        <Toggle label="Backup Call" checked={backupElig} onChange={setBackupElig} />
-        <Toggle label="Late Shift" checked={lateElig} onChange={setLateElig} />
       </div>
 
       {/* Day Doc settings — show only when the provider is flagged Day Doc. */}
@@ -1008,37 +903,14 @@ function SchedulingTab({ profile, sites, saveState, onSave }: { profile: Employm
         </>
       )}
 
-      <SectionLabel>Capabilities</SectionLabel>
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8, marginBottom: 16 }}>
-        <Toggle label="Can Supervise CRNAs" checked={canSupervise} onChange={setCanSupervise} />
-        <Toggle label="Can Work Solo" checked={canSolo} onChange={setCanSolo} />
-        <Toggle label="Can Cover Offsite" checked={canOffsite} onChange={setCanOffsite} />
-      </div>
-
-      <SectionLabel>Specialty Eligibility</SectionLabel>
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8, marginBottom: 16 }}>
-        <Toggle label="Trauma" checked={traumaElig} onChange={setTraumaElig} />
-        <Toggle label="OB" checked={obElig} onChange={setObElig} />
-        <Toggle label="Cardiac" checked={cardiacElig} onChange={setCardiacElig} />
-        <Toggle label="Endoscopy" checked={endoElig} onChange={setEndoElig} />
-        <Toggle label="EP Lab" checked={epElig} onChange={setEpElig} />
-      </div>
-
-      <SectionLabel>Limits</SectionLabel>
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 16 }}>
-        <Field label="Max Monthly Calls" value={maxCalls} onChange={setMaxCalls} error={errors.maxCalls} />
-        <Field label="Max Consecutive Calls" value={maxConsec} onChange={setMaxConsec} error={errors.maxConsec} />
-      </div>
-
-      <SectionLabel>Frequency Targets</SectionLabel>
-      <div style={{ fontSize: 11, color: 'var(--text-dim)', marginBottom: 8, marginTop: -4 }}>
-        Optional ratios used by the scheduler for fairness tracking. Leave blank to let the group default apply.
-      </div>
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12, marginBottom: 16 }}>
-        <Field label="Weekend Target" value={weekendTarget} onChange={setWeekendTarget} error={errors.weekendTarget} hint="e.g. 0.75" />
-        <Field label="Holiday Target" value={holidayTarget} onChange={setHolidayTarget} error={errors.holidayTarget} />
-        <Field label="Friday Target" value={fridayTarget} onChange={setFridayTarget} error={errors.fridayTarget} />
-      </div>
+      {/* Capabilities, Specialty Eligibility, Limits and Frequency Targets used
+          to sit here (Gabriel 2026-09-09: "getting rid of the check boxes or
+          sections that are not really necessary"). Eighteen controls, none of
+          them read by anything: the frequency targets had no data and no
+          reader, the specialty toggles no reader, and backup_call_eligible's
+          only consumer hardcodes it true. The COLUMNS survive with their values
+          — see providerEmploymentForm.RETIRED_PROFILE_FIELDS, which a test uses
+          to assert they stay out of the save payload. */}
 
       <SectionLabel>Scheduling Notes</SectionLabel>
       <textarea
