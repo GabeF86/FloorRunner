@@ -1958,10 +1958,15 @@ function AvailSection({ title, hint, counter, children }: {
   );
 }
 
+// Rides in the Card header's actions slot, which does not shrink — and Card
+// clips its overflow. The PTO counter is the long one ("Total PTO Days · 2026:
+// 12 weekdays (incl. 3 sold back) · 18 calendar"), so it is capped and allowed
+// to wrap rather than being set nowrap and silently cut off on a narrow window.
 const COUNTER_STYLE: React.CSSProperties = {
-  display: 'inline-flex', alignItems: 'center', gap: 'var(--space-1)',
+  display: 'inline-flex', alignItems: 'center', flexWrap: 'wrap',
+  gap: 'var(--space-1)',
   fontSize: 'var(--fs-xs)', fontWeight: 500, color: 'var(--text-muted)',
-  letterSpacing: 0.3, whiteSpace: 'nowrap',
+  letterSpacing: 0.3, lineHeight: 1.5, textAlign: 'right', maxWidth: 420,
   fontFamily: 'var(--font-mono), ui-monospace, monospace',
 };
 
