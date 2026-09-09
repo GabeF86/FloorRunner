@@ -13,6 +13,7 @@ import {
   isValidEmail,
   reasonCodeLabel,
 } from '@/lib/validation/providers';
+import { formatBreakdown, type BreakdownRow } from '@/lib/callCodeBreakdown';
 import {
   icuWeekEnd,
   pairIcuRows,
@@ -3926,6 +3927,7 @@ function MoneyField({ label, value, onChange, hint }: {
 interface BurdenData {
   period: { from: string; to: string };
   burden: Record<string, number>;
+  breakdown: Record<string, BreakdownRow[]>;
   history: Array<{
     id: string;
     slot_date: string;
@@ -3987,19 +3989,34 @@ function HistoryTab({ providerId }: { providerId: string }) {
       {/* Burden summary cards */}
       <SectionLabel>Call Burden Summary</SectionLabel>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10, marginBottom: 24 }}>
-        {Object.entries(BURDEN_LABELS).map(([key, label]) => (
-          <div key={key} style={{
-            background: 'var(--bg-surface)', border: '1px solid var(--border)', borderRadius: 10,
-            padding: '14px 16px', textAlign: 'center',
-          }}>
-            <div style={{ fontSize: 24, fontWeight: 800, color: BURDEN_COLORS[key] || 'var(--text)' }}>
-              {data.burden[key] ?? 0}
+        {Object.entries(BURDEN_LABELS).map(([key, label]) => {
+          // Breakdown by shift code, e.g. "7 C2 · 3 C1" under a Weekday Call of
+          // 10. Computed by the route from the same predicate as the total, so
+          // these always sum to the number above them. Empty renders nothing,
+          // which leaves an untouched category looking exactly as it did.
+          const detail = formatBreakdown(data.breakdown?.[key] ?? []);
+          return (
+            <div key={key} style={{
+              background: 'var(--bg-surface)', border: '1px solid var(--border)', borderRadius: 10,
+              padding: '14px 16px', textAlign: 'center',
+            }}>
+              <div style={{ fontSize: 24, fontWeight: 800, color: BURDEN_COLORS[key] || 'var(--text)' }}>
+                {data.burden[key] ?? 0}
+              </div>
+              <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-dim)', marginTop: 4 }}>
+                {label}
+              </div>
+              {detail && (
+                <div style={{
+                  fontSize: 10, fontWeight: 600, color: 'var(--text-dim)',
+                  marginTop: 5, lineHeight: 1.5, wordBreak: 'break-word',
+                }}>
+                  {detail}
+                </div>
+              )}
             </div>
-            <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-dim)', marginTop: 4 }}>
-              {label}
-            </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
 
       {/* Assignment history list */}
