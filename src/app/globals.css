@@ -173,6 +173,30 @@ body {
 /* Quiet row hover for Table body rows */
 .fr-row:hover { background: var(--tint-surface-faint); }
 
+/* Form field states. Inline styles cannot express a pseudo-class, so any
+   input/select/textarea that wants the house hover + keyboard ring opts in
+   with class="fr-field" and keeps its layout inline.
+
+   Fields get an OUTLINE rather than the --focus-ring box-shadow that buttons
+   use: --focus-ring paints a 2px halo in --bg-base, which is correct for a
+   control sitting on the page background but wrong for one inside a Card
+   (--bg-surface), where the halo would show as a grey band. An outline needs
+   no background match, follows the border radius, and survives forced-colors. */
+.fr-field { transition: border-color .12s, box-shadow .12s; }
+.fr-field:hover:not(:disabled):not(:focus) { border-color: var(--border-strong); }
+.fr-field:focus-visible {
+  outline: 2px solid var(--blue);
+  outline-offset: 1px;
+  border-color: var(--blue);
+}
+
+/* Checkbox-as-pill: the native input keeps the semantics, the label draws the
+   affordance — so the ring has to come from :focus-within, and hover must not
+   repaint the border of a pill that is already on. */
+.fr-toggle { transition: background .12s, border-color .12s; }
+.fr-toggle[data-on='false']:hover { border-color: var(--border-strong); }
+.fr-toggle:focus-within { outline: 2px solid var(--blue); outline-offset: 1px; }
+
 /* Skeleton shimmer */
 @keyframes skeleton-pulse {
   0%, 100% { opacity: 1; }

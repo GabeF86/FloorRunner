@@ -42,10 +42,11 @@ import { collapseDatesToRanges, countDaysInYear, ptoCounterStats, type DateRange
 import { HOLIDAY_CALL_CODES, holidayCallHolderNote } from '@/lib/holidayCall';
 import { CalendarMultiPicker } from '@/components/CalendarMultiPicker';
 import { SiteShiftTypePicker } from '@/components/ShiftTypePicker';
+import { Badge, Banner, Button, Card, EmptyState, PageHeader, Spinner, Table, type BadgeTone } from '@/components/ui';
 import {
-  addFormBoxStyle, addFormErrorStyle, yearBtnStyle,
-  fieldLabelStyle, fieldInputStyle, saveBtnStyle,
+  addFormBoxStyle, fieldLabelStyle, fieldInputStyle, textAreaStyle, structureType,
   SaveButton, Field, Toggle, InfoTip, SectionLabel, ChipPill, SaveIndicator,
+  FormGrid, Stack, Hint, NoneYet, StatTile, ChipRow, RemovableChip, TabStack, SaveBar, PreviewNote,
 } from './ui';
 
 // Canonical lists used by the Preferences tab. Kept in this file for now —
@@ -146,6 +147,14 @@ interface SiteCredential {
 }
 
 type Tab = 'profile' | 'scheduling' | 'preferences' | 'sites' | 'availability' | 'custom' | 'compensation' | 'history';
+
+// Same map the providers LIST page carries, so a provider's status reads the
+// same in the table and on their profile.
+const STATUS_TONES: Record<string, BadgeTone> = {
+  active: 'ok',
+  inactive: 'neutral',
+  on_leave: 'warn',
+};
 
 const TYPE_COLORS: Record<string, { color: string; bg: string; label: string }> = {
   physician: { color: '#f59e0b', bg: 'rgba(245,158,11,0.15)', label: 'Physician' },
@@ -299,15 +308,23 @@ export default function ProviderDetailPage({ params }: { params: { id: string } 
 
   if (loadError) {
     return (
-      <div style={{ padding: 40 }}>
-        <div style={{ color: '#f87171', fontSize: 14, marginBottom: 12 }}>
-          {loadError}
+      <div style={{ padding: 'var(--space-6)', maxWidth: 640 }}>
+        <Banner tone="error">{loadError}</Banner>
+        <div style={{ marginTop: 'var(--space-4)' }}>
+          <Link href="/providers" className="fr-focus" style={{ color: 'var(--blue)', fontSize: 'var(--fs-sm)', textDecoration: 'none' }}>
+            ← Back to providers
+          </Link>
         </div>
-        <Link href="/providers" style={{ color: '#0ea5e9', fontSize: 13 }}>← Back to providers</Link>
       </div>
     );
   }
-  if (!provider) return <div style={{ padding: 40, color: 'var(--text-muted)' }}>Loading...</div>;
+  if (!provider) {
+    return (
+      <div style={{ padding: 'var(--space-6)', display: 'flex', alignItems: 'center', gap: 'var(--space-3)', color: 'var(--text-muted)', fontSize: 'var(--fs-sm)' }}>
+        <Spinner /> Loading provider…
+      </div>
+    );
+  }
 
   const prof = provider.provider_employment_profiles?.[0] || null;
   const tc = TYPE_COLORS[provider.provider_type] || TYPE_COLORS.other;
@@ -324,82 +341,102 @@ export default function ProviderDetailPage({ params }: { params: { id: string } 
   ];
 
   return (
-    <div style={{ padding: '14px 22px 28px', maxWidth: 1200 }}>
-      {/* Breadcrumb */}
-      <div style={{ fontSize: 11, color: 'var(--text-dim)', marginBottom: 10, display: 'flex', alignItems: 'center', gap: 6, fontFamily: 'var(--font-mono), ui-monospace, monospace' }}>
-        <Link href="/providers" style={{ color: '#0ea5e9', textDecoration: 'none' }}>providers</Link>
-        <span style={{ color: 'var(--text-dim)' }}>/</span>
-        <span style={{ color: 'var(--text-muted)' }}>{provider.last_name.toLowerCase()}, {provider.first_name.toLowerCase()}</span>
-      </div>
+    <div style={{ padding: 'var(--space-5) var(--space-6) var(--space-8)', maxWidth: 1200 }}>
+      {/* Breadcrumb — Register 1, so the uppercase transform does the
+          lower-casing the old copy did by hand. */}
+      <nav
+        aria-label="Breadcrumb"
+        style={{ ...structureType, display: 'flex', alignItems: 'center', gap: 'var(--space-2)', marginBottom: 'var(--space-3)' }}
+      >
+        <Link href="/providers" className="fr-focus" style={{ color: 'var(--blue)', textDecoration: 'none' }}>providers</Link>
+        <span aria-hidden="true" style={{ color: 'var(--text-faint)' }}>/</span>
+        <span>{provider.last_name}, {provider.first_name}</span>
+      </nav>
 
-      {/* Header card — single hairline-bordered surface, dense */}
-      <div style={{
-        display: 'flex', alignItems: 'center', gap: 14,
-        padding: '12px 14px', marginBottom: 14,
-        background: 'var(--bg-surface)', border: '0.5px solid var(--border)', borderRadius: 6,
-      }}>
-        <div style={{
-          width: 44, height: 44, borderRadius: 8, display: 'flex', alignItems: 'center', justifyContent: 'center',
-          fontSize: 14, fontWeight: 800, background: tc.bg, color: tc.color,
-          border: `0.5px solid ${tc.color}40`,
-          overflow: 'hidden', position: 'relative', flexShrink: 0,
-          fontFamily: 'var(--font-mono), ui-monospace, monospace',
-        }}>
-          {provider.photo_url ? (
-            // eslint-disable-next-line @next/next/no-img-element
-            <img
-              src={provider.photo_url}
-              alt={`${provider.first_name} ${provider.last_name}`}
-              style={{ width: '100%', height: '100%', objectFit: 'cover' }}
-              onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = 'none'; }}
-            />
-          ) : (
-            provider.initials
-          )}
-        </div>
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <h1 style={{ fontSize: 16, fontWeight: 700, color: 'var(--text)', letterSpacing: -0.2, marginBottom: 3 }}>
+      {/* The identity header is this page's ONE loud moment, and it is the kit's
+          own PageHeader rather than a bespoke bordered strip: same h1 scale
+          (--fs-xl, -0.5 tracking) as every other page in the app, so the
+          profile stops announcing itself as a different product. Its `title`
+          is typed as ReactNode precisely so a page can decorate it, which is
+          where the avatar goes.
+
+          Exactly one hue rides here — the provider TYPE — and the rest of the
+          metadata is quiet kit Badges. The old header spent four different
+          hardcoded colours (#0e7c52, #534AB7, #0C447C, plus the type) on four
+          chips of equal weight, so none of them meant anything. */}
+      <PageHeader
+        title={
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 'var(--space-3)' }}>
+            <span style={{
+              width: 48, height: 48, borderRadius: 'var(--radius-md)',
+              display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+              fontSize: 'var(--fs-lg)', fontWeight: 700, letterSpacing: 0,
+              background: tc.bg, color: tc.color,
+              border: `1px solid ${tc.color}40`,
+              overflow: 'hidden', flexShrink: 0,
+              fontFamily: 'var(--font-mono), ui-monospace, monospace',
+            }}>
+              {provider.photo_url ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img
+                  src={provider.photo_url}
+                  alt=""
+                  style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                  onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = 'none'; }}
+                />
+              ) : (
+                provider.initials
+              )}
+            </span>
             {provider.first_name} {provider.last_name}
-          </h1>
-          <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap' }}>
+          </span>
+        }
+        subtitle={
+          <span style={{ display: 'inline-flex', gap: 'var(--space-2)', flexWrap: 'wrap', alignItems: 'center' }}>
             <ChipPill text={tc.label} fg={tc.color} bg={tc.bg} />
-            <ChipPill
-              text={provider.status.replace('_', ' ')}
-              fg={provider.status === 'active' ? '#0e7c52' : '#64748b'}
-              bg={provider.status === 'active' ? 'rgba(16,185,129,0.12)' : 'rgba(100,116,139,0.12)'}
-            />
-            {prof?.fellowship_primary && <ChipPill text={prof.fellowship_primary} fg="#534AB7" bg="rgba(83,74,183,0.10)" />}
-            {prof?.employment_status && <ChipPill text={employmentStatusLabel(prof.employment_status)} fg="#0C447C" bg="rgba(14,165,233,0.10)" />}
-          </div>
-        </div>
-        <SaveIndicator state={saveState} />
-      </div>
+            {/* Same status→tone map the providers LIST page uses, so one
+                provider reads identically in both places. */}
+            <Badge tone={STATUS_TONES[provider.status] ?? 'neutral'}>{provider.status.replace('_', ' ')}</Badge>
+            {prof?.employment_status && <Badge tone="neutral">{employmentStatusLabel(prof.employment_status)}</Badge>}
+            {prof?.fellowship_primary && <Badge tone="neutral">{prof.fellowship_primary}</Badge>}
+          </span>
+        }
+        actions={<SaveIndicator state={saveState} />}
+      />
 
-      {/* Tabs — hairline underline, sentence case, denser */}
-      <div style={{ display: 'flex', gap: 0, borderBottom: '0.5px solid var(--border)', marginBottom: 18, flexWrap: 'wrap' }}>
+      {/* Tabs. Active state is carried by WEIGHT + a token underline rather
+          than by recolouring the label: the old active colour was #0ea5e9,
+          the dark-theme --blue, on a light background. The Compensation tab
+          keeps a --warn underline because "this one is sensitive" is real
+          information, not decoration. */}
+      <div style={{
+        display: 'flex', gap: 'var(--space-1)', flexWrap: 'wrap',
+        borderBottom: '1px solid var(--border)', marginBottom: 'var(--space-5)',
+      }}>
         {TABS.map(t => {
           const isAdminTab = t.key === 'compensation';
           const isActive = tab === t.key;
-          const activeColor = isAdminTab ? '#BA7517' : '#0ea5e9';
+          const underline = isAdminTab ? 'var(--warn)' : 'var(--blue)';
           return (
-            <button key={t.key} onClick={() => setTab(t.key)} style={{
-              padding: '7px 12px', fontSize: 12, fontWeight: 600, cursor: 'pointer',
-              background: 'none', border: 'none',
-              borderBottom: `2px solid ${isActive ? activeColor : 'transparent'}`,
-              color: isActive ? activeColor : 'var(--text-muted)', transition: 'all 0.12s',
-              display: 'flex', alignItems: 'center', gap: 5,
-              marginBottom: -1, // sit on top of the container border
-            }}>
+            <button
+              key={t.key}
+              onClick={() => setTab(t.key)}
+              className="fr-focus"
+              aria-current={isActive ? 'page' : undefined}
+              style={{
+                padding: 'var(--space-2) var(--space-3)',
+                fontSize: 'var(--fs-sm)', fontWeight: isActive ? 700 : 500,
+                fontFamily: 'inherit', cursor: 'pointer',
+                background: 'none', border: 'none',
+                borderBottom: `2px solid ${isActive ? underline : 'transparent'}`,
+                color: isActive ? 'var(--text-strong)' : 'var(--text-muted)',
+                transition: 'color .12s, border-color .12s',
+                display: 'flex', alignItems: 'center', gap: 'var(--space-2)',
+                marginBottom: -1, // sit on top of the container border
+              }}
+            >
               {t.label}
-              {isAdminTab && (
-                <span style={{
-                  fontSize: 8, fontWeight: 800, padding: '1px 4px', borderRadius: 3,
-                  background: 'rgba(186,117,23,0.15)', color: '#BA7517', letterSpacing: 0.5,
-                  fontFamily: 'var(--font-mono), ui-monospace, monospace',
-                }}>
-                  ADMIN
-                </span>
-              )}
+              {isAdminTab && <Badge tone="warn">admin</Badge>}
               {isActive && <InfoTip text={t.info} />}
             </button>
           );
@@ -518,115 +555,124 @@ function ProfileTab({ provider, saveState, onSave }: { provider: ProviderDetail;
   const swatchValid = /^#[0-9A-F]{6}$/i.test(colorTag.trim());
 
   return (
-    <div style={{ maxWidth: 760 }}>
-      <SectionLabel>Identity</SectionLabel>
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 14 }}>
-        <Field label="First name *" value={firstName} onChange={setFirstName} error={errors.firstName} />
-        <Field label="Last name *" value={lastName} onChange={setLastName} error={errors.lastName} />
-        <Field label="Preferred display name" value={preferredDisplay} onChange={setPreferredDisplay} hint={`Defaults to "${firstName} ${lastName}"`} />
-        <div>
-          <label style={fieldLabelStyle}>Provider type</label>
-          <select value={providerType} onChange={e => setProviderType(e.target.value)} style={fieldInputStyle}>
-            {PROVIDER_TYPES.map(t => (
-              <option key={t} value={t}>{TYPE_COLORS[t]?.label ?? t}</option>
-            ))}
-          </select>
-        </div>
-        <div>
-          <label style={fieldLabelStyle}>Status</label>
-          <select value={status} onChange={e => setStatus(e.target.value)} style={fieldInputStyle}>
-            {PROVIDER_STATUSES.map(s => (
-              <option key={s} value={s}>{s.replace('_', ' ')}</option>
-            ))}
-          </select>
-        </div>
-      </div>
+    <TabStack>
+      {/* Photo sits inside Identity rather than in a section of its own: a
+          face IS identity, and a card holding one URL field was the thinnest
+          of the five sections this tab used to run down the page. */}
+      <Card title="Identity">
+        <FormGrid cols="1fr 1fr">
+          <Field label="First name *" value={firstName} onChange={setFirstName} error={errors.firstName} />
+          <Field label="Last name *" value={lastName} onChange={setLastName} error={errors.lastName} />
+          <Field label="Preferred display name" value={preferredDisplay} onChange={setPreferredDisplay} hint={`Defaults to "${firstName} ${lastName}"`} />
+          <div>
+            <label style={fieldLabelStyle}>Provider type</label>
+            <select value={providerType} onChange={e => setProviderType(e.target.value)} className="fr-field" style={fieldInputStyle}>
+              {PROVIDER_TYPES.map(t => (
+                <option key={t} value={t}>{TYPE_COLORS[t]?.label ?? t}</option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label style={fieldLabelStyle}>Status</label>
+            <select value={status} onChange={e => setStatus(e.target.value)} className="fr-field" style={fieldInputStyle}>
+              {PROVIDER_STATUSES.map(s => (
+                <option key={s} value={s}>{s.replace('_', ' ')}</option>
+              ))}
+            </select>
+          </div>
+        </FormGrid>
 
-      <SectionLabel>Contact</SectionLabel>
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 14 }}>
-        <Field label="Email" value={email} onChange={setEmail} error={errors.email} />
-        <Field label="Phone" value={phone} onChange={setPhone} />
-        <div style={{ gridColumn: '1 / -1' }}>
-          <Field label="Home address" value={homeAddress} onChange={setHomeAddress} />
-        </div>
-      </div>
-
-      <SectionLabel>Credentials & employment records</SectionLabel>
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10, marginBottom: 14 }}>
-        <Field label="NPI" value={npi} onChange={setNpi} />
-        <Field label="Employee ID" value={employeeId} onChange={setEmployeeId} />
-        <Field label="Payroll ID" value={payrollId} onChange={setPayrollId} />
-        <Field label="Start date" value={startDate} onChange={setStartDate} type="date" />
-        <div>
-          <label style={fieldLabelStyle}>Color tag</label>
-          <div style={{ display: 'flex', gap: 6, alignItems: 'stretch' }}>
-            <input
-              type="text"
-              value={colorTag}
-              onChange={(e) => setColorTag(e.target.value)}
-              placeholder="#6366f1"
-              style={{ ...fieldInputStyle, flex: 1, fontFamily: 'var(--font-mono), ui-monospace, monospace' }}
+        <div style={{ display: 'flex', gap: 'var(--space-3)', alignItems: 'flex-start', marginTop: 'var(--space-4)' }}>
+          <div style={{
+            width: 64, height: 64, borderRadius: 'var(--radius-md)', overflow: 'hidden', flexShrink: 0,
+            background: 'var(--bg-deep)', border: '1px solid var(--border)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            fontSize: 'var(--fs-xs)', color: 'var(--text-dim)', textAlign: 'center', padding: 'var(--space-1)',
+            fontFamily: 'var(--font-mono), ui-monospace, monospace',
+          }}>
+            {photoUrl ? (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img
+                src={photoUrl}
+                alt="Photo preview"
+                style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = 'none'; }}
+              />
+            ) : (
+              <span>no photo</span>
+            )}
+          </div>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <Field
+              label="Photo URL"
+              value={photoUrl}
+              onChange={setPhotoUrl}
+              hint="Paste a publicly-accessible image URL. Upload-from-device coming soon."
             />
-            <div style={{
-              width: 28, borderRadius: 5, border: '0.5px solid var(--border)',
-              background: swatchValid ? colorTag.trim() : 'transparent',
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-              color: 'var(--text-dim)', fontSize: 9,
-            }}>
-              {!swatchValid && '—'}
+          </div>
+        </div>
+      </Card>
+
+      <Card title="Contact">
+        <FormGrid cols="1fr 1fr">
+          <Field label="Email" value={email} onChange={setEmail} error={errors.email} />
+          <Field label="Phone" value={phone} onChange={setPhone} />
+          <div style={{ gridColumn: '1 / -1' }}>
+            <Field label="Home address" value={homeAddress} onChange={setHomeAddress} />
+          </div>
+        </FormGrid>
+      </Card>
+
+      <Card title="Credentials & employment records">
+        <FormGrid cols="1fr 1fr 1fr">
+          <Field label="NPI" value={npi} onChange={setNpi} />
+          <Field label="Employee ID" value={employeeId} onChange={setEmployeeId} />
+          <Field label="Payroll ID" value={payrollId} onChange={setPayrollId} />
+          <Field label="Start date" value={startDate} onChange={setStartDate} type="date" />
+          <div style={{ minWidth: 0 }}>
+            <label style={fieldLabelStyle}>Color tag</label>
+            <div style={{ display: 'flex', gap: 'var(--space-2)', alignItems: 'stretch' }}>
+              <input
+                type="text"
+                value={colorTag}
+                onChange={(e) => setColorTag(e.target.value)}
+                placeholder="#6366f1"
+                className="fr-field"
+                style={{ ...fieldInputStyle, flex: 1, fontFamily: 'var(--font-mono), ui-monospace, monospace' }}
+              />
+              <div
+                aria-hidden="true"
+                style={{
+                  width: 36, borderRadius: 'var(--radius-sm)', border: '1px solid var(--border)',
+                  background: swatchValid ? colorTag.trim() : 'transparent',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  color: 'var(--text-dim)', fontSize: 'var(--fs-xs)', flexShrink: 0,
+                }}
+              >
+                {!swatchValid && '—'}
+              </div>
+            </div>
+            <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-dim)', marginTop: 'var(--space-1)' }}>
+              Used in schedule views.
             </div>
           </div>
-          <div style={{ fontSize: 10, color: 'var(--text-dim)', marginTop: 2 }}>
-            Used in schedule views.
-          </div>
-        </div>
-      </div>
+        </FormGrid>
+      </Card>
 
-      <SectionLabel>Photo</SectionLabel>
-      <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start', marginBottom: 14 }}>
-        <div style={{
-          width: 56, height: 56, borderRadius: 6, overflow: 'hidden', flexShrink: 0,
-          background: 'var(--bg-deep)', border: '0.5px solid var(--border)',
-          display: 'flex', alignItems: 'center', justifyContent: 'center',
-          fontSize: 9, color: 'var(--text-dim)', textAlign: 'center', padding: 4,
-          fontFamily: 'var(--font-mono), ui-monospace, monospace',
-        }}>
-          {photoUrl ? (
-            // eslint-disable-next-line @next/next/no-img-element
-            <img
-              src={photoUrl}
-              alt="Photo preview"
-              style={{ width: '100%', height: '100%', objectFit: 'cover' }}
-              onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = 'none'; }}
-            />
-          ) : (
-            <span>no photo</span>
-          )}
-        </div>
-        <div style={{ flex: 1 }}>
-          <Field
-            label="Photo URL"
-            value={photoUrl}
-            onChange={setPhotoUrl}
-            hint="Paste a publicly-accessible image URL. Upload-from-device coming soon."
-          />
-        </div>
-      </div>
+      <Card title="Admin notes">
+        <textarea
+          value={notes} onChange={e => setNotes(e.target.value)}
+          placeholder="Internal notes visible only to admins…"
+          aria-label="Admin notes"
+          className="fr-field"
+          style={textAreaStyle}
+        />
+      </Card>
 
-      <SectionLabel>Admin notes</SectionLabel>
-      <textarea
-        value={notes} onChange={e => setNotes(e.target.value)}
-        placeholder="Internal notes visible only to admins…"
-        style={{
-          width: '100%', minHeight: 72, padding: '7px 10px', borderRadius: 5,
-          border: '0.5px solid var(--border)', background: 'var(--bg-deep)',
-          color: 'var(--text)', fontSize: 12, resize: 'vertical', marginBottom: 14,
-          fontFamily: 'inherit', outline: 'none',
-        }}
-      />
-
-      <SaveButton onClick={handleSave} canSave={canSave} saveState={saveState} />
-    </div>
+      <SaveBar>
+        <SaveButton onClick={handleSave} canSave={canSave} saveState={saveState} />
+      </SaveBar>
+    </TabStack>
   );
 }
 
@@ -728,116 +774,122 @@ function SchedulingTab({ profile, sites, saveState, onSave }: { profile: Employm
   };
 
   return (
-    <div style={{ maxWidth: 720 }}>
-      <SectionLabel>Employment</SectionLabel>
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12, marginBottom: 12 }}>
-        <div>
-          <label style={fieldLabelStyle}>Employment Status</label>
-          {/* An off-list current value is offered as "(legacy)" rather than
-              dropped — the DB enum carries `employed`, which the validator does
-              not allow, and a select with no matching option would leave that
-              provider permanently unsaveable. */}
-          <select value={empStatus} onChange={e => setEmpStatus(e.target.value)} style={fieldInputStyle}>
-            {employmentStatusOptions(empStatus).map(o => (
-              <option key={o.value} value={o.value}>{o.label}</option>
-            ))}
-          </select>
-        </div>
-        <Field
-          label="FTE (call share)"
-          value={fte} onChange={setFte} error={errors.fte}
-          hint={`${FTE_MIN}\u2013${FTE_MAX} \u00b7 pro-rates how much CALL they owe`}
-        />
-        {/* The second contract (patch43). Sits beside the call FTE because the
-            pair is only comprehensible together: one pro-rates call, the other
-            pro-rates the days they must be IN a room. Blank is the norm and
-            means "same as FTE" \u2014 the blank-means-formula convention used by
-            the Limits tab. Hussain is the case that forced the split: 0.66 for
-            call (a third of his time is ICU), 1.0 for working days. */}
-        <Field
-          label="Working-Days FTE"
-          value={workDaysFte} onChange={setWorkDaysFte} error={errors.workDaysFte}
-          hint={'Blank = same as FTE \u00b7 share of working days they must be scheduled'}
-        />
-        <Field
-          label="PTO Weeks"
-          value={ptoWeeks} onChange={setPtoWeeks} error={errors.ptoWeeks}
-          hint={'Blank = not stated · 0 = genuinely no allotment'}
-        />
-        <Field label="Weekly Hours" value={weeklyHours} onChange={setWeeklyHours} error={errors.weeklyHours} />
-        <div style={{ gridColumn: '1 / -1' }}>
-          <label style={fieldLabelStyle}>Home Hospital / Surgery Center</label>
-          <select value={homeSite} onChange={e => setHomeSite(e.target.value)} style={fieldInputStyle}>
-            <option value="">— None —</option>
-            {sites.map(s => (
-              <option key={s.id} value={s.id}>{s.name}</option>
-            ))}
-          </select>
-        </div>
-      </div>
+    <TabStack>
+      <Card title="Employment">
+        <FormGrid cols="1fr 1fr 1fr">
+          <div style={{ minWidth: 0 }}>
+            <label style={fieldLabelStyle}>Employment Status</label>
+            {/* An off-list current value is offered as "(legacy)" rather than
+                dropped — the DB enum carries `employed`, which the validator does
+                not allow, and a select with no matching option would leave that
+                provider permanently unsaveable. */}
+            <select value={empStatus} onChange={e => setEmpStatus(e.target.value)} className="fr-field" style={fieldInputStyle}>
+              {employmentStatusOptions(empStatus).map(o => (
+                <option key={o.value} value={o.value}>{o.label}</option>
+              ))}
+            </select>
+          </div>
+          <Field
+            label="FTE (call share)"
+            value={fte} onChange={setFte} error={errors.fte}
+            hint={`${FTE_MIN}\u2013${FTE_MAX} \u00b7 pro-rates how much CALL they owe`}
+          />
+          {/* The second contract (patch43). Sits beside the call FTE because the
+              pair is only comprehensible together: one pro-rates call, the other
+              pro-rates the days they must be IN a room. Blank is the norm and
+              means "same as FTE" \u2014 the blank-means-formula convention used by
+              the Limits tab. Hussain is the case that forced the split: 0.66 for
+              call (a third of his time is ICU), 1.0 for working days. */}
+          <Field
+            label="Working-Days FTE"
+            value={workDaysFte} onChange={setWorkDaysFte} error={errors.workDaysFte}
+            hint={'Blank = same as FTE \u00b7 share of working days they must be scheduled'}
+          />
+          <Field
+            label="PTO Weeks"
+            value={ptoWeeks} onChange={setPtoWeeks} error={errors.ptoWeeks}
+            hint={'Blank = not stated · 0 = genuinely no allotment'}
+          />
+          <Field label="Weekly Hours" value={weeklyHours} onChange={setWeeklyHours} error={errors.weeklyHours} />
+          <div style={{ gridColumn: '1 / -1', minWidth: 0 }}>
+            <label style={fieldLabelStyle}>Home Hospital / Surgery Center</label>
+            <select value={homeSite} onChange={e => setHomeSite(e.target.value)} className="fr-field" style={fieldInputStyle}>
+              <option value="">— None —</option>
+              {sites.map(s => (
+                <option key={s.id} value={s.id}>{s.name}</option>
+              ))}
+            </select>
+          </div>
+        </FormGrid>
+      </Card>
 
-      <div style={{ display: 'flex', gap: 16, marginBottom: 16, flexWrap: 'wrap' }}>
-        {/* One value, three checkboxes: picking any clears the others, and
-            unchecking the one that is set returns to "none stated". */}
-        <Toggle
-          label="Partner"
-          checked={partnership === 'partner'}
-          onChange={(v) => setPartnership(v ? 'partner' : null)}
-        />
-        <Toggle
-          label="Partner Track"
-          checked={partnership === 'partner_track'}
-          onChange={(v) => setPartnership(v ? 'partner_track' : null)}
-        />
-        <Toggle
-          label="Employed Call Taker"
-          checked={partnership === 'employed_call_taker'}
-          onChange={(v) => setPartnership(v ? 'employed_call_taker' : null)}
-        />
-        {/* Day Doc is mutually exclusive with the call-taker flags — you're
-            either in the call rotation or you're a scheduled-shift day doc. */}
-        <Toggle
-          label="Day Doc"
-          checked={isDayDoc}
-          onChange={(v) => {
-            setIsDayDoc(v);
-            if (v) {
-              setCallTaker(false);
-              setPartialCall(false);
-            }
-          }}
-        />
-        {/* ICU Doc is orthogonal to the call/day-doc split — it only reveals
-            the ICU Rotation entry section on the Availability tab. */}
-        <Toggle label="ICU Doc" checked={isIcuDoc} onChange={setIsIcuDoc} />
-      </div>
+      {/* Standing and call eligibility were two runs of bare checkboxes, the
+          first of them under no heading at all. They are one decision — what
+          this provider IS to the group — so they are one card, split by a rule. */}
+      <Card title="Role & call eligibility">
+        <SectionLabel>Standing</SectionLabel>
+        <div style={{ display: 'flex', gap: 'var(--space-2)', marginBottom: 'var(--space-4)', flexWrap: 'wrap' }}>
+          {/* One value, three checkboxes: picking any clears the others, and
+              unchecking the one that is set returns to "none stated". */}
+          <Toggle
+            label="Partner"
+            checked={partnership === 'partner'}
+            onChange={(v) => setPartnership(v ? 'partner' : null)}
+          />
+          <Toggle
+            label="Partner Track"
+            checked={partnership === 'partner_track'}
+            onChange={(v) => setPartnership(v ? 'partner_track' : null)}
+          />
+          <Toggle
+            label="Employed Call Taker"
+            checked={partnership === 'employed_call_taker'}
+            onChange={(v) => setPartnership(v ? 'employed_call_taker' : null)}
+          />
+          {/* Day Doc is mutually exclusive with the call-taker flags — you're
+              either in the call rotation or you're a scheduled-shift day doc. */}
+          <Toggle
+            label="Day Doc"
+            checked={isDayDoc}
+            onChange={(v) => {
+              setIsDayDoc(v);
+              if (v) {
+                setCallTaker(false);
+                setPartialCall(false);
+              }
+            }}
+          />
+          {/* ICU Doc is orthogonal to the call/day-doc split — it only reveals
+              the ICU Rotation entry section on the Availability tab. */}
+          <Toggle label="ICU Doc" checked={isIcuDoc} onChange={setIsIcuDoc} />
+        </div>
 
-      <SectionLabel>Call Eligibility</SectionLabel>
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 16 }}>
-        <Toggle
-          label="Call Taker"
-          checked={callTaker}
-          onChange={(v) => { setCallTaker(v); if (v) setIsDayDoc(false); }}
-        />
-        <Toggle
-          label="Partial Call Taker"
-          checked={partialCall}
-          onChange={(v) => { setPartialCall(v); if (v) setIsDayDoc(false); }}
-        />
-      </div>
+        <SectionLabel>Call eligibility</SectionLabel>
+        <div style={{ display: 'flex', gap: 'var(--space-2)', flexWrap: 'wrap' }}>
+          <Toggle
+            label="Call Taker"
+            checked={callTaker}
+            onChange={(v) => { setCallTaker(v); if (v) setIsDayDoc(false); }}
+          />
+          <Toggle
+            label="Partial Call Taker"
+            checked={partialCall}
+            onChange={(v) => { setPartialCall(v); if (v) setIsDayDoc(false); }}
+          />
+        </div>
+      </Card>
 
       {/* Day Doc settings — show only when the provider is flagged Day Doc. */}
       {isDayDoc && (
-        <>
-          <SectionLabel>Day Doc Settings</SectionLabel>
-          <div style={{ fontSize: 11, color: 'var(--text-dim)', marginBottom: 10, marginTop: -4 }}>
+        <Card title="Day doc settings">
+          <Hint>
             Working days, shift preferences, and weekly-day cap for this Day Doc.
             Hidden until the Day Doc role is checked above.
-          </div>
+          </Hint>
 
           {/* Working days */}
-          <label style={{ ...fieldLabelStyle, marginBottom: 6 }}>Available Weekdays</label>
-          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 14 }}>
+          <label style={fieldLabelStyle}>Available Weekdays</label>
+          <div style={{ display: 'flex', gap: 'var(--space-2)', flexWrap: 'wrap', marginBottom: 'var(--space-4)' }}>
             {/* Render Mon first for readability; storage order is Sun..Sat. */}
             {[1, 2, 3, 4, 5, 6, 0].map(idx => {
               const labels = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -846,16 +898,21 @@ function SchedulingTab({ profile, sites, saveState, onSave }: { profile: Employm
                 <button
                   key={idx}
                   type="button"
+                  className="fr-focus"
+                  aria-pressed={selected}
                   onClick={() => setAvailableWeekdays(prev => {
                     const next = [...prev];
                     next[idx] = !next[idx];
                     return next;
                   })}
                   style={{
-                    padding: '7px 14px', borderRadius: 8, fontSize: 12, fontWeight: 700, cursor: 'pointer',
-                    border: `1px solid ${selected ? '#0ea5e9' : 'var(--border)'}`,
-                    background: selected ? 'rgba(14,165,233,0.15)' : 'transparent',
-                    color: selected ? '#0ea5e9' : 'var(--text-dim)',
+                    padding: '7px 14px', borderRadius: 'var(--radius-sm)',
+                    fontSize: 'var(--fs-sm)', fontWeight: selected ? 700 : 500,
+                    fontFamily: 'inherit', cursor: 'pointer',
+                    border: `1px solid ${selected ? 'var(--blue)' : 'var(--border)'}`,
+                    background: selected ? 'var(--info-bg)' : 'transparent',
+                    color: selected ? 'var(--text-strong)' : 'var(--text-muted)',
+                    transition: 'background .12s, border-color .12s, color .12s',
                     minWidth: 58,
                   }}
                 >
@@ -866,12 +923,13 @@ function SchedulingTab({ profile, sites, saveState, onSave }: { profile: Employm
           </div>
 
           {/* Days per week */}
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 14 }}>
-            <div>
+          <FormGrid cols="1fr 1fr" style={{ marginBottom: 'var(--space-4)' }}>
+            <div style={{ minWidth: 0 }}>
               <label style={fieldLabelStyle}>Days per Week</label>
               <select
                 value={daysPerWeek}
                 onChange={e => setDaysPerWeek(e.target.value)}
+                className="fr-field"
                 style={fieldInputStyle}
               >
                 <option value="">— No cap —</option>
@@ -879,16 +937,18 @@ function SchedulingTab({ profile, sites, saveState, onSave }: { profile: Employm
                   <option key={n} value={String(n)}>{n} day{n === 1 ? '' : 's'} / week</option>
                 ))}
               </select>
-              <div style={{ fontSize: 10, color: 'var(--text-dim)', marginTop: 3 }}>
+              <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-dim)', marginTop: 'var(--space-1)', lineHeight: 1.4 }}>
                 How many days the scheduler should try to place them on each week,
                 among the available weekdays above.
               </div>
             </div>
-          </div>
+          </FormGrid>
 
           {/* Preferred day-shift types — scoped to the home site, category=regular,
               and D-prefixed codes are excluded because post-call D1..D9 relief
-              shifts are call-taker territory (they chain off call placements). */}
+              shifts are call-taker territory (they chain off call placements).
+              `accent` stays a literal hex: SiteShiftTypePicker is shared with
+              other pages and concatenates an alpha onto it. */}
           {homeSite ? (
             <SiteShiftTypePicker
               siteId={homeSite}
@@ -901,11 +961,9 @@ function SchedulingTab({ profile, sites, saveState, onSave }: { profile: Employm
               accent="#0ea5e9"
             />
           ) : (
-            <div style={{ fontSize: 11, color: 'var(--text-dim)', padding: '8px 0', marginBottom: 14 }}>
-              Set a Home Hospital above to pick preferred day-shift types.
-            </div>
+            <NoneYet>Set a Home Hospital above to pick preferred day-shift types.</NoneYet>
           )}
-        </>
+        </Card>
       )}
 
       {/* Capabilities, Specialty Eligibility, Limits and Frequency Targets used
@@ -917,20 +975,21 @@ function SchedulingTab({ profile, sites, saveState, onSave }: { profile: Employm
           — see providerEmploymentForm.RETIRED_PROFILE_FIELDS, which a test uses
           to assert they stay out of the save payload. */}
 
-      <SectionLabel>Scheduling Notes</SectionLabel>
-      <textarea
-        value={schedulingNotes}
-        onChange={e => setSchedulingNotes(e.target.value)}
-        placeholder="Scheduling-specific notes (e.g. 'Prefers no back-to-back weekend + Monday')..."
-        style={{
-          width: '100%', minHeight: 70, padding: '10px 12px', borderRadius: 8,
-          border: '1px solid var(--border)', background: 'var(--bg-deep)',
-          color: 'var(--text)', fontSize: 13, resize: 'vertical', marginBottom: 16,
-        }}
-      />
+      <Card title="Scheduling notes">
+        <textarea
+          value={schedulingNotes}
+          onChange={e => setSchedulingNotes(e.target.value)}
+          placeholder="Scheduling-specific notes (e.g. 'Prefers no back-to-back weekend + Monday')..."
+          aria-label="Scheduling notes"
+          className="fr-field"
+          style={textAreaStyle}
+        />
+      </Card>
 
-      <SaveButton onClick={handleSave} canSave={canSave} saveState={saveState} />
-    </div>
+      <SaveBar>
+        <SaveButton onClick={handleSave} canSave={canSave} saveState={saveState} />
+      </SaveBar>
+    </TabStack>
   );
 }
 
@@ -974,76 +1033,105 @@ function PreferencesTab({ profile, sites, saveState, onSave }: {
   };
 
   return (
-    <div style={{ maxWidth: 720 }}>
-      <SectionLabel>Specialties</SectionLabel>
-      <div style={{ marginBottom: 14 }}>
-        <label style={fieldLabelStyle}>Primary Fellowship / Subspecialty</label>
-        <select
-          value={fellowshipPrimary}
-          onChange={e => setFellowshipPrimary(e.target.value)}
-          style={fieldInputStyle}
-        >
-          <option value="">— None —</option>
-          {FELLOWSHIP_OPTIONS.map(f => (
-            <option key={f} value={f}>{f}</option>
-          ))}
-          {fellowshipPrimary && !(FELLOWSHIP_OPTIONS as readonly string[]).includes(fellowshipPrimary) && (
-            // Preserve any legacy free-text value so it isn't wiped on load.
-            <option value={fellowshipPrimary}>{fellowshipPrimary} (legacy)</option>
-          )}
-        </select>
-      </div>
-      <OptionPicker
-        label="Additional Fellowships"
-        values={fellowships}
-        onChange={setFellowships}
-        options={FELLOWSHIP_OPTIONS}
-        excludeOptions={fellowshipPrimary ? [fellowshipPrimary] : []}
-      />
-      <TagInput label="Skills" values={skills} onChange={setSkills} placeholder="Add a skill (e.g. TEE, regional, ultrasound)..." />
+    <TabStack>
+      <Card title="Specialties">
+        <Stack>
+          <div>
+            <label style={fieldLabelStyle}>Primary Fellowship / Subspecialty</label>
+            <select
+              value={fellowshipPrimary}
+              onChange={e => setFellowshipPrimary(e.target.value)}
+              className="fr-field"
+              style={fieldInputStyle}
+            >
+              <option value="">— None —</option>
+              {FELLOWSHIP_OPTIONS.map(f => (
+                <option key={f} value={f}>{f}</option>
+              ))}
+              {fellowshipPrimary && !(FELLOWSHIP_OPTIONS as readonly string[]).includes(fellowshipPrimary) && (
+                // Preserve any legacy free-text value so it isn't wiped on load.
+                <option value={fellowshipPrimary}>{fellowshipPrimary} (legacy)</option>
+              )}
+            </select>
+          </div>
+          <OptionPicker
+            label="Additional Fellowships"
+            values={fellowships}
+            onChange={setFellowships}
+            options={FELLOWSHIP_OPTIONS}
+            excludeOptions={fellowshipPrimary ? [fellowshipPrimary] : []}
+          />
+          <TagInput label="Skills" values={skills} onChange={setSkills} placeholder="Add a skill (e.g. TEE, regional, ultrasound)..." />
+        </Stack>
+      </Card>
 
-      <SectionLabel>Assignment Preferences</SectionLabel>
-      <div style={{ fontSize: 11, color: 'var(--text-dim)', marginBottom: 10, marginTop: -4 }}>
-        Soft preferences used by the scheduler. Pick from the list of case / service assignments.
-      </div>
-      <OptionPicker
-        label="Preferred Assignments"
-        values={preferredAssignments}
-        onChange={setPreferredAssignments}
-        options={ASSIGNMENT_OPTIONS}
-        accent="#10b981"
-      />
-      <OptionPicker
-        label="Undesired Assignments"
-        values={undesiredAssignments}
-        onChange={setUndesiredAssignments}
-        options={ASSIGNMENT_OPTIONS}
-        accent="#f87171"
-      />
+      {/* Preferred vs undesired is the one place on this page where colour
+          carries the meaning rather than decorating it, so the two pickers are
+          --ok and --danger tones and sit in the same card as a matched pair. */}
+      <Card title="Assignment preferences">
+        <Hint>
+          Soft preferences used by the scheduler. Pick from the list of case / service assignments.
+        </Hint>
+        <Stack>
+          <OptionPicker
+            label="Preferred Assignments"
+            values={preferredAssignments}
+            onChange={setPreferredAssignments}
+            options={ASSIGNMENT_OPTIONS}
+            tone="ok"
+          />
+          <OptionPicker
+            label="Undesired Assignments"
+            values={undesiredAssignments}
+            onChange={setUndesiredAssignments}
+            options={ASSIGNMENT_OPTIONS}
+            tone="danger"
+          />
+        </Stack>
+      </Card>
 
-      <SectionLabel>Site Preferences</SectionLabel>
-      <SitePicker label="Preferred Sites" values={preferredSites} onChange={setPreferredSites} sites={sites} accent="#10b981" />
-      <SitePicker label="Undesired Sites" values={undesiredSites} onChange={setUndesiredSites} sites={sites} accent="#f87171" />
+      <Card title="Site preferences">
+        <Stack>
+          <SitePicker label="Preferred Sites" values={preferredSites} onChange={setPreferredSites} sites={sites} tone="ok" />
+          <SitePicker label="Undesired Sites" values={undesiredSites} onChange={setUndesiredSites} sites={sites} tone="danger" />
+        </Stack>
+      </Card>
 
-      <SectionLabel>Permanently Blocked Dates</SectionLabel>
-      <div style={{ fontSize: 11, color: 'var(--text-dim)', marginBottom: 10, marginTop: -4 }}>
-        For one-off time off, use the Availability tab. This is for recurring hard-blocks like a standing academic day.
-      </div>
-      <DateListEditor values={blockedDates} onChange={setBlockedDates} />
+      <Card title="Permanently blocked dates">
+        <Hint>
+          For one-off time off, use the Availability tab. This is for recurring hard-blocks like a standing academic day.
+        </Hint>
+        <DateListEditor values={blockedDates} onChange={setBlockedDates} />
+      </Card>
 
-      <div style={{ marginTop: 20 }}>
+      <SaveBar>
         <SaveButton onClick={handleSave} canSave={true} saveState={saveState} />
-      </div>
-    </div>
+      </SaveBar>
+    </TabStack>
   );
 }
 
-function TagInput({ label, values, onChange, placeholder, accent = '#0ea5e9' }: {
+// The four value pickers below share one shape: a control row (input or
+// select + Add) and a run of removable chips beneath it. They used to build
+// their own chip tint by concatenating an alpha onto a raw hex `accent`
+// (`${accent}20` / `${accent}30`), which meant four dark-theme colours painted
+// onto the light default. They now take a semantic tone and get their colours
+// from the kit's BADGE_TONES.
+//
+// `accent` survives ONLY where it crosses into SiteShiftTypePicker and
+// CalendarMultiPicker: those are shared components used by other pages, and
+// they concatenate the alpha themselves, so they require a literal hex.
+
+function PickerControls({ children }: { children: React.ReactNode }) {
+  return <div style={{ display: 'flex', gap: 'var(--space-2)', alignItems: 'stretch' }}>{children}</div>;
+}
+
+function TagInput({ label, values, onChange, placeholder, tone = 'info' }: {
   label: string;
   values: string[];
   onChange: (next: string[]) => void;
   placeholder?: string;
-  accent?: string;
+  tone?: BadgeTone;
 }) {
   const [draft, setDraft] = useState('');
 
@@ -1055,51 +1143,32 @@ function TagInput({ label, values, onChange, placeholder, accent = '#0ea5e9' }: 
   };
 
   return (
-    <div style={{ marginBottom: 14 }}>
+    <div>
       <label style={fieldLabelStyle}>{label}</label>
-      <div style={{ display: 'flex', gap: 8 }}>
+      <PickerControls>
         <input
           value={draft}
           onChange={e => setDraft(e.target.value)}
           onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); add(); } }}
           placeholder={placeholder}
+          className="fr-field"
           style={{ ...fieldInputStyle, flex: 1 }}
         />
-        <button onClick={add} disabled={!draft.trim()} style={{
-          padding: '8px 14px', borderRadius: 8, cursor: draft.trim() ? 'pointer' : 'not-allowed',
-          fontSize: 12, fontWeight: 700, background: 'var(--bg-surface)', color: 'var(--text-muted)',
-          border: '1px solid var(--border)', opacity: draft.trim() ? 1 : 0.5,
-        }}>
-          Add
-        </button>
-      </div>
+        <Button variant="secondary" onClick={add} disabled={!draft.trim()}>Add</Button>
+      </PickerControls>
       {values.length > 0 && (
-        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 8 }}>
+        <ChipRow>
           {values.map(v => (
-            <span key={v} style={{
-              display: 'inline-flex', alignItems: 'center', gap: 5,
-              fontSize: 11, fontWeight: 600, padding: '3px 4px 3px 9px', borderRadius: 6,
-              background: `${accent}20`, color: accent, border: `1px solid ${accent}30`,
-            }}>
-              {v}
-              <button
-                onClick={() => onChange(values.filter(x => x !== v))}
-                style={{
-                  background: 'none', border: 'none', color: accent, cursor: 'pointer',
-                  fontSize: 14, lineHeight: 1, padding: '0 4px',
-                }}
-                aria-label={`Remove ${v}`}
-              >×</button>
-            </span>
+            <RemovableChip key={v} label={v} tone={tone} onRemove={() => onChange(values.filter(x => x !== v))} />
           ))}
-        </div>
+        </ChipRow>
       )}
     </div>
   );
 }
 
 function OptionPicker({
-  label, values, onChange, options, excludeOptions = [], accent = '#0ea5e9',
+  label, values, onChange, options, excludeOptions = [], tone = 'info',
 }: {
   label: string;
   values: string[];
@@ -1109,7 +1178,7 @@ function OptionPicker({
   // present). Used e.g. to exclude the primary fellowship from the
   // additional-fellowships picker.
   excludeOptions?: string[];
-  accent?: string;
+  tone?: BadgeTone;
 }) {
   const [sel, setSel] = useState('');
   const available = options.filter(o => !values.includes(o) && !excludeOptions.includes(o));
@@ -1121,59 +1190,42 @@ function OptionPicker({
   };
 
   return (
-    <div style={{ marginBottom: 14 }}>
+    <div>
       <label style={fieldLabelStyle}>{label}</label>
-      <div style={{ display: 'flex', gap: 8 }}>
-        <select value={sel} onChange={e => setSel(e.target.value)} style={{ ...fieldInputStyle, flex: 1 }}>
+      <PickerControls>
+        <select value={sel} onChange={e => setSel(e.target.value)} className="fr-field" style={{ ...fieldInputStyle, flex: 1 }}>
           <option value="">Select...</option>
           {available.map(o => (
             <option key={o} value={o}>{o}</option>
           ))}
         </select>
-        <button onClick={add} disabled={!sel} style={{
-          padding: '8px 14px', borderRadius: 8, cursor: sel ? 'pointer' : 'not-allowed',
-          fontSize: 12, fontWeight: 700, background: 'var(--bg-surface)', color: 'var(--text-muted)',
-          border: '1px solid var(--border)', opacity: sel ? 1 : 0.5,
-        }}>
-          Add
-        </button>
-      </div>
+        <Button variant="secondary" onClick={add} disabled={!sel}>Add</Button>
+      </PickerControls>
       {values.length > 0 && (
-        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 8 }}>
-          {values.map(v => {
-            const known = (options as readonly string[]).includes(v);
-            return (
-              <span key={v} style={{
-                display: 'inline-flex', alignItems: 'center', gap: 5,
-                fontSize: 11, fontWeight: 600, padding: '3px 4px 3px 9px', borderRadius: 6,
-                background: `${accent}20`, color: accent, border: `1px solid ${accent}30`,
-                opacity: known ? 1 : 0.7,
-              }}>
-                {v}
-                {!known && <span style={{ fontStyle: 'italic', fontSize: 10 }}>(legacy)</span>}
-                <button
-                  onClick={() => onChange(values.filter(x => x !== v))}
-                  style={{
-                    background: 'none', border: 'none', color: accent, cursor: 'pointer',
-                    fontSize: 14, lineHeight: 1, padding: '0 4px',
-                  }}
-                  aria-label={`Remove ${v}`}
-                >×</button>
-              </span>
-            );
-          })}
-        </div>
+        <ChipRow>
+          {values.map(v => (
+            <RemovableChip
+              key={v}
+              label={v}
+              tone={tone}
+              // A value no longer in the canonical list is kept and marked
+              // rather than dropped, so loading a legacy row can't wipe it.
+              note={(options as readonly string[]).includes(v) ? undefined : '(legacy)'}
+              onRemove={() => onChange(values.filter(x => x !== v))}
+            />
+          ))}
+        </ChipRow>
       )}
     </div>
   );
 }
 
-function SitePicker({ label, values, onChange, sites, accent = '#0ea5e9' }: {
+function SitePicker({ label, values, onChange, sites, tone = 'info' }: {
   label: string;
   values: string[];
   onChange: (next: string[]) => void;
   sites: Array<{ id: string; name: string; short_name: string | null }>;
-  accent?: string;
+  tone?: BadgeTone;
 }) {
   const [sel, setSel] = useState('');
   const available = sites.filter(s => !values.includes(s.id));
@@ -1187,43 +1239,28 @@ function SitePicker({ label, values, onChange, sites, accent = '#0ea5e9' }: {
   const nameOf = (id: string) => sites.find(s => s.id === id)?.name || id;
 
   return (
-    <div style={{ marginBottom: 14 }}>
+    <div>
       <label style={fieldLabelStyle}>{label}</label>
-      <div style={{ display: 'flex', gap: 8 }}>
-        <select value={sel} onChange={e => setSel(e.target.value)} style={{ ...fieldInputStyle, flex: 1 }}>
+      <PickerControls>
+        <select value={sel} onChange={e => setSel(e.target.value)} className="fr-field" style={{ ...fieldInputStyle, flex: 1 }}>
           <option value="">Select a site...</option>
           {available.map(s => (
             <option key={s.id} value={s.id}>{s.name}</option>
           ))}
         </select>
-        <button onClick={add} disabled={!sel} style={{
-          padding: '8px 14px', borderRadius: 8, cursor: sel ? 'pointer' : 'not-allowed',
-          fontSize: 12, fontWeight: 700, background: 'var(--bg-surface)', color: 'var(--text-muted)',
-          border: '1px solid var(--border)', opacity: sel ? 1 : 0.5,
-        }}>
-          Add
-        </button>
-      </div>
+        <Button variant="secondary" onClick={add} disabled={!sel}>Add</Button>
+      </PickerControls>
       {values.length > 0 && (
-        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 8 }}>
+        <ChipRow>
           {values.map(id => (
-            <span key={id} style={{
-              display: 'inline-flex', alignItems: 'center', gap: 5,
-              fontSize: 11, fontWeight: 600, padding: '3px 4px 3px 9px', borderRadius: 6,
-              background: `${accent}20`, color: accent, border: `1px solid ${accent}30`,
-            }}>
-              {nameOf(id)}
-              <button
-                onClick={() => onChange(values.filter(x => x !== id))}
-                style={{
-                  background: 'none', border: 'none', color: accent, cursor: 'pointer',
-                  fontSize: 14, lineHeight: 1, padding: '0 4px',
-                }}
-                aria-label={`Remove ${nameOf(id)}`}
-              >×</button>
-            </span>
+            <RemovableChip
+              key={id}
+              label={nameOf(id)}
+              tone={tone}
+              onRemove={() => onChange(values.filter(x => x !== id))}
+            />
           ))}
-        </div>
+        </ChipRow>
       )}
     </div>
   );
@@ -1239,42 +1276,28 @@ function DateListEditor({ values, onChange }: { values: string[]; onChange: (nex
   };
 
   return (
-    <div style={{ marginBottom: 14 }}>
-      <div style={{ display: 'flex', gap: 8 }}>
+    <div>
+      <PickerControls>
         <input
           type="date"
           value={draft}
           onChange={e => setDraft(e.target.value)}
+          className="fr-field"
           style={{ ...fieldInputStyle, flex: 1 }}
         />
-        <button onClick={add} disabled={!draft} style={{
-          padding: '8px 14px', borderRadius: 8, cursor: draft ? 'pointer' : 'not-allowed',
-          fontSize: 12, fontWeight: 700, background: 'var(--bg-surface)', color: 'var(--text-muted)',
-          border: '1px solid var(--border)', opacity: draft ? 1 : 0.5,
-        }}>
-          Add Date
-        </button>
-      </div>
+        <Button variant="secondary" onClick={add} disabled={!draft}>Add Date</Button>
+      </PickerControls>
       {values.length > 0 && (
-        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 8 }}>
+        <ChipRow>
           {values.map(d => (
-            <span key={d} style={{
-              display: 'inline-flex', alignItems: 'center', gap: 5,
-              fontSize: 11, fontWeight: 600, padding: '3px 4px 3px 9px', borderRadius: 6,
-              background: 'rgba(100,116,139,0.15)', color: '#94a3b8', border: '1px solid rgba(100,116,139,0.3)',
-            }}>
-              {d}
-              <button
-                onClick={() => onChange(values.filter(x => x !== d))}
-                style={{
-                  background: 'none', border: 'none', color: '#94a3b8', cursor: 'pointer',
-                  fontSize: 14, lineHeight: 1, padding: '0 4px',
-                }}
-                aria-label={`Remove ${d}`}
-              >×</button>
-            </span>
+            <RemovableChip
+              key={d}
+              label={d}
+              tone="neutral"
+              onRemove={() => onChange(values.filter(x => x !== d))}
+            />
           ))}
-        </div>
+        </ChipRow>
       )}
     </div>
   );
@@ -1362,145 +1385,144 @@ function SitesTab({ providerId, credentials, sites, onChanged }: {
   };
 
   return (
-    <div style={{ maxWidth: 760 }}>
-      {error && (
-        <div style={{
-          background: 'rgba(248,113,113,0.1)', border: '1px solid rgba(248,113,113,0.3)',
-          color: '#f87171', padding: '10px 14px', borderRadius: 8, marginBottom: 12, fontSize: 13,
-        }}>{error}</div>
-      )}
+    <TabStack>
+      {error && <Banner tone="error" onDismiss={() => setError(null)}>{error}</Banner>}
+
       {/* Add new site */}
       {availableSites.length > 0 && (
-        <div style={{
-          display: 'flex', gap: 8, marginBottom: 16, padding: 12,
-          background: 'var(--bg-surface)', border: '1px solid var(--border)', borderRadius: 10,
-        }}>
-          <select
-            value={addSiteId}
-            onChange={e => setAddSiteId(e.target.value)}
-            style={{ ...fieldInputStyle, flex: 1 }}
-          >
-            <option value="">+ Credential at a new site...</option>
-            {availableSites.map(s => (
-              <option key={s.id} value={s.id}>{s.name}</option>
-            ))}
-          </select>
-          <button
-            onClick={addSite}
-            disabled={!addSiteId || busy}
-            style={{ ...saveBtnStyle, opacity: !addSiteId || busy ? 0.5 : 1 }}
-          >
-            Add
-          </button>
-        </div>
+        <Card>
+          <div style={{ display: 'flex', gap: 'var(--space-2)', alignItems: 'stretch' }}>
+            <select
+              value={addSiteId}
+              onChange={e => setAddSiteId(e.target.value)}
+              aria-label="Credential at a new site"
+              className="fr-field"
+              style={{ ...fieldInputStyle, flex: 1 }}
+            >
+              <option value="">+ Credential at a new site...</option>
+              {availableSites.map(s => (
+                <option key={s.id} value={s.id}>{s.name}</option>
+              ))}
+            </select>
+            <Button onClick={addSite} disabled={!addSiteId || busy}>Add</Button>
+          </div>
+        </Card>
       )}
 
       {credentials.length === 0 ? (
-        <div style={{ color: 'var(--text-dim)', fontStyle: 'italic', padding: '20px 0' }}>
-          No site credentials configured yet. Use the dropdown above to add one.
-        </div>
+        <Card pad={false}>
+          <EmptyState
+            icon="⬡"
+            title="No site credentials yet"
+            hint="Credential this provider at a hospital or surgery center to make them schedulable there."
+          />
+        </Card>
       ) : (
+        // One Card per site. Each site is a self-contained unit of decisions
+        // (credentialed / active / four call permissions, plus an optional
+        // detail panel), so it earns its own surface — where the availability
+        // rows, which are one-line facts, deliberately do not.
         credentials.map(c => (
-          <div key={c.id} style={{
-            background: 'var(--bg-surface)', border: '1px solid var(--border)', borderRadius: 10,
-            padding: '14px 18px', marginBottom: 8,
-          }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
-              <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--text)' }}>
-                {c.sites?.name || c.site_id}
-              </div>
-              <div style={{ display: 'flex', gap: 6 }}>
-                <button
+          <Card
+            key={c.id}
+            title={c.sites?.name || c.site_id}
+            actions={
+              <>
+                <Button
+                  variant="secondary"
+                  size="sm"
                   onClick={() => setExpanded(expanded === c.id ? null : c.id)}
                   disabled={busy}
-                  style={{
-                    fontSize: 11, fontWeight: 600, color: 'var(--text-muted)', background: 'none',
-                    border: '1px solid var(--border)', borderRadius: 6,
-                    padding: '3px 10px', cursor: busy ? 'not-allowed' : 'pointer',
-                  }}
+                  ariaExpanded={expanded === c.id}
                 >
                   {expanded === c.id ? 'Less' : 'More'}
-                </button>
-                <button
+                </Button>
+                <Button
+                  variant="danger"
+                  size="sm"
                   onClick={() => removeSite(c.site_id)}
                   disabled={busy}
-                  style={{
-                    fontSize: 11, fontWeight: 600, color: '#f87171', background: 'none',
-                    border: '1px solid rgba(248,113,113,0.3)', borderRadius: 6,
-                    padding: '3px 10px', cursor: busy ? 'not-allowed' : 'pointer',
-                  }}
                 >
                   Remove
-                </button>
-              </div>
-            </div>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 6 }}>
+                </Button>
+              </>
+            }
+          >
+            <FormGrid cols="repeat(auto-fit, minmax(180px, 1fr))" style={{ gap: 'var(--space-2)' }}>
               <Toggle label="Credentialed" checked={c.credentialed} onChange={v => updateCred(c, { credentialed: v })} />
               <Toggle label="Active" checked={c.is_active} onChange={v => updateCred(c, { is_active: v })} />
               <Toggle label="Can Take Call" checked={c.can_take_call} onChange={v => updateCred(c, { can_take_call: v })} />
               <Toggle label="Weekend Call" checked={c.can_take_weekend_call} onChange={v => updateCred(c, { can_take_weekend_call: v })} />
               <Toggle label="Holiday Call" checked={c.can_take_holiday_call} onChange={v => updateCred(c, { can_take_holiday_call: v })} />
               <Toggle label="Backup Call" checked={c.can_take_backup_call} onChange={v => updateCred(c, { can_take_backup_call: v })} />
-            </div>
+            </FormGrid>
 
             {expanded === c.id && (
-              <div style={{ marginTop: 14, paddingTop: 14, borderTop: '1px solid var(--border)' }}>
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 12 }}>
-                  <div>
-                    <label style={fieldLabelStyle}>Effective Start</label>
-                    <input
-                      type="date"
-                      value={c.effective_start_date || ''}
-                      onChange={e => updateCred(c, { effective_start_date: e.target.value || null })}
-                      style={fieldInputStyle}
-                    />
-                  </div>
-                  <div>
-                    <label style={fieldLabelStyle}>Effective End</label>
-                    <input
-                      type="date"
-                      value={c.effective_end_date || ''}
-                      onChange={e => updateCred(c, { effective_end_date: e.target.value || null })}
-                      style={fieldInputStyle}
-                    />
-                  </div>
-                </div>
-                <SiteShiftTypePicker
-                  siteId={c.site_id}
-                  label="Allowed Shift Types (if set, ONLY these are allowed)"
-                  values={c.allowed_shift_types}
-                  onChange={next => updateCred(c, { allowed_shift_types: next })}
-                  accent="#10b981"
-                />
-                <SiteShiftTypePicker
-                  siteId={c.site_id}
-                  label="Excluded Shift Types"
-                  values={c.excluded_shift_types}
-                  onChange={next => updateCred(c, { excluded_shift_types: next })}
-                  accent="#f87171"
-                />
-                <TagInput
-                  label="Skill Tags"
-                  values={c.skill_tags}
-                  onChange={next => updateCred(c, { skill_tags: next })}
-                  placeholder="e.g. trauma-level-1, pediatric..."
-                  accent="#a78bfa"
-                />
-                <div>
-                  <label style={fieldLabelStyle}>Notes</label>
-                  <input
-                    value={c.notes || ''}
-                    onChange={e => updateCred(c, { notes: e.target.value || null })}
-                    placeholder="Site-specific notes..."
-                    style={fieldInputStyle}
+              <div style={{ marginTop: 'var(--space-4)', paddingTop: 'var(--space-4)', borderTop: '1px solid var(--border-faint)' }}>
+                <Stack>
+                  <FormGrid cols="1fr 1fr">
+                    <div style={{ minWidth: 0 }}>
+                      <label style={fieldLabelStyle}>Effective Start</label>
+                      <input
+                        type="date"
+                        value={c.effective_start_date || ''}
+                        onChange={e => updateCred(c, { effective_start_date: e.target.value || null })}
+                        className="fr-field"
+                        style={fieldInputStyle}
+                      />
+                    </div>
+                    <div style={{ minWidth: 0 }}>
+                      <label style={fieldLabelStyle}>Effective End</label>
+                      <input
+                        type="date"
+                        value={c.effective_end_date || ''}
+                        onChange={e => updateCred(c, { effective_end_date: e.target.value || null })}
+                        className="fr-field"
+                        style={fieldInputStyle}
+                      />
+                    </div>
+                  </FormGrid>
+                  {/* accent stays a literal hex here: SiteShiftTypePicker is
+                      shared with other pages and builds its own tints by
+                      concatenating an alpha onto this string. */}
+                  <SiteShiftTypePicker
+                    siteId={c.site_id}
+                    label="Allowed Shift Types (if set, ONLY these are allowed)"
+                    values={c.allowed_shift_types}
+                    onChange={next => updateCred(c, { allowed_shift_types: next })}
+                    accent="#10b981"
                   />
-                </div>
+                  <SiteShiftTypePicker
+                    siteId={c.site_id}
+                    label="Excluded Shift Types"
+                    values={c.excluded_shift_types}
+                    onChange={next => updateCred(c, { excluded_shift_types: next })}
+                    accent="#f87171"
+                  />
+                  <TagInput
+                    label="Skill Tags"
+                    values={c.skill_tags}
+                    onChange={next => updateCred(c, { skill_tags: next })}
+                    placeholder="e.g. trauma-level-1, pediatric..."
+                    tone="info"
+                  />
+                  <div>
+                    <label style={fieldLabelStyle}>Notes</label>
+                    <input
+                      value={c.notes || ''}
+                      onChange={e => updateCred(c, { notes: e.target.value || null })}
+                      placeholder="Site-specific notes..."
+                      className="fr-field"
+                      style={fieldInputStyle}
+                    />
+                  </div>
+                </Stack>
               </div>
             )}
-          </div>
+          </Card>
         ))
       )}
-    </div>
+    </TabStack>
   );
 }
 
@@ -1548,37 +1570,50 @@ interface RequestWindowInfo {
   status: string;
 }
 
-const AVAILABILITY_TYPES: { value: string; label: string; color: string }[] = [
-  { value: 'pto', label: 'PTO', color: '#10b981' },
-  { value: 'sick', label: 'Sick', color: '#f87171' },
-  { value: 'fmla', label: 'FMLA', color: '#f59e0b' },
-  { value: 'conference', label: 'Conference', color: '#0ea5e9' },
-  { value: 'cme', label: 'CME', color: '#6366f1' },
-  { value: 'admin', label: 'Admin', color: '#8b5cf6' },
-  { value: 'jury_duty', label: 'Jury Duty', color: '#64748b' },
-  { value: 'parental_leave', label: 'Parental Leave', color: '#fb923c' },
-  { value: 'military_leave', label: 'Military Leave', color: '#94a3b8' },
-  { value: 'unavailable', label: 'Unavailable', color: '#475569' },
-  { value: 'blocked', label: 'Blocked', color: '#334155' },
-  { value: 'no_call_request', label: 'No-Call Request', color: '#fbbf24' },
-  { value: 'call_request', label: 'Call Request', color: '#34d399' },
-  // Sell-back is RED by convention (matches the schedule grid's sell-back
-  // treatment): the provider IS WORKING these dates.
-  { value: 'pto_sellback', label: 'PTO Sell-Back', color: '#dc2626' },
+// Sixteen availability categories used to carry sixteen hand-picked hues.
+// They collapse to the kit's five semantic tones here — not to save colours,
+// but because they were never sixteen distinct meanings: they are "time off",
+// "working anyway", "asked for", and "administrative". No information is lost,
+// since every chip has always shown its label as text; what IS gained is that
+// all sixteen now invert correctly (most of the old hexes were dark-theme
+// values painted onto the light default).
+//
+// The two that read against intuition are deliberate and pre-existing clinical
+// convention: PTO Sell-Back and Holiday Call mean the provider IS WORKING.
+const AVAILABILITY_TYPES: { value: string; label: string; tone: BadgeTone }[] = [
+  { value: 'pto', label: 'PTO', tone: 'ok' },
+  { value: 'sick', label: 'Sick', tone: 'danger' },
+  { value: 'fmla', label: 'FMLA', tone: 'warn' },
+  { value: 'conference', label: 'Conference', tone: 'info' },
+  { value: 'cme', label: 'CME', tone: 'info' },
+  { value: 'admin', label: 'Admin', tone: 'neutral' },
+  { value: 'jury_duty', label: 'Jury Duty', tone: 'neutral' },
+  { value: 'parental_leave', label: 'Parental Leave', tone: 'warn' },
+  { value: 'military_leave', label: 'Military Leave', tone: 'neutral' },
+  { value: 'unavailable', label: 'Unavailable', tone: 'neutral' },
+  { value: 'blocked', label: 'Blocked', tone: 'neutral' },
+  { value: 'no_call_request', label: 'No-Call Request', tone: 'warn' },
+  { value: 'call_request', label: 'Call Request', tone: 'ok' },
+  // Sell-back is a DANGER tone by convention (matches the schedule grid's
+  // sell-back treatment): the provider IS WORKING these dates.
+  { value: 'pto_sellback', label: 'PTO Sell-Back', tone: 'danger' },
   // Holiday call (patch44): the provider IS WORKING that holiday. Entered
   // from the Holiday Call card on the schedules page, not here.
-  { value: 'holiday_call', label: 'Holiday Call', color: '#22d3ee' },
+  { value: 'holiday_call', label: 'Holiday Call', tone: 'info' },
 ];
 
-const AVAIL_TYPE_MAP: Record<string, { label: string; color: string }> = {};
+const AVAIL_TYPE_MAP: Record<string, { label: string; tone: BadgeTone }> = {};
 AVAILABILITY_TYPES.forEach(t => { AVAIL_TYPE_MAP[t.value] = t; });
 
-const APPROVAL_COLORS: Record<string, { color: string; bg: string }> = {
-  approved: { color: '#10b981', bg: 'rgba(16,185,129,0.12)' },
-  pending: { color: '#fbbf24', bg: 'rgba(251,191,36,0.12)' },
-  denied: { color: '#f87171', bg: 'rgba(248,113,113,0.12)' },
-  waitlisted: { color: '#8b5cf6', bg: 'rgba(139,92,246,0.12)' },
-  canceled: { color: '#64748b', bg: 'rgba(100,116,139,0.12)' },
+// Approval state is exactly what the kit's tones are for: approved is the good
+// resting state, pending needs attention, denied is a fault, waitlisted is
+// informational, canceled is inert.
+const APPROVAL_TONES: Record<string, BadgeTone> = {
+  approved: 'ok',
+  pending: 'warn',
+  denied: 'danger',
+  waitlisted: 'info',
+  canceled: 'neutral',
 };
 
 function AvailabilityTab({ providerId, profile, orgId, sites }: {
@@ -1634,7 +1669,13 @@ function AvailabilityTab({ providerId, profile, orgId, sites }: {
     return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
   };
 
-  if (loading) return <div style={{ color: 'var(--text-dim)', padding: '20px 0' }}>Loading...</div>;
+  if (loading) {
+    return (
+      <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-3)', padding: 'var(--space-5) 0', color: 'var(--text-muted)', fontSize: 'var(--fs-sm)' }}>
+        <Spinner /> Loading availability…
+      </div>
+    );
+  }
 
   // Category split. ICU rows (blocked + icu_* reason) render in the ICU
   // section only; generic blocked rows stay in Other Leave & Blocks.
@@ -1707,7 +1748,7 @@ function AvailabilityTab({ providerId, profile, orgId, sites }: {
   }
 
   return (
-    <div style={{ maxWidth: 720 }}>
+    <TabStack>
       {/* ── PTO Schedule ─────────────────────────────────────────────────── */}
       <AvailSection
         title="PTO Schedule"
@@ -1851,9 +1892,7 @@ function AvailabilityTab({ providerId, profile, orgId, sites }: {
             <IcuAddForm providerId={providerId} rows={rows} onAdded={loadAvailability} />
           )}
           {icuPairs.length === 0 && icuOrphans.length === 0 ? (
-            <div style={{ color: 'var(--text-dim)', fontStyle: 'italic', fontSize: 12, padding: '6px 0' }}>
-              No ICU weeks entered yet.
-            </div>
+            <NoneYet>No ICU weeks entered yet.</NoneYet>
           ) : (
             icuPairs.map(pair => (
               <IcuPairCard
@@ -1871,28 +1910,18 @@ function AvailabilityTab({ providerId, profile, orgId, sites }: {
             ))
           )}
           {icuOrphans.map(o => (
-            <div key={o.id} style={{
-              display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10,
-              padding: '7px 10px', marginBottom: 6,
-              background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.35)',
-              borderRadius: 6,
-            }}>
-              <div style={{ fontSize: 12, lineHeight: 1.45 }}>
-                <span style={{ fontWeight: 700, color: '#f59e0b' }}>Orphaned post-ICU Monday</span>
-                <span style={{ color: 'var(--text)' }}> — {formatDate(o.start_date)}</span>
-                <div style={{ color: 'var(--text-dim)', fontSize: 11 }}>
-                  Its ICU week entry no longer exists, but this day still blocks scheduling. Delete it if the rest day no longer applies.
+            <div key={o.id} style={{ marginTop: 'var(--space-3)' }}>
+              <Banner tone="warn">
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 'var(--space-3)', flexWrap: 'wrap' }}>
+                  <div>
+                    <strong>Orphaned post-ICU Monday</strong> — {formatDate(o.start_date)}
+                    <div style={{ color: 'var(--text-muted)', marginTop: 2 }}>
+                      Its ICU week entry no longer exists, but this day still blocks scheduling. Delete it if the rest day no longer applies.
+                    </div>
+                  </div>
+                  <Button variant="secondary" size="sm" onClick={() => deleteEntry(o.id)}>Delete</Button>
                 </div>
-              </div>
-              <button
-                onClick={() => deleteEntry(o.id)}
-                style={{
-                  background: 'none', border: '1px solid var(--border)', borderRadius: 5,
-                  color: 'var(--text-dim)', fontSize: 11, padding: '3px 9px', cursor: 'pointer', flexShrink: 0,
-                }}
-              >
-                Delete
-              </button>
+              </Banner>
             </div>
           ))}
         </AvailSection>
@@ -1907,11 +1936,13 @@ function AvailabilityTab({ providerId, profile, orgId, sites }: {
         <OtherAddForm providerId={providerId} onAdded={loadAvailability} />
         <SectionRows rows={otherRows} onDelete={deleteEntry} onChanged={loadAvailability} formatDate={formatDate} emptyText="No other entries." />
       </AvailSection>
-    </div>
+    </TabStack>
   );
 }
 
-// Section wrapper: label (+ optional right-aligned counter) + hint + content.
+// One availability category = one Card. The counter rides in the Card's own
+// actions slot, which is what it is for, and the category's counting rule stays
+// in the hint directly under the title where it explains the number beside it.
 function AvailSection({ title, hint, counter, children }: {
   title: string;
   hint: string;
@@ -1920,25 +1951,17 @@ function AvailSection({ title, hint, counter, children }: {
   children: React.ReactNode;
 }) {
   return (
-    <div style={{ marginBottom: 26 }}>
-      <SectionLabel>
-        <span style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%' }}>
-          <span>{title}</span>
-          {counter}
-        </span>
-      </SectionLabel>
-      <div style={{ fontSize: 11, color: 'var(--text-dim)', marginBottom: 10, marginTop: -2, lineHeight: 1.5 }}>
-        {hint}
-      </div>
+    <Card title={title} actions={counter}>
+      <Hint>{hint}</Hint>
       {children}
-    </div>
+    </Card>
   );
 }
 
 const COUNTER_STYLE: React.CSSProperties = {
-  display: 'inline-flex', alignItems: 'center', gap: 5,
-  fontSize: 10, fontWeight: 700, color: 'var(--text-muted)',
-  letterSpacing: 0.3, textTransform: 'none',
+  display: 'inline-flex', alignItems: 'center', gap: 'var(--space-1)',
+  fontSize: 'var(--fs-xs)', fontWeight: 500, color: 'var(--text-muted)',
+  letterSpacing: 0.3, whiteSpace: 'nowrap',
   fontFamily: 'var(--font-mono), ui-monospace, monospace',
 };
 
@@ -1988,18 +2011,14 @@ function SectionRows({ rows, onDelete, onChanged, formatDate, emptyText, noteByI
   const upcoming = rows.filter(r => r.end_date >= today);
   const past = rows.filter(r => r.end_date < today);
   if (rows.length === 0) {
-    return emptyText ? (
-      <div style={{ color: 'var(--text-dim)', fontStyle: 'italic', fontSize: 12, padding: '6px 0' }}>
-        {emptyText}
-      </div>
-    ) : null;
+    return emptyText ? <NoneYet>{emptyText}</NoneYet> : null;
   }
   return (
     <>
       {upcoming.map(r => <AvailabilityCard key={r.id} row={r} onDelete={onDelete} onChanged={onChanged} formatDate={formatDate} note={noteById?.[r.id]} />)}
       {past.length > 0 && (
-        <div style={{ opacity: 0.55 }}>
-          <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-dim)', letterSpacing: 0.5, textTransform: 'uppercase', margin: '8px 0 6px' }}>
+        <div style={{ opacity: 0.6 }}>
+          <div style={{ ...structureType, marginTop: 'var(--space-4)', marginBottom: 'var(--space-1)' }}>
             Past
           </div>
           {past.map(r => <AvailabilityCard key={r.id} row={r} onDelete={onDelete} onChanged={onChanged} formatDate={formatDate} note={noteById?.[r.id]} />)}
@@ -2136,7 +2155,7 @@ function PtoAddForm({ providerId, onAdded }: { providerId: string; onAdded: () =
 
   return (
     <div style={addFormBoxStyle}>
-      {error && <div style={addFormErrorStyle}>{error}</div>}
+      {error && <div style={{ marginBottom: 'var(--space-3)' }}><Banner tone="error">{error}</Banner></div>}
       <ModeTabs
         options={[
           { value: 'date', label: 'Date Range' },
@@ -2159,18 +2178,18 @@ function PtoAddForm({ providerId, onAdded }: { providerId: string; onAdded: () =
               <input type="date" value={start} onChange={e => {
                 setStart(e.target.value);
                 if (!end || e.target.value > end) setEnd(e.target.value);
-              }} style={fieldInputStyle} />
+              }} className="fr-field" style={fieldInputStyle} />
             </div>
             <div>
               <label style={fieldLabelStyle}>End Date</label>
-              <input type="date" value={end} onChange={e => setEnd(e.target.value)} min={start} style={fieldInputStyle} />
+              <input type="date" value={end} onChange={e => setEnd(e.target.value)} min={start} className="fr-field" style={fieldInputStyle} />
             </div>
           </>
         ) : (
           <>
             <div>
               <label style={fieldLabelStyle}>Year</label>
-              <select value={year} onChange={e => setYear(parseInt(e.target.value, 10))} style={fieldInputStyle}>
+              <select value={year} onChange={e => setYear(parseInt(e.target.value, 10))} className="fr-field" style={fieldInputStyle}>
                 {(() => {
                   const cur = new Date().getUTCFullYear();
                   return [cur - 1, cur, cur + 1, cur + 2].map(y => (
@@ -2181,7 +2200,7 @@ function PtoAddForm({ providerId, onAdded }: { providerId: string; onAdded: () =
             </div>
             <div>
               <label style={fieldLabelStyle}>Week #</label>
-              <select value={weekNum} onChange={e => setWeekNum(parseInt(e.target.value, 10))} style={fieldInputStyle}>
+              <select value={weekNum} onChange={e => setWeekNum(parseInt(e.target.value, 10))} className="fr-field" style={fieldInputStyle}>
                 {Array.from({ length: weeksInYear(year) }, (_, i) => i + 1).map(n => (
                   <option key={n} value={n}>Week {n}</option>
                 ))}
@@ -2191,22 +2210,16 @@ function PtoAddForm({ providerId, onAdded }: { providerId: string; onAdded: () =
         )}
         <div>
           <label style={fieldLabelStyle}>Notes</label>
-          <input value={notes} onChange={e => setNotes(e.target.value)} placeholder="Optional" style={fieldInputStyle} />
+          <input value={notes} onChange={e => setNotes(e.target.value)} placeholder="Optional" className="fr-field" style={fieldInputStyle} />
         </div>
-        <button onClick={add} disabled={busy || !canAdd} style={{
-          ...saveBtnStyle, opacity: busy || !canAdd ? 0.5 : 1, whiteSpace: 'nowrap',
-        }}>
+        <Button onClick={add} disabled={busy || !canAdd}>
           {busy ? 'Adding...' : 'Add PTO'}
-        </button>
+        </Button>
       </div>
       {mode === 'week' && start && end && (
-        <div style={{
-          fontSize: 11, color: 'var(--text-dim)', marginTop: 8,
-          padding: '5px 9px', background: 'rgba(14,165,233,0.06)',
-          border: '1px solid rgba(14,165,233,0.2)', borderRadius: 6,
-        }}>
+        <PreviewNote>
           Week {weekNum}: {new Date(start + 'T12:00:00Z').toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} – {new Date(end + 'T12:00:00Z').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })} (Mon–Fri). Flanking Sat/Sun are blocked automatically.
-        </div>
+        </PreviewNote>
       )}
     </div>
   );
@@ -2260,7 +2273,7 @@ function RangeAddForm({ providerId, availabilityType, addLabel, accent = '#0ea5e
 
   return (
     <div style={addFormBoxStyle}>
-      {error && <div style={addFormErrorStyle}>{error}</div>}
+      {error && <div style={{ marginBottom: 'var(--space-3)' }}><Banner tone="error">{error}</Banner></div>}
       <ModeTabs
         options={[
           { value: 'date', label: 'Date Range' },
@@ -2268,7 +2281,6 @@ function RangeAddForm({ providerId, availabilityType, addLabel, accent = '#0ea5e
         ] as const}
         mode={mode}
         onChange={setMode}
-        accent={accent}
       />
       {mode === 'calendar' && <CalendarPane days={days} onDaysChange={setDays} accent={accent} />}
       <div style={{
@@ -2283,23 +2295,21 @@ function RangeAddForm({ providerId, availabilityType, addLabel, accent = '#0ea5e
               <input type="date" value={start} onChange={e => {
                 setStart(e.target.value);
                 if (!end || e.target.value > end) setEnd(e.target.value);
-              }} style={fieldInputStyle} />
+              }} className="fr-field" style={fieldInputStyle} />
             </div>
             <div>
               <label style={fieldLabelStyle}>End Date</label>
-              <input type="date" value={end} onChange={e => setEnd(e.target.value)} min={start} style={fieldInputStyle} />
+              <input type="date" value={end} onChange={e => setEnd(e.target.value)} min={start} className="fr-field" style={fieldInputStyle} />
             </div>
           </>
         )}
         <div>
           <label style={fieldLabelStyle}>Notes</label>
-          <input value={notes} onChange={e => setNotes(e.target.value)} placeholder="Optional" style={fieldInputStyle} />
+          <input value={notes} onChange={e => setNotes(e.target.value)} placeholder="Optional" className="fr-field" style={fieldInputStyle} />
         </div>
-        <button onClick={add} disabled={busy || !canAdd} style={{
-          ...saveBtnStyle, opacity: busy || !canAdd ? 0.5 : 1, whiteSpace: 'nowrap',
-        }}>
+        <Button onClick={add} disabled={busy || !canAdd}>
           {busy ? 'Adding...' : addLabel}
-        </button>
+        </Button>
       </div>
     </div>
   );
@@ -2327,7 +2337,10 @@ function WindowRequestAddForm({ providerId, window: win, usedDates, onAdded, kin
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const max = kind === 'no_call' ? win.max_no_call_requests : (win.max_call_requests ?? 0);
-  const accent = kind === 'no_call' ? '#fbbf24' : '#34d399'; // AVAILABILITY_TYPES colors
+  // A literal hex, not a token: this is forwarded to CalendarMultiPicker,
+  // which builds its own tints by concatenating an alpha suffix onto the
+  // string (`${accent}26`) and so cannot take a CSS variable.
+  const accent = kind === 'no_call' ? '#fbbf24' : '#34d399';
   const usedCount = kind === 'no_call' ? countNoCallRequestUnits(usedDates) : usedDates.length;
 
   const add = async () => {
@@ -2367,7 +2380,7 @@ function WindowRequestAddForm({ providerId, window: win, usedDates, onAdded, kin
 
   return (
     <div style={addFormBoxStyle}>
-      {error && <div style={addFormErrorStyle}>{error}</div>}
+      {error && <div style={{ marginBottom: 'var(--space-3)' }}><Banner tone="error">{error}</Banner></div>}
       <ModeTabs
         options={[
           { value: 'date', label: 'Date' },
@@ -2375,7 +2388,6 @@ function WindowRequestAddForm({ providerId, window: win, usedDates, onAdded, kin
         ] as const}
         mode={mode}
         onChange={setMode}
-        accent={accent}
       />
       {mode === 'calendar' && (
         <CalendarPane
@@ -2400,21 +2412,19 @@ function WindowRequestAddForm({ providerId, window: win, usedDates, onAdded, kin
               min={win.block_start}
               max={win.block_end}
               onChange={e => setDate(e.target.value)}
-              style={fieldInputStyle}
+              className="fr-field" style={fieldInputStyle}
             />
           </div>
         )}
-        <div style={{ fontSize: 11, color: 'var(--text-dim)', paddingBottom: 7 }}>
+        <div style={{ fontSize: 'var(--fs-sm)', color: 'var(--text-muted)', paddingBottom: 8 }}>
           {usedCount}/{max} request{max === 1 ? '' : 's'} used
           {mode === 'calendar' && selectedCount > 0 && projectedCount > max && (
-            <span style={{ color: '#f87171', fontWeight: 700 }}> — the selection needs {projectedCount} total, over the {max} allowed</span>
+            <span style={{ color: 'var(--danger)', fontWeight: 700 }}> — the selection needs {projectedCount} total, over the {max} allowed</span>
           )}
         </div>
-        <button onClick={add} disabled={busy || !canAdd} style={{
-          ...saveBtnStyle, opacity: busy || !canAdd ? 0.5 : 1, whiteSpace: 'nowrap',
-        }}>
+        <Button onClick={add} disabled={busy || !canAdd}>
           {busy ? 'Adding...' : selectedCount > 1 ? `Add ${selectedCount} Requests` : 'Add Request'}
-        </button>
+        </Button>
       </div>
     </div>
   );
@@ -2559,22 +2569,17 @@ function HolidayCallAddForm({ providerId, orgId, sites, homeSiteId, onAdded }: {
 
   if (!orgId) return null;
 
-  const selectStyle: React.CSSProperties = {
-    padding: '7px 10px', borderRadius: 8, border: '1px solid var(--border)',
-    background: 'var(--bg-deep)', color: 'var(--text)', fontSize: 12.5,
-  };
-
   return (
     <div style={addFormBoxStyle}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-        <button onClick={() => setYear(y => y - 1)} style={selectStyle} aria-label="Previous year">&larr;</button>
-        <span style={{ fontSize: 12.5, fontWeight: 800, minWidth: 38, textAlign: 'center' }}>{year}</span>
-        <button onClick={() => setYear(y => y + 1)} style={selectStyle} aria-label="Next year">&rarr;</button>
+        <Button variant="secondary" size="sm" title="Previous year" onClick={() => setYear(y => y - 1)}>&larr;</Button>
+        <span style={{ fontSize: 'var(--fs-md)', fontWeight: 700, minWidth: 40, textAlign: 'center', fontFamily: 'var(--font-mono), ui-monospace, monospace' }}>{year}</span>
+        <Button variant="secondary" size="sm" title="Next year" onClick={() => setYear(y => y + 1)}>&rarr;</Button>
 
         <select
           value={date}
           onChange={e => setDate(e.target.value)}
-          style={{ ...selectStyle, cursor: 'pointer', minWidth: 210 }}
+          className="fr-field" style={{ ...fieldInputStyle, cursor: 'pointer', minWidth: 210, width: 'auto' }}
           aria-label="Holiday day"
           disabled={loading || days.length === 0}
         >
@@ -2590,7 +2595,7 @@ function HolidayCallAddForm({ providerId, orgId, sites, homeSiteId, onAdded }: {
         <select
           value={siteId ?? ''}
           onChange={e => setSiteId(e.target.value || null)}
-          style={{ ...selectStyle, cursor: 'pointer' }}
+          className="fr-field" style={{ ...fieldInputStyle, cursor: 'pointer', width: 'auto' }}
           aria-label="Site this holiday call is recorded for"
         >
           <option value="">All sites (no site)</option>
@@ -2602,7 +2607,7 @@ function HolidayCallAddForm({ providerId, orgId, sites, homeSiteId, onAdded }: {
         <select
           value={code}
           onChange={e => setCode(e.target.value)}
-          style={{ ...selectStyle, cursor: 'pointer' }}
+          className="fr-field" style={{ ...fieldInputStyle, cursor: 'pointer', width: 'auto' }}
           aria-label="Call code"
         >
           {HOLIDAY_CALL_CODES.map(c => (
@@ -2610,26 +2615,19 @@ function HolidayCallAddForm({ providerId, orgId, sites, homeSiteId, onAdded }: {
           ))}
         </select>
 
-        <button
-          onClick={submit}
-          disabled={saving || loading || !date}
-          style={{
-            ...saveBtnStyle,
-            opacity: saving || loading || !date ? 0.5 : 1,
-            whiteSpace: 'nowrap',
-          }}
-        >
+        <Button onClick={submit}
+          disabled={saving || loading || !date}>
           {saving ? 'Saving…' : 'Add'}
-        </button>
+        </Button>
       </div>
 
       {holderNote && (
-        <div style={{ fontSize: 11.5, color: 'var(--warn)', marginTop: 8, lineHeight: 1.5 }}>
+        <div style={{ fontSize: 'var(--fs-sm)', color: 'var(--warn)', marginTop: 'var(--space-2)', lineHeight: 1.5 }}>
           {holderNote}
         </div>
       )}
 
-      {error && <div style={{ ...addFormErrorStyle, marginTop: 8 }}>{error}</div>}
+      {error && <div style={{ marginTop: 'var(--space-3)' }}><Banner tone="error">{error}</Banner></div>}
     </div>
   );
 }
@@ -2682,30 +2680,24 @@ function IcuAddForm({ providerId, rows, onAdded }: {
 
   return (
     <div style={addFormBoxStyle}>
-      {error && <div style={addFormErrorStyle}>{error}</div>}
+      {error && <div style={{ marginBottom: 'var(--space-3)' }}><Banner tone="error">{error}</Banner></div>}
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr auto', gap: 10, alignItems: 'end' }}>
         <div>
           <label style={fieldLabelStyle}>Week Start</label>
-          <input type="date" value={start} onChange={e => setStart(e.target.value)} style={fieldInputStyle} />
+          <input type="date" value={start} onChange={e => setStart(e.target.value)} className="fr-field" style={fieldInputStyle} />
         </div>
         <div>
           <label style={fieldLabelStyle}>Week End (default +6 days)</label>
-          <input type="date" value={end} min={start} placeholder="start + 6" onChange={e => setEnd(e.target.value)} style={fieldInputStyle} />
+          <input type="date" value={end} min={start} placeholder="start + 6" onChange={e => setEnd(e.target.value)} className="fr-field" style={fieldInputStyle} />
         </div>
-        <button onClick={add} disabled={busy || !start} style={{
-          ...saveBtnStyle, opacity: busy || !start ? 0.5 : 1, whiteSpace: 'nowrap',
-        }}>
+        <Button onClick={add} disabled={busy || !start}>
           {busy ? 'Adding...' : 'Add ICU Week'}
-        </button>
+        </Button>
       </div>
       {start && (
-        <div style={{
-          fontSize: 11, color: 'var(--text-dim)', marginTop: 8,
-          padding: '5px 9px', background: 'rgba(139,92,246,0.06)',
-          border: '1px solid rgba(139,92,246,0.2)', borderRadius: 6,
-        }}>
+        <PreviewNote>
           Blocks {start} – {effectiveEnd}, plus the following Monday off.
-        </div>
+        </PreviewNote>
       )}
     </div>
   );
@@ -2785,58 +2777,39 @@ function IcuPairCard({ pair, providerId, rows, formatDate, onDeletePair, onChang
 
   if (editing) {
     return (
-      <div style={{
-        background: 'var(--bg-surface)', border: '1px solid rgba(139,92,246,0.5)', borderRadius: 10,
-        padding: '12px 16px', marginBottom: 8,
-      }}>
-        {error && <div style={addFormErrorStyle}>{error}</div>}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
-          <span style={{
-            fontSize: 11, fontWeight: 700, padding: '3px 8px', borderRadius: 6,
-            background: 'rgba(139,92,246,0.15)', color: '#8b5cf6',
-          }}>
-            ICU Week
-          </span>
-          <span style={{ fontSize: 10, color: 'var(--text-dim)' }}>
-            editing — the post-ICU Monday moves with the week
-          </span>
+      <div style={{ ...addFormBoxStyle, borderColor: 'var(--border)', marginTop: 'var(--space-3)' }}>
+        {error && <div style={{ marginBottom: 'var(--space-3)' }}><Banner tone="error">{error}</Banner></div>}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)', marginBottom: 'var(--space-3)' }}>
+          <Badge tone="info">ICU Week</Badge>
+          <span style={structureType}>editing — the post-ICU Monday moves with the week</span>
         </div>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr auto auto', gap: 10, alignItems: 'end' }}>
-          <div>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr auto auto', gap: 'var(--space-3)', alignItems: 'end' }}>
+          <div style={{ minWidth: 0 }}>
             <label style={fieldLabelStyle}>Week Start</label>
-            <input type="date" value={start} onChange={e => setStart(e.target.value)} style={fieldInputStyle} />
+            <input type="date" value={start} onChange={e => setStart(e.target.value)} className="fr-field" style={fieldInputStyle} />
           </div>
-          <div>
+          <div style={{ minWidth: 0 }}>
             <label style={fieldLabelStyle}>Week End</label>
-            <input type="date" value={end} min={start} onChange={e => setEnd(e.target.value)} style={fieldInputStyle} />
+            <input type="date" value={end} min={start} onChange={e => setEnd(e.target.value)} className="fr-field" style={fieldInputStyle} />
           </div>
-          <button onClick={save} disabled={busy || !start || !end} style={{
-            ...saveBtnStyle, opacity: busy || !start || !end ? 0.5 : 1, whiteSpace: 'nowrap',
-          }}>
-            {busy ? 'Saving...' : 'Save'}
-          </button>
-          <button
+          <Button onClick={save} disabled={busy || !start || !end}>
+            {busy ? 'Saving…' : 'Save'}
+          </Button>
+          <Button
+            variant="secondary"
             onClick={() => {
               setEditing(false); setError(null);
               setStart(pair.week.start_date); setEnd(pair.week.end_date);
             }}
             disabled={busy}
-            style={{
-              padding: '7px 12px', borderRadius: 5, cursor: 'pointer', fontWeight: 600, fontSize: 12,
-              background: 'var(--bg-deep)', color: 'var(--text-muted)', border: '1px solid var(--border)',
-            }}
           >
             Cancel
-          </button>
+          </Button>
         </div>
         {start && end && end >= start && (
-          <div style={{
-            fontSize: 11, color: 'var(--text-dim)', marginTop: 8,
-            padding: '5px 9px', background: 'rgba(139,92,246,0.06)',
-            border: '1px solid rgba(139,92,246,0.2)', borderRadius: 6,
-          }}>
+          <PreviewNote>
             Will block {start} – {end}, plus the following Monday off (re-derived).
-          </div>
+          </PreviewNote>
         )}
       </div>
     );
@@ -2844,49 +2817,37 @@ function IcuPairCard({ pair, providerId, rows, formatDate, onDeletePair, onChang
 
   return (
     <div style={{
-      background: 'var(--bg-surface)', border: '1px solid var(--border)', borderRadius: 10,
-      padding: '12px 16px', marginBottom: 8,
       display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+      gap: 'var(--space-3)', flexWrap: 'wrap',
+      padding: 'var(--space-3) 0',
+      borderTop: '1px solid var(--border-faint)',
     }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-        <span style={{
-          fontSize: 11, fontWeight: 700, padding: '3px 8px', borderRadius: 6,
-          background: 'rgba(139,92,246,0.15)', color: '#8b5cf6',
-        }}>
-          ICU Week
-        </span>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-3)', flexWrap: 'wrap' }}>
+        <Badge tone="info">ICU Week</Badge>
         <div>
-          <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)' }}>
+          <div style={{ fontSize: 'var(--fs-md)', fontWeight: 600, color: 'var(--text-strong)' }}>
             {formatDate(pair.week.start_date)} — {formatDate(pair.week.end_date)}
           </div>
-          <div style={{ fontSize: 11, color: 'var(--text-dim)', marginTop: 2 }}>
+          <div style={{ fontSize: 'var(--fs-sm)', color: 'var(--text-muted)', marginTop: 2 }}>
             {pair.monday
               ? `+ post-ICU Monday off ${formatDate(pair.monday.start_date)}`
               : 'post-ICU Monday covered by another blocked entry'}
           </div>
         </div>
       </div>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-        <button
-          onClick={() => setEditing(true)}
-          title="Edit ICU week (the Monday re-derives)"
-          style={{
-            fontSize: 11, color: '#0ea5e9', background: 'none', border: 'none',
-            cursor: 'pointer', padding: '2px 6px', fontWeight: 600,
-          }}
-        >
-          edit
-        </button>
-        <button
+      <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
+        <Button variant="ghost" size="sm" onClick={() => setEditing(true)} title="Edit ICU week (the Monday re-derives)">
+          Edit
+        </Button>
+        <Button
+          variant="ghost"
+          size="sm"
           onClick={onDeletePair}
           title="Delete ICU week + Monday"
-          style={{
-            fontSize: 11, color: '#f87171', background: 'none', border: 'none',
-            cursor: 'pointer', padding: '2px 6px',
-          }}
+          style={{ color: 'var(--danger)' }}
         >
-          x
-        </button>
+          Remove
+        </Button>
       </div>
     </div>
   );
@@ -2939,7 +2900,7 @@ function OtherAddForm({ providerId, onAdded }: { providerId: string; onAdded: ()
 
   return (
     <div style={addFormBoxStyle}>
-      {error && <div style={addFormErrorStyle}>{error}</div>}
+      {error && <div style={{ marginBottom: 'var(--space-3)' }}><Banner tone="error">{error}</Banner></div>}
       <ModeTabs
         options={[
           { value: 'date', label: 'Date Range' },
@@ -2956,7 +2917,7 @@ function OtherAddForm({ providerId, onAdded }: { providerId: string; onAdded: ()
       }}>
         <div>
           <label style={fieldLabelStyle}>Type</label>
-          <select value={type} onChange={e => setType(e.target.value)} style={fieldInputStyle}>
+          <select value={type} onChange={e => setType(e.target.value)} className="fr-field" style={fieldInputStyle}>
             {OTHER_ENTRY_TYPES.map(t => (
               <option key={t.value} value={t.value}>{t.label}</option>
             ))}
@@ -2969,23 +2930,21 @@ function OtherAddForm({ providerId, onAdded }: { providerId: string; onAdded: ()
               <input type="date" value={start} onChange={e => {
                 setStart(e.target.value);
                 if (!end || e.target.value > end) setEnd(e.target.value);
-              }} style={fieldInputStyle} />
+              }} className="fr-field" style={fieldInputStyle} />
             </div>
             <div>
               <label style={fieldLabelStyle}>End Date</label>
-              <input type="date" value={end} onChange={e => setEnd(e.target.value)} min={start} style={fieldInputStyle} />
+              <input type="date" value={end} onChange={e => setEnd(e.target.value)} min={start} className="fr-field" style={fieldInputStyle} />
             </div>
           </>
         )}
         <div>
           <label style={fieldLabelStyle}>Notes</label>
-          <input value={notes} onChange={e => setNotes(e.target.value)} placeholder="Optional" style={fieldInputStyle} />
+          <input value={notes} onChange={e => setNotes(e.target.value)} placeholder="Optional" className="fr-field" style={fieldInputStyle} />
         </div>
-        <button onClick={add} disabled={busy || !canAdd} style={{
-          ...saveBtnStyle, opacity: busy || !canAdd ? 0.5 : 1, whiteSpace: 'nowrap',
-        }}>
+        <Button onClick={add} disabled={busy || !canAdd}>
           {busy ? 'Adding...' : 'Add'}
-        </button>
+        </Button>
       </div>
     </div>
   );
@@ -2993,30 +2952,45 @@ function OtherAddForm({ providerId, onAdded }: { providerId: string; onAdded: ()
 
 // Entry-mode tab strip shared by every add box (Date Range / By Week # /
 // Calendar). One look, one behavior.
-function ModeTabs<T extends string>({ options, mode, onChange, accent = '#0ea5e9' }: {
+//
+// It no longer takes an `accent`: four categories passing four different hex
+// accents made the SAME control look like four different controls, and the
+// category is already named in the Card title directly above it. This is now a
+// plain segmented control — an inset track with the live segment raised onto
+// the surface colour.
+function ModeTabs<T extends string>({ options, mode, onChange }: {
   options: ReadonlyArray<{ value: T; label: string }>;
   mode: T;
   onChange: (m: T) => void;
-  accent?: string;
 }) {
   return (
-    <div style={{ display: 'flex', gap: 6, marginBottom: 10 }}>
-      {options.map(o => (
-        <button
-          key={o.value}
-          type="button"
-          onClick={() => onChange(o.value)}
-          style={{
-            padding: '5px 10px', borderRadius: 6, cursor: 'pointer',
-            fontSize: 11, fontWeight: 700,
-            background: mode === o.value ? `${accent}26` : 'var(--bg-deep)',
-            color: mode === o.value ? accent : 'var(--text-muted)',
-            border: `1px solid ${mode === o.value ? `${accent}66` : 'var(--border)'}`,
-          }}
-        >
-          {o.label}
-        </button>
-      ))}
+    <div style={{
+      display: 'inline-flex', gap: 2, marginBottom: 'var(--space-3)',
+      padding: 2, borderRadius: 'var(--radius-sm)',
+      background: 'var(--tint-surface)', border: '1px solid var(--border-faint)',
+    }}>
+      {options.map(o => {
+        const on = mode === o.value;
+        return (
+          <button
+            key={o.value}
+            type="button"
+            aria-pressed={on}
+            className="fr-focus"
+            onClick={() => onChange(o.value)}
+            style={{
+              padding: '4px 12px', borderRadius: 4, cursor: 'pointer',
+              fontSize: 'var(--fs-sm)', fontWeight: on ? 700 : 500, fontFamily: 'inherit',
+              background: on ? 'var(--bg-surface)' : 'transparent',
+              color: on ? 'var(--text-strong)' : 'var(--text-muted)',
+              border: `1px solid ${on ? 'var(--border)' : 'transparent'}`,
+              transition: 'background .12s, color .12s, border-color .12s',
+            }}
+          >
+            {o.label}
+          </button>
+        );
+      })}
     </div>
   );
 }
@@ -3048,32 +3022,32 @@ function CalendarPane({ days, onDaysChange, accent = '#0ea5e9', minDate, maxDate
         maxDate={maxDate}
       />
       {days.length > 0 && (
-        <div style={{
-          fontSize: 11, color: 'var(--text-dim)', marginTop: 8,
-          padding: '5px 9px', background: `${accent}0f`,
-          border: `1px solid ${accent}33`, borderRadius: 6,
-        }}>
+        <PreviewNote>
           {days.length} day{days.length === 1 ? '' : 's'} selected → {ranges.length}{' '}
           entr{ranges.length === 1 ? 'y' : 'ies'}: {ranges.map(rangeLabel).join(', ')}
-        </div>
+        </PreviewNote>
       )}
     </div>
   );
 }
 
+// One availability entry, as a FLUSH ROW inside its category Card — not as a
+// card of its own. Eight sections each rendering N bordered boxes is what made
+// this tab read as boxes inside boxes; a hairline rule separates rows just as
+// well and lets the Card be the only surface.
 function AvailabilityCard({ row, onDelete, onChanged, formatDate, note }: {
   row: AvailabilityRow;
-  onDelete: (id: string) => void;
   // When provided, the card offers an inline Edit flow (start/end/notes PATCH)
   // and calls this after a successful save so the section reloads.
+  onDelete: (id: string) => void;
   onChanged?: () => Promise<void>;
   formatDate: (d: string) => string;
   // Optional annotation badge (e.g. the sell-back "standalone" hint).
   note?: string;
 }) {
   const [editing, setEditing] = useState(false);
-  const typeInfo = AVAIL_TYPE_MAP[row.availability_type] || { label: row.availability_type, color: '#64748b' };
-  const approvalInfo = APPROVAL_COLORS[row.approval_status] || APPROVAL_COLORS.pending;
+  const typeInfo = AVAIL_TYPE_MAP[row.availability_type]
+    || { label: row.availability_type, tone: 'neutral' as BadgeTone };
   const sameDay = row.start_date === row.end_date;
   const reason = reasonCodeLabel(row.reason_code);
 
@@ -3082,7 +3056,7 @@ function AvailabilityCard({ row, onDelete, onChanged, formatDate, note }: {
       <AvailabilityEditForm
         row={row}
         typeLabel={typeInfo.label}
-        typeColor={typeInfo.color}
+        tone={typeInfo.tone}
         onCancel={() => setEditing(false)}
         onSaved={async () => { setEditing(false); await onChanged(); }}
       />
@@ -3091,76 +3065,46 @@ function AvailabilityCard({ row, onDelete, onChanged, formatDate, note }: {
 
   return (
     <div style={{
-      background: 'var(--bg-surface)', border: '1px solid var(--border)', borderRadius: 10,
-      padding: '12px 16px', marginBottom: 8,
       display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+      gap: 'var(--space-3)', flexWrap: 'wrap',
+      padding: 'var(--space-3) 0',
+      borderTop: '1px solid var(--border-faint)',
     }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-        <span style={{
-          fontSize: 11, fontWeight: 700, padding: '3px 8px', borderRadius: 6,
-          background: `${typeInfo.color}20`, color: typeInfo.color,
-        }}>
-          {typeInfo.label}
-        </span>
-        {reason && (
-          <span style={{
-            fontSize: 10, fontWeight: 700, padding: '2px 7px', borderRadius: 6,
-            background: 'rgba(139,92,246,0.12)', color: '#8b5cf6',
-          }}>
-            {reason}
-          </span>
-        )}
-        <div>
-          <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-3)', minWidth: 0 }}>
+        <Badge tone={typeInfo.tone}>{typeInfo.label}</Badge>
+        {reason && <Badge tone="neutral">{reason}</Badge>}
+        <div style={{ minWidth: 0 }}>
+          <div style={{ fontSize: 'var(--fs-md)', fontWeight: 600, color: 'var(--text-strong)' }}>
             {formatDate(row.start_date)}{!sameDay && ` — ${formatDate(row.end_date)}`}
           </div>
           {row.notes && (
-            <div style={{ fontSize: 11, color: 'var(--text-dim)', marginTop: 2 }}>{row.notes}</div>
+            <div style={{ fontSize: 'var(--fs-sm)', color: 'var(--text-muted)', marginTop: 2 }}>{row.notes}</div>
           )}
           {note && (
-            <div style={{ fontSize: 10, color: 'var(--text-dim)', fontStyle: 'italic', marginTop: 2 }} title={note}>
+            <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-dim)', marginTop: 2, lineHeight: 1.4 }} title={note}>
               {note}
             </div>
           )}
         </div>
       </div>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-        {row.source === 'request_window' && (
-          <span style={{
-            fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 6,
-            background: 'rgba(14,165,233,0.12)', color: '#0ea5e9',
-          }}>
-            Window
-          </span>
-        )}
-        <span style={{
-          fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 6,
-          background: approvalInfo.bg, color: approvalInfo.color, textTransform: 'capitalize',
-        }}>
-          {row.approval_status}
-        </span>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
+        {row.source === 'request_window' && <Badge tone="info">Window</Badge>}
+        <Badge tone={APPROVAL_TONES[row.approval_status] ?? 'warn'}>{row.approval_status}</Badge>
         {onChanged && (
-          <button
-            onClick={() => setEditing(true)}
-            title="Edit dates / notes"
-            style={{
-              fontSize: 11, color: '#0ea5e9', background: 'none', border: 'none',
-              cursor: 'pointer', padding: '2px 6px', fontWeight: 600,
-            }}
-          >
-            edit
-          </button>
+          <Button variant="ghost" size="sm" onClick={() => setEditing(true)} title="Edit dates / notes">
+            Edit
+          </Button>
         )}
-        <button
+        {/* Was an unlabelled "x". A destructive control gets a word. */}
+        <Button
+          variant="ghost"
+          size="sm"
           onClick={() => onDelete(row.id)}
           title="Delete"
-          style={{
-            fontSize: 11, color: '#f87171', background: 'none', border: 'none',
-            cursor: 'pointer', padding: '2px 6px',
-          }}
+          style={{ color: 'var(--danger)' }}
         >
-          x
-        </button>
+          Remove
+        </Button>
       </div>
     </div>
   );
@@ -3169,10 +3113,10 @@ function AvailabilityCard({ row, onDelete, onChanged, formatDate, note }: {
 // Inline editor for one availability row: start/end/notes → PATCH through the
 // hardened whitelist route. ICU rows never reach this form — the ICU section
 // renders its own pair cards with a pairing-aware edit flow (IcuPairCard).
-function AvailabilityEditForm({ row, typeLabel, typeColor, onCancel, onSaved }: {
+function AvailabilityEditForm({ row, typeLabel, tone, onCancel, onSaved }: {
   row: AvailabilityRow;
   typeLabel: string;
-  typeColor: string;
+  tone: BadgeTone;
   onCancel: () => void;
   onSaved: () => Promise<void>;
 }) {
@@ -3200,47 +3144,32 @@ function AvailabilityEditForm({ row, typeLabel, typeColor, onCancel, onSaved }: 
   };
 
   return (
-    <div style={{
-      background: 'var(--bg-surface)', border: `1px solid ${typeColor}50`, borderRadius: 10,
-      padding: '12px 16px', marginBottom: 8,
-    }}>
-      {error && <div style={addFormErrorStyle}>{error}</div>}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
-        <span style={{
-          fontSize: 11, fontWeight: 700, padding: '3px 8px', borderRadius: 6,
-          background: `${typeColor}20`, color: typeColor,
-        }}>
-          {typeLabel}
-        </span>
-        <span style={{ fontSize: 10, color: 'var(--text-dim)' }}>editing</span>
+    <div style={{ ...addFormBoxStyle, borderColor: 'var(--border)', marginTop: 'var(--space-3)' }}>
+      {error && <div style={{ marginBottom: 'var(--space-3)' }}><Banner tone="error">{error}</Banner></div>}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)', marginBottom: 'var(--space-3)' }}>
+        <Badge tone={tone}>{typeLabel}</Badge>
+        <span style={structureType}>editing</span>
       </div>
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr auto auto', gap: 10, alignItems: 'end' }}>
-        <div>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr auto auto', gap: 'var(--space-3)', alignItems: 'end' }}>
+        <div style={{ minWidth: 0 }}>
           <label style={fieldLabelStyle}>Start Date</label>
           <input type="date" value={start} onChange={e => {
             setStart(e.target.value);
             if (e.target.value > end) setEnd(e.target.value);
-          }} style={fieldInputStyle} />
+          }} className="fr-field" style={fieldInputStyle} />
         </div>
-        <div>
+        <div style={{ minWidth: 0 }}>
           <label style={fieldLabelStyle}>End Date</label>
-          <input type="date" value={end} min={start} onChange={e => setEnd(e.target.value)} style={fieldInputStyle} />
+          <input type="date" value={end} min={start} onChange={e => setEnd(e.target.value)} className="fr-field" style={fieldInputStyle} />
         </div>
-        <div>
+        <div style={{ minWidth: 0 }}>
           <label style={fieldLabelStyle}>Notes</label>
-          <input value={notes} onChange={e => setNotes(e.target.value)} placeholder="Optional" style={fieldInputStyle} />
+          <input value={notes} onChange={e => setNotes(e.target.value)} placeholder="Optional" className="fr-field" style={fieldInputStyle} />
         </div>
-        <button onClick={save} disabled={busy || !start || !end} style={{
-          ...saveBtnStyle, opacity: busy || !start || !end ? 0.5 : 1, whiteSpace: 'nowrap',
-        }}>
-          {busy ? 'Saving...' : 'Save'}
-        </button>
-        <button onClick={onCancel} disabled={busy} style={{
-          padding: '7px 12px', borderRadius: 5, cursor: 'pointer', fontWeight: 600, fontSize: 12,
-          background: 'var(--bg-deep)', color: 'var(--text-muted)', border: '1px solid var(--border)',
-        }}>
-          Cancel
-        </button>
+        <Button onClick={save} disabled={busy || !start || !end}>
+          {busy ? 'Saving…' : 'Save'}
+        </Button>
+        <Button variant="secondary" onClick={onCancel} disabled={busy}>Cancel</Button>
       </div>
     </div>
   );
@@ -3339,47 +3268,56 @@ function CustomFieldsTab({ providerId, providerType, homeSiteId }: { providerId:
     }
   };
 
-  if (loading) return <div style={{ color: 'var(--text-dim)', padding: '20px 0' }}>Loading...</div>;
-
-  if (visible.length === 0) {
+  if (loading) {
     return (
-      <div style={{ maxWidth: 640, color: 'var(--text-dim)', padding: '20px 0' }}>
-        <div style={{ fontStyle: 'italic', marginBottom: 8 }}>
-          No custom fields apply to this provider yet.
-        </div>
-        <div style={{ fontSize: 12 }}>
-          Define fields under <Link href="/settings" style={{ color: '#0ea5e9', textDecoration: 'none' }}>Settings → Provider Custom Fields</Link>.
-        </div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-3)', padding: 'var(--space-5) 0', color: 'var(--text-muted)', fontSize: 'var(--fs-sm)' }}>
+        <Spinner /> Loading custom fields…
       </div>
     );
   }
 
+  if (visible.length === 0) {
+    return (
+      <TabStack maxWidth={640}>
+        <Card pad={false}>
+          <EmptyState
+            icon="◎"
+            title="No custom fields apply to this provider"
+            hint="Custom fields can be scoped to a provider type or a site, so this provider may simply be out of scope for the ones that exist."
+            action={
+              <Link href="/settings" className="fr-focus" style={{ color: 'var(--blue)', fontSize: 'var(--fs-sm)', textDecoration: 'none' }}>
+                Settings → Provider Custom Fields
+              </Link>
+            }
+          />
+        </Card>
+      </TabStack>
+    );
+  }
+
   return (
-    <div style={{ maxWidth: 640 }}>
-      {error && (
-        <div style={{
-          background: 'rgba(248,113,113,0.1)', border: '1px solid rgba(248,113,113,0.3)',
-          color: '#f87171', padding: '10px 14px', borderRadius: 8, marginBottom: 14, fontSize: 13,
-        }}>{error}</div>
-      )}
+    <TabStack maxWidth={640}>
+      {error && <Banner tone="error" onDismiss={() => setError(null)}>{error}</Banner>}
 
-      {visible.map(d => (
-        <CustomFieldInput
-          key={d.id}
-          def={d}
-          value={draft[d.id]}
-          onChange={v => setDraft(prev => ({ ...prev, [d.id]: v }))}
-        />
-      ))}
+      <Card title="Custom fields">
+        <Stack>
+          {visible.map(d => (
+            <CustomFieldInput
+              key={d.id}
+              def={d}
+              value={draft[d.id]}
+              onChange={v => setDraft(prev => ({ ...prev, [d.id]: v }))}
+            />
+          ))}
+        </Stack>
+      </Card>
 
-      <button
-        onClick={save}
-        disabled={!dirty || saving}
-        style={{ ...saveBtnStyle, opacity: (!dirty || saving) ? 0.5 : 1, cursor: (!dirty || saving) ? 'not-allowed' : 'pointer' }}
-      >
-        {saving ? 'Saving...' : 'Save Changes'}
-      </button>
-    </div>
+      <SaveBar>
+        <Button onClick={save} disabled={!dirty || saving}>
+          {saving ? 'Saving…' : 'Save Changes'}
+        </Button>
+      </SaveBar>
+    </TabStack>
   );
 }
 
@@ -3388,87 +3326,79 @@ function CustomFieldInput({ def, value, onChange }: {
   value: unknown;
   onChange: (v: unknown) => void;
 }) {
+  // The ADMIN marker was an 8–9px uppercase span with a hand-mixed amber tint.
+  // It is a status on a field, which is exactly what the kit's Badge is.
+  const markers = (
+    <>
+      {def.required && <span style={{ color: 'var(--danger)' }} title="Required">*</span>}
+      {def.admin_only && <Badge tone="warn">admin</Badge>}
+    </>
+  );
   const label = (
-    <label style={{ ...fieldLabelStyle, display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+    <label style={{ ...fieldLabelStyle, display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
       {def.display_label}
-      {def.required && <span style={{ color: '#f59e0b' }}>*</span>}
-      {def.admin_only && (
-        <span style={{
-          fontSize: 9, fontWeight: 800, padding: '1px 6px', borderRadius: 4,
-          background: 'rgba(245,158,11,0.15)', color: '#f59e0b', letterSpacing: 0.5,
-        }}>
-          ADMIN
-        </span>
-      )}
+      {markers}
     </label>
   );
 
   switch (def.field_type) {
     case 'text':
       return (
-        <div style={{ marginBottom: 14 }}>
+        <div>
           {label}
           <input
             value={typeof value === 'string' ? value : ''}
             onChange={e => onChange(e.target.value || null)}
+            className="fr-field"
             style={fieldInputStyle}
           />
         </div>
       );
     case 'number':
       return (
-        <div style={{ marginBottom: 14 }}>
+        <div>
           {label}
           <input
             type="number"
             value={value === null || value === undefined ? '' : String(value)}
             onChange={e => onChange(e.target.value === '' ? null : Number(e.target.value))}
+            className="fr-field"
             style={fieldInputStyle}
           />
         </div>
       );
     case 'date':
       return (
-        <div style={{ marginBottom: 14 }}>
+        <div>
           {label}
           <input
             type="date"
             value={typeof value === 'string' ? value : ''}
             onChange={e => onChange(e.target.value || null)}
+            className="fr-field"
             style={fieldInputStyle}
           />
         </div>
       );
     case 'boolean':
       return (
-        <div style={{ marginBottom: 14 }}>
-          <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: 'var(--text-muted)', cursor: 'pointer' }}>
-            <input
-              type="checkbox"
-              checked={value === true}
-              onChange={e => onChange(e.target.checked)}
-              style={{ accentColor: '#0ea5e9', width: 15, height: 15 }}
-            />
-            {def.display_label}
-            {def.required && <span style={{ color: '#f59e0b', marginLeft: 4 }}>*</span>}
-            {def.admin_only && (
-              <span style={{
-                fontSize: 9, fontWeight: 800, padding: '1px 6px', borderRadius: 4,
-                background: 'rgba(245,158,11,0.15)', color: '#f59e0b', letterSpacing: 0.5, marginLeft: 4,
-              }}>
-                ADMIN
-              </span>
-            )}
-          </label>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)', flexWrap: 'wrap' }}>
+          <Toggle
+            label={def.display_label}
+            checked={value === true}
+            onChange={v => onChange(v)}
+          />
+          {markers}
         </div>
       );
     case 'select':
       return (
-        <div style={{ marginBottom: 14 }}>
+        <div>
           {label}
           <select
             value={typeof value === 'string' ? value : ''}
             onChange={e => onChange(e.target.value || null)}
+            className="fr-field"
             style={fieldInputStyle}
           >
             <option value="">— None —</option>
@@ -3479,24 +3409,29 @@ function CustomFieldInput({ def, value, onChange }: {
     case 'multiselect': {
       const arr = Array.isArray(value) ? value as string[] : [];
       return (
-        <div style={{ marginBottom: 14 }}>
+        <div>
           {label}
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 'var(--space-2)' }}>
             {def.options.map(o => {
               const selected = arr.includes(o);
               return (
                 <button
                   key={o}
                   type="button"
+                  className="fr-focus"
+                  aria-pressed={selected}
                   onClick={() => {
                     const next = selected ? arr.filter(x => x !== o) : [...arr, o];
                     onChange(next);
                   }}
                   style={{
-                    padding: '5px 11px', borderRadius: 6, fontSize: 12, fontWeight: 600, cursor: 'pointer',
-                    border: `1px solid ${selected ? '#0ea5e9' : 'var(--border)'}`,
-                    background: selected ? 'rgba(14,165,233,0.15)' : 'transparent',
-                    color: selected ? '#0ea5e9' : 'var(--text-muted)',
+                    padding: '6px 12px', borderRadius: 'var(--radius-sm)',
+                    fontSize: 'var(--fs-sm)', fontWeight: selected ? 700 : 500,
+                    fontFamily: 'inherit', cursor: 'pointer',
+                    border: `1px solid ${selected ? 'var(--blue)' : 'var(--border)'}`,
+                    background: selected ? 'var(--info-bg)' : 'transparent',
+                    color: selected ? 'var(--text-strong)' : 'var(--text-muted)',
+                    transition: 'background .12s, border-color .12s, color .12s',
                   }}
                 >
                   {o}
@@ -3611,90 +3546,77 @@ function CompensationTab({ providerId }: { providerId: string }) {
     }
   };
 
-  if (loading) return <div style={{ color: 'var(--text-dim)', padding: '20px 0' }}>Loading...</div>;
+  if (loading) {
+    return (
+      <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-3)', padding: 'var(--space-5) 0', color: 'var(--text-muted)', fontSize: 'var(--fs-sm)' }}>
+        <Spinner /> Loading compensation…
+      </div>
+    );
+  }
 
   return (
-    <div style={{ maxWidth: 720 }}>
-      <div style={{
-        background: 'rgba(245,158,11,0.08)',
-        border: '1px solid rgba(245,158,11,0.3)',
-        color: '#f59e0b',
-        padding: '12px 16px',
-        borderRadius: 10,
-        marginBottom: 20,
-        display: 'flex',
-        gap: 10,
-        alignItems: 'flex-start',
-      }}>
-        <span style={{
-          fontSize: 10, fontWeight: 800, padding: '2px 8px', borderRadius: 4,
-          background: 'rgba(245,158,11,0.2)', letterSpacing: 0.5, flexShrink: 0, marginTop: 1,
-        }}>
-          ADMIN ONLY
-        </span>
-        <div style={{ fontSize: 12, lineHeight: 1.5 }}>
-          Sensitive compensation data. All values are current-snapshot only — no history is retained today.
-          Once authentication and role-based access are wired up, this tab will be restricted to admin users.
-        </div>
-      </div>
+    <TabStack>
+      {/* The admin notice was a bespoke amber box with its own tint, border and
+          inline ADMIN ONLY chip. It is an inline alert, which the kit has. */}
+      <Banner tone="warn">
+        <strong>Admin only.</strong> Sensitive compensation data. All values are current-snapshot only — no
+        history is retained today. Once authentication and role-based access are wired up, this tab will be
+        restricted to admin users.
+      </Banner>
 
-      {error && (
-        <div style={{
-          background: 'rgba(248,113,113,0.1)', border: '1px solid rgba(248,113,113,0.3)',
-          color: '#f87171', padding: '10px 14px', borderRadius: 8, marginBottom: 14, fontSize: 13,
-        }}>{error}</div>
-      )}
+      {error && <Banner tone="error" onDismiss={() => setError(null)}>{error}</Banner>}
 
-      <SectionLabel>Salary & Stipends</SectionLabel>
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 16 }}>
-        <MoneyField label="Base Salary" value={comp.base_salary} onChange={v => patch('base_salary', v)} />
-        <MoneyField label="Fellowship Stipend" value={comp.fellowship_stipend} onChange={v => patch('fellowship_stipend', v)} />
-        <MoneyField label="Admin Stipend" value={comp.admin_stipend} onChange={v => patch('admin_stipend', v)} />
-      </div>
+      <Card title="Salary & stipends">
+        <FormGrid cols="1fr 1fr">
+          <MoneyField label="Base Salary" value={comp.base_salary} onChange={v => patch('base_salary', v)} />
+          <MoneyField label="Fellowship Stipend" value={comp.fellowship_stipend} onChange={v => patch('fellowship_stipend', v)} />
+          <MoneyField label="Admin Stipend" value={comp.admin_stipend} onChange={v => patch('admin_stipend', v)} />
+        </FormGrid>
+      </Card>
 
-      <SectionLabel>Bonuses & Profit Share</SectionLabel>
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 16 }}>
-        <MoneyField label="Retention Bonus" value={comp.retention_bonus} onChange={v => patch('retention_bonus', v)} />
-        <div>
-          <label style={fieldLabelStyle}>Retention Bonus End Date</label>
-          <input
-            type="date"
-            value={comp.retention_bonus_end_date ?? ''}
-            onChange={e => patch('retention_bonus_end_date', e.target.value || null)}
-            style={fieldInputStyle}
-          />
-        </div>
-        <MoneyField label="Profit Share" value={comp.profit_share} onChange={v => patch('profit_share', v)} />
-      </div>
+      <Card title="Bonuses & profit share">
+        <FormGrid cols="1fr 1fr">
+          <MoneyField label="Retention Bonus" value={comp.retention_bonus} onChange={v => patch('retention_bonus', v)} />
+          <div style={{ minWidth: 0 }}>
+            <label style={fieldLabelStyle}>Retention Bonus End Date</label>
+            <input
+              type="date"
+              value={comp.retention_bonus_end_date ?? ''}
+              onChange={e => patch('retention_bonus_end_date', e.target.value || null)}
+              className="fr-field"
+              style={fieldInputStyle}
+            />
+          </div>
+          <MoneyField label="Profit Share" value={comp.profit_share} onChange={v => patch('profit_share', v)} />
+        </FormGrid>
+      </Card>
 
-      <SectionLabel>Benefits & Employer Costs</SectionLabel>
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 16 }}>
-        <MoneyField label="Health Insurance Cost" value={comp.health_insurance_cost} onChange={v => patch('health_insurance_cost', v)} hint="Annual employer cost" />
-        <MoneyField label="Malpractice Cost" value={comp.malpractice_cost} onChange={v => patch('malpractice_cost', v)} hint="Annual employer cost" />
-        <MoneyField label="401(k) Contribution" value={comp.retirement_401k_contribution} onChange={v => patch('retirement_401k_contribution', v)} hint="Annual employer contribution" />
-      </div>
+      <Card title="Benefits & employer costs">
+        <FormGrid cols="1fr 1fr">
+          <MoneyField label="Health Insurance Cost" value={comp.health_insurance_cost} onChange={v => patch('health_insurance_cost', v)} hint="Annual employer cost" />
+          <MoneyField label="Malpractice Cost" value={comp.malpractice_cost} onChange={v => patch('malpractice_cost', v)} hint="Annual employer cost" />
+          <MoneyField label="401(k) Contribution" value={comp.retirement_401k_contribution} onChange={v => patch('retirement_401k_contribution', v)} hint="Annual employer contribution" />
+        </FormGrid>
+      </Card>
 
       <CompensationTotals comp={comp} />
 
-      <SectionLabel>Notes</SectionLabel>
-      <textarea
-        value={comp.notes ?? ''}
-        onChange={e => patch('notes', e.target.value || null)}
-        placeholder="Offer letter terms, upcoming raises, special arrangements..."
-        style={{
-          width: '100%', minHeight: 70, padding: '10px 12px', borderRadius: 8,
-          border: '1px solid var(--border)', background: 'var(--bg-deep)',
-          color: 'var(--text)', fontSize: 13, resize: 'vertical', marginBottom: 16,
-        }}
-      />
+      <Card title="Notes">
+        <textarea
+          value={comp.notes ?? ''}
+          onChange={e => patch('notes', e.target.value || null)}
+          placeholder="Offer letter terms, upcoming raises, special arrangements..."
+          aria-label="Compensation notes"
+          className="fr-field"
+          style={textAreaStyle}
+        />
+      </Card>
 
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-        <button onClick={save} disabled={saving} style={{ ...saveBtnStyle, opacity: saving ? 0.5 : 1, cursor: saving ? 'not-allowed' : 'pointer' }}>
-          {saving ? 'Saving...' : 'Save Changes'}
-        </button>
-        {savedAt && <span style={{ fontSize: 11, color: '#10b981' }}>Saved at {savedAt}</span>}
-      </div>
-    </div>
+      <SaveBar>
+        <Button onClick={save} disabled={saving}>{saving ? 'Saving…' : 'Save Changes'}</Button>
+        {savedAt && <span style={{ fontSize: 'var(--fs-sm)', color: 'var(--ok)' }}>Saved at {savedAt}</span>}
+      </SaveBar>
+    </TabStack>
   );
 }
 
@@ -3703,6 +3625,10 @@ function CompensationTab({ providerId }: { providerId: string }) {
 // types. Retention bonus + profit share are conceptually lumpy (one-time
 // vs. variable) — noted in the footnote rather than excluded, because
 // hiding them would surprise admins who just typed them into the form.
+//
+// It is a Card with a footnote rather than a blue-tinted box: it is the one
+// READ-ONLY panel on this tab, and the money is set in mono so the three
+// figures align on the decimal.
 function CompensationTotals({ comp }: { comp: Compensation }) {
   const sum = (...vals: (number | null)[]) => vals.reduce<number>((a, v) => a + (v ?? 0), 0);
   const providerTotal = sum(
@@ -3721,34 +3647,37 @@ function CompensationTotals({ comp }: { comp: Compensation }) {
   const fmt = (n: number) => n === 0 ? '—' : `$${n.toLocaleString('en-US', { maximumFractionDigits: 2 })}`;
 
   const rowStyle: React.CSSProperties = {
-    display: 'flex', justifyContent: 'space-between', gap: 16, fontSize: 13, marginBottom: 8,
+    display: 'flex', justifyContent: 'space-between', gap: 'var(--space-4)',
+    fontSize: 'var(--fs-sm)', marginBottom: 'var(--space-2)',
+  };
+  const moneyStyle: React.CSSProperties = {
+    fontFamily: 'var(--font-mono), ui-monospace, monospace',
+    whiteSpace: 'nowrap',
   };
 
   return (
-    <div style={{
-      background: 'rgba(14,165,233,0.04)',
-      border: '1px solid rgba(14,165,233,0.2)',
-      borderRadius: 10,
-      padding: '14px 18px',
-      marginBottom: 16,
-    }}>
-      <SectionLabel>Totals</SectionLabel>
+    <Card
+      title="Totals"
+      footer="Retention bonus is typically one-time; profit share varies by year. Adjust with context in the notes field."
+    >
       <div style={rowStyle}>
         <span style={{ color: 'var(--text-muted)' }}>Provider Total Compensation</span>
-        <span style={{ color: 'var(--text)', fontWeight: 700, fontFamily: 'monospace' }}>{fmt(providerTotal)}</span>
+        <span style={{ ...moneyStyle, color: 'var(--text)', fontWeight: 700 }}>{fmt(providerTotal)}</span>
       </div>
       <div style={rowStyle}>
         <span style={{ color: 'var(--text-dim)' }}>+ Employer Costs (health, malpractice, 401k)</span>
-        <span style={{ color: 'var(--text-muted)', fontFamily: 'monospace' }}>{fmt(employerExtras)}</span>
+        <span style={{ ...moneyStyle, color: 'var(--text-muted)' }}>{fmt(employerExtras)}</span>
       </div>
-      <div style={{ borderTop: '1px solid rgba(14,165,233,0.2)', paddingTop: 8, display: 'flex', justifyContent: 'space-between', gap: 16, fontSize: 13 }}>
-        <span style={{ color: 'var(--text)', fontWeight: 700 }}>Total Cost to Employer</span>
-        <span style={{ color: '#0ea5e9', fontWeight: 800, fontFamily: 'monospace' }}>{fmt(employerTotal)}</span>
+      <div style={{
+        borderTop: '1px solid var(--border-faint)', paddingTop: 'var(--space-3)', marginTop: 'var(--space-3)',
+        display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 'var(--space-4)',
+      }}>
+        <span style={{ color: 'var(--text-strong)', fontWeight: 700, fontSize: 'var(--fs-sm)' }}>Total Cost to Employer</span>
+        <span style={{ ...moneyStyle, color: 'var(--text-strong)', fontWeight: 700, fontSize: 'var(--fs-lg)' }}>
+          {fmt(employerTotal)}
+        </span>
       </div>
-      <div style={{ fontSize: 10, color: 'var(--text-dim)', marginTop: 8, lineHeight: 1.5 }}>
-        Retention bonus is typically one-time; profit share varies by year. Adjust with context in the notes field.
-      </div>
-    </div>
+    </Card>
   );
 }
 
@@ -3764,12 +3693,12 @@ function MoneyField({ label, value, onChange, hint }: {
   useEffect(() => { setRaw(value == null ? '' : String(value)); }, [value]);
 
   return (
-    <div>
+    <div style={{ minWidth: 0 }}>
       <label style={fieldLabelStyle}>{label}</label>
       <div style={{ position: 'relative' }}>
-        <span style={{
-          position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)',
-          color: 'var(--text-dim)', fontSize: 13, pointerEvents: 'none',
+        <span aria-hidden="true" style={{
+          position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)',
+          color: 'var(--text-dim)', fontSize: 'var(--fs-md)', pointerEvents: 'none',
         }}>$</span>
         <input
           value={raw}
@@ -3781,10 +3710,15 @@ function MoneyField({ label, value, onChange, hint }: {
             const n = Number(next);
             if (Number.isFinite(n)) onChange(n);
           }}
-          style={{ ...fieldInputStyle, paddingLeft: 22 }}
+          className="fr-field"
+          style={{
+            ...fieldInputStyle,
+            paddingLeft: 24,
+            fontFamily: 'var(--font-mono), ui-monospace, monospace',
+          }}
         />
       </div>
-      {hint && <div style={{ fontSize: 10, color: 'var(--text-dim)', marginTop: 3 }}>{hint}</div>}
+      {hint && <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-dim)', marginTop: 'var(--space-1)' }}>{hint}</div>}
     </div>
   );
 }
@@ -3815,14 +3749,13 @@ const BURDEN_LABELS: Record<string, string> = {
   holiday_call: 'Holiday Call',
 };
 
-const BURDEN_COLORS: Record<string, string> = {
-  total_assignments: '#64748b',
-  total_call: '#0ea5e9',
-  weekday_call: '#6366f1',
-  friday_call: '#f59e0b',
-  weekend_call: '#f87171',
-  holiday_call: '#10b981',
-};
+// The six figures are not six peers: the four day-type buckets DECOMPOSE
+// total_call. Splitting them across a rule says so, and replaces the old
+// BURDEN_COLORS — six unrelated hues (#64748b, #0ea5e9, #6366f1, #f59e0b,
+// #f87171, #10b981) on six tiles, which encoded nothing since the set is
+// neither a scale nor a set of statuses, and all six were dark-theme values.
+const BURDEN_TOTALS = ['total_assignments', 'total_call'] as const;
+const BURDEN_BUCKETS = ['weekday_call', 'friday_call', 'weekend_call', 'holiday_call'] as const;
 
 function HistoryTab({ providerId }: { providerId: string }) {
   const [data, setData] = useState<BurdenData | null>(null);
@@ -3841,101 +3774,92 @@ function HistoryTab({ providerId }: { providerId: string }) {
     return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
   };
 
-  if (loading) return <div style={{ color: 'var(--text-dim)', padding: '20px 0' }}>Loading...</div>;
-  if (!data) return <div style={{ color: 'var(--text-dim)', padding: '20px 0' }}>Failed to load data.</div>;
+  // The year stepper stays mounted through load and failure so the way OUT of
+  // an empty year is never the thing that disappears.
+  const yearBar = (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-3)' }}>
+      <Button variant="secondary" size="sm" title="Previous year" onClick={() => setYear(y => y - 1)}>&larr;</Button>
+      <span style={{
+        fontSize: 'var(--fs-lg)', fontWeight: 700, color: 'var(--text-strong)',
+        minWidth: 56, textAlign: 'center',
+        fontFamily: 'var(--font-mono), ui-monospace, monospace',
+      }}>{year}</span>
+      <Button variant="secondary" size="sm" title="Next year" onClick={() => setYear(y => y + 1)}>&rarr;</Button>
+    </div>
+  );
+
+  if (loading) {
+    return (
+      <TabStack>
+        {yearBar}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-3)', color: 'var(--text-muted)', fontSize: 'var(--fs-sm)' }}>
+          <Spinner /> Loading assignments…
+        </div>
+      </TabStack>
+    );
+  }
+  if (!data) {
+    return (
+      <TabStack>
+        {yearBar}
+        <Banner tone="error">Could not load this provider&rsquo;s assignment history.</Banner>
+      </TabStack>
+    );
+  }
+
+  const tile = (key: string, emphasis?: boolean) => (
+    <StatTile
+      key={key}
+      value={data.burden[key] ?? 0}
+      label={BURDEN_LABELS[key]}
+      // Breakdown by shift code, e.g. "7 C2 · 3 C1" under a Weekday Call of
+      // 10. Computed by the route from the same predicate as the total, so
+      // these always sum to the number above them. Empty renders nothing,
+      // which leaves an untouched category looking exactly as it did.
+      detail={formatBreakdown(data.breakdown?.[key] ?? []) || undefined}
+      emphasis={emphasis}
+    />
+  );
 
   return (
-    <div style={{ maxWidth: 780 }}>
-      {/* Year selector */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 20 }}>
-        <button onClick={() => setYear(y => y - 1)} style={yearBtnStyle}>&larr;</button>
-        <span style={{ fontSize: 15, fontWeight: 800, color: 'var(--text)', minWidth: 50, textAlign: 'center' }}>{year}</span>
-        <button onClick={() => setYear(y => y + 1)} style={yearBtnStyle}>&rarr;</button>
-      </div>
+    <TabStack>
+      {yearBar}
 
-      {/* Burden summary cards */}
-      <SectionLabel>Call Burden Summary</SectionLabel>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10, marginBottom: 24 }}>
-        {Object.entries(BURDEN_LABELS).map(([key, label]) => {
-          // Breakdown by shift code, e.g. "7 C2 · 3 C1" under a Weekday Call of
-          // 10. Computed by the route from the same predicate as the total, so
-          // these always sum to the number above them. Empty renders nothing,
-          // which leaves an untouched category looking exactly as it did.
-          const detail = formatBreakdown(data.breakdown?.[key] ?? []);
-          return (
-            <div key={key} style={{
-              background: 'var(--bg-surface)', border: '1px solid var(--border)', borderRadius: 10,
-              padding: '14px 16px', textAlign: 'center',
-            }}>
-              <div style={{ fontSize: 24, fontWeight: 800, color: BURDEN_COLORS[key] || 'var(--text)' }}>
-                {data.burden[key] ?? 0}
-              </div>
-              <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-dim)', marginTop: 4 }}>
-                {label}
-              </div>
-              {detail && (
-                <div style={{
-                  fontSize: 10, fontWeight: 600, color: 'var(--text-dim)',
-                  marginTop: 5, lineHeight: 1.5, wordBreak: 'break-word',
-                }}>
-                  {detail}
-                </div>
-              )}
-            </div>
-          );
-        })}
-      </div>
+      <Card title="Call burden">
+        <FormGrid cols="repeat(auto-fit, minmax(190px, 1fr))" style={{ gap: 'var(--space-3)' }}>
+          {BURDEN_TOTALS.map(k => tile(k, true))}
+        </FormGrid>
+        <div style={{ marginTop: 'var(--space-4)' }}>
+          <SectionLabel>Total call, by day type</SectionLabel>
+          <FormGrid cols="repeat(auto-fit, minmax(150px, 1fr))" style={{ gap: 'var(--space-3)' }}>
+            {BURDEN_BUCKETS.map(k => tile(k))}
+          </FormGrid>
+        </div>
+      </Card>
 
-      {/* Assignment history list */}
-      <SectionLabel>Assignments ({data.history.length})</SectionLabel>
-      {data.history.length === 0 ? (
-        <div style={{ color: 'var(--text-dim)', fontStyle: 'italic', padding: '12px 0' }}>
-          No assignments in {year}.
-        </div>
-      ) : (
-        <div style={{ background: 'var(--bg-surface)', border: '1px solid var(--border)', borderRadius: 12, overflow: 'hidden' }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
-            <thead>
-              <tr style={{ borderBottom: '1px solid var(--border)', background: 'rgba(14,165,233,0.04)' }}>
-                {['Date', 'Shift', 'Category', 'Day Type', 'Source'].map(h => (
-                  <th key={h} style={{
-                    padding: '8px 12px', textAlign: 'left', fontSize: 10, fontWeight: 800,
-                    color: 'var(--text-dim)', letterSpacing: 1, textTransform: 'uppercase',
-                  }}>{h}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {data.history.map(a => (
-                <tr key={a.id} style={{ borderBottom: '1px solid rgba(30,58,95,0.3)' }}>
-                  <td style={{ padding: '8px 12px', fontWeight: 600, color: 'var(--text)' }}>
-                    {formatDate(a.slot_date)}
-                  </td>
-                  <td style={{ padding: '8px 12px', color: 'var(--text-muted)' }}>
-                    <span style={{ fontWeight: 700 }}>{a.shift_code}</span>
-                    <span style={{ marginLeft: 6, fontSize: 11, color: 'var(--text-dim)' }}>{a.shift_name}</span>
-                  </td>
-                  <td style={{ padding: '8px 12px', color: 'var(--text-dim)', textTransform: 'capitalize' }}>
-                    {a.shift_category}
-                  </td>
-                  <td style={{ padding: '8px 12px', color: 'var(--text-dim)', textTransform: 'capitalize' }}>
-                    {a.day_type?.replace('_', ' ') || '—'}
-                  </td>
-                  <td style={{ padding: '8px 12px' }}>
-                    <span style={{
-                      fontSize: 10, fontWeight: 600, padding: '2px 6px', borderRadius: 4,
-                      background: a.source_type === 'auto_generated' ? 'rgba(16,185,129,0.12)' : 'rgba(14,165,233,0.12)',
-                      color: a.source_type === 'auto_generated' ? '#10b981' : '#0ea5e9',
-                    }}>
-                      {a.source_type === 'auto_generated' ? 'Auto' : a.source_type === 'manual' ? 'Manual' : a.source_type}
-                    </span>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-    </div>
+      <Card title={`Assignments (${data.history.length})`} pad={false}>
+        <Table
+          headers={['Date', 'Shift', 'Category', 'Day Type', 'Source']}
+          minWidth={620}
+          rows={data.history.map(a => [
+            <span key="d" style={{ fontWeight: 600, color: 'var(--text-strong)', whiteSpace: 'nowrap' }}>
+              {formatDate(a.slot_date)}
+            </span>,
+            <span key="s">
+              <span style={{ fontWeight: 700 }}>{a.shift_code}</span>
+              <span style={{ marginLeft: 'var(--space-2)', color: 'var(--text-muted)' }}>{a.shift_name}</span>
+            </span>,
+            <span key="c" style={{ textTransform: 'capitalize', color: 'var(--text-muted)' }}>{a.shift_category}</span>,
+            <span key="t" style={{ textTransform: 'capitalize', color: 'var(--text-muted)' }}>
+              {a.day_type?.replace('_', ' ') || '—'}
+            </span>,
+            <Badge key="src" tone={a.source_type === 'auto_generated' ? 'ok' : 'info'}>
+              {a.source_type === 'auto_generated' ? 'Auto' : a.source_type === 'manual' ? 'Manual' : a.source_type}
+            </Badge>,
+          ])}
+          empty={<EmptyState icon="◷" title={`No assignments in ${year}`} hint="Step to another year, or generate a schedule that covers this provider." />}
+        />
+      </Card>
+    </TabStack>
   );
 }

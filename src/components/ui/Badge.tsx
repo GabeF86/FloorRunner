@@ -7,7 +7,14 @@ export interface BadgeProps {
   children?: ReactNode;
 }
 
-const TONES: Record<BadgeTone, { bg: string; fg: string }> = {
+/**
+ * The tone → (tint, ink) pairing behind Badge. Exported because tone-carrying
+ * chips that are NOT badges need the identical pairing — the provider
+ * profile's removable value chips are sentence-case --fs-sm (they carry a site
+ * or assignment NAME, which is content, not an instrument label), so they
+ * cannot render as a Badge, but they must not fork its colours either.
+ */
+export const BADGE_TONES: Record<BadgeTone, { bg: string; fg: string }> = {
   ok:      { bg: 'var(--ok-bg)',      fg: 'var(--ok)' },
   warn:    { bg: 'var(--warn-bg)',    fg: 'var(--warn)' },
   danger:  { bg: 'var(--danger-bg)',  fg: 'var(--danger)' },
@@ -20,7 +27,7 @@ const TONES: Record<BadgeTone, { bg: string; fg: string }> = {
  * micro-type on a soft tone tint.
  */
 export function Badge({ tone, children }: BadgeProps) {
-  const t = TONES[tone];
+  const t = BADGE_TONES[tone];
   return (
     <span
       style={{
