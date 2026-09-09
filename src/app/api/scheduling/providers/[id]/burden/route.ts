@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { sbSchedulingServer } from '@/lib/supabaseScheduling';
 import { fetchCommittedAssignments } from '@/lib/rulesEngine/committedAssignments';
+import { tallyBurden, type TallyInput } from '@/lib/callCodeBreakdown';
 
 // GET /api/scheduling/providers/:id/burden?from=...&to=...
 // Computes call burden from assignments on-the-fly.
@@ -33,15 +34,11 @@ export async function GET(
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
 
-  // Compute burden categories
-  const burden: Record<string, number> = {
-    total_assignments: 0,
-    weekday_call: 0,
-    friday_call: 0,
-    weekend_call: 0,
-    holiday_call: 0,
-    total_call: 0,
-  };
+  // Bucketing lives in @/lib/callCodeBreakdown so the per-code breakdown below
+  // is computed from the SAME predicate as the totals it decomposes, rather
+  // than being re-tallied on the client from `history` rows that do not carry
+  // counts_toward_call_burden.
+  const tallyRows: TallyInput[] = [];
 
   const history: Array<{
     id: string;
@@ -62,22 +59,19 @@ export async function GET(
 
     const dayType = (slot.derived_day_type as string) || null;
     const category = st.category as string;
-    const isCalled = st.counts_toward_call_burden as boolean;
+    const code = st.code as string;
 
-    burden.total_assignments++;
-
-    if (isCalled || category === 'call') {
-      burden.total_call++;
-      if (dayType === 'weekday') burden.weekday_call++;
-      else if (dayType === 'friday') burden.friday_call++;
-      else if (dayType === 'saturday' || dayType === 'sunday') burden.weekend_call++;
-      else if (dayType === 'federal_holiday' || dayType === 'major_holiday') burden.holiday_call++;
-    }
+    tallyRows.push({
+      shift_code: code,
+      shift_category: category,
+      day_type: dayType,
+      counts_toward_call_burden: !!st.counts_toward_call_burden,
+    });
 
     history.push({
       id: row.id as string,
       slot_date: slot.slot_date as string,
-      shift_code: st.code as string,
+      shift_code: code,
       shift_name: st.name as string,
       shift_category: category,
       day_type: dayType,
@@ -86,8 +80,10 @@ export async function GET(
     });
   }
 
+  const { burden, breakdown } = tallyBurden(tallyRows);
+
   // Newest-first (the helper does not order; the previous DB query did).
   history.sort((a, b) => b.slot_date.localeCompare(a.slot_date));
 
-  return NextResponse.json({ period: { from, to }, burden, history });
+  return NextResponse.json({ period: { from, to }, burden, breakdown, history });
 }
