@@ -101,6 +101,14 @@ export const PROVIDER_COLUMNS = [
 // isn't on this list (or PROVIDER_COLUMNS) is dropped on PATCH rather than
 // silently INSERTed by Supabase — this prevents typos from quietly creating
 // garbage columns via upsert.
+//
+// Eighteen of these no longer have any UI (Gabriel 2026-09-09) — the specialty
+// and capability toggles, the call-eligibility toggles beyond call_taker /
+// partial_call_taker, the two limits and the three frequency targets. They stay
+// HERE on purpose: the columns still exist with their stored values, so the API
+// contract is unchanged and nothing that PATCHes one starts failing. What
+// changed is that the profile page no longer writes them. The canonical list is
+// providerEmploymentForm.RETIRED_PROFILE_FIELDS.
 export const PROFILE_COLUMNS = [
   'employment_status', 'fte_value', 'work_days_fte', 'is_shareholder', 'is_partner_track',
   // Third partnership standing (patch47). The UI models the trio as ONE value

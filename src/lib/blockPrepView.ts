@@ -303,7 +303,9 @@ export function parseFteInput(raw: string, kind: FteFieldKind): ParseResult<numb
  * there isn't one to import: that file has no dedicated FTE_MIN/FTE_MAX-style
  * export for this field — its inline check is shared, un-exported, across
  * several unrelated integer columns (pto_weeks, max_weekly_hours,
- * max_monthly_calls, max_consecutive_calls, years_with_group). Checked as
+ * years_with_group, and the retired max_monthly_calls / max_consecutive_calls
+ * — see providerEmploymentForm.RETIRED_PROFILE_FIELDS: those two columns still
+ * exist and are still coerced here, they just have no UI any more). Checked as
  * part of this fix; nothing to wire to.
  */
 export function parseAllotmentInput(raw: string): ParseResult<number | null> {

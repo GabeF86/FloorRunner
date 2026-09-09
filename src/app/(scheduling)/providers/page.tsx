@@ -24,8 +24,6 @@ interface Provider {
     is_shareholder: boolean;
     is_partner_track: boolean;
     home_site_id: string | null;
-    weekend_call_eligible: boolean;
-    holiday_call_eligible: boolean;
     fellowship_primary: string | null;
   }[] | null;
 }
