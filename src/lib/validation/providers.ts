@@ -8,7 +8,12 @@ export type ProviderType = typeof PROVIDER_TYPES[number];
 export const PROVIDER_STATUSES = ['active', 'inactive', 'on_leave'] as const;
 export type ProviderStatus = typeof PROVIDER_STATUSES[number];
 
-export const EMPLOYMENT_STATUSES = ['full_time', 'part_time', 'per_diem', 'locums', 'contract', 'retired', 'terminated'] as const;
+// 'employed_non_call_taker' added by patch47 (Gabriel 2026-09-09). NOTE the
+// database enum also carries 'employed', which this list deliberately does NOT
+// allow — no row uses it, and what it means is unsettled. The employment select
+// renders an off-list current value as "(legacy)" so such a row stays editable
+// rather than being unsaveable; see providerEmploymentForm.employmentStatusOptions.
+export const EMPLOYMENT_STATUSES = ['full_time', 'part_time', 'per_diem', 'locums', 'contract', 'retired', 'terminated', 'employed_non_call_taker'] as const;
 export type EmploymentStatus = typeof EMPLOYMENT_STATUSES[number];
 
 export const AVAILABILITY_TYPES = [
@@ -98,6 +103,9 @@ export const PROVIDER_COLUMNS = [
 // garbage columns via upsert.
 export const PROFILE_COLUMNS = [
   'employment_status', 'fte_value', 'work_days_fte', 'is_shareholder', 'is_partner_track',
+  // Third partnership standing (patch47). The UI models the trio as ONE value
+  // and derives all three booleans at the storage boundary.
+  'is_employed_call_taker',
   'is_day_doc', 'is_icu_doc',
   'pto_weeks', 'max_weekly_hours', 'max_monthly_calls',
   'call_taker', 'partial_call_taker', 'holiday_call_eligible',
