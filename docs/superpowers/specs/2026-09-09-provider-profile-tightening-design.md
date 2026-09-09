@@ -270,11 +270,48 @@ card exactly as it looks today.
 
 ---
 
+### 1.8 A pure seam for the form logic — `src/lib/providerEmploymentForm.ts`
+
+The three behaviours worth pinning here — what the save payload contains, which
+toggles clear which, and how an off-list employment status is offered — are all
+pure functions of component state that currently live inline in a 4,000-line
+component where nothing can reach them.
+
+They move to a small pure module, following the `blockPrepView.ts` precedent from
+the Block Prep work: view logic in a lib module, the component imports it.
+
+```ts
+/** Exactly the keys the Employment & Scheduling tab writes. */
+export function employmentSavePayload(s: EmploymentFormState): Record<string, unknown>;
+
+/** Partner / Partner Track / Employed Call Taker are mutually exclusive. */
+export type Partnership = 'partner' | 'partner_track' | 'employed_call_taker' | null;
+export function partnershipFromProfile(p: {
+  is_shareholder: boolean; is_partner_track: boolean; is_employed_call_taker: boolean;
+}): Partnership;
+export function partnershipFlags(v: Partnership): {
+  is_shareholder: boolean; is_partner_track: boolean; is_employed_call_taker: boolean;
+};
+
+/** The status list, with an off-list current value appended as "(legacy)". */
+export function employmentStatusOptions(
+  current: string,
+): Array<{ value: string; label: string }>;
+```
+
+Modelling the trio as **one `Partnership` value** rather than three booleans is
+what makes the exclusion invariant hold by construction: there is no state in
+which two are true, so no toggle handler can forget to clear a sibling. The
+booleans are derived at the storage boundary only. A profile that somehow has two
+flags set in the database resolves by fixed precedence — partner, then partner
+track, then employed call taker — so it is displayed, not crashed on.
+
 ## Testing
 
 The repo runs vitest under `environment: 'node'` with no jsdom, so component
 *interaction* is untestable but **render output is testable** via
-`renderToStaticMarkup` (precedent: `src/components/ui/Modal.test.tsx`).
+`renderToStaticMarkup` (precedent: `src/components/ui/Modal.test.tsx`). The pure
+seams above are what carry the real assertions.
 
 | What | How |
 | --- | --- |
