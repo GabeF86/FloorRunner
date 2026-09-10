@@ -372,3 +372,60 @@ describe('acceptInvitation — unwinds cleanly on every failure', () => {
     expect(calls.some(c => c.table === 'users' && c.method === 'insert')).toBe(false);
   });
 });
+
+describe('invitation role', () => {
+  const pw = 'correct-horse-battery';
+  const args = { providerId: PROVIDER, email: 'doc@example.com', origin: 'https://x.dev', now: NOW };
+
+  it('defaults a new invitation to provider', async () => {
+    const { sb, calls } = makeSb({
+      providers: { data: unlinkedProvider },
+      provider_invitations: (v) => v === 'insert' ? { data: { id: 'i' } } : { data: null },
+    });
+    await createInvitation(sb, null, args);
+    const row = calls.find(c => c.method === 'insert')!.args[0] as Record<string, unknown>;
+    expect(row.role).toBe('provider');
+  });
+
+  it('records an admin invitation when asked', async () => {
+    const { sb, calls } = makeSb({
+      providers: { data: unlinkedProvider },
+      provider_invitations: (v) => v === 'insert' ? { data: { id: 'i' } } : { data: null },
+    });
+    await createInvitation(sb, null, { ...args, role: 'admin' });
+    const row = calls.find(c => c.method === 'insert')!.args[0] as Record<string, unknown>;
+    expect(row.role).toBe('admin');
+  });
+
+  it('grants the role the INVITATION names, not one the redeemer picked', async () => {
+    const { sb, calls } = happy({
+      provider_invitations: (v) => v === 'select'
+        ? { data: { ...pendingInvite, role: 'admin' } }
+        : { data: [{ id: 'inv-1' }] },
+    });
+    await acceptInvitation(sb, makeAuth(), { token: TOKEN, password: pw, now: NOW });
+    const lookup = calls.find(c => c.table === 'roles' && c.method === 'eq'
+      && (c.args as string[])[0] === 'name')!;
+    expect(lookup.args[1]).toBe('admin');
+  });
+
+  it('falls back to provider for a garbled role, never widening to admin', async () => {
+    const { sb, calls } = happy({
+      provider_invitations: (v) => v === 'select'
+        ? { data: { ...pendingInvite, role: 'ADMIN; drop table' } }
+        : { data: [{ id: 'inv-1' }] },
+    });
+    await acceptInvitation(sb, makeAuth(), { token: TOKEN, password: pw, now: NOW });
+    const lookup = calls.find(c => c.table === 'roles' && c.method === 'eq'
+      && (c.args as string[])[0] === 'name')!;
+    expect(lookup.args[1]).toBe('provider');
+  });
+
+  it('falls back to provider when the invitation predates the role column', async () => {
+    const { sb, calls } = happy();
+    await acceptInvitation(sb, makeAuth(), { token: TOKEN, password: pw, now: NOW });
+    const lookup = calls.find(c => c.table === 'roles' && c.method === 'eq'
+      && (c.args as string[])[0] === 'name')!;
+    expect(lookup.args[1]).toBe('provider');
+  });
+});

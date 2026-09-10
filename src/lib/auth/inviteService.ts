@@ -16,7 +16,7 @@
 
 import { hashInviteToken, invitationState, inviteExpiry, inviteUrl } from './invitations';
 import type { InvitationRow, InvitationState } from './invitations';
-import { PROVIDER_ROLE } from './roles';
+import { ADMIN_ROLE, PROVIDER_ROLE } from './roles';
 import { passwordError } from './password';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -60,7 +60,7 @@ export interface CreatedInvitation {
 export async function createInvitation(
   sb: Sb,
   authAdminUserId: string | null,
-  args: { providerId: string; email: string; origin: string; now: Date },
+  args: { providerId: string; email: string; origin: string; now: Date; role?: 'admin' | 'provider' },
 ): Promise<ServiceResult<CreatedInvitation>> {
   const email = args.email.trim().toLowerCase();
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
@@ -96,6 +96,7 @@ export async function createInvitation(
       token_hash: tokenHash,
       expires_at: expiresAt,
       status: 'pending',
+      role: args.role === ADMIN_ROLE ? ADMIN_ROLE : PROVIDER_ROLE,
       invited_by: authAdminUserId,
     })
     .select('id')
@@ -171,12 +172,12 @@ export async function acceptInvitation(
 
   const found = await sb
     .from('provider_invitations')
-    .select('id, provider_id, email, status, expires_at')
+    .select('id, provider_id, email, status, expires_at, role')
     .eq('token_hash', hashInviteToken(args.token))
     .maybeSingle();
   if (found.error) return fail(500, found.error.message);
 
-  const invitation = found.data as InvitationRow | null;
+  const invitation = found.data as (InvitationRow & { role?: string }) | null;
   const state = invitationState(invitation, args.now);
   if (state !== 'valid' || !invitation) {
     return fail(400, 'This invitation link is not valid. Ask for a new one.');
@@ -197,13 +198,16 @@ export async function acceptInvitation(
     .from('roles')
     .select('id')
     .eq('organization_id', prov.data.organization_id)
-    .eq('name', PROVIDER_ROLE)
+    // The role the INVITATION names, not one the redeemer chose. Anything
+    // unrecognised falls back to provider -- an invitation carrying a garbled
+    // role must never widen into admin.
+    .eq('name', invitation.role === ADMIN_ROLE ? ADMIN_ROLE : PROVIDER_ROLE)
     .maybeSingle();
   if (role.error) return fail(500, role.error.message);
   if (!role.data) {
     // Resolved BEFORE the auth user is created, on purpose: discovering a
     // missing role afterwards would mean unwinding a live credential.
-    return fail(500, 'The provider role is missing for this organization. Apply patch48.');
+    return fail(500, 'The role named by this invitation is missing for this organization. Apply patch48.');
   }
 
   // ── forward, with an unwind stack ────────────────────────────────────────

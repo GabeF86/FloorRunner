@@ -1,16 +1,21 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { sbSchedulingServer } from '@/lib/supabaseScheduling';
 import { createInvitation } from '@/lib/auth/inviteService';
-import { currentSession } from '@/lib/auth/session';
+import { requireAdmin } from '@/lib/auth/session';
 
 export const dynamic = 'force-dynamic';
 
 // POST /api/scheduling/providers/:id/invite   { email }
 //
-// Chief-only. It is under /api/scheduling/ and NOT under /me, so the
-// deny-by-default middleware classifies it 'admin' with no entry anywhere —
-// that is the whole point of the classifier. The session lookup below is only
-// to stamp `invited_by`, not to authorize; authorization already happened.
+// Chief-only, and gated HERE rather than left to the middleware.
+//
+// The middleware is env-gated (AUTH_ENFORCED) so the rollout can proceed
+// without locking anyone out — but that flag being off must not leave this
+// route open. An invitation yields a link that creates a durable login bound
+// to a real physician, which is strictly worse than the read exposure the app
+// already has. So it calls requireAdmin() directly and is closed from the
+// moment it ships. Before any admin exists it denies everyone, which is why
+// the first account comes from scripts/bootstrap-admin.ts.
 export async function POST(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> },
@@ -25,9 +30,10 @@ export async function POST(
     return NextResponse.json({ error: 'An email address is required.' }, { status: 400 });
   }
 
-  const session = await currentSession();
+  const gate = await requireAdmin();
+  if (!gate.ok) return NextResponse.json({ error: gate.error }, { status: gate.status });
 
-  const res = await createInvitation(sbSchedulingServer(), session.userId, {
+  const res = await createInvitation(sbSchedulingServer(), gate.session.userId, {
     providerId,
     email,
     origin: new URL(req.url).origin,
@@ -49,8 +55,11 @@ export async function GET(
   { params }: { params: Promise<{ id: string }> },
 ) {
   const { id: providerId } = await params;
-  const sb = sbSchedulingServer();
 
+  const gate = await requireAdmin();
+  if (!gate.ok) return NextResponse.json({ error: gate.error }, { status: gate.status });
+
+  const sb = sbSchedulingServer();
   const [prov, inv] = await Promise.all([
     sb.from('providers').select('linked_user_id, email').eq('id', providerId).maybeSingle(),
     sb.from('provider_invitations')

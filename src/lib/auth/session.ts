@@ -126,3 +126,25 @@ export async function providerIdFor(userId: string): Promise<string | null> {
   if (error || !data) return null;
   return (data as { id: string }).id;
 }
+
+/**
+ * A hard admin gate, independent of AUTH_ENFORCED.
+ *
+ * The middleware is the general control, but it is env-gated so the rollout
+ * can proceed without locking anyone out. That gate being off must NOT leave
+ * account-creating routes open: minting an invitation yields a link that
+ * creates a durable login bound to a real physician, which is a strictly worse
+ * exposure than reading data. Those routes call this instead of relying on the
+ * middleware, so they are closed from the moment they ship.
+ *
+ * Before any admin exists this denies everyone — correct, and the reason the
+ * first account is bootstrapped by a local script rather than over HTTP.
+ */
+export async function requireAdmin(): Promise<
+  { ok: true; session: SessionInfo } | { ok: false; status: number; error: string }
+> {
+  const session = await currentSession();
+  if (!session.userId) return { ok: false, status: 401, error: 'Sign in required.' };
+  if (session.role !== 'admin') return { ok: false, status: 403, error: 'Forbidden.' };
+  return { ok: true, session };
+}
