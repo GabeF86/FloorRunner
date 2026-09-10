@@ -1,81 +1,27 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { sbSchedulingServer } from '@/lib/supabaseScheduling';
-import { isValidDate } from '@/lib/validation/providers';
+import { writeSiteCredential } from './route.helpers';
 
 // Never prerender — this route hits Supabase per request.
 export const dynamic = 'force-dynamic';
 
+// POST creates a credential, or PARTIALLY updates an existing one: only the
+// columns the body names are written. The merge semantics and the reasoning
+// live in route.helpers.ts, where they are testable — in short, the previous
+// full-row upsert defaulted every absent boolean to TRUE and every absent array
+// to EMPTY, so a caller could not change one flag without resending the other
+// ten, and a client resending a stale copy silently reverted concurrent edits.
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id: providerId } = await params;
-  const sb = sbSchedulingServer();
-  const body = await req.json();
-
-  if (!body.site_id || typeof body.site_id !== 'string') {
-    return NextResponse.json({ error: 'site_id is required' }, { status: 400 });
+  const body = await req.json().catch(() => null);
+  if (!body || typeof body !== 'object') {
+    return NextResponse.json({ error: 'Invalid request body.' }, { status: 400 });
   }
 
-  // Verify the provider exists and the site belongs to the same org. Without
-  // this check a client could cross orgs by submitting an arbitrary site_id.
-  const [{ data: provider }, { data: site }] = await Promise.all([
-    sb.from('providers').select('organization_id').eq('id', providerId).maybeSingle(),
-    sb.from('sites').select('organization_id').eq('id', body.site_id).maybeSingle(),
-  ]);
-  if (!provider) return NextResponse.json({ error: 'Provider not found' }, { status: 404 });
-  if (!site) return NextResponse.json({ error: 'Site not found' }, { status: 404 });
-  if (site.organization_id !== provider.organization_id) {
-    return NextResponse.json(
-      { error: 'Site does not belong to this provider\u2019s organization' },
-      { status: 400 },
-    );
-  }
-
-  // Validate date range when provided.
-  if (body.effective_start_date && !isValidDate(body.effective_start_date)) {
-    return NextResponse.json({ error: 'effective_start_date must be YYYY-MM-DD' }, { status: 400 });
-  }
-  if (body.effective_end_date && !isValidDate(body.effective_end_date)) {
-    return NextResponse.json({ error: 'effective_end_date must be YYYY-MM-DD' }, { status: 400 });
-  }
-  if (body.effective_start_date && body.effective_end_date &&
-      body.effective_start_date > body.effective_end_date) {
-    return NextResponse.json(
-      { error: 'effective_end_date must be on or after effective_start_date' },
-      { status: 400 },
-    );
-  }
-
-  const toStringArray = (v: unknown): string[] => {
-    if (!Array.isArray(v)) return [];
-    return v.filter((x): x is string => typeof x === 'string');
-  };
-
-  const row: Record<string, unknown> = {
-    provider_id: providerId,
-    site_id: body.site_id,
-    is_active: body.is_active ?? true,
-    credentialed: body.credentialed ?? true,
-    can_take_call: body.can_take_call ?? true,
-    can_take_weekend_call: body.can_take_weekend_call ?? true,
-    can_take_holiday_call: body.can_take_holiday_call ?? true,
-    can_take_backup_call: body.can_take_backup_call ?? true,
-    allowed_shift_types: toStringArray(body.allowed_shift_types),
-    excluded_shift_types: toStringArray(body.excluded_shift_types),
-    skill_tags: toStringArray(body.skill_tags),
-  };
-  // Include date fields only when present so we don't overwrite existing
-  // values with null on a partial toggle update.
-  if ('effective_start_date' in body) row.effective_start_date = body.effective_start_date || null;
-  if ('effective_end_date' in body) row.effective_end_date = body.effective_end_date || null;
-  if ('notes' in body) row.notes = body.notes || null;
-
-  const { data, error } = await sb
-    .from('provider_site_credentials')
-    .upsert(row, { onConflict: 'provider_id,site_id' })
-    .select('*, sites:site_id(id, name, short_name)')
-    .single();
-
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-  return NextResponse.json(data);
+  const { status, body: payload } = await writeSiteCredential(
+    sbSchedulingServer(), providerId, body as Record<string, unknown>,
+  );
+  return NextResponse.json(payload, { status });
 }
 
 export async function GET(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {

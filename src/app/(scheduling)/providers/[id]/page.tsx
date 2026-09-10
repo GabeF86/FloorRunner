@@ -1342,25 +1342,16 @@ function SitesTab({ providerId, credentials, sites, onChanged }: {
     } finally { setBusy(false); }
   };
 
-  const updateCred = async (cred: SiteCredential, patch: Partial<SiteCredential>) => {
+  // Send ONLY what changed. This used to post the whole row, rebuilt from the
+  // `cred` prop — and that prop does not refresh until onChanged() completes a
+  // refetch, so two toggles clicked before it landed both read the same stale
+  // base and the second silently reverted the first. Sending just the patch
+  // makes that structurally impossible: the client never transmits a value it
+  // did not itself just set. The endpoint does the merge (route.helpers.ts).
+  const updateCred = async (siteId: string, patch: Partial<SiteCredential>) => {
     setBusy(true); setError(null);
     try {
-      await post({
-        site_id: cred.site_id,
-        is_active: cred.is_active,
-        credentialed: cred.credentialed,
-        can_take_call: cred.can_take_call,
-        can_take_weekend_call: cred.can_take_weekend_call,
-        can_take_holiday_call: cred.can_take_holiday_call,
-        can_take_backup_call: cred.can_take_backup_call,
-        effective_start_date: cred.effective_start_date,
-        effective_end_date: cred.effective_end_date,
-        allowed_shift_types: cred.allowed_shift_types,
-        excluded_shift_types: cred.excluded_shift_types,
-        skill_tags: cred.skill_tags,
-        notes: cred.notes,
-        ...patch,
-      });
+      await post({ site_id: siteId, ...patch });
       onChanged();
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to update');
@@ -1449,12 +1440,12 @@ function SitesTab({ providerId, credentials, sites, onChanged }: {
             }
           >
             <FormGrid cols="repeat(auto-fit, minmax(180px, 1fr))" style={{ gap: 'var(--space-2)' }}>
-              <Toggle label="Credentialed" checked={c.credentialed} onChange={v => updateCred(c, { credentialed: v })} />
-              <Toggle label="Active" checked={c.is_active} onChange={v => updateCred(c, { is_active: v })} />
-              <Toggle label="Can Take Call" checked={c.can_take_call} onChange={v => updateCred(c, { can_take_call: v })} />
-              <Toggle label="Weekend Call" checked={c.can_take_weekend_call} onChange={v => updateCred(c, { can_take_weekend_call: v })} />
-              <Toggle label="Holiday Call" checked={c.can_take_holiday_call} onChange={v => updateCred(c, { can_take_holiday_call: v })} />
-              <Toggle label="Backup Call" checked={c.can_take_backup_call} onChange={v => updateCred(c, { can_take_backup_call: v })} />
+              <Toggle label="Credentialed" checked={c.credentialed} onChange={v => updateCred(c.site_id, { credentialed: v })} />
+              <Toggle label="Active" checked={c.is_active} onChange={v => updateCred(c.site_id, { is_active: v })} />
+              <Toggle label="Can Take Call" checked={c.can_take_call} onChange={v => updateCred(c.site_id, { can_take_call: v })} />
+              <Toggle label="Weekend Call" checked={c.can_take_weekend_call} onChange={v => updateCred(c.site_id, { can_take_weekend_call: v })} />
+              <Toggle label="Holiday Call" checked={c.can_take_holiday_call} onChange={v => updateCred(c.site_id, { can_take_holiday_call: v })} />
+              <Toggle label="Backup Call" checked={c.can_take_backup_call} onChange={v => updateCred(c.site_id, { can_take_backup_call: v })} />
             </FormGrid>
 
             {expanded === c.id && (
@@ -1466,7 +1457,7 @@ function SitesTab({ providerId, credentials, sites, onChanged }: {
                       <input
                         type="date"
                         value={c.effective_start_date || ''}
-                        onChange={e => updateCred(c, { effective_start_date: e.target.value || null })}
+                        onChange={e => updateCred(c.site_id, { effective_start_date: e.target.value || null })}
                         className="fr-field"
                         style={fieldInputStyle}
                       />
@@ -1476,7 +1467,7 @@ function SitesTab({ providerId, credentials, sites, onChanged }: {
                       <input
                         type="date"
                         value={c.effective_end_date || ''}
-                        onChange={e => updateCred(c, { effective_end_date: e.target.value || null })}
+                        onChange={e => updateCred(c.site_id, { effective_end_date: e.target.value || null })}
                         className="fr-field"
                         style={fieldInputStyle}
                       />
@@ -1489,20 +1480,20 @@ function SitesTab({ providerId, credentials, sites, onChanged }: {
                     siteId={c.site_id}
                     label="Allowed Shift Types (if set, ONLY these are allowed)"
                     values={c.allowed_shift_types}
-                    onChange={next => updateCred(c, { allowed_shift_types: next })}
+                    onChange={next => updateCred(c.site_id, { allowed_shift_types: next })}
                     accent="#10b981"
                   />
                   <SiteShiftTypePicker
                     siteId={c.site_id}
                     label="Excluded Shift Types"
                     values={c.excluded_shift_types}
-                    onChange={next => updateCred(c, { excluded_shift_types: next })}
+                    onChange={next => updateCred(c.site_id, { excluded_shift_types: next })}
                     accent="#f87171"
                   />
                   <TagInput
                     label="Skill Tags"
                     values={c.skill_tags}
-                    onChange={next => updateCred(c, { skill_tags: next })}
+                    onChange={next => updateCred(c.site_id, { skill_tags: next })}
                     placeholder="e.g. trauma-level-1, pediatric..."
                     tone="info"
                   />
@@ -1510,7 +1501,7 @@ function SitesTab({ providerId, credentials, sites, onChanged }: {
                     <label style={fieldLabelStyle}>Notes</label>
                     <input
                       value={c.notes || ''}
-                      onChange={e => updateCred(c, { notes: e.target.value || null })}
+                      onChange={e => updateCred(c.site_id, { notes: e.target.value || null })}
                       placeholder="Site-specific notes..."
                       className="fr-field"
                       style={fieldInputStyle}
