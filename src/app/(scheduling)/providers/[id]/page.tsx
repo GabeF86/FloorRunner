@@ -14,6 +14,7 @@ import {
   reasonCodeLabel,
 } from '@/lib/validation/providers';
 import { formatBreakdown, type BreakdownRow } from '@/lib/callCodeBreakdown';
+import { AccountCard } from './AccountCard';
 import {
   employmentSavePayload,
   employmentStatusLabel,
@@ -668,6 +669,8 @@ function ProfileTab({ provider, saveState, onSave }: { provider: ProviderDetail;
           style={textAreaStyle}
         />
       </Card>
+
+      <AccountCard providerId={provider.id} />
 
       <SaveBar>
         <SaveButton onClick={handleSave} canSave={canSave} saveState={saveState} />
