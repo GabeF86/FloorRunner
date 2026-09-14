@@ -15,3 +15,7 @@ tsconfig.tsbuildinfo
 
 # Generated import/schedule artifacts (scripts/importPaoliBlock.ts etc.)
 artifacts/
+
+# Staff roster snapshots — real names, hire dates and FTEs.
+# This repo is PUBLIC; employee PII must never be committed.
+private/
