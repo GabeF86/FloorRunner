@@ -48,22 +48,25 @@ describe('datesInYear', () => {
 });
 
 describe('bucketFor', () => {
-  it('maps the three display buckets', () => {
+  it('keeps Saturday and Sunday as separate rows', () => {
     expect(bucketFor('weekday', '2026-09-15')).toBe('weekday');   // Tue
     expect(bucketFor('friday', '2026-09-18')).toBe('friday');
-    expect(bucketFor('saturday', '2026-09-19')).toBe('weekend');
-    expect(bucketFor('sunday', '2026-09-20')).toBe('weekend');
+    expect(bucketFor('saturday', '2026-09-19')).toBe('saturday');
+    expect(bucketFor('sunday', '2026-09-20')).toBe('sunday');
   });
 
   it('charges a holiday to the weekday it actually falls on', () => {
-    // Christmas 2026 is a Friday — it belongs in the Fri column, not weekend.
+    // Christmas 2026 is a Friday — it belongs in Friday's row, not a weekend one.
     expect(bucketFor('major_holiday', '2026-12-25')).toBe('friday');
-    // A Tuesday federal holiday is M–Th.
-    expect(bucketFor('federal_holiday', '2026-12-29')).toBe('weekday');
-    // A holiday on a Sunday stays weekend.
-    expect(bucketFor('major_holiday', '2026-12-27')).toBe('weekend');
+    expect(bucketFor('federal_holiday', '2026-12-29')).toBe('weekday'); // a Tuesday
+    expect(bucketFor('major_holiday', '2026-12-27')).toBe('sunday');
   });
 });
+
+/** Helper: the per-FTE figure for one code on one kind of day. */
+function cell(r: ReturnType<typeof computeSiteCallObligation>, bucket: string, code: string) {
+  return r.groups.find(g => g.bucket === bucket)?.rows.find(x => x.code === code);
+}
 
 describe('computeSiteCallObligation — the Friday contract', () => {
   it('materializes weekday call onto Fridays even with no friday template', () => {
@@ -73,9 +76,7 @@ describe('computeSiteCallObligation — the Friday contract', () => {
     const r = computeSiteCallObligation({
       year: 2026, parLevel: 11, templates: PAOLI, holidays: NO_HOLIDAYS,
     });
-    const c1 = r.codes.find(c => c.code === 'C1')!;
-    expect(c1.byBucket.friday).toBeGreaterThan(0);
-    expect(c1.byBucket.friday).toBe(52); // 2026 has 52 Fridays
+    expect(cell(r, 'friday', 'C1')!.slots).toBe(52); // 2026 has 52 Fridays
   });
 
   it('lets a friday-specific row override that shift type only', () => {
@@ -86,9 +87,9 @@ describe('computeSiteCallObligation — the Friday contract', () => {
     const r = computeSiteCallObligation({
       year: 2026, parLevel: 11, templates: withFri, holidays: NO_HOLIDAYS,
     });
-    expect(r.codes.find(c => c.code === 'C1')!.byBucket.friday).toBe(104); // 52 × 2
+    expect(cell(r, 'friday', 'C1')!.slots).toBe(104); // 52 × 2
     // C2 has no friday row, so it still fills from weekday.
-    expect(r.codes.find(c => c.code === 'C2')!.byBucket.friday).toBe(52);
+    expect(cell(r, 'friday', 'C2')!.slots).toBe(52);
   });
 
   it('lets a count-0 friday row suppress that shift type on Fridays', () => {
@@ -99,8 +100,8 @@ describe('computeSiteCallObligation — the Friday contract', () => {
     const r = computeSiteCallObligation({
       year: 2026, parLevel: 11, templates: suppressed, holidays: NO_HOLIDAYS,
     });
-    expect(r.codes.find(c => c.code === 'C1')!.byBucket.friday).toBe(0);
-    expect(r.codes.find(c => c.code === 'C1')!.byBucket.weekday).toBeGreaterThan(0);
+    expect(cell(r, 'friday', 'C1')).toBeUndefined(); // suppressed entirely
+    expect(cell(r, 'weekday', 'C1')!.slots).toBeGreaterThan(0);
   });
 });
 
@@ -111,31 +112,57 @@ describe('computeSiteCallObligation — counts', () => {
 
   it('counts M–Th as four weekdays a week', () => {
     // 2026: 365 days, 52 Fridays, 52 Saturdays, 52 Sundays → 209 M–Th.
-    expect(r.codes.find(c => c.code === 'C1')!.byBucket.weekday).toBe(209);
+    expect(cell(r, 'weekday', 'C1')!.slots).toBe(209);
   });
 
-  it('counts Sat and Sun together in the weekend column', () => {
-    expect(r.codes.find(c => c.code === 'C1')!.byBucket.weekend).toBe(104);
+  it('lists Saturday and Sunday separately', () => {
+    expect(cell(r, 'saturday', 'C1')!.slots).toBe(52);
+    expect(cell(r, 'sunday', 'C1')!.slots).toBe(52);
   });
 
-  it('gives C3 weekend-only coverage, since it has no weekday template', () => {
-    const c3 = r.codes.find(c => c.code === 'C3')!;
-    expect(c3.byBucket.weekday).toBe(0);
-    expect(c3.byBucket.friday).toBe(0);
-    expect(c3.byBucket.weekend).toBe(104);
+  it('describes the Paoli slate Gabriel named', () => {
+    // "M-Th C1, C2; Friday C1, C2; Saturday C1, C2, C3; same with Sunday."
+    expect(r.groups.map(g => g.bucket)).toEqual(['weekday', 'friday', 'saturday', 'sunday']);
+    expect(r.groups.find(g => g.bucket === 'weekday')!.rows.map(x => x.code)).toEqual(['C1', 'C2']);
+    expect(r.groups.find(g => g.bucket === 'friday')!.rows.map(x => x.code)).toEqual(['C1', 'C2']);
+    expect(r.groups.find(g => g.bucket === 'saturday')!.rows.map(x => x.code)).toEqual(['C1', 'C2', 'C3']);
+    expect(r.groups.find(g => g.bucket === 'sunday')!.rows.map(x => x.code)).toEqual(['C1', 'C2', 'C3']);
   });
 
-  it('adds up: bucket totals equal the sum of the code rows', () => {
-    for (const b of OBLIGATION_BUCKETS) {
-      const summed = r.codes.reduce((acc, c) => acc + c.byBucket[b], 0);
-      expect(r.bucketTotals[b], b).toBe(summed);
+  it('gives a 1.0 FTE the par-divided share of each call type', () => {
+    // Par 11. M–Th C1 = 209 slots → 19 each. Saturday C3 = 52 → 4.7.
+    expect(cell(r, 'weekday', 'C1')!.perFte).toBeCloseTo(19, 6);
+    expect(cell(r, 'saturday', 'C3')!.perFte).toBeCloseTo(52 / 11, 6);
+  });
+
+  it('agrees with the stated 16-calls-per-block obligation', () => {
+    // 834 call slots a year ÷ par 11 = 75.8 for a 1.0 FTE; over an 11-week
+    // block that is 16.0 — exactly the top obligation band (patch46).
+    expect(r.totalSlots).toBe(834);
+    expect(r.totalPerFte * (11 / 52)).toBeCloseTo(16, 1);
+  });
+
+  it('adds up: group totals and the grand total are the sums of their rows', () => {
+    for (const g of r.groups) {
+      expect(g.slots, g.bucket).toBe(g.rows.reduce((a, x) => a + x.slots, 0));
     }
-    expect(r.grandTotal).toBe(r.codes.reduce((a, c) => a + c.total, 0));
+    expect(r.totalSlots).toBe(r.groups.reduce((a, g) => a + g.slots, 0));
   });
 
-  it('orders codes commonest first', () => {
-    const totals = r.codes.map(c => c.total);
-    expect([...totals].sort((a, b) => b - a)).toEqual(totals);
+  it('orders codes by name, not by frequency', () => {
+    // Stable across sites; a table that reorders itself is harder to read.
+    for (const g of r.groups) {
+      const codes = g.rows.map(x => x.code);
+      expect([...codes].sort()).toEqual(codes);
+    }
+  });
+
+  it('omits a day type that carries no call at all', () => {
+    const weekendOnly = computeSiteCallObligation({
+      year: 2026, parLevel: 11, holidays: NO_HOLIDAYS,
+      templates: [tmpl({ code: 'C3', day_type: 'saturday', shift_type_id: 'c3' })],
+    });
+    expect(weekendOnly.groups.map(g => g.bucket)).toEqual(['saturday']);
   });
 });
 
@@ -157,8 +184,9 @@ describe('computeSiteCallObligation — holidays', () => {
     });
     // That Friday now materializes the major_holiday slate instead of the
     // weekday-filled one — the day is counted once either way.
-    expect(holiday.codes.find(c => c.code === 'C1')!.total)
-      .toBe(plain.codes.find(c => c.code === 'C1')!.total);
+    const totalC1 = (x: typeof plain) =>
+      x.groups.reduce((a, g) => a + (g.rows.find(r2 => r2.code === 'C1')?.slots ?? 0), 0);
+    expect(totalC1(holiday)).toBe(totalC1(plain));
   });
 });
 
@@ -170,8 +198,9 @@ describe('computeSiteCallObligation — a site with no slate', () => {
       year: 2026, parLevel: 12, templates: [], holidays: NO_HOLIDAYS,
     });
     expect(r.noSlate).toBe(true);
-    expect(r.codes).toEqual([]);
-    expect(r.grandTotal).toBe(0);
+    expect(r.groups).toEqual([]);
+    expect(r.totalSlots).toBe(0);
+    expect(r.totalPerFte).toBe(0);
   });
 });
 
@@ -184,8 +213,8 @@ describe('split segments fold into their parent code', () => {
     const r = computeSiteCallObligation({
       year: 2026, parLevel: 11, templates: split, holidays: NO_HOLIDAYS,
     });
-    expect(r.codes.map(c => c.code)).toEqual(['C2']);
-    expect(r.codes[0].byBucket.weekend).toBe(52);
+    expect(cell(r, 'saturday', 'C2')!.slots).toBe(52);
+    expect(cell(r, 'saturday', 'C2N12')).toBeUndefined();
   });
 });
 

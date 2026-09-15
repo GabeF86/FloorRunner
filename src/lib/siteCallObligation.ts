@@ -19,11 +19,12 @@
 // ── WHERE PAR COMES IN ─────────────────────────────────────────────────────
 // `sites.call_par_level` is THE obligation denominator, unconditionally and in
 // both directions (Gabriel 2026-07-24, par-authoritative — see fteTarget.ts).
-// One 1.0-FTE call taker owes `annual slots ÷ par` in each bucket. When the
-// pool's ΣFTE is below par, obligations deliberately UNDER-cover the schedule;
-// the remainder is the paid-pickup layer. That is the design, not a rounding
-// error, which is why this reports the site total and the per-FTE share side
-// by side rather than only one of them.
+// One 1.0-FTE call taker owes `annual slots ÷ par` for each call type on each
+// kind of day — that per-type figure is the number Gabriel reads this table
+// for. When the pool's ΣFTE is below par, obligations deliberately UNDER-cover
+// the schedule; the remainder is the paid-pickup layer. That is the design, not
+// a rounding error, which is why the site's own slot count is shown beside the
+// per-FTE share rather than hidden behind it.
 
 import {
   derivedDayTypeFor,
@@ -34,14 +35,23 @@ import {
 import { dayTypeBucketOn } from './rulesEngine/shared';
 import { parentCallCodeOf } from './callBurden';
 
-/** The three columns Gabriel asked for: M-Th, F, Sat/Sun. */
-export const OBLIGATION_BUCKETS = ['weekday', 'friday', 'weekend'] as const;
+/**
+ * The day-type groups the table lists, in order.
+ *
+ * Saturday and Sunday are SEPARATE rather than a merged weekend column
+ * (Gabriel 2026-09-15, describing the slate as "Saturday C1, C2 and C3 (Neuro)
+ * and same with Sunday"). That also makes this exactly the engine's own
+ * FAIRNESS_BUCKETS domain, so the table cannot describe a grouping the
+ * scheduler does not actually use.
+ */
+export const OBLIGATION_BUCKETS = ['weekday', 'friday', 'saturday', 'sunday'] as const;
 export type ObligationBucket = (typeof OBLIGATION_BUCKETS)[number];
 
 export const BUCKET_LABELS: Record<ObligationBucket, string> = {
   weekday: 'M–Th',
-  friday: 'Fri',
-  weekend: 'Sat/Sun',
+  friday: 'Friday',
+  saturday: 'Saturday',
+  sunday: 'Sunday',
 };
 
 export interface ObligationTemplate extends TemplateUnionRow {
@@ -58,20 +68,31 @@ export interface ObligationTemplate extends TemplateUnionRow {
   required_count?: unknown;
 }
 
-export interface CodeRow {
+/** One call type on one kind of day — the unit Gabriel reads the table in. */
+export interface ObligationRow {
   code: string;
-  /** Slots the SITE must cover in the year, per bucket. */
-  byBucket: Record<ObligationBucket, number>;
-  total: number;
+  /** Slots the SITE must cover in the year for this code on this day type. */
+  slots: number;
+  /** What a 1.0 FTE owes: slots ÷ par. Fractional on purpose. */
+  perFte: number;
+}
+
+export interface ObligationGroup {
+  bucket: ObligationBucket;
+  label: string;
+  rows: ObligationRow[];
+  slots: number;
+  perFte: number;
 }
 
 export interface SiteCallObligation {
   year: number;
   parLevel: number;
-  /** One row per call code, commonest first. */
-  codes: CodeRow[];
-  bucketTotals: Record<ObligationBucket, number>;
-  grandTotal: number;
+  /** M–Th, Friday, Saturday, Sunday — only those with call in them. */
+  groups: ObligationGroup[];
+  totalSlots: number;
+  /** Every call a 1.0 FTE owes in the year, across all groups. */
+  totalPerFte: number;
   /** True when the site has no active call templates — nothing to compute. */
   noSlate: boolean;
 }
@@ -80,20 +101,14 @@ export interface SiteCallObligation {
  * The bucket a day type is charged to.
  *
  * `dayTypeBucketOn` already folds a holiday onto the day of the week it lands
- * on, which is what keeps Christmas-on-a-Tuesday out of the weekend column.
- * Saturday and Sunday are separate fairness buckets in the engine; they are
- * merged here only for DISPLAY, because that is the breakdown asked for.
+ * on, which is what keeps Christmas-on-a-Tuesday out of the Saturday row and
+ * puts it in Friday's, where the person actually works it.
  */
 export function bucketFor(dayType: string, date: string): ObligationBucket | null {
   const b = dayTypeBucketOn(dayType, date);
-  if (b === 'saturday' || b === 'sunday') return 'weekend';
-  if (b === 'friday') return 'friday';
-  if (b === 'weekday') return 'weekday';
-  return null; // a bucket outside the fairness domain is not charged anywhere
-}
-
-function emptyBuckets(): Record<ObligationBucket, number> {
-  return { weekday: 0, friday: 0, weekend: 0 };
+  return (OBLIGATION_BUCKETS as readonly string[]).includes(b)
+    ? (b as ObligationBucket)
+    : null; // outside the fairness domain — charged nowhere rather than guessed
 }
 
 /** Every date in the calendar year, as ISO strings. Handles leap years. */
@@ -124,17 +139,11 @@ export function computeSiteCallObligation(args: {
   const { year, parLevel, templates, holidays } = args;
 
   if (templates.length === 0) {
-    return {
-      year,
-      parLevel,
-      codes: [],
-      bucketTotals: emptyBuckets(),
-      grandTotal: 0,
-      noSlate: true,
-    };
+    return { year, parLevel, groups: [], totalSlots: 0, totalPerFte: 0, noSlate: true };
   }
 
-  const byCode = new Map<string, Record<ObligationBucket, number>>();
+  // bucket -> code -> annual slot count
+  const grid = new Map<ObligationBucket, Map<string, number>>();
 
   for (const date of datesInYear(year)) {
     const dayType = derivedDayTypeFor(date, holidays.get(date));
@@ -147,31 +156,41 @@ export function computeSiteCallObligation(args: {
       // Split segments (C2N12, C2N8) are charged to their PARENT so the table
       // reads in the codes Gabriel named rather than in materialization detail.
       const code = parentCallCodeOf(tmpl.code, tmpl);
-      const row = byCode.get(code) ?? emptyBuckets();
-      row[bucket] += n;
-      byCode.set(code, row);
+      const inBucket = grid.get(bucket) ?? new Map<string, number>();
+      inBucket.set(code, (inBucket.get(code) ?? 0) + n);
+      grid.set(bucket, inBucket);
     }
   }
 
-  const codes: CodeRow[] = [...byCode.entries()]
-    .map(([code, byBucket]) => ({
-      code,
-      byBucket,
-      total: byBucket.weekday + byBucket.friday + byBucket.weekend,
-    }))
-    .sort((a, b) => b.total - a.total || a.code.localeCompare(b.code));
+  const groups: ObligationGroup[] = [];
+  for (const bucket of OBLIGATION_BUCKETS) {
+    const inBucket = grid.get(bucket);
+    if (!inBucket || inBucket.size === 0) continue; // a day type with no call is not listed
 
-  const bucketTotals = emptyBuckets();
-  for (const c of codes) {
-    for (const b of OBLIGATION_BUCKETS) bucketTotals[b] += c.byBucket[b];
+    const rows: ObligationRow[] = [...inBucket.entries()]
+      .map(([code, slots]) => ({ code, slots, perFte: perFteShare(slots, parLevel) }))
+      // Call code order, not frequency: C1 before C2 before C3 is how the
+      // slate is spoken about, and a table that reorders itself per site is
+      // harder to read across sites.
+      .sort((a, b) => a.code.localeCompare(b.code, undefined, { numeric: true }));
+
+    const slots = rows.reduce((acc, r) => acc + r.slots, 0);
+    groups.push({
+      bucket,
+      label: BUCKET_LABELS[bucket],
+      rows,
+      slots,
+      perFte: perFteShare(slots, parLevel),
+    });
   }
 
+  const totalSlots = groups.reduce((acc, g) => acc + g.slots, 0);
   return {
     year,
     parLevel,
-    codes,
-    bucketTotals,
-    grandTotal: bucketTotals.weekday + bucketTotals.friday + bucketTotals.weekend,
+    groups,
+    totalSlots,
+    totalPerFte: perFteShare(totalSlots, parLevel),
     noSlate: false,
   };
 }

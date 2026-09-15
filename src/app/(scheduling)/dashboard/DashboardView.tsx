@@ -16,10 +16,7 @@ import type { ReactNode } from 'react';
 import { sbSchedulingServer } from '@/lib/supabaseScheduling';
 import { PageHeader, Card, Badge, Table, EmptyState, Banner, Button, scheduleStatusTone } from '@/components/ui';
 import type { DashboardData, Panel, ProviderMix, ScheduleRow } from './queries';
-import {
-  BUCKET_LABELS, OBLIGATION_BUCKETS, formatShare, perFteShare,
-  type SiteCallObligation,
-} from '@/lib/siteCallObligation';
+import { formatShare, type SiteCallObligation } from '@/lib/siteCallObligation';
 import PhysicianPlannerCard from './PhysicianPlannerCard';
 import DashboardTallyCard from './DashboardTallyCard';
 
@@ -368,13 +365,7 @@ function ObligationCard({ panel }: { panel: Panel<SiteCallObligation> }) {
     );
   }
 
-  const cell: React.CSSProperties = {
-    padding: '7px 10px', textAlign: 'right', fontVariantNumeric: 'tabular-nums',
-  };
-  const head: React.CSSProperties = {
-    ...cell, fontSize: 'var(--fs-xs)', textTransform: 'uppercase', letterSpacing: 0.6,
-    color: 'var(--text-dim)', fontWeight: 700,
-  };
+  const num: React.CSSProperties = { textAlign: 'right', fontVariantNumeric: 'tabular-nums' };
 
   return (
     <Card
@@ -385,48 +376,82 @@ function ObligationCard({ panel }: { panel: Panel<SiteCallObligation> }) {
         </span>
       }
     >
-      <div style={{ overflowX: 'auto' }}>
-        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 'var(--fs-sm)' }}>
-          <thead>
-            <tr style={{ borderBottom: '1px solid var(--border)' }}>
-              <th style={{ ...head, textAlign: 'left' }}>Code</th>
-              {OBLIGATION_BUCKETS.map(b => <th key={b} style={head}>{BUCKET_LABELS[b]}</th>)}
-              <th style={head}>Year</th>
-              <th style={head}>Per 1.0 FTE</th>
-            </tr>
-          </thead>
-          <tbody>
-            {o.codes.map(c => (
-              <tr key={c.code} style={{ borderBottom: '1px solid var(--border-faint)' }}>
-                <td style={{ ...cell, textAlign: 'left', fontWeight: 700, color: 'var(--text)' }}>{c.code}</td>
-                {OBLIGATION_BUCKETS.map(b => (
-                  <td key={b} style={{ ...cell, color: 'var(--text-muted)' }}>{c.byBucket[b]}</td>
-                ))}
-                <td style={{ ...cell, fontWeight: 700, color: 'var(--text)' }}>{c.total}</td>
-                <td style={{ ...cell, color: 'var(--blue)', fontWeight: 700 }}>
-                  {formatShare(perFteShare(c.total, o.parLevel))}
-                </td>
-              </tr>
+      <div style={{
+        display: 'grid',
+        gridTemplateColumns: 'repeat(auto-fit, minmax(230px, 1fr))',
+        gap: 'var(--space-4)',
+      }}>
+        {o.groups.map(g => (
+          <div key={g.bucket} style={{ minWidth: 0 }}>
+            <div style={{
+              fontSize: 'var(--fs-xs)', textTransform: 'uppercase', letterSpacing: 1,
+              color: 'var(--text-dim)', fontWeight: 700,
+              paddingBottom: 6, borderBottom: '1px solid var(--border)', marginBottom: 6,
+            }}>
+              {g.label}
+            </div>
+
+            {g.rows.map(r => (
+              <div
+                key={r.code}
+                style={{
+                  display: 'flex', alignItems: 'baseline', gap: 'var(--space-2)',
+                  padding: '5px 0',
+                }}
+              >
+                <span style={{ fontWeight: 700, color: 'var(--text)', minWidth: 42 }}>{r.code}</span>
+                {/* The number Gabriel reads this table for: what ONE 1.0 FTE
+                    owes of this call type on this kind of day. */}
+                <span style={{ ...num, flex: 1, fontWeight: 800, color: 'var(--blue)', fontSize: 'var(--fs-md)' }}>
+                  {formatShare(r.perFte)}
+                </span>
+                <span style={{ ...num, fontSize: 'var(--fs-xs)', color: 'var(--text-dim)', minWidth: 58 }}>
+                  of {r.slots}
+                </span>
+              </div>
             ))}
-            <tr>
-              <td style={{ ...cell, textAlign: 'left', fontWeight: 800, color: 'var(--text-strong)' }}>All</td>
-              {OBLIGATION_BUCKETS.map(b => (
-                <td key={b} style={{ ...cell, fontWeight: 700, color: 'var(--text)' }}>{o.bucketTotals[b]}</td>
-              ))}
-              <td style={{ ...cell, fontWeight: 800, color: 'var(--text-strong)' }}>{o.grandTotal}</td>
-              <td style={{ ...cell, fontWeight: 800, color: 'var(--blue)' }}>
-                {formatShare(perFteShare(o.grandTotal, o.parLevel))}
-              </td>
-            </tr>
-          </tbody>
-        </table>
+
+            <div style={{
+              display: 'flex', alignItems: 'baseline', gap: 'var(--space-2)',
+              padding: '6px 0 0', marginTop: 4, borderTop: '1px solid var(--border-faint)',
+            }}>
+              <span style={{ fontWeight: 700, color: 'var(--text-muted)', minWidth: 42, fontSize: 'var(--fs-sm)' }}>
+                All
+              </span>
+              <span style={{ ...num, flex: 1, fontWeight: 800, color: 'var(--text-strong)' }}>
+                {formatShare(g.perFte)}
+              </span>
+              <span style={{ ...num, fontSize: 'var(--fs-xs)', color: 'var(--text-dim)', minWidth: 58 }}>
+                of {g.slots}
+              </span>
+            </div>
+          </div>
+        ))}
       </div>
-      <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-dim)', marginTop: 'var(--space-3)', lineHeight: 1.6 }}>
-        Slots the site must cover in {o.year}, simulated day by day through the
-        same rules that create real schedules. <strong>Per 1.0 FTE</strong> is that
-        divided by the par level of {o.parLevel} — a 0.75 FTE owes three quarters
-        of it. When the pool&rsquo;s total FTE is below par, obligations
-        deliberately under-cover the year; the remainder is the paid-pickup layer.
+
+      <div style={{
+        marginTop: 'var(--space-4)', paddingTop: 'var(--space-3)',
+        borderTop: '1px solid var(--border)',
+        display: 'flex', alignItems: 'baseline', gap: 'var(--space-3)', flexWrap: 'wrap',
+      }}>
+        <span style={{ fontSize: 'var(--fs-sm)', fontWeight: 700, color: 'var(--text-muted)' }}>
+          A 1.0 FTE owes
+        </span>
+        <span style={{ fontSize: 'var(--fs-xl)', fontWeight: 800, color: 'var(--blue)', letterSpacing: -0.5 }}>
+          {formatShare(o.totalPerFte)}
+        </span>
+        <span style={{ fontSize: 'var(--fs-sm)', color: 'var(--text-muted)' }}>
+          calls in {o.year}, of {o.totalSlots} the site must cover.
+        </span>
+      </div>
+
+      <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-dim)', marginTop: 'var(--space-2)', lineHeight: 1.6 }}>
+        Big blue figure is what one 1.0 FTE owes; &ldquo;of N&rdquo; is the site&rsquo;s own
+        total for that call type. Divided by the par level of {o.parLevel}, so a
+        0.75 FTE owes three quarters of each. Holidays are charged to the day of
+        the week they land on. When the pool&rsquo;s total FTE is below par,
+        obligations deliberately under-cover the year — the remainder is the
+        paid-pickup layer.
       </div>
     </Card>
   );
