@@ -256,8 +256,18 @@ table, .fr-nums, input[type='number'] { font-variant-numeric: tabular-nums; }
 /* Checkbox-as-pill: the native input keeps the semantics, the label draws the
    affordance — so the ring has to come from :focus-within, and hover must not
    repaint the border of a pill that is already on. */
-.fr-toggle { transition: background .12s, border-color .12s; }
-.fr-toggle[data-on='false']:hover { border-color: var(--border-strong); }
+.fr-toggle {
+  transition:
+    background var(--dur-fast) var(--ease-out),
+    border-color var(--dur-fast) var(--ease-out);
+}
+/* !important for the same reason .fr-field needs it ten lines above: Toggle
+   sets `border` inline unconditionally, so without it this rule loses to the
+   inline style and the hover silently does nothing — which is exactly what it
+   had been doing. The border cannot simply move out of the inline style here,
+   because the on-state border is data-driven (--blue when checked) and there
+   is no resting border in CSS to fall back to. */
+.fr-toggle[data-on='false']:hover { border-color: var(--border-strong) !important; }
 .fr-toggle:focus-within { outline: 2px solid var(--blue); outline-offset: 1px; }
 
 /* Skeleton shimmer */

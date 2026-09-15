@@ -174,7 +174,8 @@ export function CalendarMultiPicker({
           handleKeyDown(e, day);
         }}
         style={{
-          height: 28, borderRadius: 6, fontSize: 11, fontWeight: showSelected ? 800 : 500,
+          height: 28, borderRadius: 'var(--radius-sm)', fontSize: 'var(--fs-xs)',
+          fontWeight: showSelected ? 800 : 500,
           border: `1px solid ${showSelected ? accent : 'transparent'}`,
           background: showSelected
             // color-mix so `accent` may be a design token rather than a
@@ -212,7 +213,9 @@ export function CalendarMultiPicker({
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: 2, marginBottom: 2 }}>
         {DAY_HEADERS.map(h => (
           <div key={h} style={{
-            textAlign: 'center', fontSize: 9, fontWeight: 700, color: 'var(--text-dim)',
+            // Was 9px. --fs-xs (11px) is the type scale's floor, and a single
+            // uppercase letter has the room for it in a 1/7-width cell.
+            textAlign: 'center', fontSize: 'var(--fs-xs)', fontWeight: 700, color: 'var(--text-dim)',
             textTransform: 'uppercase', letterSpacing: 0.5, padding: '2px 0',
           }}>
             {h}
@@ -228,7 +231,8 @@ export function CalendarMultiPicker({
       >
         {cells}
       </div>
-      <div style={{ fontSize: 10, color: 'var(--text-dim)', marginTop: 6 }}>
+      {/* Was 10px — a whole sentence of instructions below the 11px floor. */}
+      <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-dim)', marginTop: 'var(--space-2)' }}>
         Click a day to toggle it, or drag across days to select a span.
       </div>
     </div>
@@ -244,7 +248,7 @@ function nextDay(iso: string): string {
 }
 
 const navBtnStyle: React.CSSProperties = {
-  width: 24, height: 24, borderRadius: 6, border: '1px solid var(--border)',
+  width: 24, height: 24, borderRadius: 'var(--radius-sm)', border: '1px solid var(--border)',
   background: 'var(--bg-surface)', color: 'var(--text-muted)', cursor: 'pointer',
   display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 14,
   padding: 0,

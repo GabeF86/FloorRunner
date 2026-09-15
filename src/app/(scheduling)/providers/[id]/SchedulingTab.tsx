@@ -285,8 +285,18 @@ export function SchedulingTab({ profile, sites, saveState, onSave }: { profile: 
                     padding: '7px 14px', borderRadius: 'var(--radius-sm)',
                     fontSize: 'var(--fs-sm)', fontWeight: selected ? 700 : 500,
                     fontFamily: 'inherit', cursor: 'pointer',
-                    border: `1px solid ${selected ? 'var(--blue)' : 'var(--border)'}`,
-                    background: selected ? 'var(--info-bg)' : 'transparent',
+                    // An OFF pill declares no background and no border: those
+                    // are the two properties .fr-btn-secondary:hover moves, and
+                    // an inline value outranks the class, so stating them here
+                    // (as this did) leaves the pill inert under the cursor. The
+                    // class's resting values are the same transparent/--border
+                    // this used to spell out. `color` is safe to keep inline —
+                    // the secondary hover does not touch it, and OFF is
+                    // deliberately quieter than the class's --text.
+                    ...(selected ? {
+                      background: 'var(--info-bg)',
+                      border: '1px solid var(--blue)',
+                    } : null),
                     color: selected ? 'var(--text-strong)' : 'var(--text-muted)',
                     minWidth: 58,
                   }}

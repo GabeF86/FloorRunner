@@ -29,9 +29,19 @@ import {
   Toggle, FormGrid,
 } from './ui';
 
-/** Everything that does not take a caller-supplied colour, rendered at once. */
+/**
+ * Every primitive, rendered at once.
+ *
+ * ChipPill used to be excluded as "the one that takes a caller-supplied
+ * colour", which was really an exemption for the caller: the provider-type map
+ * it is fed was seven literals. That map is tokens now, so the exemption is
+ * gone and the invariants below cover the whole module.
+ */
 function renderAll(): string {
   return [
+    renderToStaticMarkup(
+      <ChipPill text="Physician" fg="var(--warn)" bg="color-mix(in srgb, var(--warn) 15%, transparent)" />,
+    ),
     renderToStaticMarkup(<SectionLabel>Standing</SectionLabel>),
     renderToStaticMarkup(<Hint>Soft preferences used by the scheduler.</Hint>),
     renderToStaticMarkup(<NoneYet>No PTO entries yet.</NoneYet>),
@@ -131,10 +141,41 @@ describe('provider profile primitives — design invariants', () => {
     expect(tip).toContain('var(--info');
   });
 
-  it('still lets ChipPill carry the shared provider-type hue', () => {
-    // The one deliberate exception: provider TYPE colours are shared verbatim
-    // with the providers list page, so this primitive takes them as props.
-    const pill = renderToStaticMarkup(<ChipPill text="Physician" fg="#f59e0b" bg="rgba(245,158,11,0.15)" />);
-    expect(pill).toContain('#f59e0b');
+  it('carries the shared provider-type hue through as a token', () => {
+    // ChipPill is the one primitive that takes its colour from the caller: the
+    // provider TYPE map, held verbatim by providers/page.tsx,
+    // providers/[id]/page.tsx and requests/page.tsx. That map used to be seven
+    // dark-theme hexes (#f59e0b was ~2.2:1 on the light default); it is tokens
+    // now, so what arrives here is a var() and it must survive untouched.
+    const pill = renderToStaticMarkup(
+      <ChipPill text="Physician" fg="var(--warn)" bg="color-mix(in srgb, var(--warn) 15%, transparent)" />,
+    );
+    expect(pill).toContain('color:var(--warn)');
+    expect(pill).not.toMatch(/#[0-9a-fA-F]{3,8}\b/);
+  });
+
+  it('derives ChipPill’s hairline with color-mix, never an alpha suffix', () => {
+    // This is the regression that made the token migration above possible.
+    // `${fg}33` only works while fg is a 6-digit hex — once the provider-type
+    // map went to tokens, `var(--warn)33` is not a colour and the border
+    // silently vanishes. color-mix takes either.
+    const pill = renderToStaticMarkup(
+      <ChipPill text="Physician" fg="var(--warn)" bg="color-mix(in srgb, var(--warn) 15%, transparent)" />,
+    );
+    expect(pill).toContain('border:1px solid color-mix(in srgb, var(--warn) 22%, transparent)');
+    expect(pill).not.toMatch(/var\(--warn\)[0-9a-fA-F]{2}/);
+  });
+
+  it('lets .fr-btn own the motion contract for SaveButton', () => {
+    // An inline `transition` REPLACES the shorthand from .fr-btn, which covers
+    // background, colour, border, shadow, filter and the press transform at
+    // the motion tokens. A hand-written `background .2s` here therefore does
+    // not add a transition, it removes five — and the save button becomes the
+    // one control in the app whose hover and 1px press snap.
+    for (const state of ['idle', 'saving', 'saved'] as const) {
+      const btn = renderToStaticMarkup(<SaveButton onClick={() => {}} canSave saveState={state} />);
+      expect(btn).toContain('fr-btn');
+      expect(btn).not.toMatch(/transition/);
+    }
   });
 });

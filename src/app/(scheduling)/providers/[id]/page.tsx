@@ -69,14 +69,19 @@ const STATUS_TONES: Record<string, BadgeTone> = {
   on_leave: 'warn',
 };
 
+// Byte-identical to the map in providers/page.tsx (and to its first three rows
+// plus the `other` fallback in requests/page.tsx) — see the full note there.
+// Tokens, not hexes: the seven literals this held were dark-theme values
+// painted on the light default, where #f59e0b is ~2.2:1 on white and fails AA
+// as 11px avatar ink.
 const TYPE_COLORS: Record<string, { color: string; bg: string; label: string }> = {
-  physician: { color: '#f59e0b', bg: 'rgba(245,158,11,0.15)', label: 'Physician' },
-  crna:      { color: '#0ea5e9', bg: 'rgba(14,165,233,0.15)', label: 'CRNA' },
-  aa:        { color: '#8b5cf6', bg: 'rgba(139,92,246,0.15)', label: 'AA' },
-  resident:  { color: '#34d399', bg: 'rgba(52,211,153,0.15)', label: 'Resident' },
-  fellow:    { color: '#a78bfa', bg: 'rgba(167,139,250,0.15)', label: 'Fellow' },
-  locums:    { color: '#fb923c', bg: 'rgba(251,146,60,0.15)', label: 'Locums' },
-  other:     { color: '#94a3b8', bg: 'rgba(148,163,184,0.15)', label: 'Other' },
+  physician: { color: 'var(--warn)',       bg: 'color-mix(in srgb, var(--warn) 15%, transparent)',       label: 'Physician' },
+  crna:      { color: 'var(--blue)',       bg: 'color-mix(in srgb, var(--blue) 15%, transparent)',       label: 'CRNA' },
+  aa:        { color: 'var(--indigo)',     bg: 'color-mix(in srgb, var(--indigo) 15%, transparent)',     label: 'AA' },
+  resident:  { color: 'var(--ok)',         bg: 'color-mix(in srgb, var(--ok) 15%, transparent)',         label: 'Resident' },
+  fellow:    { color: 'var(--info)',       bg: 'color-mix(in srgb, var(--info) 15%, transparent)',       label: 'Fellow' },
+  locums:    { color: 'var(--danger)',     bg: 'color-mix(in srgb, var(--danger) 15%, transparent)',     label: 'Locums' },
+  other:     { color: 'var(--text-muted)', bg: 'color-mix(in srgb, var(--text-muted) 15%, transparent)', label: 'Other' },
 };
 
 // Default profile used when a provider has no employment profile row yet.
@@ -272,7 +277,9 @@ export default function ProviderDetailPage({ params }: { params: { id: string } 
               display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
               fontSize: 'var(--fs-lg)', fontWeight: 700, letterSpacing: 0,
               background: tc.bg, color: tc.color,
-              border: `1px solid ${tc.color}40`,
+              // color-mix rather than a `${tc.color}40` suffix: the alpha
+              // trick is silently tied to tc.color staying a 6-digit hex.
+              border: `1px solid color-mix(in srgb, ${tc.color} 25%, transparent)`,
               overflow: 'hidden', flexShrink: 0,
               fontFamily: 'var(--font-mono), ui-monospace, monospace',
             }}>
@@ -337,9 +344,16 @@ export default function ProviderDetailPage({ params }: { params: { id: string } 
                 padding: 'var(--space-2) var(--space-3)',
                 fontSize: 'var(--fs-sm)', fontWeight: isActive ? 700 : 500,
                 fontFamily: 'inherit', cursor: 'pointer',
-                background: 'none', border: 'none',
+                border: 'none',
+                // The ACTIVE tab paints its own background and ink here
+                // because it carries no variant class. The INACTIVE tabs must
+                // NOT: .fr-btn-ghost supplies exactly these two resting values
+                // (transparent / --text-muted) and then changes both on hover,
+                // and an inline declaration outranks a class rule — so setting
+                // them here unconditionally, as this did, is what makes a tab
+                // strip that looks correct and is inert under the cursor.
+                ...(isActive ? { background: 'none', color: 'var(--text-strong)' } : null),
                 borderBottom: `2px solid ${isActive ? underline : 'transparent'}`,
-                color: isActive ? 'var(--text-strong)' : 'var(--text-muted)',
                 display: 'flex', alignItems: 'center', gap: 'var(--space-2)',
                 marginBottom: -1, // sit on top of the container border
               }}

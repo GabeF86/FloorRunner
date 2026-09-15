@@ -35,19 +35,30 @@ interface Site {
   short_name: string | null;
 }
 
-// Provider-type identity colours. Duplicated VERBATIM in providers/[id]/page.tsx
-// (and partially in requests/page.tsx, with a test pinning '#f59e0b'), so a
-// physician's amber is the same amber on every screen. These are data, not
-// styling: re-tokenising one copy would desynchronise the roster from the
-// detail page. Left as literals deliberately.
+// Provider-type identity colours. Duplicated VERBATIM in
+// providers/[id]/page.tsx, and its first three rows plus the `other` fallback
+// in requests/page.tsx — a provider is recognised by this colour on all three
+// screens, so the copies change together or not at all.
+//
+// They used to be literals, defended as "data, not styling". That was half
+// right: the ROLE (physician is warm, CRNA is blue) is data and is preserved
+// below. The VALUES were not — all seven were dark-theme hexes rendered on the
+// light default, where #f59e0b measures ~2.2:1 on white and fails AA as 11px
+// avatar ink. A token keeps the identity and fixes the contrast in both themes,
+// which a fixed hex cannot do for two backgrounds at once.
+//
+// Seven types, seven distinct tokens: the six chromatic accents plus the
+// neutral ink. The tint is derived from the same token at 15% rather than
+// hand-mixed, so a type's chip and its avatar can never drift apart, and
+// color-mix is used because `var(--warn)15` is not a colour.
 const TYPE_COLORS: Record<string, { color: string; bg: string; label: string }> = {
-  physician: { color: '#f59e0b', bg: 'rgba(245,158,11,0.15)', label: 'Physician' },
-  crna:      { color: '#0ea5e9', bg: 'rgba(14,165,233,0.15)', label: 'CRNA' },
-  aa:        { color: '#8b5cf6', bg: 'rgba(139,92,246,0.15)', label: 'AA' },
-  resident:  { color: '#34d399', bg: 'rgba(52,211,153,0.15)', label: 'Resident' },
-  fellow:    { color: '#a78bfa', bg: 'rgba(167,139,250,0.15)', label: 'Fellow' },
-  locums:    { color: '#fb923c', bg: 'rgba(251,146,60,0.15)', label: 'Locums' },
-  other:     { color: '#94a3b8', bg: 'rgba(148,163,184,0.15)', label: 'Other' },
+  physician: { color: 'var(--warn)',       bg: 'color-mix(in srgb, var(--warn) 15%, transparent)',       label: 'Physician' },
+  crna:      { color: 'var(--blue)',       bg: 'color-mix(in srgb, var(--blue) 15%, transparent)',       label: 'CRNA' },
+  aa:        { color: 'var(--indigo)',     bg: 'color-mix(in srgb, var(--indigo) 15%, transparent)',     label: 'AA' },
+  resident:  { color: 'var(--ok)',         bg: 'color-mix(in srgb, var(--ok) 15%, transparent)',         label: 'Resident' },
+  fellow:    { color: 'var(--info)',       bg: 'color-mix(in srgb, var(--info) 15%, transparent)',       label: 'Fellow' },
+  locums:    { color: 'var(--danger)',     bg: 'color-mix(in srgb, var(--danger) 15%, transparent)',     label: 'Locums' },
+  other:     { color: 'var(--text-muted)', bg: 'color-mix(in srgb, var(--text-muted) 15%, transparent)', label: 'Other' },
 };
 
 const EMPLOYMENT_OPTIONS = [
@@ -588,9 +599,13 @@ function AddProviderModal({ orgId, sites, onClose, onAdded }: { orgId: string; s
             size="sm"
             onClick={() => setProviderType(t)}
             style={{
-              // c.color / c.bg are the shared provider-type map — data, left as-is.
-              border: `1px solid ${providerType === t ? c.color : 'var(--border)'}`,
-              background: providerType === t ? c.bg : 'transparent',
+              // Only the SELECTED type paints its identity colour here. An
+              // unselected one declares no background and no border, because
+              // those are the two properties .fr-btn-secondary:hover moves and
+              // an inline value outranks the class — spelling them out, as this
+              // did, left the whole picker inert under the cursor. The class's
+              // resting values are the same transparent/--border it stated.
+              ...(providerType === t ? { background: c.bg, border: `1px solid ${c.color}` } : null),
               color: providerType === t ? c.color : 'var(--text-muted)',
               fontWeight: 700,
             }}

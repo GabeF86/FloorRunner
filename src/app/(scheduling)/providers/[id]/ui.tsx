@@ -192,8 +192,14 @@ export function SaveButton({
       disabled={disabled}
       style={{
         minWidth: 128,
+        // No `transition` here. An inline transition REPLACES the whole
+        // shorthand from .fr-btn, which lists background, colour, border,
+        // shadow, filter and the press transform at the motion tokens — so the
+        // hand-written `background .2s` that used to sit here silently made
+        // every save button in the profile the one control in the app whose
+        // hover and 1px press snapped instead of moving. The class already
+        // transitions background, which is the only property this overrides.
         ...(isSaved ? { background: 'var(--ok)' } : null),
-        transition: 'background .2s',
       }}
     >
       {isSaving ? 'Saving…' : isSaved ? 'Saved ✓' : idleLabel}
@@ -353,7 +359,12 @@ export function ChipPill({ text, fg, bg }: { text: string; fg: string; bg: strin
       fontSize: 'var(--fs-xs)', fontWeight: 600, lineHeight: 1.6,
       padding: '2px 9px', borderRadius: 999,
       background: bg, color: fg, textTransform: 'capitalize',
-      border: `1px solid ${fg}33`,
+      // color-mix, not `${fg}33`. Concatenating an alpha suffix only works
+      // while `fg` happens to be a 6-digit hex; the moment a caller passes a
+      // token — which is the direction everything else on this page has
+      // already moved — `var(--blue)33` is not a colour and the border
+      // disappears. Derived the same way the kit's Badge derives its hairline.
+      border: `1px solid color-mix(in srgb, ${fg} 22%, transparent)`,
       whiteSpace: 'nowrap',
     }}>
       {text}

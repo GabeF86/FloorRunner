@@ -863,10 +863,14 @@ function WindowRequestAddForm({ providerId, window: win, usedDates, onAdded, kin
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const max = kind === 'no_call' ? win.max_no_call_requests : (win.max_call_requests ?? 0);
-  // A literal hex, not a token: this is forwarded to CalendarMultiPicker,
-  // which builds its own tints by concatenating an alpha suffix onto the
-  // string (`${accent}26`) and so cannot take a CSS variable.
-  const accent = kind === 'no_call' ? '#fbbf24' : '#34d399';
+  // Tokens. CalendarMultiPicker mixes its tint with color-mix now, so the note
+  // that used to sit here — "it concatenates `${accent}26`, so it cannot take a
+  // CSS variable" — has been untrue since that component was fixed, and every
+  // other CalendarPane call site already passes a token. What was left behind
+  // was #fbbf24 / #34d399: the DARK values of --warn and --ok, painted on the
+  // light default, where the tokens are deliberately deeper so small accent
+  // text clears AA.
+  const accent = kind === 'no_call' ? 'var(--warn)' : 'var(--ok)';
   const usedCount = kind === 'no_call' ? countNoCallRequestUnits(usedDates) : usedDates.length;
 
   const add = async () => {
@@ -1524,9 +1528,16 @@ function ModeTabs<T extends string>({ options, mode, onChange }: {
               // than guessed: inner radius = outer radius − the gap.
               borderRadius: 'calc(var(--radius-sm) - 2px)',
               fontSize: 'var(--fs-sm)', fontWeight: on ? 700 : 500, fontFamily: 'inherit',
-              background: on ? 'var(--bg-surface)' : 'transparent',
-              color: on ? 'var(--text-strong)' : 'var(--text-muted)',
-              border: `1px solid ${on ? 'var(--border)' : 'transparent'}`,
+              // Only the LIVE segment paints inline. The dormant one takes its
+              // resting background/ink/border from .fr-btn-ghost, which is the
+              // same rule that then warms them on hover — declaring them here
+              // outranks the class and the "ghost contract" above becomes a
+              // comment describing something that does not happen.
+              ...(on ? {
+                background: 'var(--bg-surface)',
+                color: 'var(--text-strong)',
+                border: '1px solid var(--border)',
+              } : null),
             }}
           >
             {o.label}

@@ -57,15 +57,19 @@ const STATUS_INFO: Record<string, { label: string; tone: BadgeTone }> = {
 };
 
 /**
- * Provider-type swatch. Left as literals ON PURPOSE: providers/page.tsx and
- * providers/[id]/page.tsx hold the same map verbatim, and a provider's colour is
- * recognised across all three screens — tokenising one copy would desynchronise
- * them. Change all three together or not at all.
+ * Provider-type swatch. providers/page.tsx and providers/[id]/page.tsx hold the
+ * same rows verbatim (plus the four types that never reach this screen), and a
+ * provider is recognised by this colour across all three — so the copies change
+ * together or not at all. They were changed together: see the full note on the
+ * map in providers/page.tsx.
+ *
+ * The literals these replace were dark-theme hexes on the light default, where
+ * #f59e0b is ~2.2:1 on white and fails AA as 11px avatar ink.
  */
 const TYPE_COLORS: Record<string, { color: string; bg: string }> = {
-  physician: { color: '#f59e0b', bg: 'rgba(245,158,11,0.15)' },
-  crna: { color: '#0ea5e9', bg: 'rgba(14,165,233,0.15)' },
-  aa: { color: '#8b5cf6', bg: 'rgba(139,92,246,0.15)' },
+  physician: { color: 'var(--warn)',   bg: 'color-mix(in srgb, var(--warn) 15%, transparent)' },
+  crna:      { color: 'var(--blue)',   bg: 'color-mix(in srgb, var(--blue) 15%, transparent)' },
+  aa:        { color: 'var(--indigo)', bg: 'color-mix(in srgb, var(--indigo) 15%, transparent)' },
 };
 
 const TABLE_HEADERS = ['Provider', 'Type', 'Dates', 'Notes', 'Submitted', 'Status', 'Actions'];
@@ -189,9 +193,9 @@ export default function RequestsPage() {
             const rt = REQUEST_TYPES[r.request_type] || { label: r.request_type, ...UNKNOWN_TYPE };
             const si = STATUS_INFO[r.status] || STATUS_INFO.pending;
             const prov = r.providers;
-            // Literal fallback = TYPE_COLORS.other on the providers pages, kept
+            // Fallback = TYPE_COLORS.other on the providers pages, kept
             // byte-identical for the same reason the map above is (see comment).
-            const tc = TYPE_COLORS[prov?.provider_type || ''] || { color: '#94a3b8', bg: 'rgba(148,163,184,0.15)' };
+            const tc = TYPE_COLORS[prov?.provider_type || ''] || { color: 'var(--text-muted)', bg: 'color-mix(in srgb, var(--text-muted) 15%, transparent)' };
             const sameDay = r.start_date === r.end_date;
             const isExpanded = actionId === r.id;
 

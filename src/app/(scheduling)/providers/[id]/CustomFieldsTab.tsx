@@ -268,8 +268,13 @@ function CustomFieldInput({ def, value, onChange }: {
                     padding: '6px 12px', borderRadius: 'var(--radius-sm)',
                     fontSize: 'var(--fs-sm)', fontWeight: selected ? 700 : 500,
                     fontFamily: 'inherit', cursor: 'pointer',
-                    border: `1px solid ${selected ? 'var(--blue)' : 'var(--border)'}`,
-                    background: selected ? 'var(--info-bg)' : 'transparent',
+                    // Same inline-vs-class split as the Available-Weekdays row:
+                    // the OFF pill leaves background and border to
+                    // .fr-btn-secondary so its hover has something to change.
+                    ...(selected ? {
+                      background: 'var(--info-bg)',
+                      border: '1px solid var(--blue)',
+                    } : null),
                     color: selected ? 'var(--text-strong)' : 'var(--text-muted)',
                   }}
                 >
