@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { usePathname } from 'next/navigation';
 import Link from 'next/link';
 import { Button } from '@/components/ui';
+import { SignOutButton } from '@/components/SignOutButton';
 
 interface NavItem { href: string; label: string; icon: string }
 interface NavSection { label: string; items: NavItem[] }
@@ -198,10 +199,13 @@ export default function AppShell({ fullBleed, children }: { fullBleed?: boolean;
           ))}
         </div>
 
-        {/* Footer — theme toggle (icon-only when collapsed) */}
+        {/* Footer — theme toggle and, when signed in, sign out. SignOutButton
+            renders nothing for an anonymous session, so this row is unchanged
+            for anyone who has not been invited yet. */}
         <div style={{
           padding: collapsed ? 'var(--space-3) 0 0' : 'var(--space-3) var(--space-3) 0',
-          borderTop: '1px solid var(--border)', display: 'flex', justifyContent: 'center',
+          borderTop: '1px solid var(--border)',
+          display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 'var(--space-2)',
         }}>
           {collapsed ? (
             <button
@@ -224,6 +228,7 @@ export default function AppShell({ fullBleed, children }: { fullBleed?: boolean;
               {theme === 'dark' ? 'Light mode' : 'Dark mode'}
             </Button>
           )}
+          <SignOutButton compact={collapsed} />
         </div>
       </nav>
 
