@@ -42,7 +42,7 @@ export function Banner({ tone, onDismiss, children }: BannerProps) {
           type="button"
           aria-label="Dismiss"
           title="Dismiss"
-          className="fr-focus"
+          className="fr-focus fr-btn fr-btn-ghost"
           onClick={onDismiss}
           style={{
             flexShrink: 0,
