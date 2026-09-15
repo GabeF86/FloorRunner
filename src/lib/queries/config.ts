@@ -19,6 +19,7 @@
 // shared result/client types come from there.
 
 import type { SchedulingClient, QueryResult } from './roster';
+import { CallPatternDocSchema, CLASSIC_PATTERN, type CallPatternDoc } from '@/lib/rulesEngine/callPattern';
 
 /** Shift types, optionally narrowed to one site, in display order. */
 export async function listShiftTypes(
@@ -126,4 +127,40 @@ export async function listCustomFields(
   const { data, error } = await query;
   if (error) return { ok: false, status: 500, error: error.message };
   return { ok: true, rows: (data ?? []) as Array<Record<string, unknown>> };
+}
+
+/**
+ * A site's ACTIVE call pattern, parsed.
+ *
+ * Returns the parsed doc plus whether the stored document failed validation.
+ * That distinction is the whole point: the engine silently falls back to
+ * CLASSIC_PATTERN when a doc does not satisfy the strict schema, so a site can
+ * be running structure nobody intended while the stored JSON looks fine in the
+ * editor. A page describing what the engine obeys has to say which of the two
+ * it is describing.
+ */
+export async function readActiveCallPattern(
+  sb: SchedulingClient,
+  siteId: string,
+): Promise<{
+  ok: true; name: string | null; doc: CallPatternDoc | null; usingFallback: boolean;
+} | { ok: false; status: number; error: string }> {
+  const { data, error } = await sb
+    .from('call_patterns')
+    .select('name, definition')
+    .eq('site_id', siteId)
+    .eq('status', 'active')
+    .maybeSingle();
+  if (error) return { ok: false, status: 500, error: error.message };
+
+  const row = data as { name?: string; definition?: unknown } | null;
+  if (!row) return { ok: true, name: null, doc: null, usingFallback: false };
+
+  const parsed = CallPatternDocSchema.safeParse(row.definition);
+  return parsed.success
+    ? { ok: true, name: row.name ?? null, doc: parsed.data, usingFallback: false }
+    // The engine would use CLASSIC here, so that is what gets described — and
+    // the caller is told, because silently showing the fallback as if it were
+    // the site's own pattern is the failure this flag exists to prevent.
+    : { ok: true, name: row.name ?? null, doc: CLASSIC_PATTERN, usingFallback: true };
 }

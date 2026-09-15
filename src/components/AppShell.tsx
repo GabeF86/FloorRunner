@@ -43,7 +43,11 @@ const NAV_SECTIONS: NavSection[] = [
     items: [
       { href: '/settings',   label: 'Settings',   icon: '⚙' },
       { href: '/block-prep', label: 'Block Prep', icon: '◫' },
-      { href: '/rules',      label: 'Rules',      icon: '⚖' },
+      // Renamed from "Rules" 2026-09-15. The page now leads with the live
+      // generation contract — what the engine actually obeys — and the
+      // validation rule sets sit below it. Calling it Rules pointed at the one
+      // thing on the page the engine never reads.
+      { href: '/rules',      label: 'Scheduling Logic', icon: '⚖' },
       { href: '/requests',   label: 'Requests',   icon: '✉' },
     ],
   },
