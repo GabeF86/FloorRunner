@@ -18,12 +18,9 @@ const NAV_SECTIONS: NavSection[] = [
   {
     label: 'Scheduling',
     items: [
-      { href: '/block-prep', label: 'Block Prep', icon: '◫' },
       { href: '/schedules', label: 'Schedules', icon: '▦' },
       { href: '/providers', label: 'Providers', icon: '◆' },
       { href: '/sites',     label: 'Sites',     icon: '⬡' },
-      { href: '/rules',     label: 'Rules',     icon: '⚖' },
-      { href: '/requests',  label: 'Requests',  icon: '✉' },
     ],
   },
   {
@@ -38,8 +35,17 @@ const NAV_SECTIONS: NavSection[] = [
     items: [{ href: '/board', label: 'Floor Runner', icon: '⚡' }],
   },
   {
-    label: 'Admin',
-    items: [{ href: '/settings', label: 'Settings', icon: '⚙' }],
+    // Block Prep, Rules and Requests moved here from Scheduling (Gabriel
+    // 2026-09-15). They are the things you configure AROUND a generation
+    // cycle rather than the schedule itself, which leaves Scheduling as the
+    // three nouns you actually work in day to day.
+    label: 'Settings',
+    items: [
+      { href: '/settings',   label: 'Settings',   icon: '⚙' },
+      { href: '/block-prep', label: 'Block Prep', icon: '◫' },
+      { href: '/rules',      label: 'Rules',      icon: '⚖' },
+      { href: '/requests',   label: 'Requests',   icon: '✉' },
+    ],
   },
 ];
 
