@@ -189,12 +189,19 @@ table, .fr-nums, input[type='number'] { font-variant-numeric: tabular-nums; }
 }
 .live-dot { animation: live-pulse 1.5s ease-in-out infinite; }
 
+/* Backdrop fades in with the panel, so the scrim does not appear a frame
+   before the thing it is dimming for. */
+@keyframes fr-backdrop-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
 /* Fade-in for modals */
 @keyframes fade-up {
   from { opacity: 0; transform: translateY(10px); }
   to   { opacity: 1; transform: translateY(0); }
 }
-.modal-box { animation: fade-up 0.18s ease-out; }
+.modal-box { animation: fade-up var(--dur-slow) var(--ease-out); }
 
 /* Stagger site cards on load */
 @keyframes card-in {

@@ -89,6 +89,13 @@ export function Modal({
         inset: 0,
         zIndex: 200,
         background: 'var(--bg-modal-backdrop)',
+        // A slight blur behind the dialog. It does the job the scrim alone
+        // cannot: the page underneath stops competing for the eye, so the
+        // dialog reads as the only live thing on screen. Kept at 3px — enough
+        // to defocus, not enough to look like a phone OS.
+        backdropFilter: 'blur(3px)',
+        WebkitBackdropFilter: 'blur(3px)',
+        animation: 'fr-backdrop-in var(--dur-fast) var(--ease-out)',
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
@@ -138,7 +145,7 @@ export function Modal({
             type="button"
             aria-label="Close"
             title="Close"
-            className="fr-focus"
+            className="fr-focus fr-btn fr-btn-ghost"
             onClick={onClose}
             style={{
               marginLeft: 'auto',
