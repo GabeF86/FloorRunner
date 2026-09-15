@@ -35,6 +35,11 @@ interface Site {
   short_name: string | null;
 }
 
+// Provider-type identity colours. Duplicated VERBATIM in providers/[id]/page.tsx
+// (and partially in requests/page.tsx, with a test pinning '#f59e0b'), so a
+// physician's amber is the same amber on every screen. These are data, not
+// styling: re-tokenising one copy would desynchronise the roster from the
+// detail page. Left as literals deliberately.
 const TYPE_COLORS: Record<string, { color: string; bg: string; label: string }> = {
   physician: { color: '#f59e0b', bg: 'rgba(245,158,11,0.15)', label: 'Physician' },
   crna:      { color: '#0ea5e9', bg: 'rgba(14,165,233,0.15)', label: 'CRNA' },
@@ -227,7 +232,7 @@ export default function ProvidersPage() {
       />
 
       {(providersError || sitesError) && (
-        <div style={{ marginBottom: 16, display: 'grid', gap: 8 }}>
+        <div style={{ marginBottom: 'var(--space-4)', display: 'grid', gap: 'var(--space-2)' }}>
           {providersError && <Banner tone="error">{providersError}</Banner>}
           {/* Sites feed the two site filters and the Home Site column, so a
               failed sites read leaves them empty and needs saying out loud. */}
@@ -235,33 +240,34 @@ export default function ProvidersPage() {
         </div>
       )}
 
-      {/* Filters */}
-      <div style={{ display: 'flex', gap: 10, marginBottom: 20, flexWrap: 'wrap' }}>
+      {/* Filters. Every control carries .fr-field so hover and the keyboard ring
+          come from the design system rather than from six near-identical inline
+          styles that can only ever express the resting state. */}
+      <div style={{ display: 'flex', gap: 'var(--space-2)', marginBottom: 'var(--space-5)', flexWrap: 'wrap' }}>
         <input
+          className="fr-field"
           placeholder="Search by name..."
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          style={{
-            padding: '8px 14px', borderRadius: 8, border: '1px solid var(--border)',
-            background: 'var(--bg-deep)', color: 'var(--text)', fontSize: 13, width: 220,
-          }}
+          style={{ ...fieldStyle, padding: '8px 14px', width: 220, cursor: 'auto' }}
         />
-        <select value={typeFilter} onChange={(e) => setTypeFilter(e.target.value)} style={selectStyle}>
+        <select className="fr-field" value={typeFilter} onChange={(e) => setTypeFilter(e.target.value)} style={fieldStyle}>
           <option value="">All Types</option>
           {Object.entries(TYPE_COLORS).map(([t, c]) => (
             <option key={t} value={t}>{c.label}</option>
           ))}
         </select>
-        <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} style={selectStyle}>
+        <select className="fr-field" value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} style={fieldStyle}>
           <option value="">All Statuses</option>
           <option value="active">Active</option>
           <option value="inactive">Inactive</option>
           <option value="on_leave">On Leave</option>
         </select>
         <select
+          className="fr-field"
           value={homeSiteFilter}
           onChange={(e) => setHomeSiteFilter(e.target.value)}
-          style={selectStyle}
+          style={fieldStyle}
         >
           <option value="">Home site — Any</option>
           {sites.map(s => (
@@ -269,16 +275,17 @@ export default function ProvidersPage() {
           ))}
         </select>
         <select
+          className="fr-field"
           value={credentialedSiteFilter}
           onChange={(e) => setCredentialedSiteFilter(e.target.value)}
-          style={selectStyle}
+          style={fieldStyle}
         >
           <option value="">Credentialed at — Any Site</option>
           {sites.map(s => (
             <option key={s.id} value={s.id}>Credentialed at {s.short_name || s.name}</option>
           ))}
         </select>
-        <select value={roleFilter} onChange={(e) => setRoleFilter(e.target.value)} style={selectStyle}>
+        <select className="fr-field" value={roleFilter} onChange={(e) => setRoleFilter(e.target.value)} style={fieldStyle}>
           <option value="">All Roles</option>
           <option value="call_taker">Call Taker</option>
           <option value="per_diem">Per Diem</option>
@@ -297,18 +304,21 @@ export default function ProvidersPage() {
             const prof = profile(p);
             const tc = TYPE_COLORS[p.provider_type] || TYPE_COLORS.other;
             return [
-              <Link key="name" href={`/providers/${p.id}`} style={{ display: 'flex', alignItems: 'center', gap: 10, textDecoration: 'none', color: 'var(--text)' }}>
+              <Link key="name" href={`/providers/${p.id}`} style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-3)', textDecoration: 'none', color: 'var(--text)' }}>
+                {/* Avatar tint/ink come from TYPE_COLORS — provider-type data, not
+                    styling, and shared verbatim with the provider detail page. */}
                 <div style={{
-                  width: 32, height: 32, borderRadius: 8, display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  fontSize: 11, fontWeight: 800, background: tc.bg, color: tc.color, flexShrink: 0,
+                  width: 32, height: 32, borderRadius: 'var(--radius-sm)', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  fontSize: 'var(--fs-xs)', fontWeight: 800, background: tc.bg, color: tc.color, flexShrink: 0,
                 }}>{p.initials}</div>
-                <div>
+                <div style={{ minWidth: 0 }}>
                   <div style={{ fontWeight: 700 }}>{p.first_name} {p.last_name}</div>
-                  {p.email && <div style={{ fontSize: 11, color: 'var(--text-dim)' }}>{p.email}</div>}
+                  {p.email && <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-dim)' }}>{p.email}</div>}
                 </div>
               </Link>,
               <span key="type" style={{
-                fontSize: 11, fontWeight: 700, padding: '3px 8px', borderRadius: 6,
+                display: 'inline-block', lineHeight: 1.5,
+                fontSize: 'var(--fs-xs)', fontWeight: 700, padding: '2px 8px', borderRadius: 'var(--radius-sm)',
                 background: tc.bg, color: tc.color, whiteSpace: 'nowrap',
               }}>{tc.label}</span>,
               <Badge key="status" tone={STATUS_TONES[p.status] || 'neutral'}>{p.status.replace('_', ' ')}</Badge>,
@@ -321,10 +331,13 @@ export default function ProvidersPage() {
                 : (
                   <span
                     key="fte"
+                    // Two figures read as one column: tabular digits and no wrap,
+                    // so "0.66 / 1.00" never breaks across lines mid-pair.
+                    style={{ fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' }}
                     title={`Call FTE ${Number(prof.fte_value).toFixed(2)} (pro-rates call) · Working-days FTE ${Number(prof.work_days_fte).toFixed(2)} (share of working days they must be scheduled)`}
                   >
                     {Number(prof.fte_value).toFixed(2)}
-                    <span style={{ color: 'var(--text-dim)' }}>{' / '}</span>
+                    <span style={{ color: 'var(--text-faint)' }}>{' / '}</span>
                     {Number(prof.work_days_fte).toFixed(2)}
                   </span>
                 ),
@@ -374,9 +387,11 @@ export default function ProvidersPage() {
   );
 }
 
-const selectStyle: React.CSSProperties = {
-  padding: '8px 12px', borderRadius: 8, border: '1px solid var(--border)',
-  background: 'var(--bg-deep)', color: 'var(--text)', fontSize: 13, cursor: 'pointer',
+/** Resting look of a filter control; hover and focus come from .fr-field. */
+const fieldStyle: React.CSSProperties = {
+  padding: '8px 12px', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border)',
+  background: 'var(--bg-deep)', color: 'var(--text)', fontSize: 'var(--fs-sm)',
+  fontFamily: 'inherit', cursor: 'pointer',
 };
 
 // ── No Org Setup ──────────────────────────────────────────────────────────────
@@ -402,10 +417,15 @@ function NoOrgSetup({ onCreated }: { onCreated: (id: string) => void }) {
         subtitle="Create your organization to get started."
       />
       <input
+        className="fr-field"
         placeholder="Organization name (e.g. Main Line Anesthesia)"
         value={name} onChange={(e) => setName(e.target.value)}
         onKeyDown={(e) => e.key === 'Enter' && create()}
-        style={{ width: '100%', padding: '12px 16px', borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg-deep)', color: 'var(--text)', fontSize: 14, marginBottom: 12 }}
+        style={{
+          width: '100%', padding: '12px 16px', borderRadius: 'var(--radius-sm)',
+          border: '1px solid var(--border)', background: 'var(--bg-deep)', color: 'var(--text)',
+          fontSize: 'var(--fs-md)', fontFamily: 'inherit', marginBottom: 'var(--space-3)',
+        }}
       />
       <Button onClick={create} disabled={creating}>{creating ? 'Creating...' : 'Create Organization'}</Button>
     </div>
@@ -478,12 +498,19 @@ function AddProviderModal({ orgId, sites, onClose, onAdded }: { orgId: string; s
   };
 
   const inputStyle: React.CSSProperties = {
-    width: '100%', padding: '10px 12px', borderRadius: 8,
+    width: '100%', padding: '10px 12px', borderRadius: 'var(--radius-sm)',
     border: '1px solid var(--border)', background: 'var(--bg-deep)',
-    color: 'var(--text)', fontSize: 14, marginBottom: 12,
+    color: 'var(--text)', fontSize: 'var(--fs-md)', fontFamily: 'inherit',
+    marginBottom: 'var(--space-3)',
   };
-  const labelStyle: React.CSSProperties = { fontSize: 11, color: 'var(--text-muted)', display: 'block', marginBottom: 5, fontWeight: 600, letterSpacing: 0.5 };
-  const errorStyle: React.CSSProperties = { fontSize: 10, color: 'var(--danger)', marginBottom: 8, marginTop: 2 };
+  const labelStyle: React.CSSProperties = { fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', display: 'block', marginBottom: 'var(--space-1)', fontWeight: 600, letterSpacing: 0.5 };
+  const errorStyle: React.CSSProperties = { fontSize: 'var(--fs-xs)', color: 'var(--danger)', marginBottom: 'var(--space-2)', marginTop: 2 };
+  /** Checkbox rows share one resting style; only the accent differs. */
+  const toggleStyle: React.CSSProperties = {
+    display: 'flex', alignItems: 'center', gap: 'var(--space-2)',
+    fontSize: 'var(--fs-sm)', color: 'var(--text-muted)', cursor: 'pointer',
+    userSelect: 'none',
+  };
 
   return (
     <Modal
@@ -499,15 +526,16 @@ function AddProviderModal({ orgId, sites, onClose, onAdded }: { orgId: string; s
       }
     >
       {error && (
-        <div style={{ marginBottom: 14 }}>
+        <div style={{ marginBottom: 'var(--space-4)' }}>
           <Banner tone="error">{error}</Banner>
         </div>
       )}
 
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 12 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 'var(--space-3)', marginBottom: 'var(--space-3)' }}>
         <div>
           <label style={labelStyle}>First Name *</label>
           <input
+            className="fr-field"
             style={{ ...inputStyle, border: `1px solid ${errors.firstName ? 'var(--danger)' : 'var(--border)'}`, marginBottom: errors.firstName ? 2 : 12 }}
             placeholder="Jane" value={firstName} onChange={e => setFirstName(e.target.value)}
           />
@@ -516,6 +544,7 @@ function AddProviderModal({ orgId, sites, onClose, onAdded }: { orgId: string; s
         <div>
           <label style={labelStyle}>Last Name *</label>
           <input
+            className="fr-field"
             style={{ ...inputStyle, border: `1px solid ${errors.lastName ? 'var(--danger)' : 'var(--border)'}`, marginBottom: errors.lastName ? 2 : 12 }}
             placeholder="Smith" value={lastName} onChange={e => setLastName(e.target.value)}
           />
@@ -523,10 +552,11 @@ function AddProviderModal({ orgId, sites, onClose, onAdded }: { orgId: string; s
         </div>
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 'var(--space-3)' }}>
         <div>
           <label style={labelStyle}>Email</label>
           <input
+            className="fr-field"
             style={{ ...inputStyle, border: `1px solid ${errors.email ? 'var(--danger)' : 'var(--border)'}`, marginBottom: errors.email ? 2 : 12 }}
             placeholder="jane.smith@hospital.org" value={email} onChange={e => setEmail(e.target.value)}
           />
@@ -534,23 +564,23 @@ function AddProviderModal({ orgId, sites, onClose, onAdded }: { orgId: string; s
         </div>
         <div>
           <label style={labelStyle}>Phone</label>
-          <input style={inputStyle} placeholder="(555) 123-4567" value={phone} onChange={e => setPhone(e.target.value)} />
+          <input className="fr-field" style={inputStyle} placeholder="(555) 123-4567" value={phone} onChange={e => setPhone(e.target.value)} />
         </div>
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 'var(--space-3)' }}>
         <div>
           <label style={labelStyle}>NPI</label>
-          <input style={inputStyle} placeholder="1234567890" value={npi} onChange={e => setNpi(e.target.value)} />
+          <input className="fr-field" style={inputStyle} placeholder="1234567890" value={npi} onChange={e => setNpi(e.target.value)} />
         </div>
         <div>
           <label style={labelStyle}>Employee ID</label>
-          <input style={inputStyle} placeholder="E12345" value={employeeId} onChange={e => setEmployeeId(e.target.value)} />
+          <input className="fr-field" style={inputStyle} placeholder="E12345" value={employeeId} onChange={e => setEmployeeId(e.target.value)} />
         </div>
       </div>
 
       <label style={labelStyle}>Provider Type</label>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 6, marginBottom: 14 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 'var(--space-1)', marginBottom: 'var(--space-4)' }}>
         {Object.entries(TYPE_COLORS).map(([t, c]) => (
           <Button
             key={t}
@@ -558,6 +588,7 @@ function AddProviderModal({ orgId, sites, onClose, onAdded }: { orgId: string; s
             size="sm"
             onClick={() => setProviderType(t)}
             style={{
+              // c.color / c.bg are the shared provider-type map — data, left as-is.
               border: `1px solid ${providerType === t ? c.color : 'var(--border)'}`,
               background: providerType === t ? c.bg : 'transparent',
               color: providerType === t ? c.color : 'var(--text-muted)',
@@ -570,31 +601,37 @@ function AddProviderModal({ orgId, sites, onClose, onAdded }: { orgId: string; s
       </div>
 
       <label style={labelStyle}>Employment Status</label>
-      <select value={employmentStatus} onChange={e => setEmploymentStatus(e.target.value)} style={{ ...inputStyle, cursor: 'pointer' }}>
+      <select className="fr-field" value={employmentStatus} onChange={e => setEmploymentStatus(e.target.value)} style={{ ...inputStyle, cursor: 'pointer' }}>
         {EMPLOYMENT_OPTIONS.map(o => (
           <option key={o.value} value={o.value}>{o.label}</option>
         ))}
       </select>
 
       <label style={labelStyle}>Home Address</label>
-      <input style={inputStyle} placeholder="123 Main St, City, State" value={homeAddress} onChange={e => setHomeAddress(e.target.value)} />
+      <input className="fr-field" style={inputStyle} placeholder="123 Main St, City, State" value={homeAddress} onChange={e => setHomeAddress(e.target.value)} />
 
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 12 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 'var(--space-3)', marginBottom: 'var(--space-3)' }}>
         <div>
           <label style={labelStyle}>Home Hospital / Surgery Center</label>
-          <select value={homeSiteId} onChange={e => setHomeSiteId(e.target.value)} style={{ ...inputStyle, cursor: 'pointer' }}>
+          <select className="fr-field" value={homeSiteId} onChange={e => setHomeSiteId(e.target.value)} style={{ ...inputStyle, cursor: 'pointer' }}>
             <option value="">— None —</option>
             {sites.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
           </select>
         </div>
         <div>
           <label style={labelStyle}>Start Date with Company</label>
-          <input type="date" style={inputStyle} value={startDate} onChange={e => setStartDate(e.target.value)} />
+          <input className="fr-field" type="date" style={inputStyle} value={startDate} onChange={e => setStartDate(e.target.value)} />
         </div>
       </div>
 
-      <div style={{ display: 'flex', gap: 16, marginBottom: 14, flexWrap: 'wrap' }}>
-        <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, color: 'var(--text-muted)', cursor: 'pointer' }}>
+      {/* Checkbox accents were four literals — and #0ea5e9 is the DARK-mode blue,
+          so on the light default it was both off-system and short of AA. Each is
+          now the token that means the thing: brand blue for the call flag, the
+          second accent for its mutually-exclusive twin, ok/warn for the two
+          partner states. accent-color resolves var() natively, so both themes
+          track their own value. */}
+      <div style={{ display: 'flex', gap: 'var(--space-4)', marginBottom: 'var(--space-4)', flexWrap: 'wrap' }}>
+        <label style={toggleStyle}>
           <input
             type="checkbox"
             checked={callTaker}
@@ -603,11 +640,11 @@ function AddProviderModal({ orgId, sites, onClose, onAdded }: { orgId: string; s
               setCallTaker(v);
               if (v) setIsDayDoc(false);
             }}
-            style={{ accentColor: '#0ea5e9' }}
+            style={{ accentColor: 'var(--blue)', cursor: 'pointer' }}
           />
           Call Taker
         </label>
-        <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, color: 'var(--text-muted)', cursor: 'pointer' }}>
+        <label style={toggleStyle}>
           <input
             type="checkbox"
             checked={isDayDoc}
@@ -616,16 +653,16 @@ function AddProviderModal({ orgId, sites, onClose, onAdded }: { orgId: string; s
               setIsDayDoc(v);
               if (v) setCallTaker(false);
             }}
-            style={{ accentColor: '#8b5cf6' }}
+            style={{ accentColor: 'var(--indigo)', cursor: 'pointer' }}
           />
           Day Doc
         </label>
-        <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, color: 'var(--text-muted)', cursor: 'pointer' }}>
-          <input type="checkbox" checked={isPartner} onChange={e => { setIsPartner(e.target.checked); if (e.target.checked) setIsPartnerTrack(false); }} style={{ accentColor: '#10b981' }} />
+        <label style={toggleStyle}>
+          <input type="checkbox" checked={isPartner} onChange={e => { setIsPartner(e.target.checked); if (e.target.checked) setIsPartnerTrack(false); }} style={{ accentColor: 'var(--ok)', cursor: 'pointer' }} />
           Partner
         </label>
-        <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, color: 'var(--text-muted)', cursor: 'pointer' }}>
-          <input type="checkbox" checked={isPartnerTrack} onChange={e => { setIsPartnerTrack(e.target.checked); if (e.target.checked) setIsPartner(false); }} style={{ accentColor: '#fbbf24' }} />
+        <label style={toggleStyle}>
+          <input type="checkbox" checked={isPartnerTrack} onChange={e => { setIsPartnerTrack(e.target.checked); if (e.target.checked) setIsPartner(false); }} style={{ accentColor: 'var(--warn)', cursor: 'pointer' }} />
           Partner Track
         </label>
       </div>

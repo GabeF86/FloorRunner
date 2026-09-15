@@ -29,14 +29,24 @@ interface Request {
   providers: ProviderInfo | null;
 }
 
-const REQUEST_TYPES: Record<string, { label: string; color: string }> = {
-  pto: { label: 'PTO', color: '#10b981' },
-  no_call: { label: 'No-Call', color: '#fbbf24' },
-  extra_call: { label: 'Extra Call', color: '#0ea5e9' },
-  preferred_weekend: { label: 'Preferred Weekend', color: '#8b5cf6' },
-  swap_request: { label: 'Swap', color: '#fb923c' },
-  availability_change: { label: 'Availability Change', color: '#64748b' },
+/**
+ * Request-type chip colours. These are categories, not statuses, so they carry
+ * the meaning of the category rather than a hand-picked hue: leave/absence reads
+ * as --ok, a restriction as --warn, volunteering for more call as the accent, and
+ * an administrative change as neutral. Tokens rather than literals because the
+ * old values were the DARK-mode ramp (the bright emerald/amber/sky trio) painted
+ * on a light-default app, where the small chip label missed AA.
+ */
+const REQUEST_TYPES: Record<string, { label: string; fg: string; bg: string }> = {
+  pto:                 { label: 'PTO',                 fg: 'var(--ok)',         bg: 'var(--ok-bg)' },
+  no_call:             { label: 'No-Call',             fg: 'var(--warn)',       bg: 'var(--warn-bg)' },
+  extra_call:          { label: 'Extra Call',          fg: 'var(--blue)',       bg: 'color-mix(in srgb, var(--blue) 12%, transparent)' },
+  preferred_weekend:   { label: 'Preferred Weekend',   fg: 'var(--indigo)',     bg: 'color-mix(in srgb, var(--indigo) 12%, transparent)' },
+  swap_request:        { label: 'Swap',                fg: 'var(--info)',       bg: 'var(--info-bg)' },
+  availability_change: { label: 'Availability Change', fg: 'var(--text-muted)', bg: 'var(--tint-surface)' },
 };
+
+const UNKNOWN_TYPE = { fg: 'var(--text-muted)', bg: 'var(--tint-surface)' };
 
 const STATUS_INFO: Record<string, { label: string; tone: BadgeTone }> = {
   pending: { label: 'Pending', tone: 'warn' },
@@ -46,6 +56,12 @@ const STATUS_INFO: Record<string, { label: string; tone: BadgeTone }> = {
   canceled: { label: 'Canceled', tone: 'neutral' },
 };
 
+/**
+ * Provider-type swatch. Left as literals ON PURPOSE: providers/page.tsx and
+ * providers/[id]/page.tsx hold the same map verbatim, and a provider's colour is
+ * recognised across all three screens — tokenising one copy would desynchronise
+ * them. Change all three together or not at all.
+ */
 const TYPE_COLORS: Record<string, { color: string; bg: string }> = {
   physician: { color: '#f59e0b', bg: 'rgba(245,158,11,0.15)' },
   crna: { color: '#0ea5e9', bg: 'rgba(14,165,233,0.15)' },
@@ -143,20 +159,20 @@ export default function RequestsPage() {
       />
 
       {loadError && (
-        <div style={{ marginBottom: 20 }}>
+        <div style={{ marginBottom: 'var(--space-5)' }}>
           <Banner tone="error">{loadError} Reload the page to try again.</Banner>
         </div>
       )}
 
       {/* Filters */}
-      <div style={{ display: 'flex', gap: 10, marginBottom: 20, flexWrap: 'wrap' }}>
-        <select value={statusFilter} onChange={e => setStatusFilter(e.target.value)} style={selectStyle}>
+      <div style={{ display: 'flex', gap: 'var(--space-2)', marginBottom: 'var(--space-5)', flexWrap: 'wrap' }}>
+        <select className="fr-field" value={statusFilter} onChange={e => setStatusFilter(e.target.value)} style={selectStyle}>
           <option value="">All Statuses</option>
           {Object.entries(STATUS_INFO).map(([k, v]) => (
             <option key={k} value={k}>{v.label}</option>
           ))}
         </select>
-        <select value={typeFilter} onChange={e => setTypeFilter(e.target.value)} style={selectStyle}>
+        <select className="fr-field" value={typeFilter} onChange={e => setTypeFilter(e.target.value)} style={selectStyle}>
           <option value="">All Types</option>
           {Object.entries(REQUEST_TYPES).map(([k, v]) => (
             <option key={k} value={k}>{v.label}</option>
@@ -170,19 +186,25 @@ export default function RequestsPage() {
           headers={TABLE_HEADERS}
           minWidth={760}
           rows={requests.map(r => {
-            const rt = REQUEST_TYPES[r.request_type] || { label: r.request_type, color: '#64748b' };
+            const rt = REQUEST_TYPES[r.request_type] || { label: r.request_type, ...UNKNOWN_TYPE };
             const si = STATUS_INFO[r.status] || STATUS_INFO.pending;
             const prov = r.providers;
+            // Literal fallback = TYPE_COLORS.other on the providers pages, kept
+            // byte-identical for the same reason the map above is (see comment).
             const tc = TYPE_COLORS[prov?.provider_type || ''] || { color: '#94a3b8', bg: 'rgba(148,163,184,0.15)' };
             const sameDay = r.start_date === r.end_date;
             const isExpanded = actionId === r.id;
 
             return [
               prov ? (
-                <Link key="prov" href={`/providers/${prov.id}`} style={{ display: 'flex', alignItems: 'center', gap: 8, textDecoration: 'none', color: 'var(--text)' }}>
+                <Link key="prov" className="fr-focus" href={`/providers/${prov.id}`} style={{
+                  display: 'inline-flex', alignItems: 'center', gap: 'var(--space-2)',
+                  textDecoration: 'none', color: 'var(--text)',
+                  borderRadius: 'var(--radius-sm)', outline: 'none',
+                }}>
                   <div style={{
-                    width: 28, height: 28, borderRadius: 6, display: 'flex', alignItems: 'center', justifyContent: 'center',
-                    fontSize: 10, fontWeight: 800, background: tc.bg, color: tc.color, flexShrink: 0,
+                    width: 28, height: 28, borderRadius: 'var(--radius-sm)', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    fontSize: 'var(--fs-xs)', fontWeight: 700, background: tc.bg, color: tc.color, flexShrink: 0,
                   }}>{prov.initials}</div>
                   <span style={{ fontWeight: 600 }}>{prov.short_display_name}</span>
                 </Link>
@@ -190,45 +212,55 @@ export default function RequestsPage() {
                 <span key="prov" style={{ color: 'var(--text-dim)' }}>Unknown</span>
               ),
               <span key="type" style={{
-                fontSize: 11, fontWeight: 700, padding: '3px 8px', borderRadius: 6,
-                background: `${rt.color}20`, color: rt.color, whiteSpace: 'nowrap',
+                display: 'inline-block',
+                fontSize: 'var(--fs-xs)', fontWeight: 600, padding: '3px 8px', borderRadius: 'var(--radius-sm)',
+                background: rt.bg, color: rt.fg, whiteSpace: 'nowrap',
+                // Same hairline trick as Badge: a flat tint with no edge washes
+                // out against the surface, and it is derived from the tone so it
+                // stays correct in both themes.
+                border: `1px solid color-mix(in srgb, ${rt.fg} 22%, transparent)`,
               }}>{rt.label}</span>,
-              <span key="dates">
+              <span key="dates" style={{ whiteSpace: 'nowrap' }}>
                 {formatDate(r.start_date)}{!sameDay && ` — ${formatDate(r.end_date)}`}
-                {r.part_of_day && <span style={{ fontSize: 10, marginLeft: 4 }}>({r.part_of_day})</span>}
+                {r.part_of_day && <span style={{ fontSize: 'var(--fs-xs)', marginLeft: 'var(--space-1)', color: 'var(--text-dim)' }}>({r.part_of_day})</span>}
               </span>,
               <span key="notes" style={{
                 display: 'block', color: 'var(--text-dim)', maxWidth: 200,
                 overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
               }}>{r.notes || '—'}</span>,
-              <span key="sub" style={{ fontSize: 11, color: 'var(--text-dim)' }}>{formatDateTime(r.submitted_at)}</span>,
+              <span key="sub" style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-dim)', whiteSpace: 'nowrap' }}>{formatDateTime(r.submitted_at)}</span>,
               <span key="status">
                 <Badge tone={si.tone}>{si.label}</Badge>
                 {r.decision_reason && (
-                  <div style={{ fontSize: 10, color: 'var(--text-dim)', marginTop: 2 }}>
+                  <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-dim)', marginTop: 'var(--space-1)', maxWidth: 180 }}>
                     {r.decision_reason}
                   </div>
                 )}
               </span>,
               r.status === 'pending' ? (
-                <div key="actions" style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                <div key="actions" style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-1)' }}>
                   {isExpanded ? (
                     <>
                       <input
+                        className="fr-field"
                         placeholder="Reason (optional)"
                         value={decisionReason}
                         onChange={e => setDecisionReason(e.target.value)}
                         style={{
-                          padding: '4px 8px', fontSize: 11, borderRadius: 4,
+                          padding: '4px 8px', fontSize: 'var(--fs-xs)', borderRadius: 'var(--radius-sm)',
                           border: '1px solid var(--border)', background: 'var(--bg-deep)',
-                          color: 'var(--text)', width: 150,
+                          color: 'var(--text)', width: 150, fontFamily: 'inherit',
                         }}
                       />
-                      <div style={{ display: 'flex', gap: 4 }}>
-                        <Button size="sm" variant="secondary" onClick={() => handleAction(r.id, 'approved')} style={{ color: 'var(--ok)', background: 'var(--ok-bg)', border: '1px solid transparent' }}>Approve</Button>
+                      <div style={{ display: 'flex', gap: 'var(--space-1)' }}>
+                        {/* Tone lives in the label, not a fill: an inline background
+                            would out-specify .fr-btn-secondary:hover (inline beats a
+                            class rule), which is what left these two with no hover
+                            state at all. Colour the ink, let the kit own the states. */}
+                        <Button size="sm" variant="secondary" onClick={() => handleAction(r.id, 'approved')} style={{ color: 'var(--ok)' }}>Approve</Button>
                         <Button size="sm" variant="danger" onClick={() => handleAction(r.id, 'denied')}>Deny</Button>
-                        <Button size="sm" variant="secondary" onClick={() => handleAction(r.id, 'waitlisted')} style={{ color: 'var(--info)', background: 'var(--info-bg)', border: '1px solid transparent' }}>Wait</Button>
-                        <Button size="sm" variant="ghost" onClick={() => { setActionId(null); setDecisionReason(''); }}>X</Button>
+                        <Button size="sm" variant="secondary" onClick={() => handleAction(r.id, 'waitlisted')} style={{ color: 'var(--info)' }}>Wait</Button>
+                        <Button size="sm" variant="ghost" title="Cancel review" onClick={() => { setActionId(null); setDecisionReason(''); }}>✕</Button>
                       </div>
                     </>
                   ) : (
@@ -262,6 +294,7 @@ export default function RequestsPage() {
 }
 
 const selectStyle: React.CSSProperties = {
-  padding: '8px 12px', borderRadius: 8, border: '1px solid var(--border)',
-  background: 'var(--bg-deep)', color: 'var(--text)', fontSize: 13, cursor: 'pointer',
+  padding: 'var(--space-2) var(--space-3)', borderRadius: 'var(--radius-sm)',
+  border: '1px solid var(--border)', background: 'var(--bg-deep)', color: 'var(--text)',
+  fontSize: 'var(--fs-md)', fontFamily: 'inherit', cursor: 'pointer',
 };

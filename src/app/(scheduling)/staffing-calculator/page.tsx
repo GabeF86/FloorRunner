@@ -13,7 +13,7 @@ import {
   SiteCatalogEntry,
 } from '@/lib/staffingCalculator';
 import { buildBreakAnalysis } from '@/lib/staffingCalculator/shared';
-import { Card } from '@/components/ui';
+import { Banner, Button, Card, EmptyState, Table } from '@/components/ui';
 
 /* ── Shared style tokens ─────────────────────────────────────────────────── */
 // All values resolve to the global var(--*) tokens so both themes render
@@ -48,6 +48,55 @@ const tok = {
   shadow: 'var(--shadow-card)',
 };
 
+/* ── Interaction states ───────────────────────────────────────────────────
+   Nearly every control on this page carries a *conditional accent* (the lane
+   colour, the field's accentColor, the active-segment tint) which can only be
+   expressed as an inline style — and an inline style beats a class rule, so a
+   `:hover { background: … }` rule would simply never win. Two consequences:
+
+   · hover tints with an inset shadow instead of `background`. An inset shadow
+     paints over whatever background is already there, it comes from one token
+     that flips polarity per theme, and it is a property none of these controls
+     set inline.
+   · focus draws an `outline`, not the --focus-ring box-shadow, so the two
+     cannot collide on the same property (this is the same reasoning as
+     .fr-field in globals.css).
+
+   Everything transitions on the motion tokens and names its properties — never
+   `all`, which animates layout properties nobody asked for. */
+const INTERACTION_CSS = `
+.sc-btn {
+  transition:
+    border-color var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out),
+    box-shadow var(--dur-fast) var(--ease-out),
+    transform var(--dur-instant) var(--ease-out);
+}
+.sc-btn:not(:disabled):hover { box-shadow: inset 0 0 0 999px var(--tint-surface); }
+.sc-btn:not(:disabled):active { transform: translateY(1px); }
+.sc-btn:focus-visible { outline: 2px solid var(--blue); outline-offset: 1px; }
+
+/* Bare glyph buttons (the delete ×): no surface to tint, so hover is carried
+   by the glyph itself. */
+.sc-icon {
+  transition:
+    filter var(--dur-fast) var(--ease-out),
+    transform var(--dur-instant) var(--ease-out);
+}
+.sc-icon:hover  { filter: brightness(1.15); }
+.sc-icon:active { transform: translateY(1px); }
+.sc-icon:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; border-radius: 4px; }
+
+/* Draggable nodes in the supervision map — a grab affordance needs to say it
+   is liftable before you press. Quiet: one elevation step, no movement. */
+.sc-node {
+  transition: box-shadow var(--dur-fast) var(--ease-out), border-color var(--dur-fast) var(--ease-out);
+}
+.sc-node:hover { box-shadow: var(--shadow-card); }
+.sc-node:active { box-shadow: var(--shadow-xs); }
+.sc-node:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+`;
+
 // A user-defined site, local to the current facility's calculator state. Lives
 // only in component state (cleared by reset) — it overlays the algorithm output
 // as extra site columns and, for room-based sites, seeds CRNA "rooms" that the
@@ -63,6 +112,11 @@ type CustomSite = {
 
 // Muted palette for custom sites — distinct from the built-in lane colors but
 // in the same desaturated family so custom lanes read as "first-class".
+// These stay literal hex on purpose: a lane colour is DATA (it lands on
+// CustomSite.color and flows into the same `site.color` slot as the site
+// catalogs in src/lib/staffingCalculator), and several call sites build tints
+// by concatenating an alpha suffix — `${site.color}15` — which a var() or a
+// color-mix() expression cannot survive.
 const CUSTOM_SITE_COLORS = ['#7C9CBF', '#C18FE0', '#5FB0A8', '#E0A458', '#B0708F', '#6FA8C7', '#9C8FB0'];
 
 // Overlay custom-site rooms onto a freshly-computed output. Each room-based
@@ -182,6 +236,8 @@ export default function StaffingCalculatorPage() {
 
   return (
     <div style={{ padding: '20px 24px 36px', maxWidth: 1200, margin: '0 auto' }}>
+      <style>{INTERACTION_CSS}</style>
+
       {/* Breadcrumb */}
       <div style={{ fontSize: 11, color: 'var(--text-dim)', marginBottom: 14, fontFamily: tok.mono, display: 'flex', alignItems: 'center', gap: 6, textTransform: 'uppercase', letterSpacing: 0.4 }}>
         <span style={{ color: tok.textMuted }}>scheduling</span>
@@ -208,13 +264,18 @@ export default function StaffingCalculatorPage() {
             return (
               <button
                 key={c.facilityId}
+                className="sc-btn"
                 onClick={() => setFacilityId(c.facilityId)}
+                aria-pressed={isActive}
                 title={placeholder ? `${c.facilityName} — algorithm not yet ported` : c.facilityName}
                 style={{
                   padding: '4px 10px', borderRadius: 999, fontSize: 10, fontWeight: 700, fontFamily: tok.mono,
-                  background: isActive ? '#E1F5EE' : 'transparent',
-                  color: isActive ? '#085041' : tok.textMuted,
-                  border: '0.5px solid ' + (isActive ? '#A8DBC9' : tok.border),
+                  // The selected facility is the page's one "you are here" — it
+                  // takes the accent, the same signal the segmented controls
+                  // below it use, rather than a colour of its own.
+                  background: isActive ? `color-mix(in srgb, ${tok.accent} 12%, transparent)` : 'transparent',
+                  color: isActive ? tok.accent : tok.textMuted,
+                  border: '1px solid ' + (isActive ? `color-mix(in srgb, ${tok.accent} 45%, transparent)` : tok.border),
                   cursor: 'pointer', position: 'relative',
                   opacity: placeholder ? 0.7 : 1,
                 }}
@@ -224,21 +285,17 @@ export default function StaffingCalculatorPage() {
               </button>
             );
           })}
-          <button onClick={reset} title="Reset cfg + clear manual edits" style={{
-            padding: '4px 10px', borderRadius: 4, fontSize: 10, fontWeight: 600,
-            background: 'transparent', color: tok.textMuted, border: tok.hairline, cursor: 'pointer',
-          }}>↺ reset</button>
+          <Button variant="ghost" size="sm" onClick={reset} title="Reset cfg + clear manual edits"
+            style={{ fontSize: 10, fontWeight: 600 }}>↺ reset</Button>
         </div>
        </div>
       </Card>
 
       {isPlaceholder && (
-        <div style={{
-          padding: '10px 14px', marginBottom: 14, borderRadius: 6,
-          background: 'rgba(245,158,11,0.10)', border: '0.5px solid rgba(245,158,11,0.30)',
-          fontSize: 12, color: '#b45309',
-        }}>
-          ⚠ The {calc?.facilityName} algorithm hasn&apos;t been ported yet. Inputs and output are disabled until it&apos;s wired up.
+        <div style={{ marginBottom: 14 }}>
+          <Banner tone="warn">
+            The {calc?.facilityName} algorithm hasn&apos;t been ported yet. Inputs and output are disabled until it&apos;s wired up.
+          </Banner>
         </div>
       )}
 
@@ -274,12 +331,13 @@ export default function StaffingCalculatorPage() {
           {result && <NotesPanel notes={result.notes} />}
           {result && <BreakAnalysisPanel breakAnalysis={result.breakAnalysis} />}
           {!result && (
-            <div style={{
-              padding: '24px', background: tok.card, border: tok.hairline, borderRadius: 6,
-              color: tok.textDim, fontSize: 12, fontStyle: 'italic', textAlign: 'center',
-            }}>
-              Output not available — facility calculator pending.
-            </div>
+            <Card>
+              <EmptyState
+                icon="◎"
+                title="Output not available"
+                hint="This facility's calculator is still pending — pick another site above."
+              />
+            </Card>
           )}
         </div>
       </div>
@@ -344,6 +402,7 @@ function ConfigPanel({ schema, cfg, onChange, customSites, onAddSiteClick, onCha
                       return (
                         <button
                           key={o.value}
+                          className="sc-btn"
                           onClick={() => onChange(f.key, o.value)}
                           aria-pressed={active}
                           style={{
@@ -420,12 +479,14 @@ function ConfigPanel({ schema, cfg, onChange, customSites, onAddSiteClick, onCha
                   <Stepper value={s.rooms} onChange={(v) => onChangeCustomRooms(s.key, v)} min={0} max={12} color={s.color} />
                 )}
                 <button
+                  className="sc-btn"
                   onClick={() => onRemoveCustomSite(s.key)}
                   title="Remove site"
                   aria-label={`Remove ${s.label}`}
                   style={{
                     width: 18, height: 18, borderRadius: 5, lineHeight: 1, fontSize: 12, fontWeight: 800,
-                    background: 'transparent', color: '#dc2626', border: '0.5px solid #dc262655',
+                    background: 'transparent', color: 'var(--danger)',
+                    border: '1px solid color-mix(in srgb, var(--danger) 35%, transparent)',
                     cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
                   }}
                 >×</button>
@@ -436,6 +497,7 @@ function ConfigPanel({ schema, cfg, onChange, customSites, onAddSiteClick, onCha
       )}
 
       <button
+        className="sc-btn"
         onClick={onAddSiteClick}
         style={{
           marginTop: 12, width: '100%', padding: '6px 8px', borderRadius: tok.radiusSm,
@@ -456,6 +518,7 @@ function CrossCoverToggle({ label, on, onClick, color, title }: {
   const c = color || tok.crossSite;
   return (
     <button
+      className="sc-btn"
       onClick={onClick}
       title={title || 'Cross cover — absorb with floats / flexible staff before adding dedicated coverage'}
       aria-pressed={on}
@@ -471,21 +534,6 @@ function CrossCoverToggle({ label, on, onClick, color, title }: {
       <span style={{ fontSize: 9, lineHeight: 1 }}>⇄</span>{label}
     </button>
   );
-}
-
-function modalBtnStyle(kind: 'neutral' | 'confirm'): React.CSSProperties {
-  const color = kind === 'confirm' ? tok.accent : tok.textMuted;
-  return {
-    padding: '5px 9px',
-    borderRadius: 6,
-    background: kind === 'confirm' ? `color-mix(in srgb, ${tok.accent} 12%, transparent)` : 'var(--bg-deep)',
-    border: `1px solid ${kind === 'neutral' ? tok.border : `color-mix(in srgb, ${color} 40%, transparent)`}`,
-    color,
-    cursor: 'pointer',
-    fontSize: 10,
-    fontWeight: 800,
-    fontFamily: tok.mono,
-  };
 }
 
 function AddSiteModal({ onAdd, onCancel }: {
@@ -505,17 +553,19 @@ function AddSiteModal({ onAdd, onCancel }: {
 
   return (
     <div style={{
-      position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.18)', zIndex: 50,
+      position: 'fixed', inset: 0, background: 'var(--bg-modal-backdrop)', zIndex: 50,
       display: 'flex', alignItems: 'flex-start', justifyContent: 'center', paddingTop: 120,
+      animation: 'fr-backdrop-in var(--dur-fast) var(--ease-out)',
     }}
       onClick={onCancel}
     >
       <div
+        className="modal-box"
         onClick={(e) => e.stopPropagation()}
         style={{
-          width: 360, borderRadius: 12, background: tok.card,
+          width: 360, borderRadius: 'var(--radius-lg)', background: tok.card,
           border: `1px solid color-mix(in srgb, ${tok.accent} 33%, transparent)`,
-          boxShadow: '0 18px 50px -28px rgba(15,23,42,0.55), 0 0 0 1px rgba(255,255,255,0.8) inset',
+          boxShadow: 'var(--shadow-modal)',
           padding: 16,
         }}
       >
@@ -528,15 +578,17 @@ function AddSiteModal({ onAdd, onCancel }: {
 
         <div style={fieldLabel}>Site name</div>
         <input
+          className="fr-field"
           value={name}
           autoFocus
           placeholder="e.g. Pre-op, MRI, Off-site OR"
           onChange={(e) => setName(e.target.value)}
           onKeyDown={(e) => { if (e.key === 'Enter') submit(); if (e.key === 'Escape') onCancel(); }}
+          // No inline `outline: none` — an inline value would beat .fr-field's
+          // focus outline, which is the only keyboard affordance this field has.
           style={{
             width: '100%', boxSizing: 'border-box', padding: '7px 9px', borderRadius: tok.radiusSm,
             border: tok.hairline, background: 'var(--bg-deep)', color: tok.text, fontSize: 13,
-            outline: 'none',
           }}
         />
 
@@ -554,12 +606,8 @@ function AddSiteModal({ onAdd, onCancel }: {
         )}
 
         <div style={{ marginTop: 16, display: 'flex', justifyContent: 'flex-end', gap: 7 }}>
-          <button onClick={onCancel} style={modalBtnStyle('neutral')}>Cancel</button>
-          <button
-            onClick={submit}
-            disabled={!canAdd}
-            style={{ ...modalBtnStyle('confirm'), opacity: canAdd ? 1 : 0.45, cursor: canAdd ? 'pointer' : 'not-allowed' }}
-          >Add site</button>
+          <Button variant="secondary" size="sm" onClick={onCancel}>Cancel</Button>
+          <Button variant="primary" size="sm" onClick={submit} disabled={!canAdd}>Add site</Button>
         </div>
       </div>
     </div>
@@ -569,7 +617,9 @@ function AddSiteModal({ onAdd, onCancel }: {
 function SegBtn({ active, onClick, children }: { active: boolean; onClick: () => void; children: React.ReactNode }) {
   return (
     <button
+      className="sc-btn"
       onClick={onClick}
+      aria-pressed={active}
       style={{
         flex: 1, padding: '6px 8px', borderRadius: tok.radiusSm, cursor: 'pointer',
         fontSize: 11, fontWeight: 700, fontFamily: tok.mono,
@@ -608,7 +658,10 @@ function Stepper({ value, onChange, min, max, color }: {
   max: number;
   color?: string;
 }) {
-  const c = color || '#0ea5e9';
+  // Field accents arrive as hex from the calculator schema; the fallback is the
+  // themed accent token, so every colour here goes through color-mix rather
+  // than string-concatenated alpha — which a var() could never survive.
+  const c = color || tok.accent;
   const btn: React.CSSProperties = {
     width: 22, height: 22, borderRadius: 6, border: `1px solid color-mix(in srgb, ${c} 45%, var(--border))`,
     background: `color-mix(in srgb, ${c} 7%, transparent)`, color: c, fontSize: 13, cursor: 'pointer',
@@ -617,34 +670,38 @@ function Stepper({ value, onChange, min, max, color }: {
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
       <button
+        className="sc-btn"
         aria-label="decrease"
         onClick={() => onChange(Math.max(min, value - 1))}
         disabled={value <= min}
-        style={{ ...btn, opacity: value <= min ? 0.35 : 1 }}
+        style={{ ...btn, opacity: value <= min ? 0.35 : 1, cursor: value <= min ? 'not-allowed' : 'pointer' }}
       >−</button>
-      <span style={{
-        color: tok.text, fontSize: 13, fontWeight: 700, fontVariantNumeric: 'tabular-nums',
+      <span className="fr-nums" style={{
+        color: tok.text, fontSize: 13, fontWeight: 700,
         minWidth: 18, textAlign: 'center',
       }}>{value}</span>
       <button
+        className="sc-btn"
         aria-label="increase"
         onClick={() => onChange(Math.min(max, value + 1))}
         disabled={value >= max}
-        style={{ ...btn, opacity: value >= max ? 0.35 : 1 }}
+        style={{ ...btn, opacity: value >= max ? 0.35 : 1, cursor: value >= max ? 'not-allowed' : 'pointer' }}
       >+</button>
     </div>
   );
 }
 
 function ToggleBtn({ on, onClick, color }: { on: boolean; onClick: () => void; color?: string }) {
-  const c = color || '#0ea5e9';
+  const c = color || tok.accent;
   return (
     <button
+      className="sc-btn"
       onClick={onClick}
+      aria-pressed={on}
       style={{
         padding: '2px 8px', borderRadius: 4, fontSize: 9, fontWeight: 700, cursor: 'pointer', fontFamily: tok.mono,
-        background: on ? `${c}25` : 'transparent',
-        border: `0.5px solid ${on ? c : tok.border}`,
+        background: on ? `color-mix(in srgb, ${c} 15%, transparent)` : 'transparent',
+        border: `1px solid ${on ? c : tok.border}`,
         color: on ? c : tok.textMuted,
       }}
     >
@@ -930,6 +987,7 @@ function StaffingDiagram({ result, setResult, siteCatalog }: {
             return (
               <button
                 key={m}
+                className="sc-btn"
                 onClick={() => setCrossMode(m)}
                 aria-pressed={on}
                 style={{
@@ -946,8 +1004,10 @@ function StaffingDiagram({ result, setResult, siteCatalog }: {
 
       {selectedCRNA && (
         <div style={{
-          background: 'rgba(14,165,233,0.10)', border: `0.5px solid ${tok.accent}`,
-          borderRadius: 5, padding: '6px 12px', marginTop: 6, marginBottom: 8,
+          background: `color-mix(in srgb, ${tok.accent} 10%, transparent)`,
+          border: `1px solid color-mix(in srgb, ${tok.accent} 45%, transparent)`,
+          borderLeft: `3px solid ${tok.accent}`,
+          borderRadius: tok.radiusSm, padding: '6px 12px', marginTop: 6, marginBottom: 8,
           color: tok.accent, fontSize: 11, fontWeight: 600,
           display: 'flex', alignItems: 'center', gap: 8,
         }}>
@@ -955,9 +1015,10 @@ function StaffingDiagram({ result, setResult, siteCatalog }: {
           <span style={{ fontSize: 10, fontWeight: 500, opacity: 0.85 }}>
             (hold <kbd style={kbdStyle}>Shift</kbd> to keep CRNA at current site — cross-site supervision)
           </span>
-          <button onClick={() => setSelectedCRNA(null)} style={{
-            marginLeft: 'auto', background: 'transparent', border: `0.5px solid ${tok.accent}`,
-            color: tok.accent, borderRadius: 3, padding: '1px 8px', cursor: 'pointer',
+          <button className="sc-btn" onClick={() => setSelectedCRNA(null)} style={{
+            marginLeft: 'auto', background: 'transparent',
+            border: `1px solid color-mix(in srgb, ${tok.accent} 55%, transparent)`,
+            color: tok.accent, borderRadius: 'var(--radius-sm)', padding: '1px 8px', cursor: 'pointer',
             fontSize: 10, fontFamily: tok.mono,
           }}>cancel</button>
         </div>
@@ -982,11 +1043,13 @@ function StaffingDiagram({ result, setResult, siteCatalog }: {
               onDragLeave={onDragLeave}
               style={{
                 display: 'flex',
-                borderRadius: 5,
+                borderRadius: tok.radiusSm,
                 overflow: 'hidden',
+                // site.color is catalog DATA (hex), so the drop tint stays a
+                // concatenated alpha suffix — see the note on CUSTOM_SITE_COLORS.
                 background: isLaneTarget ? `${site.color}15` : 'transparent',
-                border: isLaneTarget ? `0.5px dashed ${site.color}` : `0.5px solid transparent`,
-                transition: 'all 0.15s',
+                border: isLaneTarget ? `1px dashed ${site.color}` : `1px solid transparent`,
+                transition: `background var(--dur-fast) var(--ease-out), border-color var(--dur-fast) var(--ease-out)`,
               }}
             >
               {/* Lane label column */}
@@ -1008,7 +1071,7 @@ function StaffingDiagram({ result, setResult, siteCatalog }: {
               </div>
 
               {/* Vertical divider */}
-              <div style={{ width: 1, background: tok.border, margin: '6px 0', flexShrink: 0 }} />
+              <div style={{ width: 1, background: 'var(--border-faint)', margin: '6px 0', flexShrink: 0 }} />
 
               {/* Lane content */}
               <div style={{ flex: 1, padding: '4px 10px', minWidth: 0 }}>
@@ -1111,8 +1174,8 @@ function StaffingDiagram({ result, setResult, siteCatalog }: {
       </div>
 
       <div style={{
-        marginTop: 10, padding: '6px 10px', borderRadius: 5,
-        background: tok.surface, border: tok.hairline,
+        marginTop: 10, padding: '6px 10px', borderRadius: tok.radiusSm,
+        background: tok.surface, border: '1px solid var(--border-faint)',
         display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap',
         fontSize: 9, color: tok.textDim, fontFamily: tok.mono,
       }}>
@@ -1134,7 +1197,7 @@ function StaffingDiagram({ result, setResult, siteCatalog }: {
 const kbdStyle: React.CSSProperties = {
   fontFamily: 'var(--font-mono), ui-monospace, monospace',
   fontSize: 9, padding: '1px 4px', borderRadius: 3,
-  background: 'var(--bg-deep)', border: '0.5px solid var(--border)',
+  background: 'var(--bg-deep)', border: '1px solid var(--border)',
   color: 'var(--text)',
 };
 
@@ -1233,20 +1296,24 @@ function LaneAddControls({ onAddSupv, onAddSolo, onAddCardiac, onAddCRNA, laneCo
   onAddCRNA: () => void;
   laneColor: string;
 }) {
+  // The role colours below are the group-wide MD-kind palette (supervising /
+  // solo / cardiac), shared verbatim with the grid calculator and the
+  // staffingCalculator site catalogs — they encode WHICH KIND of provider this
+  // is, not a style choice, so they stay literal here.
   const btn = (label: string, onClick: () => void, color: string): React.CSSProperties => ({
     padding: '2px 8px', borderRadius: 4, fontSize: 9, fontWeight: 700, cursor: 'pointer',
-    background: 'transparent', color, border: `0.5px dashed ${color}`,
+    background: 'transparent', color, border: `1px dashed ${color}`,
     fontFamily: tok.mono, letterSpacing: 0.3,
   });
   return (
     <div style={{ display: 'flex', gap: 5, padding: '4px 0 2px', flexWrap: 'wrap' }}>
       {onAddCardiac ? (
-        <button onClick={onAddCardiac} style={btn('+ Cardiac MD', onAddCardiac, '#E05599')}>+ Cardiac MD</button>
+        <button className="sc-btn" onClick={onAddCardiac} style={btn('+ Cardiac MD', onAddCardiac, '#E05599')}>+ Cardiac MD</button>
       ) : (
-        <button onClick={onAddSupv} style={btn('+ Supv MD', onAddSupv, '#4A90D9')}>+ Supv MD</button>
+        <button className="sc-btn" onClick={onAddSupv} style={btn('+ Supv MD', onAddSupv, '#4A90D9')}>+ Supv MD</button>
       )}
-      <button onClick={onAddSolo} style={btn('+ Solo MD', onAddSolo, '#B06AE8')}>+ Solo MD</button>
-      <button onClick={onAddCRNA} style={btn('+ CRNA', onAddCRNA, tok.crna.fg)}>+ CRNA</button>
+      <button className="sc-btn" onClick={onAddSolo} style={btn('+ Solo MD', onAddSolo, '#B06AE8')}>+ Solo MD</button>
+      <button className="sc-btn" onClick={onAddCRNA} style={btn('+ CRNA', onAddCRNA, tok.crna.fg)}>+ CRNA</button>
       <span style={{ marginLeft: 4, color: tok.textDim, fontSize: 9, alignSelf: 'center' }}>
         in <span style={{ color: laneColor, fontWeight: 700 }}>this lane</span>
       </span>
@@ -1276,7 +1343,10 @@ function MDBlock({ md, crnas, selectedCRNA, dropTarget, onMDClick, onCRNAClick, 
 }) {
   const [hov, setHov] = useState(false);
   const isSolo = md.isSolo;
-  // Pick an outline color that says what KIND of MD this is
+  // Pick an outline color that says what KIND of MD this is. These hexes are
+  // the group's provider-type palette, shared verbatim with the grid
+  // calculator (AnesthesiologistCard / GridCanvas) and the site catalogs — they
+  // are an encoding, not a style, and tokenising one copy would desync them.
   const borderCol = isSolo
     ? (md.isCardiac ? '#E05599' : md.is8101 ? '#FFD54F' : md.isFloat ? '#80CBC4' : md.isFloorRunner ? '#00D4AA' : '#B06AE8')
     : (md.is8101 ? '#FFD54F' : md.isFloorRunner ? '#00D4AA' : '#4A90D9');
@@ -1306,25 +1376,30 @@ function MDBlock({ md, crnas, selectedCRNA, dropTarget, onMDClick, onCRNAClick, 
         cursor: selectedCRNA ? 'pointer' : 'grab',
       }}
     >
-      <div data-ccnode={dataNode} style={{
+      <div className="sc-node" data-ccnode={dataNode} style={{
         display: 'flex', alignItems: 'center', gap: 7,
-        padding: '5px 9px', borderRadius: 6,
-        background: (canAccept || isHovered) ? 'rgba(16,185,129,0.10)' : tok.surface,
-        border: `1.5px solid ${(canAccept || isHovered) ? '#16a34a' : borderCol}`,
-        minWidth: 110, flexShrink: 0, transition: 'all 0.15s',
+        padding: '5px 9px', borderRadius: tok.radiusSm,
+        // "This block will accept the selected CRNA" is a success signal, so it
+        // takes the --ok pair rather than a green picked by hand.
+        background: (canAccept || isHovered) ? 'var(--ok-bg)' : tok.surface,
+        border: `1.5px solid ${(canAccept || isHovered) ? 'var(--ok)' : borderCol}`,
+        minWidth: 110, flexShrink: 0,
+        transition: `background var(--dur-fast) var(--ease-out), border-color var(--dur-fast) var(--ease-out), box-shadow var(--dur-fast) var(--ease-out)`,
         position: 'relative',
       }}>
         {/* Delete × — appears on hover, top-right of the block. Stops propagation
             so the click doesn't trigger the reassign-CRNA-to-this-MD branch. */}
         {hov && (
           <button
+            className="sc-btn"
             title="Delete this MD"
+            aria-label={`Delete ${md.role}`}
             onClick={(e) => { e.stopPropagation(); onDelete(md.id); }}
             style={{
               position: 'absolute', top: -7, right: -7,
               width: 16, height: 16, borderRadius: '50%',
-              background: tok.card, color: '#dc2626',
-              border: '0.5px solid #dc2626',
+              background: tok.card, color: 'var(--danger)',
+              border: '1px solid var(--danger)',
               fontSize: 11, lineHeight: 1, padding: 0, cursor: 'pointer',
               display: 'flex', alignItems: 'center', justifyContent: 'center',
               fontWeight: 800, zIndex: 5,
@@ -1416,12 +1491,13 @@ function SecondaryMDCard({ md, crnas, homeSite, selectedCRNA, onMDClick, onCRNAC
       title={`${md.role} — home lane: ${homeSite.label}`}
       style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 0', cursor: selectedCRNA ? 'pointer' : 'default' }}
     >
-      <div data-ccnode={dataNode} style={{
+      <div className="sc-node" data-ccnode={dataNode} style={{
         display: 'flex', alignItems: 'center', gap: 7,
-        padding: '5px 9px', borderRadius: 6,
-        background: selectedCRNA ? 'rgba(16,185,129,0.10)' : 'rgba(249,115,22,0.07)',
-        border: `1.5px dashed ${selectedCRNA ? '#16a34a' : tone}`,
+        padding: '5px 9px', borderRadius: tok.radiusSm,
+        background: selectedCRNA ? 'var(--ok-bg)' : `color-mix(in srgb, ${tone} 8%, transparent)`,
+        border: `1.5px dashed ${selectedCRNA ? 'var(--ok)' : tone}`,
         minWidth: 110, flexShrink: 0, position: 'relative',
+        transition: `background var(--dur-fast) var(--ease-out), border-color var(--dur-fast) var(--ease-out), box-shadow var(--dur-fast) var(--ease-out)`,
       }}>
         <div style={{
           width: 22, height: 22, borderRadius: 5,
@@ -1515,10 +1591,15 @@ function CrossCoverConnectors({ containerRef, links, version }: {
   );
 }
 
+// Micro-badge stamped onto a solid role colour. Both inks are deliberately
+// theme-invariant: the fill is the role hex (identical in light and dark), so
+// the text on top has to be a fixed value too — a --text token would flip to
+// near-white in dark mode and vanish on the yellow 8101 fill. `#0f172a` is the
+// system's own darkest slate, matching --text-strong in light.
 function Badge({ color, text, dark }: { color: string; text: string; dark?: boolean }) {
   return (
     <span style={{
-      background: color, color: dark ? '#1a1a1a' : '#fff',
+      background: color, color: dark ? '#0f172a' : 'var(--on-accent)',
       fontSize: 7, fontWeight: 800, padding: '1px 4px', borderRadius: 2,
       letterSpacing: 0.3, fontFamily: tok.mono,
     }}>{text}</span>
@@ -1540,6 +1621,7 @@ function CRNAChip({ crna, selected, onClick, onDragStart, onDelete, crossSite }:
   const ringColor = addOn ? tok.warning : crossSite ? crossSite.color : tok.crna.fg;
   return (
     <div
+      className="sc-node"
       draggable
       onDragStart={onDragStart}
       onClick={(e) => { e.stopPropagation(); onClick(); }}
@@ -1549,9 +1631,10 @@ function CRNAChip({ crna, selected, onClick, onDragStart, onDelete, crossSite }:
       style={{
         display: 'inline-flex', alignItems: 'center', gap: 4,
         padding: '3px 8px', borderRadius: 999,
-        background: selected ? 'rgba(14,165,233,0.18)' : tok.crna.bg,
+        background: selected ? `color-mix(in srgb, ${tok.accent} 18%, transparent)` : tok.crna.bg,
         border: `1.5px ${addOn ? 'dashed' : 'solid'} ${selected ? tok.accent : addOn ? `color-mix(in srgb, ${tok.warning} 50%, transparent)` : crossSite ? crossSite.color + '80' : tok.crna.bd}`,
-        cursor: 'grab', transition: 'all 0.12s', whiteSpace: 'nowrap', flexShrink: 0,
+        cursor: 'grab', whiteSpace: 'nowrap', flexShrink: 0,
+        transition: `background var(--dur-fast) var(--ease-out), border-color var(--dur-fast) var(--ease-out), box-shadow var(--dur-fast) var(--ease-out)`,
         position: 'relative',
       }}
     >
@@ -1574,11 +1657,13 @@ function CRNAChip({ crna, selected, onClick, onDragStart, onDelete, crossSite }:
       )}
       {onDelete && (hov || selected) && (
         <button
+          className="sc-icon"
           title="Delete this CRNA"
+          aria-label={`Delete ${crna.role}`}
           onClick={(e) => { e.stopPropagation(); onDelete(crna.id); }}
           style={{
             background: 'transparent', border: 'none', padding: 0,
-            color: '#dc2626', fontSize: 13, lineHeight: 1, cursor: 'pointer',
+            color: 'var(--danger)', fontSize: 13, lineHeight: 1, cursor: 'pointer',
             fontWeight: 800, marginLeft: 1,
           }}
         >×</button>
@@ -1615,8 +1700,10 @@ function ContingencyCoverage({ contingencies, assignments }: {
           const t = contingencyType(cg.type);
           return (
             <div key={i} style={{
-              padding: '8px 12px', borderRadius: 5,
-              background: t.bg, border: `0.5px solid ${t.col}`,
+              padding: '8px 12px', borderRadius: tok.radiusSm,
+              background: t.bg,
+              border: `1px solid color-mix(in srgb, ${t.col} 35%, transparent)`,
+              borderLeft: `3px solid ${t.col}`,
             }}>
               <div style={{
                 color: t.col, fontSize: 10, fontWeight: 700, marginBottom: 4,
@@ -1627,14 +1714,14 @@ function ContingencyCoverage({ contingencies, assignments }: {
               </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
                 <span style={{
-                  background: tok.surface, border: `0.5px solid ${tok.md.fg}`, borderRadius: 3,
+                  background: tok.surface, border: `1px solid ${tok.md.bd}`, borderRadius: 'var(--radius-sm)',
                   padding: '1px 6px', fontWeight: 700, fontSize: 10, color: tok.text,
                 }}>{from.role}</span>
                 {cg.fromId !== cg.toId ? (
                   <>
                     <span style={{ color: t.col, fontSize: 12, fontWeight: 800 }}>→</span>
                     <span style={{
-                      background: tok.surface, border: `0.5px solid ${tok.crna.fg}`, borderRadius: 999,
+                      background: tok.surface, border: `1px solid ${tok.crna.bd}`, borderRadius: 999,
                       padding: '1px 6px', fontWeight: 700, fontSize: 10, color: tok.text,
                     }}>{to.role}</span>
                   </>
@@ -1652,17 +1739,23 @@ function ContingencyCoverage({ contingencies, assignments }: {
   );
 }
 
+// Contingency tone. These were eight hand-picked brights whose label text sat
+// on a 10% tint of itself — in light mode `#FFD93D` on pale yellow is close to
+// unreadable. Each type now maps to the token that describes its URGENCY, so
+// the ramp reads red → amber → blue → neutral in either theme and every label
+// clears AA. The distinctions that mattered (emergency vs elective-flex vs
+// break cover) survive; six hues did the work of eight.
 function contingencyType(type: string): { col: string; bg: string; icon: string } {
   switch (type) {
-    case 'trauma':    return { col: '#dc2626', bg: 'rgba(239,68,68,0.10)', icon: '🚨' };
-    case 'emergCS':   return { col: '#dc2626', bg: 'rgba(239,68,68,0.10)', icon: '🚨' };
-    case 'neuro':     return { col: '#FFD93D', bg: 'rgba(255,217,61,0.10)', icon: '🧠' };
-    case 'epTEE':     return { col: '#29B6F6', bg: 'rgba(41,182,246,0.10)', icon: '⚡' };
-    case 'teeBackup': return { col: '#CE93D8', bg: 'rgba(206,147,216,0.10)', icon: '☕' };
-    case 'teeBreaks': return { col: '#29B6F6', bg: 'rgba(41,182,246,0.10)', icon: '☕' };
-    case 'addOnFlex': return { col: '#80CBC4', bg: 'rgba(128,203,196,0.10)', icon: '♻️' };
-    case 'irFlex':    return { col: '#FFAB40', bg: 'rgba(255,171,64,0.10)', icon: '📡' };
-    default:          return { col: tok.textMuted, bg: tok.surface, icon: '📌' };
+    case 'trauma':    return { col: 'var(--danger)', bg: 'var(--danger-bg)', icon: '🚨' };
+    case 'emergCS':   return { col: 'var(--danger)', bg: 'var(--danger-bg)', icon: '🚨' };
+    case 'neuro':     return { col: 'var(--warn)',   bg: 'var(--warn-bg)',   icon: '🧠' };
+    case 'epTEE':     return { col: 'var(--info)',   bg: 'var(--info-bg)',   icon: '⚡' };
+    case 'teeBackup': return { col: 'var(--indigo)', bg: `color-mix(in srgb, var(--indigo) 10%, transparent)`, icon: '☕' };
+    case 'teeBreaks': return { col: 'var(--info)',   bg: 'var(--info-bg)',   icon: '☕' };
+    case 'addOnFlex': return { col: 'var(--ok)',     bg: 'var(--ok-bg)',     icon: '♻️' };
+    case 'irFlex':    return { col: tok.crossSite,   bg: `color-mix(in srgb, ${tok.crossSite} 10%, transparent)`, icon: '📡' };
+    default:          return { col: tok.textMuted,   bg: tok.surface,        icon: '📌' };
   }
 }
 
@@ -1692,44 +1785,52 @@ function NotesPanel({ notes }: { notes: string[] }) {
 
 function BreakAnalysisPanel({ breakAnalysis }: { breakAnalysis: CalculatorOutput['breakAnalysis'] }) {
   const sev = breakAnalysis.severity;
+  // Severity is exactly what the status tokens are for. `critical` is the same
+  // danger ink on a denser tint and a solid rule, so the two red states stay
+  // distinguishable without inventing a second red.
   const colorMap = {
-    ok:       { fg: '#16a34a', bg: 'rgba(16,185,129,0.10)', bd: 'rgba(16,185,129,0.35)' },
-    tight:    { fg: '#b45309', bg: 'rgba(245,158,11,0.10)', bd: 'rgba(245,158,11,0.35)' },
-    warning:  { fg: '#dc2626', bg: 'rgba(239,68,68,0.10)',  bd: 'rgba(239,68,68,0.35)' },
-    critical: { fg: '#dc2626', bg: 'rgba(239,68,68,0.18)',  bd: 'rgba(239,68,68,0.55)' },
+    ok:       { fg: 'var(--ok)',     bg: 'var(--ok-bg)',     bd: 'color-mix(in srgb, var(--ok) 35%, transparent)' },
+    tight:    { fg: 'var(--warn)',   bg: 'var(--warn-bg)',   bd: 'color-mix(in srgb, var(--warn) 35%, transparent)' },
+    warning:  { fg: 'var(--danger)', bg: 'var(--danger-bg)', bd: 'color-mix(in srgb, var(--danger) 35%, transparent)' },
+    critical: { fg: 'var(--danger)', bg: 'color-mix(in srgb, var(--danger) 18%, transparent)', bd: 'var(--danger)' },
   } as const;
   const c = colorMap[sev];
   return (
     <Card>
       <SectionTitle>☕ Break coverage</SectionTitle>
       <div style={{
-        marginTop: 8, padding: '8px 12px', borderRadius: 5,
-        background: c.bg, border: `0.5px solid ${c.bd}`,
+        marginTop: 8, padding: '8px 12px', borderRadius: tok.radiusSm,
+        background: c.bg, border: `1px solid ${c.bd}`, borderLeft: `3px solid ${c.fg}`,
       }}>
         <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 6 }}>
-          <span style={{ fontSize: 16, fontWeight: 800, color: c.fg, fontFamily: tok.mono }}>
+          <span className="fr-nums" style={{ fontSize: 16, fontWeight: 800, color: c.fg, fontFamily: tok.mono }}>
             {breakAnalysis.pct}%
           </span>
           <span style={{ fontSize: 10, color: c.fg, textTransform: 'uppercase', letterSpacing: 0.5, fontFamily: tok.mono, fontWeight: 700 }}>
             {sev}
           </span>
-          <span style={{ marginLeft: 'auto', fontSize: 10, color: tok.textMuted, fontFamily: tok.mono }}>
+          <span className="fr-nums" style={{ marginLeft: 'auto', fontSize: 10, color: tok.textMuted, fontFamily: tok.mono }}>
             {breakAnalysis.capacity}/{breakAnalysis.demand} slots
           </span>
         </div>
         {breakAnalysis.unrelieved > 0 && (
-          <div style={{ fontSize: 11, color: c.fg, fontWeight: 600 }}>
+          <div className="fr-nums" style={{ fontSize: 11, color: c.fg, fontWeight: 600 }}>
             {breakAnalysis.unrelieved} provider{breakAnalysis.unrelieved > 1 ? 's' : ''} may not get a timely break.
           </div>
         )}
       </div>
+      {/* Relief sources are three aligned columns, not a label/value list —
+          splitting the basis out of the parenthetical lets the break counts
+          form a real column you can add up by eye. */}
       <div style={{ marginTop: 8 }}>
-        {breakAnalysis.sources.map((s, i) => (
-          <div key={i} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, padding: '2px 0', color: tok.textMuted }}>
-            <span>{s.label}</span>
-            <span style={{ fontFamily: tok.mono, color: tok.text }}>{s.breaks} <span style={{ color: tok.textDim, fontSize: 9 }}>({s.detail})</span></span>
-          </div>
-        ))}
+        <Table
+          headers={['Relief source', 'Breaks', 'Basis']}
+          rows={breakAnalysis.sources.map((s) => [
+            <span key="l" style={{ color: tok.text }}>{s.label}</span>,
+            <span key="b" style={{ fontWeight: 700 }}>{s.breaks}</span>,
+            <span key="d" style={{ color: tok.textDim }}>{s.detail}</span>,
+          ])}
+        />
       </div>
     </Card>
   );
@@ -1738,8 +1839,10 @@ function BreakAnalysisPanel({ breakAnalysis }: { breakAnalysis: CalculatorOutput
 function SectionTitle({ children }: { children: React.ReactNode }) {
   return (
     <div style={{
-      fontSize: 12.5, fontWeight: 700, color: tok.text, letterSpacing: -0.1,
-      paddingBottom: 7, marginBottom: 9, borderBottom: '1px solid var(--border)',
+      fontSize: 'var(--fs-sm)', fontWeight: 700, color: 'var(--text-strong)', letterSpacing: -0.1,
+      // Hairline, matching the kit Card's own header rule — a full --border here
+      // read as a second box edge inside a box that already has one.
+      paddingBottom: 7, marginBottom: 9, borderBottom: '1px solid var(--border-faint)',
       display: 'flex', alignItems: 'center', gap: 7,
     }}>
       {children}

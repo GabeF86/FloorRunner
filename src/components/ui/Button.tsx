@@ -19,45 +19,18 @@ export interface ButtonProps {
   children?: ReactNode;
 }
 
-// Hover and :active live in globals.css (.fr-btn-*), not in React state.
-// Tracking hover with useState re-rendered this component on every
-// mouse-enter and mouse-leave — costly on a dense screen, and it still could
-// not express :active at all.
-const VARIANTS: Record<ButtonVariant, { base: CSSProperties }> = {
-  // The one saturated fill in the kit — every screen gets a single clear primary action.
-  primary: {
-    base: {
-      background: 'var(--blue)',
-      color: 'var(--on-accent)',
-      border: '1px solid transparent',
-      fontWeight: 700,
-    },
-  },
-  secondary: {
-    base: {
-      background: 'transparent',
-      color: 'var(--text)',
-      border: '1px solid var(--border)',
-      fontWeight: 600,
-    },
-  },
-  ghost: {
-    base: {
-      background: 'transparent',
-      color: 'var(--text-muted)',
-      border: '1px solid transparent',
-      fontWeight: 600,
-    },
-  },
-  danger: {
-    base: {
-      background: 'var(--danger-bg)',
-      color: 'var(--danger)',
-      border: '1px solid transparent',
-      fontWeight: 700,
-    },
-  },
-};
+// Colour lives ENTIRELY in globals.css (.fr-btn-*), not here.
+//
+// An earlier pass moved only :hover to CSS and left the variant's base colours
+// inline — which silently removed hover from secondary, ghost and danger
+// everywhere in the app, because an inline `background` outranks a class rule.
+// Only primary kept working, and only because it hovers via `filter`, a
+// property nothing set inline. The lesson is the rule: a state cannot live in
+// CSS while the property it overrides lives inline.
+//
+// What stays inline here is LAYOUT only. A caller's `style` prop still wins
+// over both, which is intended — that is how a caller stretches a button to
+// full width without forking the variant.
 
 const SIZES: Record<ButtonSize, CSSProperties> = {
   sm: { padding: '4px 10px', fontSize: 'var(--fs-sm)' },
@@ -76,8 +49,6 @@ export function Button({
   style,
   children,
 }: ButtonProps) {
-  const v = VARIANTS[variant];
-
   return (
     <button
       type={type}
@@ -99,7 +70,6 @@ export function Button({
         cursor: disabled ? 'not-allowed' : 'pointer',
         opacity: disabled ? 0.55 : 1,
         ...SIZES[size],
-        ...v.base,
         ...style,
       }}
     >

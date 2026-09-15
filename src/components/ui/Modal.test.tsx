@@ -89,16 +89,39 @@ describe('Badge', () => {
 });
 
 describe('Button', () => {
-  it('primary variant fills with the brand accent', () => {
+  it('carries the variant class that paints it', () => {
     const html = renderToStaticMarkup(<Button>Save changes</Button>);
     expect(html).toContain('Save changes');
-    expect(html).toContain('var(--blue)');
+    expect(html).toContain('fr-btn-primary');
     expect(html).toContain('fr-focus');
   });
 
-  it('danger variant uses the danger status vars', () => {
-    const html = renderToStaticMarkup(<Button variant="danger">Delete</Button>);
-    expect(html).toContain('var(--danger)');
+  it('names the right class per variant', () => {
+    for (const v of ['primary', 'secondary', 'ghost', 'danger'] as const) {
+      expect(renderToStaticMarkup(<Button variant={v}>x</Button>)).toContain(`fr-btn-${v}`);
+    }
+  });
+
+  it('puts NO colour inline — inline colour would disable its own hover', () => {
+    // THE regression this pins. Colour used to be inline while :hover lived in
+    // globals.css, and an inline `background` outranks a class rule — so
+    // secondary, ghost and danger silently had no hover anywhere in the app.
+    // Only primary escaped, because it hovers via `filter`, which nothing set
+    // inline. If a future change moves any of these back inline, the state it
+    // is supposed to have stops working and nothing else would catch it.
+    for (const v of ['primary', 'secondary', 'ghost', 'danger'] as const) {
+      const html = renderToStaticMarkup(<Button variant={v}>x</Button>);
+      const style = /style="([^"]*)"/.exec(html)?.[1] ?? '';
+      // Only the properties that actually COLLIDE with the hover rule.
+      // border-radius is layout and conflicts with nothing, so it stays inline.
+      expect(style, `${v} must not set colour inline`)
+        .not.toMatch(/(^|;)\s*(background|color|border(-color)?)\s*:/);
+    }
+  });
+
+  it('still lets a caller override layout through style', () => {
+    const html = renderToStaticMarkup(<Button style={{ width: '100%' }}>x</Button>);
+    expect(html).toMatch(/width:\s*100%/);
   });
 
   it('passes through disabled', () => {

@@ -409,7 +409,13 @@ export default function ProviderDetailPage({ params }: { params: { id: string } 
           than by recolouring the label: the old active colour was #0ea5e9,
           the dark-theme --blue, on a light background. The Compensation tab
           keeps a --warn underline because "this one is sensitive" is real
-          information, not decoration. */}
+          information, not decoration.
+
+          The hand-rolled button wears the kit's own .fr-btn classes instead of
+          a hand-written transition, so it moves at the house rate (motion
+          tokens) and depresses 1px on click like every other control. The
+          hover contract is .fr-btn-ghost, and only the INACTIVE tabs take it —
+          there is nowhere for the current tab to hover to. */}
       <div style={{
         display: 'flex', gap: 'var(--space-1)', flexWrap: 'wrap',
         borderBottom: '1px solid var(--border)', marginBottom: 'var(--space-5)',
@@ -422,7 +428,7 @@ export default function ProviderDetailPage({ params }: { params: { id: string } 
             <button
               key={t.key}
               onClick={() => setTab(t.key)}
-              className="fr-focus"
+              className={`fr-focus fr-btn${isActive ? '' : ' fr-btn-ghost'}`}
               aria-current={isActive ? 'page' : undefined}
               style={{
                 padding: 'var(--space-2) var(--space-3)',
@@ -431,7 +437,6 @@ export default function ProviderDetailPage({ params }: { params: { id: string } 
                 background: 'none', border: 'none',
                 borderBottom: `2px solid ${isActive ? underline : 'transparent'}`,
                 color: isActive ? 'var(--text-strong)' : 'var(--text-muted)',
-                transition: 'color .12s, border-color .12s',
                 display: 'flex', alignItems: 'center', gap: 'var(--space-2)',
                 marginBottom: -1, // sit on top of the container border
               }}
@@ -901,7 +906,12 @@ function SchedulingTab({ profile, sites, saveState, onSave }: { profile: Employm
                 <button
                   key={idx}
                   type="button"
-                  className="fr-focus"
+                  // .fr-btn = motion tokens + press nudge; .fr-btn-secondary is
+                  // the hover contract for an OFF pill only. An ON pill gets no
+                  // hover repaint, which is the same rule the kit's own .fr-toggle
+                  // states ([data-on='false']:hover) — recolouring a pill that is
+                  // already lit reads as a state change that isn't happening.
+                  className={`fr-focus fr-btn${selected ? '' : ' fr-btn-secondary'}`}
                   aria-pressed={selected}
                   onClick={() => setAvailableWeekdays(prev => {
                     const next = [...prev];
@@ -915,7 +925,6 @@ function SchedulingTab({ profile, sites, saveState, onSave }: { profile: Employm
                     border: `1px solid ${selected ? 'var(--blue)' : 'var(--border)'}`,
                     background: selected ? 'var(--info-bg)' : 'transparent',
                     color: selected ? 'var(--text-strong)' : 'var(--text-muted)',
-                    transition: 'background .12s, border-color .12s, color .12s',
                     minWidth: 58,
                   }}
                 >
@@ -1962,6 +1971,10 @@ const COUNTER_STYLE: React.CSSProperties = {
   fontSize: 'var(--fs-xs)', fontWeight: 500, color: 'var(--text-muted)',
   letterSpacing: 0.3, lineHeight: 1.5, textAlign: 'right', maxWidth: 420,
   fontFamily: 'var(--font-mono), ui-monospace, monospace',
+  // These counters stack down the right edge of eight consecutive Card
+  // headers, so their digits are read as a column even though they are not
+  // in a table.
+  fontVariantNumeric: 'tabular-nums',
 };
 
 // Current-calendar-year day counter shown beside the Sell-Back / Days Off /
@@ -2168,7 +2181,7 @@ function PtoAddForm({ providerId, onAdded }: { providerId: string; onAdded: () =
       <div style={{
         display: 'grid',
         gridTemplateColumns: mode === 'calendar' ? '1fr auto' : '1fr 1fr 1fr auto',
-        gap: 10, alignItems: 'end',
+        gap: 'var(--space-3)', alignItems: 'end',
       }}>
         {mode === 'calendar' ? null : mode === 'date' ? (
           <>
@@ -2285,7 +2298,7 @@ function RangeAddForm({ providerId, availabilityType, addLabel, accent = '#0ea5e
       <div style={{
         display: 'grid',
         gridTemplateColumns: mode === 'calendar' ? '1fr auto' : '1fr 1fr 1fr auto',
-        gap: 10, alignItems: 'end',
+        gap: 'var(--space-3)', alignItems: 'end',
       }}>
         {mode === 'date' && (
           <>
@@ -2400,7 +2413,7 @@ function WindowRequestAddForm({ providerId, window: win, usedDates, onAdded, kin
       <div style={{
         display: 'grid',
         gridTemplateColumns: mode === 'calendar' ? 'auto auto' : '1fr auto auto',
-        gap: 10, alignItems: 'end', justifyContent: mode === 'calendar' ? 'start' : undefined,
+        gap: 'var(--space-3)', alignItems: 'end', justifyContent: mode === 'calendar' ? 'start' : undefined,
       }}>
         {mode === 'date' && (
           <div>
@@ -2415,7 +2428,13 @@ function WindowRequestAddForm({ providerId, window: win, usedDates, onAdded, kin
             />
           </div>
         )}
-        <div style={{ fontSize: 'var(--fs-sm)', color: 'var(--text-muted)', paddingBottom: 8 }}>
+        <div style={{
+          fontSize: 'var(--fs-sm)', color: 'var(--text-muted)',
+          paddingBottom: 'var(--space-2)',
+          // The tally re-counts on every date the user picks; tabular digits
+          // stop the line reflowing as 9/10 becomes 10/10.
+          fontVariantNumeric: 'tabular-nums',
+        }}>
           {usedCount}/{max} request{max === 1 ? '' : 's'} used
           {mode === 'calendar' && selectedCount > 0 && projectedCount > max && (
             <span style={{ color: 'var(--danger)', fontWeight: 700 }}> — the selection needs {projectedCount} total, over the {max} allowed</span>
@@ -2570,9 +2589,14 @@ function HolidayCallAddForm({ providerId, orgId, sites, homeSiteId, onAdded }: {
 
   return (
     <div style={addFormBoxStyle}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)', flexWrap: 'wrap' }}>
         <Button variant="secondary" size="sm" title="Previous year" onClick={() => setYear(y => y - 1)}>&larr;</Button>
-        <span style={{ fontSize: 'var(--fs-md)', fontWeight: 700, minWidth: 40, textAlign: 'center', fontFamily: 'var(--font-mono), ui-monospace, monospace' }}>{year}</span>
+        <span style={{
+          fontSize: 'var(--fs-md)', fontWeight: 700, minWidth: 40, textAlign: 'center',
+          fontFamily: 'var(--font-mono), ui-monospace, monospace',
+          // Stepping the year must not re-measure the label under the arrows.
+          fontVariantNumeric: 'tabular-nums',
+        }}>{year}</span>
         <Button variant="secondary" size="sm" title="Next year" onClick={() => setYear(y => y + 1)}>&rarr;</Button>
 
         <select
@@ -2680,7 +2704,7 @@ function IcuAddForm({ providerId, rows, onAdded }: {
   return (
     <div style={addFormBoxStyle}>
       {error && <div style={{ marginBottom: 'var(--space-3)' }}><Banner tone="error">{error}</Banner></div>}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr auto', gap: 10, alignItems: 'end' }}>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr auto', gap: 'var(--space-3)', alignItems: 'end' }}>
         <div>
           <label style={fieldLabelStyle}>Week Start</label>
           <input type="date" value={start} onChange={e => setStart(e.target.value)} className="fr-field" style={fieldInputStyle} />
@@ -2912,7 +2936,7 @@ function OtherAddForm({ providerId, onAdded }: { providerId: string; onAdded: ()
       <div style={{
         display: 'grid',
         gridTemplateColumns: mode === 'calendar' ? '1fr 1fr auto' : '1fr 1fr 1fr 1fr auto',
-        gap: 10, alignItems: 'end',
+        gap: 'var(--space-3)', alignItems: 'end',
       }}>
         <div>
           <label style={fieldLabelStyle}>Type</label>
@@ -2975,15 +2999,20 @@ function ModeTabs<T extends string>({ options, mode, onChange }: {
             key={o.value}
             type="button"
             aria-pressed={on}
-            className="fr-focus"
+            // Live segment: no hover repaint (it is already the raised one).
+            // Dormant segment: the ghost contract — its label warms toward
+            // --text. Both get .fr-btn's motion tokens and press nudge.
+            className={`fr-focus fr-btn${on ? '' : ' fr-btn-ghost'}`}
             onClick={() => onChange(o.value)}
             style={{
-              padding: '4px 12px', borderRadius: 4, cursor: 'pointer',
+              padding: '4px 12px', cursor: 'pointer',
+              // Concentric with the 2px-padded track above, expressed rather
+              // than guessed: inner radius = outer radius − the gap.
+              borderRadius: 'calc(var(--radius-sm) - 2px)',
               fontSize: 'var(--fs-sm)', fontWeight: on ? 700 : 500, fontFamily: 'inherit',
               background: on ? 'var(--bg-surface)' : 'transparent',
               color: on ? 'var(--text-strong)' : 'var(--text-muted)',
               border: `1px solid ${on ? 'var(--border)' : 'transparent'}`,
-              transition: 'background .12s, color .12s, border-color .12s',
             }}
           >
             {o.label}
@@ -3012,7 +3041,7 @@ function CalendarPane({ days, onDaysChange, accent = '#0ea5e9', minDate, maxDate
 }) {
   const ranges = collapseDatesToRanges(days);
   return (
-    <div style={{ marginBottom: 10 }}>
+    <div style={{ marginBottom: 'var(--space-3)' }}>
       <CalendarMultiPicker
         selected={days}
         onChange={onDaysChange}
@@ -3417,7 +3446,8 @@ function CustomFieldInput({ def, value, onChange }: {
                 <button
                   key={o}
                   type="button"
-                  className="fr-focus"
+                  // Same pill contract as the Available-Weekdays row above.
+                  className={`fr-focus fr-btn${selected ? '' : ' fr-btn-secondary'}`}
                   aria-pressed={selected}
                   onClick={() => {
                     const next = selected ? arr.filter(x => x !== o) : [...arr, o];
@@ -3430,7 +3460,6 @@ function CustomFieldInput({ def, value, onChange }: {
                     border: `1px solid ${selected ? 'var(--blue)' : 'var(--border)'}`,
                     background: selected ? 'var(--info-bg)' : 'transparent',
                     color: selected ? 'var(--text-strong)' : 'var(--text-muted)',
-                    transition: 'background .12s, border-color .12s, color .12s',
                   }}
                 >
                   {o}
@@ -3652,6 +3681,8 @@ function CompensationTotals({ comp }: { comp: Compensation }) {
   const moneyStyle: React.CSSProperties = {
     fontFamily: 'var(--font-mono), ui-monospace, monospace',
     whiteSpace: 'nowrap',
+    // Three figures stacked flush-right that must agree on the decimal.
+    fontVariantNumeric: 'tabular-nums',
   };
 
   return (
@@ -3712,8 +3743,11 @@ function MoneyField({ label, value, onChange, hint }: {
           className="fr-field"
           style={{
             ...fieldInputStyle,
-            paddingLeft: 24,
+            paddingLeft: 24, // clears the absolutely-positioned $ at left: 10
             fontFamily: 'var(--font-mono), ui-monospace, monospace',
+            // It is an inputMode=decimal text field, so the global
+            // input[type=number] tabular rule does not reach it.
+            fontVariantNumeric: 'tabular-nums',
           }}
         />
       </div>
@@ -3811,6 +3845,7 @@ function HistoryTab({ providerId }: { providerId: string }) {
         fontSize: 'var(--fs-lg)', fontWeight: 700, color: 'var(--text-strong)',
         minWidth: 56, textAlign: 'center',
         fontFamily: 'var(--font-mono), ui-monospace, monospace',
+        fontVariantNumeric: 'tabular-nums',
       }}>{year}</span>
       <Button variant="secondary" size="sm" title="Next year" onClick={() => setYear(y => y + 1)}>&rarr;</Button>
     </div>

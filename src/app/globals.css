@@ -233,7 +233,12 @@ table, .fr-nums, input[type='number'] { font-variant-numeric: tabular-nums; }
    (--bg-surface), where the halo would show as a grey band. An outline needs
    no background match, follows the border radius, and survives forced-colors. */
 .fr-field { transition: border-color .12s, box-shadow .12s; }
-.fr-field:hover:not(:disabled):not(:focus) { border-color: var(--border-strong); }
+/* !important because every field in the app sets `border` inline as a
+   shorthand, and a shorthand outranks this longhand. Those inline borders live
+   in dozens of call sites this module does not own, so beating them is the
+   only way the hover state exists at all. The :focus-visible outline below
+   needs no such help — nothing sets `outline` inline. */
+.fr-field:hover:not(:disabled):not(:focus) { border-color: var(--border-strong) !important; }
 .fr-field:focus-visible {
   outline: 2px solid var(--blue);
   outline-offset: 1px;
@@ -282,6 +287,35 @@ table, .fr-nums, input[type='number'] { font-variant-numeric: tabular-nums; }
    The press state is a 1px downward nudge plus a slightly flattened shadow:
    the cheapest possible "this is a real control" signal, and the thing whose
    absence makes a web app feel like a document. */
+/* Variant BASE colour lives here, not inline on the component — see
+   ui/Button.tsx. A state cannot live in CSS while the property it overrides
+   lives inline: an inline `background` outranks a class rule, so keeping the
+   base inline silently disabled hover on three of the four variants. */
+.fr-btn-primary {
+  background: var(--blue);
+  color: var(--on-accent);
+  border: 1px solid transparent;
+  font-weight: 700;
+}
+.fr-btn-secondary {
+  background: transparent;
+  color: var(--text);
+  border: 1px solid var(--border);
+  font-weight: 600;
+}
+.fr-btn-ghost {
+  background: transparent;
+  color: var(--text-muted);
+  border: 1px solid transparent;
+  font-weight: 600;
+}
+.fr-btn-danger {
+  background: var(--danger-bg);
+  color: var(--danger);
+  border: 1px solid transparent;
+  font-weight: 700;
+}
+
 .fr-btn {
   transition:
     background var(--dur-fast) var(--ease-out),
@@ -321,3 +355,28 @@ table, .fr-nums, input[type='number'] { font-variant-numeric: tabular-nums; }
     border-color var(--dur-fast) var(--ease-out);
 }
 .fr-chip:hover { background: var(--tint-surface); border-color: var(--border-strong); }
+
+/* ── Segmented option buttons ─────────────────────────────────────────────
+   The site-type / day-type / category pickers: a row of buttons where one is
+   on. The UNSELECTED look lives here rather than inline, because an inline
+   background beats any :hover rule — that is why hand-rolled pickers across
+   the app have no hover at all. The SELECTED pill paints its own tone inline
+   (each option carries a meaning colour), so it simply wins over these rules
+   and hover correctly leaves it alone — same arrangement as .fr-toggle. */
+.fr-seg {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  cursor: pointer;
+  transition:
+    background var(--dur-fast) var(--ease-out),
+    border-color var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out),
+    transform var(--dur-instant) var(--ease-out);
+}
+.fr-seg:hover { background: var(--tint-surface); border-color: var(--border-strong); color: var(--text); }
+.fr-seg:active { transform: translateY(1px); }
+/* An outline rather than --focus-ring, for the same reason .fr-field uses one:
+   these pickers appear both on the page background and inside modals, and the
+   focus-ring halo is painted in --bg-base. */
+.fr-seg:focus-visible { outline: 2px solid var(--blue); outline-offset: 1px; }

@@ -24,6 +24,11 @@ interface Site { id: string; name: string; short_name: string | null; }
 
 const TABLE_HEADERS = ['Label', 'Field Name', 'Type', 'Required', 'Scope', 'Status', ''];
 
+// Page frame + header copy are shared by the loading, empty and loaded states so
+// the header does not shift or re-typeset when the fetch resolves.
+const PAGE_STYLE: React.CSSProperties = { maxWidth: 960 };
+const PAGE_SUBTITLE = 'Organization-level configuration.';
+
 export default function SettingsPage() {
   const [orgId, setOrgId] = useState<string>('');
   const [sites, setSites] = useState<Site[]>([]);
@@ -60,8 +65,8 @@ export default function SettingsPage() {
 
   if (loading) {
     return (
-      <div style={{ maxWidth: 960 }}>
-        <PageHeader title="Settings" />
+      <div style={PAGE_STYLE}>
+        <PageHeader title="Settings" subtitle={PAGE_SUBTITLE} />
         <Card pad={false}>
           <Table headers={TABLE_HEADERS} rows={undefined} minWidth={640} />
         </Card>
@@ -70,27 +75,32 @@ export default function SettingsPage() {
   }
   if (!orgId) {
     return (
-      <div style={{ maxWidth: 960 }}>
-        <PageHeader title="Settings" />
+      <div style={PAGE_STYLE}>
+        <PageHeader title="Settings" subtitle={PAGE_SUBTITLE} />
         <Banner tone="warn">Create an organization first.</Banner>
       </div>
     );
   }
 
   return (
-    <div style={{ maxWidth: 960 }}>
-      <PageHeader title="Settings" subtitle="Organization-level configuration." />
+    <div style={PAGE_STYLE}>
+      <PageHeader title="Settings" subtitle={PAGE_SUBTITLE} />
 
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', marginBottom: 12, gap: 12 }}>
-        <div>
-          <h2 style={{ fontSize: 16, fontWeight: 800, color: 'var(--text)' }}>Provider Custom Fields</h2>
-          <p style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>
+      {/* Section head: this page is the hub for the Settings group (Block Prep,
+          Rules, Requests sit beside it in the sidebar), so its own content is
+          titled as a section rather than running straight off the page H1. */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', marginBottom: 'var(--space-3)', gap: 'var(--space-3)' }}>
+        <div style={{ minWidth: 0 }}>
+          <h2 style={{ fontSize: 'var(--fs-lg)', fontWeight: 700, letterSpacing: -0.3, lineHeight: 1.2, color: 'var(--text-strong)' }}>
+            Provider Custom Fields
+          </h2>
+          <p style={{ fontSize: 'var(--fs-sm)', color: 'var(--text-muted)', marginTop: 'var(--space-1)', lineHeight: 1.45 }}>
             Extra fields that appear on every provider profile. Great for org-specific data like DEA number, preferred pager, or team assignment.
           </p>
         </div>
-        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexShrink: 0 }}>
-          <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--text-muted)' }}>
-            <input type="checkbox" checked={includeInactive} onChange={e => setIncludeInactive(e.target.checked)} style={{ accentColor: '#0ea5e9' }} />
+        <div style={{ display: 'flex', gap: 'var(--space-2)', alignItems: 'center', flexShrink: 0 }}>
+          <label style={checkboxLabelStyle}>
+            <input type="checkbox" checked={includeInactive} onChange={e => setIncludeInactive(e.target.checked)} style={checkboxStyle} />
             Show inactive
           </label>
           <Button onClick={() => setShowAdd(true)}>+ Add Field</Button>
@@ -111,13 +121,15 @@ export default function SettingsPage() {
               <span style={{ opacity: d.is_active ? 1 : 0.55, display: 'inline-block' }}>{node}</span>
             );
             return [
-              dim(<span style={{ color: 'var(--text)', fontWeight: 600 }}>{d.display_label}</span>),
-              dim(<span style={{ color: 'var(--text-muted)', fontFamily: 'monospace', fontSize: 12 }}>{d.field_name}</span>),
+              dim(<span style={{ color: 'var(--text-strong)', fontWeight: 600 }}>{d.display_label}</span>),
+              dim(<span style={{ color: 'var(--text-muted)', fontFamily: monoStack, fontSize: 'var(--fs-xs)' }}>{d.field_name}</span>),
               dim(<Badge tone="info">{d.field_type}</Badge>),
               dim(d.required ? <Badge tone="warn">Required</Badge> : <Badge tone="neutral">Optional</Badge>),
-              dim(scope.length ? <span style={{ fontSize: 12 }}>{scope.join(' · ')}</span> : <span style={{ color: 'var(--text-dim)', fontSize: 12 }}>All providers</span>),
+              dim(scope.length
+                ? <span style={{ fontSize: 'var(--fs-sm)', color: 'var(--text-muted)' }}>{scope.join(' · ')}</span>
+                : <span style={{ fontSize: 'var(--fs-sm)', color: 'var(--text-dim)' }}>All providers</span>),
               dim(
-                <span style={{ display: 'inline-flex', gap: 4, flexWrap: 'wrap' }}>
+                <span style={{ display: 'inline-flex', gap: 'var(--space-1)', flexWrap: 'wrap' }}>
                   <Badge tone={d.is_active ? 'ok' : 'neutral'}>{d.is_active ? 'Active' : 'Inactive'}</Badge>
                   {d.admin_only && <Badge tone="warn">Admin</Badge>}
                 </span>
@@ -173,7 +185,7 @@ function RowActions({ def, sites, onChanged }: { def: CustomFieldDefinition; sit
 
   return (
     <>
-      <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end', whiteSpace: 'nowrap' }}>
+      <div style={{ display: 'flex', gap: 'var(--space-1)', justifyContent: 'flex-end', whiteSpace: 'nowrap' }}>
         <Button variant="secondary" size="sm" onClick={() => setEditing(true)}>Edit</Button>
         <Button variant="secondary" size="sm" onClick={handleToggleActive}>
           {def.is_active ? 'Deactivate' : 'Activate'}
@@ -278,14 +290,15 @@ function DefinitionModal({ mode, def, orgId, sites, onClose, onSaved }: {
       }
     >
       {error && (
-        <div style={{ marginBottom: 14 }}>
+        <div style={{ marginBottom: 'var(--space-4)' }}>
           <Banner tone="error">{error}</Banner>
         </div>
       )}
 
-      <div style={{ marginBottom: 12 }}>
+      <div style={{ marginBottom: 'var(--space-3)' }}>
         <label style={labelStyle}>Display Label *</label>
         <input
+          className="fr-field"
           value={displayLabel}
           onChange={e => {
             setDisplayLabel(e.target.value);
@@ -296,23 +309,27 @@ function DefinitionModal({ mode, def, orgId, sites, onClose, onSaved }: {
             }
           }}
           placeholder="e.g. DEA Number"
-          style={{ ...inputStyle, border: `1px solid ${errors.displayLabel ? 'var(--danger)' : 'var(--border)'}` }}
+          style={{ ...inputStyle, borderColor: errors.displayLabel ? 'var(--danger)' : 'var(--border)' }}
         />
         {errors.displayLabel && <div style={errorTextStyle}>{errors.displayLabel}</div>}
       </div>
 
-      <div style={{ marginBottom: 12 }}>
+      <div style={{ marginBottom: 'var(--space-3)' }}>
         <label style={labelStyle}>Field Name (internal key) *</label>
         <input
+          className="fr-field"
           value={fieldName}
           onChange={e => setFieldName(e.target.value)}
           disabled={mode === 'edit'}
           placeholder="e.g. dea_number"
           style={{
             ...inputStyle,
-            fontFamily: 'monospace',
-            border: `1px solid ${errors.fieldName ? 'var(--danger)' : 'var(--border)'}`,
-            opacity: mode === 'edit' ? 0.6 : 1,
+            fontFamily: monoStack,
+            borderColor: errors.fieldName ? 'var(--danger)' : 'var(--border)',
+            // Locked after creation: read as disabled, not as a faded input —
+            // the dim text token says "not editable" without washing the border out.
+            color: mode === 'edit' ? 'var(--text-disabled)' : 'var(--text)',
+            cursor: mode === 'edit' ? 'not-allowed' : 'text',
           }}
         />
         {errors.fieldName ? (
@@ -322,50 +339,51 @@ function DefinitionModal({ mode, def, orgId, sites, onClose, onSaved }: {
         )}
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 12 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 'var(--space-3)', marginBottom: 'var(--space-3)' }}>
         <div>
           <label style={labelStyle}>Field Type</label>
-          <select value={fieldType} onChange={e => setFieldType(e.target.value as typeof CUSTOM_FIELD_TYPES[number])} style={inputStyle}>
+          <select className="fr-field" value={fieldType} onChange={e => setFieldType(e.target.value as typeof CUSTOM_FIELD_TYPES[number])} style={{ ...inputStyle, cursor: 'pointer' }}>
             {CUSTOM_FIELD_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
           </select>
         </div>
-        <div style={{ display: 'flex', flexDirection: 'column', justifyContent: 'flex-end', gap: 8, paddingBottom: 4 }}>
-          <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: 'var(--text-muted)' }}>
-            <input type="checkbox" checked={required} onChange={e => setRequired(e.target.checked)} style={{ accentColor: '#0ea5e9' }} />
+        <div style={{ display: 'flex', flexDirection: 'column', justifyContent: 'flex-end', gap: 'var(--space-2)', paddingBottom: 'var(--space-1)' }}>
+          <label style={{ ...checkboxLabelStyle, fontSize: 'var(--fs-sm)' }}>
+            <input type="checkbox" checked={required} onChange={e => setRequired(e.target.checked)} style={checkboxStyle} />
             Required on every profile
           </label>
-          <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: 'var(--warn)' }}>
-            <input type="checkbox" checked={adminOnly} onChange={e => setAdminOnly(e.target.checked)} style={{ accentColor: '#f59e0b' }} />
+          {/* Admin-only is a restriction, so it carries the warn tone — matching
+              the "Admin" badge this same flag paints on the table row. */}
+          <label style={{ ...checkboxLabelStyle, fontSize: 'var(--fs-sm)', color: 'var(--warn)' }}>
+            <input type="checkbox" checked={adminOnly} onChange={e => setAdminOnly(e.target.checked)} style={{ ...checkboxStyle, accentColor: 'var(--warn)' }} />
             Admin-only (hide from non-admin views)
           </label>
         </div>
       </div>
 
       {needsOptions && (
-        <div style={{ marginBottom: 12 }}>
+        <div style={{ marginBottom: 'var(--space-3)' }}>
           <label style={labelStyle}>Options (one per line)</label>
           <textarea
+            className="fr-field"
             value={optionsText}
             onChange={e => setOptionsText(e.target.value)}
             placeholder={'Option 1\nOption 2\nOption 3'}
-            style={{ ...inputStyle, minHeight: 90, resize: 'vertical', border: `1px solid ${errors.options ? 'var(--danger)' : 'var(--border)'}` }}
+            style={{ ...inputStyle, minHeight: 90, resize: 'vertical', borderColor: errors.options ? 'var(--danger)' : 'var(--border)' }}
           />
           {errors.options && <div style={errorTextStyle}>{errors.options}</div>}
         </div>
       )}
 
-      <div style={{ marginBottom: 12 }}>
+      <div style={{ marginBottom: 'var(--space-3)' }}>
         <label style={labelStyle}>Scope — Provider Types</label>
-        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', gap: 'var(--space-1)', flexWrap: 'wrap' }}>
           {PROVIDER_TYPES.map(t => (
             <Button
               key={t}
               variant="secondary"
               size="sm"
               onClick={() => setProviderTypes(prev => toggle(prev, t))}
-              style={providerTypes.includes(t)
-                ? { borderColor: 'var(--blue)', background: 'var(--info-bg)', color: 'var(--blue)' }
-                : { color: 'var(--text-muted)' }}
+              style={providerTypes.includes(t) ? scopeChipOnStyle : scopeChipOffStyle}
             >
               {t}
             </Button>
@@ -375,18 +393,16 @@ function DefinitionModal({ mode, def, orgId, sites, onClose, onSaved }: {
       </div>
 
       {sites.length > 0 && (
-        <div style={{ marginBottom: 16 }}>
+        <div style={{ marginBottom: 'var(--space-4)' }}>
           <label style={labelStyle}>Scope — Sites</label>
-          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+          <div style={{ display: 'flex', gap: 'var(--space-1)', flexWrap: 'wrap' }}>
             {sites.map(s => (
               <Button
                 key={s.id}
                 variant="secondary"
                 size="sm"
                 onClick={() => setSiteIds(prev => toggle(prev, s.id))}
-                style={siteIds.includes(s.id)
-                  ? { borderColor: 'var(--blue)', background: 'var(--info-bg)', color: 'var(--blue)' }
-                  : { color: 'var(--text-muted)' }}
+                style={siteIds.includes(s.id) ? scopeChipOnStyle : scopeChipOffStyle}
               >
                 {s.short_name || s.name}
               </Button>
@@ -399,12 +415,46 @@ function DefinitionModal({ mode, def, orgId, sites, onClose, onSaved }: {
   );
 }
 
+// The Table header already uses this stack; the internal-key field and the
+// field_name column are the same kind of value, so they read the same way.
+const monoStack = 'var(--font-mono), ui-monospace, SFMono-Regular, Menlo, monospace';
+
+// Fields pair this layout with class="fr-field", which supplies the hover
+// border and the keyboard focus outline (a pseudo-class an inline style cannot
+// express). Border is set as a longhand `border` here so callers can override
+// borderColor alone for the error state without re-declaring the shorthand.
 const inputStyle: React.CSSProperties = {
-  width: '100%', padding: '9px 12px', borderRadius: 8, border: '1px solid var(--border)',
-  background: 'var(--bg-deep)', color: 'var(--text)', fontSize: 13,
+  width: '100%',
+  padding: 'var(--space-2) var(--space-3)',
+  borderRadius: 'var(--radius-sm)',
+  border: '1px solid var(--border)',
+  background: 'var(--bg-deep)',
+  color: 'var(--text)',
+  fontSize: 'var(--fs-sm)',
+  // Textareas and selects default to the UA font; without this the modal shows
+  // three different typefaces down one column.
+  fontFamily: 'inherit',
 };
 const labelStyle: React.CSSProperties = {
-  fontSize: 11, color: 'var(--text-muted)', display: 'block', marginBottom: 5, fontWeight: 600, letterSpacing: 0.5,
+  fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', display: 'block',
+  marginBottom: 'var(--space-1)', fontWeight: 600, letterSpacing: 0.5,
 };
-const errorTextStyle: React.CSSProperties = { fontSize: 10, color: 'var(--danger)', marginTop: 3 };
-const hintStyle: React.CSSProperties = { fontSize: 10, color: 'var(--text-dim)', marginTop: 3 };
+const errorTextStyle: React.CSSProperties = { fontSize: 'var(--fs-xs)', color: 'var(--danger)', marginTop: 'var(--space-1)' };
+const hintStyle: React.CSSProperties = { fontSize: 'var(--fs-xs)', color: 'var(--text-dim)', marginTop: 'var(--space-1)' };
+
+// Checkboxes: the accent was the dark-theme blue hardcoded into a light-default
+// app; --blue tracks the theme and meets AA on both surfaces.
+const checkboxStyle: React.CSSProperties = { accentColor: 'var(--blue)', cursor: 'pointer', margin: 0 };
+const checkboxLabelStyle: React.CSSProperties = {
+  display: 'flex', alignItems: 'center', gap: 'var(--space-2)',
+  fontSize: 'var(--fs-sm)', color: 'var(--text-muted)',
+  cursor: 'pointer', userSelect: 'none', whiteSpace: 'nowrap',
+};
+
+// Scope toggles are secondary Buttons, so hover/press/focus come from .fr-btn;
+// only the selected tint is stated here. One accent family (blue) for on,
+// muted text for off — a selected chip should differ in colour, not in weight.
+const scopeChipOnStyle: React.CSSProperties = {
+  borderColor: 'var(--blue)', background: 'var(--info-bg)', color: 'var(--blue)',
+};
+const scopeChipOffStyle: React.CSSProperties = { color: 'var(--text-muted)' };

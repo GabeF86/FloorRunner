@@ -73,35 +73,158 @@ interface RuleSetActivity {
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
+/**
+ * The ten rule categories are a CATEGORICAL palette, not a status one — no
+ * semantic token means "eligibility" — so each category points at its own
+ * theme-aware custom property, defined in RULES_PAGE_CSS below. The literals
+ * that used to sit here (#0ea5e9, #fbbf24, #34d399 …) were the DARK-theme
+ * values, which is why these chips washed out on the light default; those
+ * values are kept for dark and paired with AA-passing light ones.
+ */
 const CATEGORIES: { value: RuleCategory; label: string; color: string }[] = [
-  { value: 'coverage',    label: 'Coverage',    color: '#0ea5e9' },
-  { value: 'sequence',    label: 'Sequence',    color: '#f59e0b' },
-  { value: 'eligibility', label: 'Eligibility', color: '#a78bfa' },
-  { value: 'frequency',   label: 'Frequency',   color: '#10b981' },
-  { value: 'rest',        label: 'Rest',        color: '#fb923c' },
-  { value: 'pairing',     label: 'Pairing',     color: '#f87171' },
-  { value: 'fairness',    label: 'Fairness',    color: '#8b5cf6' },
-  { value: 'open_slot',   label: 'Open Slot',   color: '#64748b' },
-  { value: 'time_off',    label: 'Time Off',    color: '#34d399' },
-  { value: 'cross_site',  label: 'Cross-Site',  color: '#fbbf24' },
+  { value: 'coverage',    label: 'Coverage',    color: 'var(--rule-cat-coverage)' },
+  { value: 'sequence',    label: 'Sequence',    color: 'var(--rule-cat-sequence)' },
+  { value: 'eligibility', label: 'Eligibility', color: 'var(--rule-cat-eligibility)' },
+  { value: 'frequency',   label: 'Frequency',   color: 'var(--rule-cat-frequency)' },
+  { value: 'rest',        label: 'Rest',        color: 'var(--rule-cat-rest)' },
+  { value: 'pairing',     label: 'Pairing',     color: 'var(--rule-cat-pairing)' },
+  { value: 'fairness',    label: 'Fairness',    color: 'var(--rule-cat-fairness)' },
+  { value: 'open_slot',   label: 'Open Slot',   color: 'var(--rule-cat-open-slot)' },
+  { value: 'time_off',    label: 'Time Off',    color: 'var(--rule-cat-time-off)' },
+  { value: 'cross_site',  label: 'Cross-Site',  color: 'var(--rule-cat-cross-site)' },
 ];
 
 const CAT_COLOR_MAP: Record<string, string> = {};
 CATEGORIES.forEach(c => { CAT_COLOR_MAP[c.value] = c.color; });
 
+/** Soft tint derived from a category ink, so tint and text can never drift. */
+const catTint = (ink: string, pct = 14) => `color-mix(in srgb, ${ink} ${pct}%, transparent)`;
+
 const DAY_TYPES = ['weekday', 'friday', 'saturday', 'sunday', 'federal_holiday', 'major_holiday'];
+
+/**
+ * Page-local stylesheet. Two things this screen needs that an inline style
+ * cannot express:
+ *
+ *   1. Hover / press states on the hand-rolled chips and switches. A selected
+ *      chip used to paint its background inline, which outranks any class
+ *      rule — so selection moves into CSS (`data-on`) and hover can finally
+ *      reach it. Layout (padding, radius, size) stays inline, matching the
+ *      .fr-field convention in globals.css.
+ *   2. The theme-aware category palette above.
+ *
+ * Selectors are unscoped rather than nested under a page wrapper because the
+ * rule builder renders through a portal, outside this page's subtree.
+ */
+const RULES_PAGE_CSS = `
+:root {
+  --rule-cat-coverage:    #0284c7;
+  --rule-cat-sequence:    #b45309;
+  --rule-cat-eligibility: #7c3aed;
+  --rule-cat-frequency:   #047857;
+  --rule-cat-rest:        #c2410c;
+  --rule-cat-pairing:     #be123c;
+  --rule-cat-fairness:    #4f46e5;
+  --rule-cat-open-slot:   #475569;
+  --rule-cat-time-off:    #0f766e;
+  --rule-cat-cross-site:  #a21caf;
+}
+[data-theme='dark'] {
+  --rule-cat-coverage:    #38bdf8;
+  --rule-cat-sequence:    #fbbf24;
+  --rule-cat-eligibility: #a78bfa;
+  --rule-cat-frequency:   #34d399;
+  --rule-cat-rest:        #fb923c;
+  --rule-cat-pairing:     #fb7185;
+  --rule-cat-fairness:    #818cf8;
+  --rule-cat-open-slot:   #94a3b8;
+  --rule-cat-time-off:    #2dd4bf;
+  --rule-cat-cross-site:  #e879f9;
+}
+
+/* Toggle chip. --chip-ink is set inline per chip; everything tonal derives
+   from it, so a chip can never have a tint from one hue and text from another. */
+.fr-rule-chip {
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-family: inherit;
+  font-weight: 700;
+  transition:
+    background var(--dur-fast) var(--ease-out),
+    border-color var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out),
+    transform var(--dur-instant) var(--ease-out);
+}
+.fr-rule-chip:hover {
+  border-color: var(--border-strong);
+  background: var(--tint-surface);
+  color: var(--text);
+}
+.fr-rule-chip[data-on='true'] {
+  border-color: var(--chip-ink);
+  background: color-mix(in srgb, var(--chip-ink) 14%, transparent);
+  color: var(--chip-ink);
+}
+.fr-rule-chip[data-on='true']:hover {
+  background: color-mix(in srgb, var(--chip-ink) 22%, transparent);
+}
+.fr-rule-chip:active { transform: translateY(1px); }
+
+/* Category disclosure header */
+.fr-rule-cathead {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  cursor: pointer;
+  text-align: left;
+  font-family: inherit;
+  transition:
+    background var(--dur-fast) var(--ease-out),
+    border-color var(--dur-fast) var(--ease-out);
+}
+.fr-rule-cathead:hover { background: var(--tint-surface-faint); border-color: var(--border-strong); }
+.fr-rule-cathead:active { background: var(--tint-surface); }
+
+/* Rule rows are a hairline-separated list — hover is the only thing that moves. */
+.fr-rule-row { transition: background var(--dur-fast) var(--ease-out); }
+.fr-rule-row:hover { background: var(--tint-surface-faint); }
+
+/* Active / same-day switches */
+.fr-rule-switch {
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  transition:
+    background var(--dur-fast) var(--ease-out),
+    box-shadow var(--dur-fast) var(--ease-out),
+    transform var(--dur-instant) var(--ease-out);
+}
+.fr-rule-switch:hover { box-shadow: var(--shadow-xs); filter: brightness(1.06); }
+.fr-rule-switch:active { transform: translateY(1px); }
+.fr-rule-switch > span { transition: left var(--dur-fast) var(--ease-out); }
+
+/* Click-to-rename heading — the underline is the only affordance it has. */
+.fr-rule-title { transition: color var(--dur-fast) var(--ease-out); }
+.fr-rule-title:hover {
+  color: var(--text-strong);
+  text-decoration: underline;
+  text-decoration-color: var(--border-strong);
+  text-underline-offset: 4px;
+}
+`;
 
 // ── Shared Styles ─────────────────────────────────────────────────────────────
 
 const inputStyle: React.CSSProperties = {
-  width: '100%', padding: '10px 12px', borderRadius: 8,
+  width: '100%', padding: '10px 12px', borderRadius: 'var(--radius-sm)',
   border: '1px solid var(--border)', background: 'var(--bg-deep)',
-  color: 'var(--text)', fontSize: 14, marginBottom: 12,
-  boxSizing: 'border-box',
+  color: 'var(--text)', fontSize: 'var(--fs-md)', marginBottom: 'var(--space-3)',
+  boxSizing: 'border-box', fontFamily: 'inherit',
 };
 
 const labelStyle: React.CSSProperties = {
-  fontSize: 11, color: 'var(--text-muted)', display: 'block',
+  fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', display: 'block',
   marginBottom: 5, fontWeight: 600, letterSpacing: 0.5,
 };
 
@@ -120,18 +243,21 @@ function RuleActivityBadge({ activity, ruleId, isActive }: {
     return (
       <span title="No violations recorded across this site's assignments." style={{
         fontSize: 10, fontWeight: 600, padding: '2px 7px', borderRadius: 4,
-        background: 'rgba(16,185,129,0.10)', color: '#16a34a',
+        background: 'var(--ok-bg)', color: 'var(--ok)',
         fontFamily: 'var(--font-mono), ui-monospace, monospace',
+        fontVariantNumeric: 'tabular-nums',
       }}>0 fires</span>
     );
   }
+  // Severity reads off the status ramp: a hard fire is --danger, a soft one --warn.
   const isHard = row.hard_count > 0;
   return (
     <span title={`${row.hard_count} hard · ${row.soft_count} soft across ${activity.assignments_checked} validated assignments`} style={{
       fontSize: 10, fontWeight: 700, padding: '2px 7px', borderRadius: 4,
-      background: isHard ? 'rgba(239,68,68,0.12)' : 'rgba(245,158,11,0.12)',
-      color: isHard ? '#dc2626' : '#b45309',
+      background: isHard ? 'var(--danger-bg)' : 'var(--warn-bg)',
+      color: isHard ? 'var(--danger)' : 'var(--warn)',
       fontFamily: 'var(--font-mono), ui-monospace, monospace',
+      fontVariantNumeric: 'tabular-nums',
     }}>
       {row.total} fire{row.total === 1 ? '' : 's'}
     </span>
@@ -195,6 +321,9 @@ function Stat({ label, value, color, fontMono }: { label: string; value: number;
       <div style={{
         fontSize: 18, fontWeight: 800, color: color ?? 'var(--text)',
         fontFamily: fontMono ? 'var(--font-mono), ui-monospace, monospace' : 'inherit',
+        // Four stats sit in one row and get compared across; proportional
+        // digits make that row ripple.
+        fontVariantNumeric: 'tabular-nums',
       }}>
         {value.toLocaleString()}
       </div>
@@ -212,16 +341,17 @@ function InfoTip({ text }: { text: string }) {
         style={{
           width: 16, height: 16, borderRadius: '50%', display: 'inline-flex',
           alignItems: 'center', justifyContent: 'center', fontSize: 10, fontWeight: 800,
-          background: 'rgba(14,165,233,0.15)', color: '#0ea5e9', cursor: 'help',
+          background: 'var(--info-bg)', color: 'var(--info)', cursor: 'help',
         }}
       >i</span>
       {show && (
         <div style={{
           position: 'absolute', bottom: '100%', left: '50%', transform: 'translateX(-50%)',
-          background: 'var(--bg-deep)', border: '1px solid var(--border)', borderRadius: 8,
-          padding: '8px 12px', fontSize: 12, color: 'var(--text-muted)', width: 240,
+          background: 'var(--bg-popover)', border: '1px solid var(--border)',
+          borderRadius: 'var(--radius-sm)',
+          padding: '8px 12px', fontSize: 'var(--fs-sm)', color: 'var(--text-muted)', width: 240,
           zIndex: 100, marginBottom: 6, lineHeight: 1.5,
-          boxShadow: '0 4px 12px rgba(0,0,0,0.4)',
+          boxShadow: 'var(--shadow-popover)',
         }}>{text}</div>
       )}
     </span>
@@ -324,8 +454,8 @@ export default function RuleSetDetailPage({ params }: { params: { id: string } }
     setCollapsedCats(prev => ({ ...prev, [cat]: !prev[cat] }));
   };
 
-  if (loading) return <div style={{ padding: 40, color: 'var(--text-muted)' }}>Loading...</div>;
-  if (!ruleSet) return <div style={{ padding: 40, color: 'var(--text-muted)' }}>Rule set not found.</div>;
+  if (loading) return <div style={{ padding: 'var(--space-8)', color: 'var(--text-muted)' }}>Loading...</div>;
+  if (!ruleSet) return <div style={{ padding: 'var(--space-8)', color: 'var(--text-muted)' }}>Rule set not found.</div>;
 
   const rules = ruleSet.rule_definitions || [];
   const groupedRules: Record<string, RuleDefinition[]> = {};
@@ -335,7 +465,9 @@ export default function RuleSetDetailPage({ params }: { params: { id: string } }
   });
 
   return (
-    <div style={{ padding: '24px 32px', maxWidth: 1100 }}>
+    <div style={{ padding: 'var(--space-6) var(--space-7)', maxWidth: 1100 }}>
+      <style>{RULES_PAGE_CSS}</style>
+
       {/* Back link */}
       <div style={{ marginBottom: 16 }}>
         <Button variant="ghost" size="sm" onClick={() => router.push('/rules')}>
@@ -350,6 +482,7 @@ export default function RuleSetDetailPage({ params }: { params: { id: string } }
             <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 6 }}>
               <input
                 autoFocus
+                className="fr-field"
                 value={nameValue}
                 onChange={e => setNameValue(e.target.value)}
                 onKeyDown={e => { if (e.key === 'Enter') saveName(); if (e.key === 'Escape') { setEditingName(false); setNameValue(ruleSet.name); } }}
@@ -359,15 +492,16 @@ export default function RuleSetDetailPage({ params }: { params: { id: string } }
             </div>
           ) : (
             <h1
+              className="fr-rule-title"
               onClick={() => setEditingName(true)}
-              style={{ fontSize: 22, fontWeight: 800, color: 'var(--text)', cursor: 'pointer', marginBottom: 6 }}
+              style={{ fontSize: 'var(--fs-xl)', fontWeight: 800, color: 'var(--text-strong)', letterSpacing: -0.3, cursor: 'pointer', marginBottom: 6 }}
               title="Click to rename"
             >{ruleSet.name}</h1>
           )}
           <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
             <Badge tone="info">{ruleSet.sites?.name || 'Unknown Site'}</Badge>
             <Badge tone={ruleSet.status === 'active' ? 'ok' : 'neutral'}>{ruleSet.status}</Badge>
-            <span style={{ fontSize: 12, color: 'var(--text-dim)' }}>{rules.length} rule{rules.length !== 1 ? 's' : ''}</span>
+            <span style={{ fontSize: 'var(--fs-sm)', color: 'var(--text-dim)' }}>{rules.length} rule{rules.length !== 1 ? 's' : ''}</span>
           </div>
         </div>
 
@@ -401,12 +535,13 @@ export default function RuleSetDetailPage({ params }: { params: { id: string } }
         style={{ marginBottom: 28 }}
       >
         <textarea
+          className="fr-field"
           value={plainText}
           onChange={e => setPlainText(e.target.value)}
           placeholder="Paste scheduling rules here in plain language...&#10;&#10;Example:&#10;- C1 always has post-call day off&#10;- Only call takers can take call shifts&#10;- Max 6 calls per month per provider"
           style={{
             ...inputStyle, minHeight: 120, resize: 'vertical', marginBottom: 0,
-            fontFamily: 'inherit', lineHeight: 1.6,
+            lineHeight: 1.6,
           }}
         />
       </Card>
@@ -440,41 +575,51 @@ export default function RuleSetDetailPage({ params }: { params: { id: string } }
           <div key={cat.value} style={{ marginBottom: 16 }}>
             {/* Category header */}
             <button
+              className="fr-focus fr-rule-cathead"
               onClick={() => toggleCat(cat.value)}
+              aria-expanded={!collapsed}
               style={{
                 width: '100%', display: 'flex', alignItems: 'center', gap: 10,
-                padding: '10px 16px', borderRadius: collapsed ? 10 : '10px 10px 0 0',
-                background: 'var(--bg-surface)', border: '1px solid var(--border)',
-                borderBottom: collapsed ? '1px solid var(--border)' : 'none',
-                cursor: 'pointer', textAlign: 'left',
+                padding: '10px 16px',
+                borderRadius: collapsed ? 'var(--radius-md)' : 'var(--radius-md) var(--radius-md) 0 0',
+                // Left to the class when collapsed, so :hover can warm all four
+                // edges rather than three.
+                borderBottom: collapsed ? undefined : 'none',
               }}
             >
-              <span style={{ fontSize: 14, color: 'var(--text-dim)', transition: 'transform 0.15s', transform: collapsed ? 'rotate(-90deg)' : 'rotate(0deg)' }}>&#9660;</span>
               <span style={{
-                fontSize: 11, fontWeight: 700, padding: '3px 10px', borderRadius: 6,
-                background: cat.color + '20', color: cat.color,
+                fontSize: 'var(--fs-md)', color: 'var(--text-dim)', lineHeight: 1,
+                transition: 'transform var(--dur-fast) var(--ease-out)',
+                transform: collapsed ? 'rotate(-90deg)' : 'rotate(0deg)',
+              }}>&#9660;</span>
+              <span style={{
+                fontSize: 'var(--fs-xs)', fontWeight: 700, padding: '3px 10px', borderRadius: 'var(--radius-sm)',
+                background: catTint(cat.color), color: cat.color,
+                border: `1px solid ${catTint(cat.color, 24)}`,
               }}>{cat.label}</span>
-              <span style={{ fontSize: 12, color: 'var(--text-dim)', fontWeight: 600 }}>{catRules.length} rule{catRules.length !== 1 ? 's' : ''}</span>
+              <span style={{ fontSize: 'var(--fs-sm)', color: 'var(--text-dim)', fontWeight: 600, fontVariantNumeric: 'tabular-nums' }}>{catRules.length} rule{catRules.length !== 1 ? 's' : ''}</span>
             </button>
 
             {/* Rules */}
             {!collapsed && (
               <div style={{
                 border: '1px solid var(--border)', borderTop: 'none',
-                borderRadius: '0 0 10px 10px', overflow: 'hidden',
+                borderRadius: '0 0 var(--radius-md) var(--radius-md)', overflow: 'hidden',
               }}>
                 {catRules.map((rule, idx) => (
-                  <div key={rule.id} style={{
+                  <div key={rule.id} className="fr-rule-row" style={{
                     padding: '14px 18px', background: 'var(--bg-surface)',
-                    borderTop: idx === 0 ? 'none' : '1px solid var(--border)',
+                    // A hairline between rows rather than the full --border:
+                    // this is one list inside one box, not a stack of boxes.
+                    borderTop: idx === 0 ? 'none' : '1px solid var(--border-faint)',
                     display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12,
                   }}>
                     {/* Left: rule info */}
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4, flexWrap: 'wrap' }}>
-                        <span style={{ fontSize: 14, fontWeight: 700, color: rule.is_active ? 'var(--text)' : 'var(--text-dim)' }}>{rule.rule_name}</span>
+                        <span style={{ fontSize: 'var(--fs-md)', fontWeight: 700, color: rule.is_active ? 'var(--text-strong)' : 'var(--text-dim)' }}>{rule.rule_name}</span>
                         <Badge tone={rule.hard_constraint ? 'danger' : 'warn'}>{rule.hard_constraint ? 'Hard' : 'Soft'}</Badge>
-                        <span style={{ fontSize: 10, color: 'var(--text-dim)', fontWeight: 600 }}>Priority: {rule.priority_rank}</span>
+                        <span style={{ fontSize: 10, color: 'var(--text-dim)', fontWeight: 600, fontVariantNumeric: 'tabular-nums' }}>Priority: {rule.priority_rank}</span>
                         <Badge tone="info">{rule.applies_to_provider_group}</Badge>
                         <RuleActivityBadge activity={activity} ruleId={rule.id} isActive={rule.is_active} />
                       </div>
@@ -482,16 +627,18 @@ export default function RuleSetDetailPage({ params }: { params: { id: string } }
                         <div style={{ fontSize: 13, color: 'var(--text-muted)', lineHeight: 1.5, marginBottom: 6 }}>{rule.explanation_text}</div>
                       )}
                       <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+                        {/* Scope chips: shift types read as --info, day types as
+                            --warn — the same two tones the builder uses for them. */}
                         {rule.applies_to_shift_types && rule.applies_to_shift_types.length > 0 && rule.applies_to_shift_types.map((st: string) => (
                           <span key={st} style={{
                             fontSize: 10, fontWeight: 600, padding: '2px 6px', borderRadius: 4,
-                            background: 'rgba(14,165,233,0.1)', color: '#38bdf8',
+                            background: 'var(--info-bg)', color: 'var(--info)',
                           }}>{st}</span>
                         ))}
                         {rule.applies_to_day_types && rule.applies_to_day_types.length > 0 && rule.applies_to_day_types.map((dt: string) => (
                           <span key={dt} style={{
                             fontSize: 10, fontWeight: 600, padding: '2px 6px', borderRadius: 4,
-                            background: 'rgba(251,191,36,0.1)', color: '#fbbf24',
+                            background: 'var(--warn-bg)', color: 'var(--warn)',
                           }}>{dt}</span>
                         ))}
                       </div>
@@ -501,17 +648,22 @@ export default function RuleSetDetailPage({ params }: { params: { id: string } }
                     <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexShrink: 0 }}>
                       {/* Active toggle */}
                       <button
+                        className="fr-focus fr-rule-switch"
                         onClick={() => toggleRuleActive(rule)}
                         title={rule.is_active ? 'Disable rule' : 'Enable rule'}
+                        aria-pressed={rule.is_active}
                         style={{
-                          width: 36, height: 20, borderRadius: 10, cursor: 'pointer', border: 'none',
-                          background: rule.is_active ? '#10b981' : 'var(--border)',
-                          position: 'relative', transition: 'background 0.15s',
+                          width: 36, height: 20, borderRadius: 10,
+                          background: rule.is_active ? 'var(--ok)' : 'var(--border)',
+                          position: 'relative',
                         }}
                       >
                         <span style={{
                           position: 'absolute', top: 2, width: 16, height: 16, borderRadius: '50%',
-                          background: '#fff', transition: 'left 0.15s',
+                          // The knob sits on a saturated fill in both themes, which
+                          // is exactly what --on-accent is for.
+                          background: 'var(--on-accent)',
+                          boxShadow: 'var(--shadow-xs)',
                           left: rule.is_active ? 18 : 2,
                         }} />
                       </button>
@@ -696,18 +848,23 @@ function RuleBuilderModal({ ruleSetId, shiftTypes, existing, onClose, onSaved }:
     >
         {/* Rule Name */}
         <label style={labelStyle}>Rule Name *</label>
-        <input style={inputStyle} placeholder="e.g. C1 Post-Call Day Off" value={ruleName} onChange={e => setRuleName(e.target.value)} />
+        <input className="fr-field" style={inputStyle} placeholder="e.g. C1 Post-Call Day Off" value={ruleName} onChange={e => setRuleName(e.target.value)} />
 
         {/* Category buttons */}
         <label style={labelStyle}>Rule Category *</label>
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 14 }}>
           {CATEGORIES.map(c => (
-            <button key={c.value} onClick={() => setCategory(c.value)} style={{
-              padding: '6px 12px', borderRadius: 6, cursor: 'pointer', fontSize: 11, fontWeight: 700,
-              border: `1px solid ${category === c.value ? c.color : 'var(--border)'}`,
-              background: category === c.value ? c.color + '20' : 'transparent',
-              color: category === c.value ? c.color : 'var(--text-muted)',
-            }}>{c.label}</button>
+            <button
+              key={c.value}
+              className="fr-focus fr-rule-chip"
+              data-on={category === c.value}
+              aria-pressed={category === c.value}
+              onClick={() => setCategory(c.value)}
+              style={{
+                padding: '6px 12px', borderRadius: 'var(--radius-sm)', fontSize: 'var(--fs-xs)',
+                ['--chip-ink' as string]: c.color,
+              } as React.CSSProperties}
+            >{c.label}</button>
           ))}
         </div>
 
@@ -715,58 +872,69 @@ function RuleBuilderModal({ ruleSetId, shiftTypes, existing, onClose, onSaved }:
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 14 }}>
           <label style={{ ...labelStyle, marginBottom: 0 }}>Hard Constraint</label>
           <InfoTip text="Hard constraints cannot be broken by the scheduler. Soft constraints generate warnings but can be overridden." />
+          {/* Severity, so it reads off the status ramp: hard = --danger, soft = --warn. */}
           <button
+            className="fr-focus fr-rule-switch"
             onClick={() => setHardConstraint(!hardConstraint)}
+            aria-pressed={hardConstraint}
             style={{
-              width: 40, height: 22, borderRadius: 11, cursor: 'pointer', border: 'none',
-              background: hardConstraint ? '#ef4444' : '#f59e0b',
-              position: 'relative', transition: 'background 0.15s',
+              width: 40, height: 22, borderRadius: 11,
+              background: hardConstraint ? 'var(--danger)' : 'var(--warn)',
+              position: 'relative',
             }}
           >
             <span style={{
               position: 'absolute', top: 3, width: 16, height: 16, borderRadius: '50%',
-              background: '#fff', transition: 'left 0.15s',
+              background: 'var(--on-accent)', boxShadow: 'var(--shadow-xs)',
               left: hardConstraint ? 21 : 3,
             }} />
           </button>
-          <span style={{ fontSize: 12, fontWeight: 700, color: hardConstraint ? '#ef4444' : '#f59e0b' }}>
+          <span style={{ fontSize: 'var(--fs-sm)', fontWeight: 700, color: hardConstraint ? 'var(--danger)' : 'var(--warn)' }}>
             {hardConstraint ? 'Hard (cannot break)' : 'Soft (warning only)'}
           </span>
         </div>
 
         {/* Priority Rank */}
         <label style={labelStyle}>Priority Rank <InfoTip text="Lower number = higher priority. Rules with lower rank are evaluated first." /></label>
-        <input type="number" style={{ ...inputStyle, width: 120 }} value={priorityRank} onChange={e => setPriorityRank(parseInt(e.target.value) || 0)} min={1} />
+        <input type="number" className="fr-field" style={{ ...inputStyle, width: 120 }} value={priorityRank} onChange={e => setPriorityRank(parseInt(e.target.value) || 0)} min={1} />
 
         {/* Provider Group */}
         <label style={labelStyle}>Provider Group</label>
         <div style={{ display: 'flex', gap: 6, marginBottom: 14 }}>
           {(['physician', 'crna', 'both'] as const).map(pg => (
-            <button key={pg} onClick={() => setProviderGroup(pg)} style={{
-              padding: '6px 14px', borderRadius: 6, cursor: 'pointer', fontSize: 12, fontWeight: 700,
-              border: `1px solid ${providerGroup === pg ? '#6366f1' : 'var(--border)'}`,
-              background: providerGroup === pg ? 'rgba(99,102,241,0.12)' : 'transparent',
-              color: providerGroup === pg ? '#818cf8' : 'var(--text-muted)',
-              textTransform: 'capitalize',
-            }}>{pg}</button>
+            <button
+              key={pg}
+              className="fr-focus fr-rule-chip"
+              data-on={providerGroup === pg}
+              aria-pressed={providerGroup === pg}
+              onClick={() => setProviderGroup(pg)}
+              style={{
+                padding: '6px 14px', borderRadius: 'var(--radius-sm)', fontSize: 'var(--fs-sm)',
+                textTransform: 'capitalize',
+                ['--chip-ink' as string]: 'var(--indigo)',
+              } as React.CSSProperties}
+            >{pg}</button>
           ))}
         </div>
 
         {/* Explanation Text */}
         <label style={labelStyle}>Explanation Text</label>
         <textarea
+          className="fr-field"
           value={explanationText}
           onChange={e => setExplanationText(e.target.value)}
           placeholder="Human-readable description of what this rule does..."
-          style={{ ...inputStyle, minHeight: 60, resize: 'vertical', fontFamily: 'inherit' }}
+          style={{ ...inputStyle, minHeight: 60, resize: 'vertical' }}
         />
 
         {/* ── Category-specific fields ─────────────────────── */}
+        {/* A panel inside a modal is already a box inside a box, so it is held
+            by a hairline rather than the full --border. */}
         <div style={{
-          background: 'var(--bg-deep)', border: '1px solid var(--border)', borderRadius: 10,
-          padding: 16, marginBottom: 14,
+          background: 'var(--bg-deep)', border: '1px solid var(--border-faint)',
+          borderRadius: 'var(--radius-md)', padding: 'var(--space-4)', marginBottom: 14,
         }}>
-          <div style={{ fontSize: 12, fontWeight: 700, color: CAT_COLOR_MAP[category] || 'var(--text)', marginBottom: 12, textTransform: 'uppercase', letterSpacing: 0.5 }}>
+          <div style={{ fontSize: 'var(--fs-sm)', fontWeight: 700, color: CAT_COLOR_MAP[category] || 'var(--text)', marginBottom: 12, textTransform: 'uppercase', letterSpacing: 0.5 }}>
             {category} Configuration
           </div>
 
@@ -774,13 +942,13 @@ function RuleBuilderModal({ ruleSetId, shiftTypes, existing, onClose, onSaved }:
           {category === 'sequence' && (
             <>
               <label style={labelStyle}>Trigger Shift</label>
-              <select value={seqTriggerShift} onChange={e => setSeqTriggerShift(e.target.value)} style={selectStyle}>
+              <select value={seqTriggerShift} onChange={e => setSeqTriggerShift(e.target.value)} className="fr-field" style={selectStyle}>
                 <option value="">Select shift...</option>
                 {shiftOptions.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
               </select>
 
               <label style={labelStyle}>Relationship</label>
-              <select value={seqRelationship} onChange={e => setSeqRelationship(e.target.value)} style={selectStyle}>
+              <select value={seqRelationship} onChange={e => setSeqRelationship(e.target.value)} className="fr-field" style={selectStyle}>
                 <option value="post_call">Post-Call (provider who did trigger yesterday gets linked today)</option>
                 <option value="pre_call">Pre-Call (provider who will do trigger tomorrow gets linked today)</option>
                 <option value="same_day_pair">Same-Day Pair (same provider does both on same day)</option>
@@ -788,7 +956,7 @@ function RuleBuilderModal({ ruleSetId, shiftTypes, existing, onClose, onSaved }:
               </select>
 
               <label style={labelStyle}>Linked Shift</label>
-              <select value={seqLinkedShift} onChange={e => setSeqLinkedShift(e.target.value)} style={selectStyle}>
+              <select value={seqLinkedShift} onChange={e => setSeqLinkedShift(e.target.value)} className="fr-field" style={selectStyle}>
                 <option value="">Select shift...</option>
                 {shiftOptions.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
               </select>
@@ -799,13 +967,13 @@ function RuleBuilderModal({ ruleSetId, shiftTypes, existing, onClose, onSaved }:
           {category === 'rest' && (
             <>
               <label style={labelStyle}>After Shift</label>
-              <select value={restAfterShift} onChange={e => setRestAfterShift(e.target.value)} style={selectStyle}>
+              <select value={restAfterShift} onChange={e => setRestAfterShift(e.target.value)} className="fr-field" style={selectStyle}>
                 <option value="">Select shift...</option>
                 {shiftOptions.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
               </select>
 
               <label style={labelStyle}>Rest Type</label>
-              <select value={restType} onChange={e => setRestType(e.target.value)} style={selectStyle}>
+              <select value={restType} onChange={e => setRestType(e.target.value)} className="fr-field" style={selectStyle}>
                 <option value="day_off">Day Off (next day off)</option>
                 <option value="min_hours">Minimum Hours (min rest before next shift)</option>
                 <option value="early_out">Early Out (leave early next day)</option>
@@ -814,7 +982,7 @@ function RuleBuilderModal({ ruleSetId, shiftTypes, existing, onClose, onSaved }:
               {restType === 'min_hours' && (
                 <>
                   <label style={labelStyle}>Minimum Hours</label>
-                  <input type="number" value={restMinHours} onChange={e => setRestMinHours(parseInt(e.target.value) || 0)} style={{ ...inputStyle, width: 120 }} min={1} />
+                  <input type="number" className="fr-field" value={restMinHours} onChange={e => setRestMinHours(parseInt(e.target.value) || 0)} style={{ ...inputStyle, width: 120 }} min={1} />
                 </>
               )}
             </>
@@ -824,13 +992,13 @@ function RuleBuilderModal({ ruleSetId, shiftTypes, existing, onClose, onSaved }:
           {category === 'pairing' && (
             <>
               <label style={labelStyle}>Primary Shift</label>
-              <select value={pairPrimary} onChange={e => setPairPrimary(e.target.value)} style={selectStyle}>
+              <select value={pairPrimary} onChange={e => setPairPrimary(e.target.value)} className="fr-field" style={selectStyle}>
                 <option value="">Select shift...</option>
                 {shiftOptions.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
               </select>
 
               <label style={labelStyle}>Required Backup Shift</label>
-              <select value={pairBackup} onChange={e => setPairBackup(e.target.value)} style={selectStyle}>
+              <select value={pairBackup} onChange={e => setPairBackup(e.target.value)} className="fr-field" style={selectStyle}>
                 <option value="">Select shift...</option>
                 {shiftOptions.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
               </select>
@@ -838,16 +1006,18 @@ function RuleBuilderModal({ ruleSetId, shiftTypes, existing, onClose, onSaved }:
               <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
                 <label style={{ ...labelStyle, marginBottom: 0 }}>Same Day Required</label>
                 <button
+                  className="fr-focus fr-rule-switch"
                   onClick={() => setPairSameDay(!pairSameDay)}
+                  aria-pressed={pairSameDay}
                   style={{
-                    width: 36, height: 20, borderRadius: 10, cursor: 'pointer', border: 'none',
-                    background: pairSameDay ? '#10b981' : 'var(--border)',
-                    position: 'relative', transition: 'background 0.15s',
+                    width: 36, height: 20, borderRadius: 10,
+                    background: pairSameDay ? 'var(--ok)' : 'var(--border)',
+                    position: 'relative',
                   }}
                 >
                   <span style={{
                     position: 'absolute', top: 2, width: 16, height: 16, borderRadius: '50%',
-                    background: '#fff', transition: 'left 0.15s',
+                    background: 'var(--on-accent)', boxShadow: 'var(--shadow-xs)',
                     left: pairSameDay ? 18 : 2,
                   }} />
                 </button>
@@ -859,13 +1029,13 @@ function RuleBuilderModal({ ruleSetId, shiftTypes, existing, onClose, onSaved }:
           {category === 'eligibility' && (
             <>
               <label style={labelStyle}>Shift</label>
-              <select value={eligShift} onChange={e => setEligShift(e.target.value)} style={selectStyle}>
+              <select value={eligShift} onChange={e => setEligShift(e.target.value)} className="fr-field" style={selectStyle}>
                 <option value="">Select shift...</option>
                 {shiftOptions.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
               </select>
 
               <label style={labelStyle}>Requirement</label>
-              <select value={eligRequirement} onChange={e => setEligRequirement(e.target.value)} style={selectStyle}>
+              <select value={eligRequirement} onChange={e => setEligRequirement(e.target.value)} className="fr-field" style={selectStyle}>
                 <option value="call_taker_only">Call Taker Only</option>
                 <option value="fellowship_required">Fellowship Required</option>
                 <option value="skill_required">Skill Required</option>
@@ -873,7 +1043,7 @@ function RuleBuilderModal({ ruleSetId, shiftTypes, existing, onClose, onSaved }:
               </select>
 
               <label style={labelStyle}>Required Value <InfoTip text="For fellowship or skill requirements, enter the specific name. For exclusions, enter the provider type." /></label>
-              <input style={inputStyle} placeholder="e.g. Cardiac, Pediatric, Part-Time" value={eligValue} onChange={e => setEligValue(e.target.value)} />
+              <input className="fr-field" style={inputStyle} placeholder="e.g. Cardiac, Pediatric, Part-Time" value={eligValue} onChange={e => setEligValue(e.target.value)} />
             </>
           )}
 
@@ -881,7 +1051,7 @@ function RuleBuilderModal({ ruleSetId, shiftTypes, existing, onClose, onSaved }:
           {category === 'frequency' && (
             <>
               <label style={labelStyle}>Shift Category</label>
-              <select value={freqCategory} onChange={e => setFreqCategory(e.target.value)} style={selectStyle}>
+              <select value={freqCategory} onChange={e => setFreqCategory(e.target.value)} className="fr-field" style={selectStyle}>
                 <option value="weekday_call">Weekday Call</option>
                 <option value="weekend_call">Weekend Call</option>
                 <option value="holiday_call">Holiday Call</option>
@@ -890,7 +1060,7 @@ function RuleBuilderModal({ ruleSetId, shiftTypes, existing, onClose, onSaved }:
               </select>
 
               <label style={labelStyle}>Period</label>
-              <select value={freqPeriod} onChange={e => setFreqPeriod(e.target.value)} style={selectStyle}>
+              <select value={freqPeriod} onChange={e => setFreqPeriod(e.target.value)} className="fr-field" style={selectStyle}>
                 <option value="week">Week</option>
                 <option value="month">Month</option>
                 <option value="quarter">Quarter</option>
@@ -900,11 +1070,11 @@ function RuleBuilderModal({ ruleSetId, shiftTypes, existing, onClose, onSaved }:
               <div style={{ display: 'flex', gap: 12 }}>
                 <div style={{ flex: 1 }}>
                   <label style={labelStyle}>Max Count</label>
-                  <input type="number" value={freqMax} onChange={e => setFreqMax(parseInt(e.target.value) || 0)} style={inputStyle} min={0} />
+                  <input type="number" className="fr-field" value={freqMax} onChange={e => setFreqMax(parseInt(e.target.value) || 0)} style={inputStyle} min={0} />
                 </div>
                 <div style={{ flex: 1 }}>
                   <label style={labelStyle}>Min Count (optional)</label>
-                  <input type="number" value={freqMin} onChange={e => setFreqMin(parseInt(e.target.value) || 0)} style={inputStyle} min={0} />
+                  <input type="number" className="fr-field" value={freqMin} onChange={e => setFreqMin(parseInt(e.target.value) || 0)} style={inputStyle} min={0} />
                 </div>
               </div>
             </>
@@ -914,7 +1084,7 @@ function RuleBuilderModal({ ruleSetId, shiftTypes, existing, onClose, onSaved }:
           {category === 'fairness' && (
             <>
               <label style={labelStyle}>Burden Category</label>
-              <select value={fairBurden} onChange={e => setFairBurden(e.target.value)} style={selectStyle}>
+              <select value={fairBurden} onChange={e => setFairBurden(e.target.value)} className="fr-field" style={selectStyle}>
                 <option value="weekday_call">Weekday Call</option>
                 <option value="weekend_call">Weekend Call</option>
                 <option value="holiday_call">Holiday Call</option>
@@ -923,7 +1093,7 @@ function RuleBuilderModal({ ruleSetId, shiftTypes, existing, onClose, onSaved }:
               </select>
 
               <label style={labelStyle}>Distribution Method</label>
-              <select value={fairMethod} onChange={e => setFairMethod(e.target.value)} style={selectStyle}>
+              <select value={fairMethod} onChange={e => setFairMethod(e.target.value)} className="fr-field" style={selectStyle}>
                 <option value="equal">Equal Distribution</option>
                 <option value="weighted_by_fte">Weighted by FTE</option>
                 <option value="manual_targets">Manual Targets</option>
@@ -941,28 +1111,34 @@ function RuleBuilderModal({ ruleSetId, shiftTypes, existing, onClose, onSaved }:
 
         {/* ── Applies To section ───────────────────────────── */}
         <div style={{
-          background: 'var(--bg-deep)', border: '1px solid var(--border)', borderRadius: 10,
-          padding: 16, marginBottom: 14,
+          background: 'var(--bg-deep)', border: '1px solid var(--border-faint)',
+          borderRadius: 'var(--radius-md)', padding: 'var(--space-4)', marginBottom: 14,
         }}>
-          <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text)', marginBottom: 12, textTransform: 'uppercase', letterSpacing: 0.5 }}>
+          <div style={{ fontSize: 'var(--fs-sm)', fontWeight: 700, color: 'var(--text)', marginBottom: 12, textTransform: 'uppercase', letterSpacing: 0.5 }}>
             Applies To
           </div>
 
-          {/* Shift types */}
+          {/* Shift types — --info here so the chips match the scope chips the
+              rule row renders for the same field. */}
           <label style={labelStyle}>Shift Types</label>
           {shiftTypes.length === 0 ? (
-            <div style={{ fontSize: 12, color: 'var(--text-dim)', marginBottom: 12, fontStyle: 'italic' }}>No shift types configured for this site.</div>
+            <div style={{ fontSize: 'var(--fs-sm)', color: 'var(--text-dim)', marginBottom: 12, fontStyle: 'italic' }}>No shift types configured for this site.</div>
           ) : (
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 14 }}>
               {shiftTypes.map(st => {
                 const selected = selectedShiftTypes.includes(st.code);
                 return (
-                  <button key={st.id} onClick={() => toggleShiftType(st.code)} style={{
-                    padding: '5px 10px', borderRadius: 6, cursor: 'pointer', fontSize: 11, fontWeight: 700,
-                    border: `1px solid ${selected ? '#0ea5e9' : 'var(--border)'}`,
-                    background: selected ? 'rgba(14,165,233,0.15)' : 'transparent',
-                    color: selected ? '#38bdf8' : 'var(--text-muted)',
-                  }}>{st.code}</button>
+                  <button
+                    key={st.id}
+                    className="fr-focus fr-rule-chip"
+                    data-on={selected}
+                    aria-pressed={selected}
+                    onClick={() => toggleShiftType(st.code)}
+                    style={{
+                      padding: '5px 10px', borderRadius: 'var(--radius-sm)', fontSize: 'var(--fs-xs)',
+                      ['--chip-ink' as string]: 'var(--info)',
+                    } as React.CSSProperties}
+                  >{st.code}</button>
                 );
               })}
             </div>
@@ -974,13 +1150,18 @@ function RuleBuilderModal({ ruleSetId, shiftTypes, existing, onClose, onSaved }:
             {DAY_TYPES.map(dt => {
               const selected = selectedDayTypes.includes(dt);
               return (
-                <button key={dt} onClick={() => toggleDayType(dt)} style={{
-                  padding: '5px 10px', borderRadius: 6, cursor: 'pointer', fontSize: 11, fontWeight: 700,
-                  border: `1px solid ${selected ? '#fbbf24' : 'var(--border)'}`,
-                  background: selected ? 'rgba(251,191,36,0.12)' : 'transparent',
-                  color: selected ? '#fbbf24' : 'var(--text-muted)',
-                  textTransform: 'capitalize',
-                }}>{dt.replace('_', ' ')}</button>
+                <button
+                  key={dt}
+                  className="fr-focus fr-rule-chip"
+                  data-on={selected}
+                  aria-pressed={selected}
+                  onClick={() => toggleDayType(dt)}
+                  style={{
+                    padding: '5px 10px', borderRadius: 'var(--radius-sm)', fontSize: 'var(--fs-xs)',
+                    textTransform: 'capitalize',
+                    ['--chip-ink' as string]: 'var(--warn)',
+                  } as React.CSSProperties}
+                >{dt.replace('_', ' ')}</button>
               );
             })}
           </div>

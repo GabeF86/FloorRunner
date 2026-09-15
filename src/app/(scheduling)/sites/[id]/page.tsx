@@ -76,6 +76,14 @@ type Tab = 'general' | 'shift-types' | 'templates' | 'holidays';
 
 /* ── Color Maps ──────────────────────────────────────────────────────────── */
 
+/** A tone tint at the Badge kit's weight, derived from the token rather than
+ *  hand-mixed, so it follows the accent into dark mode instead of staying a
+ *  fixed rgba() tuned for one theme. */
+const tint = (token: string, pct = 12) => `color-mix(in srgb, ${token} ${pct}%, transparent)`;
+
+/* NOTE: this map is duplicated verbatim in ../page.tsx (the sites list), which
+   renders the same type pill. Left on literals deliberately — moving one copy
+   onto tokens would desynchronise the two. */
 const SITE_TYPE_COLORS: Record<string, { color: string; bg: string; label: string }> = {
   hospital: { color: '#0ea5e9', bg: 'rgba(14,165,233,0.15)', label: 'Hospital' },
   asc:      { color: '#10b981', bg: 'rgba(16,185,129,0.15)', label: 'ASC' },
@@ -83,12 +91,12 @@ const SITE_TYPE_COLORS: Record<string, { color: string; bg: string; label: strin
 };
 
 const CATEGORY_COLORS: Record<string, { color: string; bg: string; label: string }> = {
-  call:        { color: '#f87171', bg: 'rgba(248,113,113,0.15)', label: 'Call' },
-  regular:     { color: '#0ea5e9', bg: 'rgba(14,165,233,0.15)', label: 'Regular' },
-  float:       { color: '#fbbf24', bg: 'rgba(251,191,36,0.15)', label: 'Float' },
-  admin:       { color: '#a78bfa', bg: 'rgba(167,139,250,0.15)', label: 'Admin' },
-  unavailable: { color: '#64748b', bg: 'rgba(100,116,139,0.15)', label: 'Unavailable' },
-  leave:       { color: '#10b981', bg: 'rgba(16,185,129,0.15)', label: 'Leave' },
+  call:        { color: 'var(--danger)',     bg: 'var(--danger-bg)',        label: 'Call' },
+  regular:     { color: 'var(--blue)',       bg: tint('var(--blue)'),       label: 'Regular' },
+  float:       { color: 'var(--warn)',       bg: 'var(--warn-bg)',          label: 'Float' },
+  admin:       { color: 'var(--indigo)',     bg: tint('var(--indigo)'),     label: 'Admin' },
+  unavailable: { color: 'var(--text-muted)', bg: 'var(--tint-surface)',     label: 'Unavailable' },
+  leave:       { color: 'var(--ok)',         bg: 'var(--ok-bg)',            label: 'Leave' },
 };
 
 const PROVIDER_GROUPS = [
@@ -120,10 +128,10 @@ const HOLIDAY_TYPES = [
 ];
 
 const HOLIDAY_TYPE_COLORS: Record<string, { color: string; bg: string }> = {
-  federal:        { color: '#0ea5e9', bg: 'rgba(14,165,233,0.15)' },
-  religious:      { color: '#a78bfa', bg: 'rgba(167,139,250,0.15)' },
-  organizational: { color: '#f59e0b', bg: 'rgba(245,158,11,0.15)' },
-  custom:         { color: '#64748b', bg: 'rgba(100,116,139,0.15)' },
+  federal:        { color: 'var(--blue)',       bg: tint('var(--blue)') },
+  religious:      { color: 'var(--indigo)',     bg: tint('var(--indigo)') },
+  organizational: { color: 'var(--warn)',       bg: 'var(--warn-bg)' },
+  custom:         { color: 'var(--text-muted)', bg: 'var(--tint-surface)' },
 };
 
 const WEEKDAYS = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'];
@@ -194,15 +202,15 @@ export default function SiteDetailPage({ params }: { params: { id: string } }) {
   if (!site) {
     if (loadError) {
       return (
-        <div style={{ padding: '24px 32px', maxWidth: 640 }}>
+        <div style={{ padding: 'var(--space-6) var(--space-7)', maxWidth: 640 }}>
           <Banner tone="error">{loadError}</Banner>
-          <div style={{ marginTop: 16 }}>
-            <Link href="/sites" style={{ color: 'var(--blue)', fontSize: 13, textDecoration: 'none' }}>← Back to sites</Link>
+          <div style={{ marginTop: 'var(--space-4)' }}>
+            <Link href="/sites" className="fr-focus" style={{ color: 'var(--blue)', fontSize: 'var(--fs-sm)', textDecoration: 'none', borderRadius: 'var(--radius-sm)' }}>← Back to sites</Link>
           </div>
         </div>
       );
     }
-    return <div style={{ padding: 40, color: 'var(--text-muted)' }}>Loading...</div>;
+    return <div style={{ padding: 'var(--space-8)', color: 'var(--text-muted)', fontSize: 'var(--fs-sm)' }}>Loading...</div>;
   }
 
   const tc = SITE_TYPE_COLORS[site.site_type] || SITE_TYPE_COLORS.hospital;
@@ -215,10 +223,10 @@ export default function SiteDetailPage({ params }: { params: { id: string } }) {
   ];
 
   return (
-    <div style={{ padding: '24px 32px' }}>
+    <div style={{ padding: 'var(--space-6) var(--space-7)' }}>
       {/* Breadcrumb */}
-      <div style={{ fontSize: 12, color: 'var(--text-dim)', marginBottom: 16 }}>
-        <Link href="/sites" style={{ color: 'var(--blue)', textDecoration: 'none' }}>Sites</Link>
+      <div style={{ fontSize: 'var(--fs-sm)', color: 'var(--text-dim)', marginBottom: 'var(--space-4)' }}>
+        <Link href="/sites" className="fr-focus" style={{ color: 'var(--blue)', textDecoration: 'none', borderRadius: 'var(--radius-sm)' }}>Sites</Link>
         <span style={{ margin: '0 6px' }}>/</span>
         <span>{site.name}</span>
       </div>
@@ -227,34 +235,54 @@ export default function SiteDetailPage({ params }: { params: { id: string } }) {
       <PageHeader
         title={site.name}
         subtitle={
-          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-            <span style={{ fontSize: 11, fontWeight: 700, padding: '2px 8px', borderRadius: 6, background: tc.bg, color: tc.color }}>
+          <div style={{ display: 'flex', gap: 'var(--space-2)', alignItems: 'center', flexWrap: 'wrap' }}>
+            <span style={{
+              fontSize: 'var(--fs-xs)', fontWeight: 700, padding: '2px 8px', borderRadius: 999,
+              background: tc.bg, color: tc.color,
+              // Hairline in the pill's own ink, matching Badge — a flat tint
+              // has no edge against a light surface.
+              border: `1px solid color-mix(in srgb, ${tc.color} 22%, transparent)`,
+            }}>
               {tc.label}
             </span>
             <Badge tone={site.is_active ? 'ok' : 'neutral'}>{site.is_active ? 'Active' : 'Inactive'}</Badge>
             {site.timezone && <Badge tone="info">{site.timezone}</Badge>}
           </div>
         }
-        actions={saving ? <span style={{ fontSize: 11, color: 'var(--blue)' }}>Saving...</span> : undefined}
+        actions={saving ? <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--blue)' }}>Saving...</span> : undefined}
       />
 
       {/* Errors — the site on screen is the last good copy, not the failed one */}
       {(saveError || loadError) && (
-        <div style={{ display: 'grid', gap: 8, marginBottom: 16 }}>
+        <div style={{ display: 'grid', gap: 'var(--space-2)', marginBottom: 'var(--space-4)' }}>
           {saveError && <Banner tone="error" onDismiss={() => setSaveError(null)}>{saveError}</Banner>}
           {loadError && <Banner tone="error" onDismiss={() => setLoadError(null)}>{loadError} — showing the last loaded version of this site.</Banner>}
         </div>
       )}
 
       {/* Tabs */}
-      <div style={{ display: 'flex', gap: 0, borderBottom: '1px solid var(--border)', marginBottom: 24 }}>
+      <div style={{ display: 'flex', gap: 0, borderBottom: '1px solid var(--border)', marginBottom: 'var(--space-6)' }}>
         {TABS.map(t => (
-          <button key={t.key} onClick={() => setTab(t.key)} style={{
-            padding: '10px 18px', fontSize: 13, fontWeight: 700, cursor: 'pointer',
-            background: 'none', border: 'none', borderBottom: `2px solid ${tab === t.key ? '#0ea5e9' : 'transparent'}`,
-            color: tab === t.key ? '#0ea5e9' : 'var(--text-muted)', transition: 'all 0.15s',
-            display: 'flex', alignItems: 'center', gap: 5,
-          }}>
+          // fr-seg carries the transparent base, the hover tint and the 1px
+          // press nudge. Background is deliberately NOT set inline — an inline
+          // background outranks the class's :hover and the tab would have no
+          // hover at all. The inline colour is set, so hovering the selected
+          // tab cannot wash out its accent.
+          <button
+            key={t.key}
+            onClick={() => setTab(t.key)}
+            aria-pressed={tab === t.key}
+            className="fr-seg"
+            style={{
+              padding: '10px 18px', fontSize: 'var(--fs-sm)', fontWeight: 700, cursor: 'pointer',
+              fontFamily: 'inherit',
+              border: 'none',
+              borderBottom: `2px solid ${tab === t.key ? 'var(--blue)' : 'transparent'}`,
+              borderRadius: 'var(--radius-sm) var(--radius-sm) 0 0',
+              color: tab === t.key ? 'var(--blue)' : 'var(--text-muted)',
+              display: 'flex', alignItems: 'center', gap: 5,
+            }}
+          >
             {t.label}
             {tab === t.key && <InfoTip text={t.info} />}
           </button>
@@ -302,27 +330,25 @@ function GeneralTab({ site, onSave }: { site: SiteDetail; onSave: (u: Record<str
   return (
     <div style={{ maxWidth: 640 }}>
       <SectionLabel>Site Information</SectionLabel>
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 16 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 'var(--space-3)', marginBottom: 'var(--space-4)' }}>
         <Field label="Site Name" value={name} onChange={setName} />
         <Field label="Short Name" value={shortName} onChange={setShortName} />
       </div>
 
       <label style={fieldLabelStyle}>Site Type</label>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 6, marginBottom: 14 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 'var(--space-1)', marginBottom: 14 }}>
         {Object.entries(SITE_TYPE_COLORS).map(([t, c]) => (
-          <button key={t} onClick={() => setSiteType(t)} style={{
-            padding: '8px 12px', borderRadius: 8, cursor: 'pointer', fontSize: 12, fontWeight: 700,
-            border: `1px solid ${siteType === t ? c.color : 'var(--border)'}`,
-            background: siteType === t ? c.bg : 'transparent',
-            color: siteType === t ? c.color : 'var(--text-muted)',
-          }}>{c.label}</button>
+          <SegButton key={t} on={siteType === t} tone={c.color} bg={c.bg}
+            onClick={() => setSiteType(t)} style={{ padding: '8px 12px', fontSize: 'var(--fs-sm)' }}>
+            {c.label}
+          </SegButton>
         ))}
       </div>
 
       <Field label="Address" value={address} onChange={setAddress} />
 
       <label style={fieldLabelStyle}>Timezone</label>
-      <select value={timezone} onChange={e => setTimezone(e.target.value)} style={{ ...fieldInputStyle, cursor: 'pointer', marginBottom: 16 }}>
+      <select className="fr-field" value={timezone} onChange={e => setTimezone(e.target.value)} style={{ ...fieldInputStyle, cursor: 'pointer', marginBottom: 'var(--space-4)' }}>
         <option value="America/New_York">America/New_York (Eastern)</option>
         <option value="America/Chicago">America/Chicago (Central)</option>
         <option value="America/Denver">America/Denver (Mountain)</option>
@@ -333,27 +359,27 @@ function GeneralTab({ site, onSave }: { site: SiteDetail; onSave: (u: Record<str
       </select>
 
       <SectionLabel>Operational Days</SectionLabel>
-      <div style={{ display: 'flex', gap: 6, marginBottom: 20, flexWrap: 'wrap' }}>
+      <div style={{ display: 'flex', gap: 'var(--space-1)', marginBottom: 'var(--space-5)', flexWrap: 'wrap' }}>
         {WEEKDAYS.map(day => (
-          <button key={day} onClick={() => toggleDay(day)} style={{
-            padding: '8px 14px', borderRadius: 8, cursor: 'pointer', fontSize: 12, fontWeight: 700,
-            textTransform: 'capitalize',
-            border: `1px solid ${opDays[day] ? '#0ea5e9' : 'var(--border)'}`,
-            background: opDays[day] ? 'rgba(14,165,233,0.15)' : 'transparent',
-            color: opDays[day] ? '#0ea5e9' : 'var(--text-dim)',
-          }}>{day.slice(0, 3)}</button>
+          <SegButton key={day} on={!!opDays[day]} tone="var(--blue)" bg={tint('var(--blue)', 14)}
+            onClick={() => toggleDay(day)}
+            style={{ padding: '8px 14px', fontSize: 'var(--fs-sm)', textTransform: 'capitalize' }}>
+            {day.slice(0, 3)}
+          </SegButton>
         ))}
       </div>
 
       <SectionLabel>Notes</SectionLabel>
       <textarea
+        className="fr-field"
         value={notes}
         onChange={e => setNotes(e.target.value)}
         placeholder="Internal notes about this site..."
         style={{
-          width: '100%', minHeight: 80, padding: '10px 12px', borderRadius: 8,
+          width: '100%', minHeight: 80, padding: '10px 12px', borderRadius: 'var(--radius-sm)',
           border: '1px solid var(--border)', background: 'var(--bg-deep)',
-          color: 'var(--text)', fontSize: 13, resize: 'vertical', marginBottom: 16,
+          color: 'var(--text)', fontSize: 'var(--fs-sm)', fontFamily: 'inherit',
+          resize: 'vertical', marginBottom: 'var(--space-4)',
         }}
       />
 
@@ -377,20 +403,17 @@ function ShiftTypesTab({ site, onReload }: { site: SiteDetail; onReload: () => v
 
   return (
     <div>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 'var(--space-4)' }}>
         <SectionLabel>Shift Types ({shiftTypes.length})</SectionLabel>
         <Button size="sm" onClick={() => { setEditId(null); setShowAdd(true); }}>+ Add Shift Type</Button>
       </div>
 
       <Card pad={false}>
-        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 'var(--fs-sm)' }}>
           <thead>
-            <tr style={{ borderBottom: '1px solid var(--border)', background: 'rgba(14,165,233,0.04)' }}>
+            <tr style={{ borderBottom: '1px solid var(--border)', background: 'var(--tint-surface-faint)' }}>
               {['Color', 'Name', 'Code', 'Category', 'Group', 'Times', 'Duration', 'Flags', ''].map(h => (
-                <th key={h} style={{
-                  padding: '10px 14px', textAlign: 'left', fontSize: 10, fontWeight: 800,
-                  color: 'var(--text-dim)', letterSpacing: 1, textTransform: 'uppercase',
-                }}>{h}</th>
+                <th key={h} style={TH_STYLE}>{h}</th>
               ))}
             </tr>
           </thead>
@@ -398,53 +421,53 @@ function ShiftTypesTab({ site, onReload }: { site: SiteDetail; onReload: () => v
             {shiftTypes.map(st => {
               const cat = CATEGORY_COLORS[st.category] || CATEGORY_COLORS.regular;
               return (
-                <tr key={st.id} style={{ borderBottom: '1px solid rgba(30,58,95,0.4)', cursor: 'pointer' }}
+                <tr key={st.id} className="fr-row" style={{ borderBottom: '1px solid var(--border-faint)', cursor: 'pointer' }}
                   onClick={() => { setEditId(st.id); setShowAdd(true); }}>
-                  <td style={{ padding: '10px 14px' }}>
+                  <td style={TD_STYLE}>
                     <div style={{
-                      width: 24, height: 24, borderRadius: 6,
-                      background: st.color_hex || '#64748b',
-                      border: '1px solid rgba(255,255,255,0.1)',
+                      width: 24, height: 24, borderRadius: 'var(--radius-sm)',
+                      // color_hex is the shift type's stored colour — data, not style.
+                      background: st.color_hex || 'var(--text-faint)',
+                      border: '1px solid var(--border-subtle)',
+                      boxShadow: 'var(--shadow-xs)',
                     }} />
                   </td>
-                  <td style={{ padding: '10px 14px', fontWeight: 700, color: 'var(--text)' }}>{st.name}</td>
-                  <td style={{ padding: '10px 14px', color: 'var(--text-muted)', fontFamily: 'monospace', fontSize: 12 }}>{st.code}</td>
-                  <td style={{ padding: '10px 14px' }}>
-                    <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
-                      <span style={{
-                        fontSize: 11, fontWeight: 700, padding: '3px 8px', borderRadius: 6,
-                        background: cat.bg, color: cat.color,
-                      }}>{cat.label}</span>
+                  <td style={{ ...TD_STYLE, fontWeight: 700, color: 'var(--text)' }}>{st.name}</td>
+                  <td style={{ ...TD_STYLE, color: 'var(--text-muted)', fontFamily: 'var(--font-mono), ui-monospace, monospace' }}>{st.code}</td>
+                  <td style={TD_STYLE}>
+                    <div style={{ display: 'flex', gap: 'var(--space-1)', alignItems: 'center' }}>
+                      <span style={{ ...TONE_PILL, background: cat.bg, color: cat.color, border: `1px solid ${tint(cat.color, 22)}` }}>{cat.label}</span>
                       {st.call_type && (
                         <span style={{
-                          fontSize: 10, fontWeight: 600, padding: '2px 6px', borderRadius: 5,
-                          background: 'rgba(255,255,255,0.06)', color: 'var(--text-muted)',
-                          border: '1px solid rgba(255,255,255,0.08)',
+                          ...TONE_PILL, fontSize: 'var(--fs-xs)', fontWeight: 600,
+                          background: 'var(--tint-surface)', color: 'var(--text-muted)',
+                          border: '1px solid var(--border-subtle)',
                         }}>{st.call_type}</span>
                       )}
                       {st.call_coverage_type && (
                         <span style={{
-                          fontSize: 10, fontWeight: 600, padding: '2px 6px', borderRadius: 5,
-                          background: st.call_coverage_type === 'full_beeper' ? 'rgba(248,113,113,0.12)' : 'rgba(251,146,60,0.12)',
-                          color: st.call_coverage_type === 'full_beeper' ? '#f87171' : '#fb923c',
+                          ...TONE_PILL, fontWeight: 600,
+                          background: st.call_coverage_type === 'full_beeper' ? 'var(--danger-bg)' : 'var(--warn-bg)',
+                          color: st.call_coverage_type === 'full_beeper' ? 'var(--danger)' : 'var(--warn)',
+                          border: `1px solid ${tint(st.call_coverage_type === 'full_beeper' ? 'var(--danger)' : 'var(--warn)', 22)}`,
                         }}>{st.call_coverage_type === 'full_beeper' ? 'Full Beeper' : 'Partial Beeper'}</span>
                       )}
                     </div>
                   </td>
-                  <td style={{ padding: '10px 14px', fontSize: 12, color: 'var(--text-muted)', textTransform: 'capitalize' }}>
+                  <td style={{ ...TD_STYLE, color: 'var(--text-muted)', textTransform: 'capitalize' }}>
                     {st.provider_group}
                   </td>
-                  <td style={{ padding: '10px 14px', fontSize: 12, color: 'var(--text-muted)' }}>
+                  <td style={{ ...TD_STYLE, color: 'var(--text-muted)', fontVariantNumeric: 'tabular-nums' }}>
                     {st.start_time && st.end_time
                       ? `${st.start_time.slice(0, 5)} - ${st.end_time.slice(0, 5)}`
                       : '—'}
-                    {st.crosses_midnight && <span style={{ color: '#fbbf24', marginLeft: 4, fontSize: 10 }}>+1d</span>}
+                    {st.crosses_midnight && <span style={{ color: 'var(--warn)', marginLeft: 'var(--space-1)', fontSize: 'var(--fs-xs)' }}>+1d</span>}
                   </td>
-                  <td style={{ padding: '10px 14px', fontSize: 12, color: 'var(--text-muted)' }}>
+                  <td style={{ ...TD_STYLE, color: 'var(--text-muted)', fontVariantNumeric: 'tabular-nums' }}>
                     {st.duration_hours ? `${st.duration_hours}h` : '—'}
                   </td>
-                  <td style={{ padding: '10px 14px' }}>
-                    <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+                  <td style={TD_STYLE}>
+                    <div style={{ display: 'flex', gap: 'var(--space-1)', flexWrap: 'wrap' }}>
                       {st.counts_toward_call_burden && <FlagBadge label="Call" />}
                       {st.counts_as_weekend_burden && <FlagBadge label="Wknd" />}
                       {st.counts_as_holiday_burden && <FlagBadge label="Hol" />}
@@ -453,7 +476,7 @@ function ShiftTypesTab({ site, onReload }: { site: SiteDetail; onReload: () => v
                       {st.manual_only && <FlagBadge label="Manual" />}
                     </div>
                   </td>
-                  <td style={{ padding: '10px 14px' }}>
+                  <td style={{ ...TD_STYLE, textAlign: 'right' }}>
                     <Button variant="danger" size="sm" onClick={(e) => { e.stopPropagation(); handleDelete(st.id); }}>Delete</Button>
                   </td>
                 </tr>
@@ -486,7 +509,9 @@ function FlagBadge({ label }: { label: string }) {
   return (
     <span style={{
       fontSize: 9, fontWeight: 700, padding: '2px 5px', borderRadius: 4,
-      background: 'rgba(99,102,241,0.12)', color: '#818cf8',
+      background: tint('var(--indigo)'), color: 'var(--indigo)',
+      border: `1px solid ${tint('var(--indigo)', 22)}`,
+      whiteSpace: 'nowrap',
     }}>{label}</span>
   );
 }
@@ -574,65 +599,55 @@ function ShiftTypeModal({ siteId, existing, onClose, onSaved }: {
         </>
       }
     >
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 4 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 'var(--space-3)', marginBottom: 'var(--space-1)' }}>
           <div>
             <label style={modalLabelStyle}>Name *</label>
-            <input style={modalInputStyle} placeholder="Call - Weekday" value={name} onChange={e => setName(e.target.value)} />
+            <input className="fr-field" style={modalInputStyle} placeholder="Call - Weekday" value={name} onChange={e => setName(e.target.value)} />
           </div>
           <div>
             <label style={modalLabelStyle}>Code *</label>
-            <input style={modalInputStyle} placeholder="CW" value={code} onChange={e => setCode(e.target.value)} />
+            <input className="fr-field" style={modalInputStyle} placeholder="CW" value={code} onChange={e => setCode(e.target.value)} />
           </div>
         </div>
 
         <label style={modalLabelStyle}>Category</label>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 6, marginBottom: 14 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 'var(--space-1)', marginBottom: 14 }}>
           {Object.entries(CATEGORY_COLORS).map(([c, style]) => (
-            <button key={c} onClick={() => setCategory(c)} style={{
-              padding: '7px 10px', borderRadius: 8, cursor: 'pointer', fontSize: 11, fontWeight: 700,
-              border: `1px solid ${category === c ? style.color : 'var(--border)'}`,
-              background: category === c ? style.bg : 'transparent',
-              color: category === c ? style.color : 'var(--text-muted)',
-            }}>{style.label}</button>
+            <SegButton key={c} on={category === c} tone={style.color} bg={style.bg} onClick={() => setCategory(c)}>
+              {style.label}
+            </SegButton>
           ))}
         </div>
 
         {category === 'call' && (
           <>
             <label style={modalLabelStyle}>Call Type</label>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 6, marginBottom: 14 }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 'var(--space-1)', marginBottom: 14 }}>
               {[
-                { value: 'weekday', label: 'Weekday', color: '#0ea5e9' },
-                { value: 'weekend', label: 'Weekend', color: '#a78bfa' },
-                { value: 'holiday', label: 'Holiday', color: '#fbbf24' },
-                { value: 'additional', label: 'Additional', color: '#10b981' },
+                { value: 'weekday', label: 'Weekday', tone: 'var(--blue)' },
+                { value: 'weekend', label: 'Weekend', tone: 'var(--indigo)' },
+                { value: 'holiday', label: 'Holiday', tone: 'var(--warn)' },
+                { value: 'additional', label: 'Additional', tone: 'var(--ok)' },
               ].map(ct => (
-                <button key={ct.value} onClick={() => setCallType(ct.value)} style={{
-                  padding: '8px 10px', borderRadius: 8, cursor: 'pointer', fontSize: 11, fontWeight: 700,
-                  border: `1px solid ${callType === ct.value ? ct.color : 'var(--border)'}`,
-                  background: callType === ct.value ? `${ct.color}20` : 'transparent',
-                  color: callType === ct.value ? ct.color : 'var(--text-muted)',
-                  transition: 'all 0.15s',
-                }}>{ct.label}</button>
+                <SegButton key={ct.value} on={callType === ct.value} tone={ct.tone} bg={tint(ct.tone, 14)}
+                  onClick={() => setCallType(ct.value)} style={{ padding: '8px 10px' }}>
+                  {ct.label}
+                </SegButton>
               ))}
             </div>
 
             <label style={modalLabelStyle}>Call Coverage</label>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 6, marginBottom: 14 }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 'var(--space-1)', marginBottom: 14 }}>
               {[
-                { value: 'partial_beeper', label: 'Partial Beeper', desc: 'In-hospital shift then on-call from home', color: '#fb923c' },
-                { value: 'full_beeper', label: 'Full Beeper', desc: 'On-call from home entire shift', color: '#f87171' },
+                { value: 'partial_beeper', label: 'Partial Beeper', desc: 'In-hospital shift then on-call from home', tone: 'var(--warn)' },
+                { value: 'full_beeper', label: 'Full Beeper', desc: 'On-call from home entire shift', tone: 'var(--danger)' },
               ].map(cc => (
-                <button key={cc.value} onClick={() => setCallCoverageType(callCoverageType === cc.value ? '' : cc.value)} style={{
-                  padding: '10px 12px', borderRadius: 8, cursor: 'pointer', fontSize: 12, fontWeight: 700,
-                  border: `1px solid ${callCoverageType === cc.value ? cc.color : 'var(--border)'}`,
-                  background: callCoverageType === cc.value ? `${cc.color}20` : 'transparent',
-                  color: callCoverageType === cc.value ? cc.color : 'var(--text-muted)',
-                  transition: 'all 0.15s', textAlign: 'left',
-                }}>
+                <SegButton key={cc.value} on={callCoverageType === cc.value} tone={cc.tone} bg={tint(cc.tone, 14)}
+                  onClick={() => setCallCoverageType(callCoverageType === cc.value ? '' : cc.value)}
+                  style={{ padding: '10px 12px', fontSize: 'var(--fs-sm)', textAlign: 'left', display: 'block' }}>
                   <div>{cc.label}</div>
                   <div style={{ fontSize: 10, fontWeight: 500, opacity: 0.7, marginTop: 2 }}>{cc.desc}</div>
-                </button>
+                </SegButton>
               ))}
             </div>
 
@@ -646,51 +661,49 @@ function ShiftTypeModal({ siteId, existing, onClose, onSaved }: {
         )}
 
         <label style={modalLabelStyle}>Provider Group</label>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 6, marginBottom: 14 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 'var(--space-1)', marginBottom: 14 }}>
           {PROVIDER_GROUPS.map(g => (
-            <button key={g.value} onClick={() => setProviderGroup(g.value)} style={{
-              padding: '7px 10px', borderRadius: 8, cursor: 'pointer', fontSize: 11, fontWeight: 700,
-              border: `1px solid ${providerGroup === g.value ? '#0ea5e9' : 'var(--border)'}`,
-              background: providerGroup === g.value ? 'rgba(14,165,233,0.15)' : 'transparent',
-              color: providerGroup === g.value ? '#0ea5e9' : 'var(--text-muted)',
-            }}>{g.label}</button>
+            <SegButton key={g.value} on={providerGroup === g.value} tone="var(--blue)" bg={tint('var(--blue)', 14)}
+              onClick={() => setProviderGroup(g.value)}>
+              {g.label}
+            </SegButton>
           ))}
         </div>
 
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12, marginBottom: 4 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 'var(--space-3)', marginBottom: 'var(--space-1)' }}>
           <div>
             <label style={modalLabelStyle}>Start Time</label>
-            <input type="time" style={modalInputStyle} value={startTime} onChange={e => setStartTime(e.target.value)} />
+            <input type="time" className="fr-field" style={modalInputStyle} value={startTime} onChange={e => setStartTime(e.target.value)} />
           </div>
           <div>
             <label style={modalLabelStyle}>End Time</label>
-            <input type="time" style={modalInputStyle} value={endTime} onChange={e => setEndTime(e.target.value)} />
+            <input type="time" className="fr-field" style={modalInputStyle} value={endTime} onChange={e => setEndTime(e.target.value)} />
           </div>
           <div>
             <label style={modalLabelStyle}>Duration (hrs)</label>
-            <input type="number" step="0.5" style={modalInputStyle} value={durationHours} onChange={e => setDurationHours(e.target.value)} />
+            <input type="number" step="0.5" className="fr-field" style={modalInputStyle} value={durationHours} onChange={e => setDurationHours(e.target.value)} />
           </div>
         </div>
 
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 4 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 'var(--space-3)', marginBottom: 'var(--space-1)' }}>
           <div>
             <label style={modalLabelStyle}>Color</label>
-            <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 12 }}>
-              <input type="color" value={colorHex} onChange={e => setColorHex(e.target.value)} style={{
-                width: 40, height: 36, borderRadius: 8, border: '1px solid var(--border)',
+            <div style={{ display: 'flex', gap: 'var(--space-2)', alignItems: 'center', marginBottom: 'var(--space-3)' }}>
+              <input type="color" className="fr-field" value={colorHex} onChange={e => setColorHex(e.target.value)} style={{
+                width: 40, height: 36, borderRadius: 'var(--radius-sm)', border: '1px solid var(--border)',
                 background: 'var(--bg-deep)', cursor: 'pointer', padding: 2,
               }} />
-              <input style={{ ...modalInputStyle, marginBottom: 0, flex: 1 }} value={colorHex} onChange={e => setColorHex(e.target.value)} />
+              <input className="fr-field" style={{ ...modalInputStyle, marginBottom: 0, flex: 1, fontFamily: 'var(--font-mono), ui-monospace, monospace' }} value={colorHex} onChange={e => setColorHex(e.target.value)} />
             </div>
           </div>
           <div>
             <label style={modalLabelStyle}>Display Order</label>
-            <input type="number" style={modalInputStyle} value={displayOrder} onChange={e => setDisplayOrder(e.target.value)} />
+            <input type="number" className="fr-field" style={modalInputStyle} value={displayOrder} onChange={e => setDisplayOrder(e.target.value)} />
           </div>
         </div>
 
         <SectionLabel>Scheduling Flags</SectionLabel>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 16 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 'var(--space-2)', marginBottom: 'var(--space-4)' }}>
           <Toggle label="Counts Toward Hours" checked={countsHours} onChange={setCountsHours} />
           <Toggle label="Counts Toward Call Burden" checked={countsCall} onChange={setCountsCall} />
           <Toggle label="Counts as Weekend Burden" checked={countsWeekend} onChange={setCountsWeekend} />
@@ -725,7 +738,7 @@ function ShiftTemplatesTab({ site, onReload }: { site: SiteDetail; onReload: () 
 
   return (
     <div>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 'var(--space-4)' }}>
         <SectionLabel>Shift Templates ({templates.length})</SectionLabel>
         <Button size="sm" onClick={() => setShowAdd(true)}>+ Add Template</Button>
       </div>
@@ -739,42 +752,43 @@ function ShiftTemplatesTab({ site, onReload }: { site: SiteDetail; onReload: () 
       {Object.entries(grouped).map(([dayType, items]) => {
         const dtLabel = DAY_TYPES.find(d => d.value === dayType)?.label || dayType;
         return (
-          <div key={dayType} style={{ marginBottom: 20 }}>
+          <div key={dayType} style={{ marginBottom: 'var(--space-5)' }}>
             <div style={{
-              fontSize: 12, fontWeight: 800, color: 'var(--text-muted)', letterSpacing: 1,
-              textTransform: 'uppercase', marginBottom: 8, paddingLeft: 2,
+              fontSize: 'var(--fs-sm)', fontWeight: 800, color: 'var(--text-muted)', letterSpacing: 1,
+              textTransform: 'uppercase', marginBottom: 'var(--space-2)', paddingLeft: 2,
             }}>{dtLabel}</div>
             <Card pad={false}>
               {items.map((t, i) => {
-                const stColor = t.shift_types?.color_hex || '#64748b';
+                // color_hex is the shift type's stored colour — data, not style.
+                const stColor = t.shift_types?.color_hex || 'var(--text-faint)';
                 return (
-                  <div key={t.id} style={{
+                  <div key={t.id} className="fr-row" style={{
                     display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-                    padding: '12px 16px',
-                    borderBottom: i < items.length - 1 ? '1px solid rgba(30,58,95,0.4)' : 'none',
+                    padding: 'var(--space-3) var(--space-4)',
+                    borderBottom: i < items.length - 1 ? '1px solid var(--border-faint)' : 'none',
                   }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-3)' }}>
                       <div style={{ width: 8, height: 8, borderRadius: '50%', background: stColor, flexShrink: 0 }} />
                       <div>
-                        <span style={{ fontWeight: 700, color: 'var(--text)', fontSize: 13 }}>
+                        <span style={{ fontWeight: 700, color: 'var(--text)', fontSize: 'var(--fs-sm)' }}>
                           {t.shift_types?.name || 'Unknown'}
                         </span>
-                        <span style={{ color: 'var(--text-dim)', fontSize: 11, marginLeft: 8, fontFamily: 'monospace' }}>
+                        <span style={{ color: 'var(--text-dim)', fontSize: 'var(--fs-xs)', marginLeft: 'var(--space-2)', fontFamily: 'var(--font-mono), ui-monospace, monospace' }}>
                           {t.shift_types?.code}
                         </span>
                       </div>
                     </div>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-3)' }}>
                       <span style={{
-                        fontSize: 11, fontWeight: 700, padding: '3px 8px', borderRadius: 6,
-                        background: 'rgba(14,165,233,0.12)', color: '#0ea5e9',
+                        ...TONE_PILL, background: tint('var(--blue)'), color: 'var(--blue)',
+                        border: `1px solid ${tint('var(--blue)', 22)}`, fontVariantNumeric: 'tabular-nums',
                       }}>x{t.required_count}</span>
                       <span style={{
-                        fontSize: 10, fontWeight: 600, padding: '3px 8px', borderRadius: 6,
-                        background: 'rgba(99,102,241,0.12)', color: '#818cf8',
+                        ...TONE_PILL, fontWeight: 600, background: tint('var(--indigo)'), color: 'var(--indigo)',
+                        border: `1px solid ${tint('var(--indigo)', 22)}`,
                       }}>{t.schedule_layer}</span>
                       {t.generation_priority != null && (
-                        <span style={{ fontSize: 10, color: 'var(--text-dim)' }}>
+                        <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-dim)', fontVariantNumeric: 'tabular-nums' }}>
                           P{t.generation_priority}
                         </span>
                       )}
@@ -844,14 +858,14 @@ function AddTemplateModal({ siteId, shiftTypes, onClose, onSaved }: {
       }
     >
         <label style={modalLabelStyle}>Day Type</label>
-        <select value={dayType} onChange={e => setDayType(e.target.value)} style={{ ...modalInputStyle, cursor: 'pointer' }}>
+        <select className="fr-field" value={dayType} onChange={e => setDayType(e.target.value)} style={{ ...modalInputStyle, cursor: 'pointer' }}>
           {DAY_TYPES.map(d => (
             <option key={d.value} value={d.value}>{d.label}</option>
           ))}
         </select>
 
         <label style={modalLabelStyle}>Shift Type</label>
-        <select value={shiftTypeId} onChange={e => setShiftTypeId(e.target.value)} style={{ ...modalInputStyle, cursor: 'pointer' }}>
+        <select className="fr-field" value={shiftTypeId} onChange={e => setShiftTypeId(e.target.value)} style={{ ...modalInputStyle, cursor: 'pointer' }}>
           {shiftTypes.length === 0 && <option value="">No shift types available</option>}
           {shiftTypes.map(st => (
             <option key={st.id} value={st.id}>{st.name} ({st.code})</option>
@@ -859,25 +873,23 @@ function AddTemplateModal({ siteId, shiftTypes, onClose, onSaved }: {
         </select>
 
         <label style={modalLabelStyle}>Schedule Layer</label>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 6, marginBottom: 14 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 'var(--space-1)', marginBottom: 14 }}>
           {SCHEDULE_LAYERS.map(l => (
-            <button key={l.value} onClick={() => setScheduleLayer(l.value)} style={{
-              padding: '7px 10px', borderRadius: 8, cursor: 'pointer', fontSize: 11, fontWeight: 700,
-              border: `1px solid ${scheduleLayer === l.value ? '#0ea5e9' : 'var(--border)'}`,
-              background: scheduleLayer === l.value ? 'rgba(14,165,233,0.15)' : 'transparent',
-              color: scheduleLayer === l.value ? '#0ea5e9' : 'var(--text-muted)',
-            }}>{l.label}</button>
+            <SegButton key={l.value} on={scheduleLayer === l.value} tone="var(--blue)" bg={tint('var(--blue)', 14)}
+              onClick={() => setScheduleLayer(l.value)}>
+              {l.label}
+            </SegButton>
           ))}
         </div>
 
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 4 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 'var(--space-3)', marginBottom: 'var(--space-1)' }}>
           <div>
             <label style={modalLabelStyle}>Required Count</label>
-            <input type="number" min="1" style={modalInputStyle} value={requiredCount} onChange={e => setRequiredCount(e.target.value)} />
+            <input type="number" min="1" className="fr-field" style={modalInputStyle} value={requiredCount} onChange={e => setRequiredCount(e.target.value)} />
           </div>
           <div>
             <label style={modalLabelStyle}>Generation Priority</label>
-            <input type="number" style={modalInputStyle} value={genPriority} onChange={e => setGenPriority(e.target.value)} />
+            <input type="number" className="fr-field" style={modalInputStyle} value={genPriority} onChange={e => setGenPriority(e.target.value)} />
           </div>
         </div>
     </Modal>
@@ -900,20 +912,17 @@ function HolidaysTab({ site, holidays, onReload }: { site: SiteDetail; holidays:
 
   return (
     <div>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 'var(--space-4)' }}>
         <SectionLabel>Holidays ({relevantHolidays.length})</SectionLabel>
         <Button size="sm" onClick={() => setShowAdd(true)}>+ Add Holiday</Button>
       </div>
 
       <Card pad={false}>
-        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 'var(--fs-sm)' }}>
           <thead>
-            <tr style={{ borderBottom: '1px solid var(--border)', background: 'rgba(14,165,233,0.04)' }}>
+            <tr style={{ borderBottom: '1px solid var(--border)', background: 'var(--tint-surface-faint)' }}>
               {['Holiday', 'Date', 'Type', 'Major', 'Scope', ''].map(h => (
-                <th key={h} style={{
-                  padding: '10px 14px', textAlign: 'left', fontSize: 10, fontWeight: 800,
-                  color: 'var(--text-dim)', letterSpacing: 1, textTransform: 'uppercase',
-                }}>{h}</th>
+                <th key={h} style={TH_STYLE}>{h}</th>
               ))}
             </tr>
           </thead>
@@ -921,35 +930,36 @@ function HolidaysTab({ site, holidays, onReload }: { site: SiteDetail; holidays:
             {relevantHolidays.map(h => {
               const htc = HOLIDAY_TYPE_COLORS[h.holiday_type] || HOLIDAY_TYPE_COLORS.custom;
               return (
-                <tr key={h.id} style={{ borderBottom: '1px solid rgba(30,58,95,0.4)' }}>
-                  <td style={{ padding: '10px 14px' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <tr key={h.id} className="fr-row" style={{ borderBottom: '1px solid var(--border-faint)' }}>
+                  <td style={TD_STYLE}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
                       {h.color_hex && (
+                        // color_hex is the holiday's stored colour — data, not style.
                         <div style={{ width: 8, height: 8, borderRadius: '50%', background: h.color_hex, flexShrink: 0 }} />
                       )}
                       <span style={{ fontWeight: 700, color: 'var(--text)' }}>{h.holiday_name}</span>
                     </div>
                   </td>
-                  <td style={{ padding: '10px 14px', fontSize: 12, color: 'var(--text-muted)' }}>
+                  <td style={{ ...TD_STYLE, color: 'var(--text-muted)', fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' }}>
                     {new Date(h.holiday_date + 'T00:00:00').toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' })}
                   </td>
-                  <td style={{ padding: '10px 14px' }}>
+                  <td style={TD_STYLE}>
                     <span style={{
-                      fontSize: 11, fontWeight: 700, padding: '3px 8px', borderRadius: 6,
-                      background: htc.bg, color: htc.color, textTransform: 'capitalize',
+                      ...TONE_PILL, background: htc.bg, color: htc.color, textTransform: 'capitalize',
+                      border: `1px solid ${tint(htc.color, 22)}`,
                     }}>{h.holiday_type}</span>
                   </td>
-                  <td style={{ padding: '10px 14px' }}>
+                  <td style={TD_STYLE}>
                     {h.is_major_holiday ? (
-                      <span style={{ fontSize: 11, fontWeight: 700, color: '#f59e0b' }}>Yes</span>
+                      <span style={{ fontSize: 'var(--fs-xs)', fontWeight: 700, color: 'var(--warn)' }}>Yes</span>
                     ) : (
-                      <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>No</span>
+                      <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-dim)' }}>No</span>
                     )}
                   </td>
-                  <td style={{ padding: '10px 14px', fontSize: 11, color: 'var(--text-muted)' }}>
+                  <td style={{ ...TD_STYLE, fontSize: 'var(--fs-xs)', color: 'var(--text-muted)' }}>
                     {h.site_id ? 'Site' : 'Org-wide'}
                   </td>
-                  <td style={{ padding: '10px 14px' }}>
+                  <td style={{ ...TD_STYLE, textAlign: 'right' }}>
                     <Button variant="danger" size="sm" onClick={() => handleDelete(h.id)}>Delete</Button>
                   </td>
                 </tr>
@@ -1024,56 +1034,48 @@ function AddHolidayModal({ orgId, siteId, onClose, onSaved }: {
       }
     >
         <label style={modalLabelStyle}>Holiday Name *</label>
-        <input style={modalInputStyle} placeholder="Christmas Day" value={holidayName} onChange={e => setHolidayName(e.target.value)} />
+        <input className="fr-field" style={modalInputStyle} placeholder="Christmas Day" value={holidayName} onChange={e => setHolidayName(e.target.value)} />
 
         <label style={modalLabelStyle}>Date *</label>
-        <input type="date" style={modalInputStyle} value={holidayDate} onChange={e => setHolidayDate(e.target.value)} />
+        <input type="date" className="fr-field" style={modalInputStyle} value={holidayDate} onChange={e => setHolidayDate(e.target.value)} />
 
         <label style={modalLabelStyle}>Holiday Type</label>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 6, marginBottom: 14 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 'var(--space-1)', marginBottom: 14 }}>
           {HOLIDAY_TYPES.map(ht => {
             const htc = HOLIDAY_TYPE_COLORS[ht.value] || HOLIDAY_TYPE_COLORS.custom;
             return (
-              <button key={ht.value} onClick={() => setHolidayType(ht.value)} style={{
-                padding: '7px 10px', borderRadius: 8, cursor: 'pointer', fontSize: 11, fontWeight: 700,
-                border: `1px solid ${holidayType === ht.value ? htc.color : 'var(--border)'}`,
-                background: holidayType === ht.value ? htc.bg : 'transparent',
-                color: holidayType === ht.value ? htc.color : 'var(--text-muted)',
-              }}>{ht.label}</button>
+              <SegButton key={ht.value} on={holidayType === ht.value} tone={htc.color} bg={htc.bg}
+                onClick={() => setHolidayType(ht.value)}>
+                {ht.label}
+              </SegButton>
             );
           })}
         </div>
 
         <label style={modalLabelStyle}>Scope</label>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, marginBottom: 14 }}>
-          <button onClick={() => setScope('org')} style={{
-            padding: '7px 10px', borderRadius: 8, cursor: 'pointer', fontSize: 11, fontWeight: 700,
-            border: `1px solid ${scope === 'org' ? '#0ea5e9' : 'var(--border)'}`,
-            background: scope === 'org' ? 'rgba(14,165,233,0.15)' : 'transparent',
-            color: scope === 'org' ? '#0ea5e9' : 'var(--text-muted)',
-          }}>Organization-wide</button>
-          <button onClick={() => setScope('site')} style={{
-            padding: '7px 10px', borderRadius: 8, cursor: 'pointer', fontSize: 11, fontWeight: 700,
-            border: `1px solid ${scope === 'site' ? '#10b981' : 'var(--border)'}`,
-            background: scope === 'site' ? 'rgba(16,185,129,0.15)' : 'transparent',
-            color: scope === 'site' ? '#10b981' : 'var(--text-muted)',
-          }}>This Site Only</button>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 'var(--space-1)', marginBottom: 14 }}>
+          <SegButton on={scope === 'org'} tone="var(--blue)" bg={tint('var(--blue)', 14)} onClick={() => setScope('org')}>
+            Organization-wide
+          </SegButton>
+          <SegButton on={scope === 'site'} tone="var(--ok)" bg="var(--ok-bg)" onClick={() => setScope('site')}>
+            This Site Only
+          </SegButton>
         </div>
 
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 4 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 'var(--space-3)', marginBottom: 'var(--space-1)' }}>
           <div>
             <label style={modalLabelStyle}>Color</label>
-            <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 12 }}>
-              <input type="color" value={colorHex} onChange={e => setColorHex(e.target.value)} style={{
-                width: 40, height: 36, borderRadius: 8, border: '1px solid var(--border)',
+            <div style={{ display: 'flex', gap: 'var(--space-2)', alignItems: 'center', marginBottom: 'var(--space-3)' }}>
+              <input type="color" className="fr-field" value={colorHex} onChange={e => setColorHex(e.target.value)} style={{
+                width: 40, height: 36, borderRadius: 'var(--radius-sm)', border: '1px solid var(--border)',
                 background: 'var(--bg-deep)', cursor: 'pointer', padding: 2,
               }} />
-              <input style={{ ...modalInputStyle, marginBottom: 0, flex: 1 }} value={colorHex} onChange={e => setColorHex(e.target.value)} />
+              <input className="fr-field" style={{ ...modalInputStyle, marginBottom: 0, flex: 1, fontFamily: 'var(--font-mono), ui-monospace, monospace' }} value={colorHex} onChange={e => setColorHex(e.target.value)} />
             </div>
           </div>
-          <div style={{ display: 'flex', alignItems: 'flex-end', paddingBottom: 12 }}>
-            <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: 'var(--text-muted)', cursor: 'pointer' }}>
-              <input type="checkbox" checked={isMajor} onChange={e => setIsMajor(e.target.checked)} style={{ accentColor: '#f59e0b', width: 15, height: 15 }} />
+          <div style={{ display: 'flex', alignItems: 'flex-end', paddingBottom: 'var(--space-3)' }}>
+            <label className="fr-toggle" style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)', fontSize: 'var(--fs-sm)', color: 'var(--text-muted)', cursor: 'pointer', borderRadius: 'var(--radius-sm)' }}>
+              <input type="checkbox" checked={isMajor} onChange={e => setIsMajor(e.target.checked)} style={{ accentColor: 'var(--warn)', width: 15, height: 15, cursor: 'pointer' }} />
               Major Holiday
             </label>
           </div>
@@ -1085,30 +1087,88 @@ function AddHolidayModal({ orgId, siteId, onClose, onSaved }: {
 /* ── Shared Components ───────────────────────────────────────────────────── */
 
 const fieldLabelStyle: React.CSSProperties = {
-  fontSize: 11, color: 'var(--text-muted)', display: 'block',
+  fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', display: 'block',
   marginBottom: 5, fontWeight: 600, letterSpacing: 0.5,
 };
 const fieldInputStyle: React.CSSProperties = {
-  width: '100%', padding: '9px 12px', borderRadius: 8,
+  width: '100%', padding: '9px 12px', borderRadius: 'var(--radius-sm)',
   border: '1px solid var(--border)', background: 'var(--bg-deep)',
-  color: 'var(--text)', fontSize: 13,
+  color: 'var(--text)', fontSize: 'var(--fs-sm)', fontFamily: 'inherit',
 };
 const modalLabelStyle: React.CSSProperties = {
-  fontSize: 11, color: 'var(--text-muted)', display: 'block',
+  fontSize: 'var(--fs-xs)', color: 'var(--text-muted)', display: 'block',
   marginBottom: 5, fontWeight: 600, letterSpacing: 0.5,
 };
 const modalInputStyle: React.CSSProperties = {
-  width: '100%', padding: '10px 12px', borderRadius: 8,
+  width: '100%', padding: '10px 12px', borderRadius: 'var(--radius-sm)',
   border: '1px solid var(--border)', background: 'var(--bg-deep)',
-  color: 'var(--text)', fontSize: 14, marginBottom: 12,
+  color: 'var(--text)', fontSize: 'var(--fs-md)', fontFamily: 'inherit',
+  marginBottom: 'var(--space-3)',
+};
+
+/* Both tables on this page are hand-rolled (their rows are clickable and the
+   Table kit takes plain cells), so they borrow the kit's header and cell
+   voice rather than inventing a second one. */
+const TH_STYLE: React.CSSProperties = {
+  padding: '10px 14px', textAlign: 'left',
+  fontSize: 'var(--fs-xs)', fontWeight: 500,
+  fontFamily: 'var(--font-mono), ui-monospace, monospace',
+  color: 'var(--text-muted)', letterSpacing: 0.6,
+  textTransform: 'uppercase', whiteSpace: 'nowrap',
+};
+const TD_STYLE: React.CSSProperties = {
+  padding: '10px 14px', fontSize: 'var(--fs-sm)', verticalAlign: 'middle',
+};
+
+/** Soft tone tint + solid tone ink, at the Badge kit's weight. */
+const TONE_PILL: React.CSSProperties = {
+  display: 'inline-block',
+  fontSize: 'var(--fs-xs)', fontWeight: 700,
+  padding: '2px 8px', borderRadius: 999,
+  lineHeight: 1.5, whiteSpace: 'nowrap',
 };
 
 function Field({ label, value, onChange, type }: { label: string; value: string; onChange: (v: string) => void; type?: string }) {
   return (
     <div>
       <label style={fieldLabelStyle}>{label}</label>
-      <input type={type || 'text'} value={value} onChange={e => onChange(e.target.value)} style={fieldInputStyle} />
+      <input className="fr-field" type={type || 'text'} value={value} onChange={e => onChange(e.target.value)} style={fieldInputStyle} />
     </div>
+  );
+}
+
+/**
+ * One option in a segmented picker (site type, category, day type, scope…).
+ * The ON look is inline because each option owns a meaning colour; the OFF
+ * look, its hover and its press nudge come from .fr-seg — an inline
+ * background would outrank the class's :hover and kill it, which is exactly
+ * what the hand-rolled versions of this button used to do.
+ */
+function SegButton({ on, tone, bg, onClick, style, children }: {
+  on: boolean;
+  tone: string;
+  bg: string;
+  onClick: () => void;
+  style?: React.CSSProperties;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-pressed={on}
+      className="fr-seg"
+      style={{
+        padding: '7px 10px', borderRadius: 'var(--radius-sm)',
+        fontSize: 'var(--fs-xs)', fontWeight: 700, fontFamily: 'inherit',
+        // borderColor, not the border shorthand: the 1px solid width lives in
+        // .fr-seg and must survive the ON state.
+        ...(on ? { background: bg, borderColor: tone, color: tone } : null),
+        ...style,
+      }}
+    >
+      {children}
+    </button>
   );
 }
 
@@ -1121,16 +1181,21 @@ function InfoTip({ text }: { text: string }) {
       <span style={{
         width: 16, height: 16, borderRadius: '50%', display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
         fontSize: 10, fontWeight: 800, cursor: 'pointer',
-        background: 'rgba(14,165,233,0.15)', color: '#0ea5e9', border: '1px solid rgba(14,165,233,0.3)',
+        background: tint('var(--blue)', 14), color: 'var(--blue)',
+        border: `1px solid ${tint('var(--blue)', 30)}`,
         flexShrink: 0,
       }}>i</span>
       {show && (
         <div style={{
           position: 'absolute', top: '100%', left: '50%', transform: 'translateX(-50%)',
-          marginTop: 8, padding: '10px 14px', borderRadius: 8, fontSize: 12, lineHeight: 1.5,
-          background: '#1e293b', color: '#e2e8f0', border: '1px solid #334155',
-          boxShadow: '0 8px 24px rgba(0,0,0,0.5)', width: 280, zIndex: 300,
-          fontWeight: 500, whiteSpace: 'normal',
+          marginTop: 'var(--space-2)', padding: '10px 14px', borderRadius: 'var(--radius-md)',
+          fontSize: 'var(--fs-sm)', lineHeight: 1.5,
+          background: 'var(--bg-popover)', color: 'var(--text)', border: '1px solid var(--border)',
+          boxShadow: 'var(--shadow-popover)', width: 280, zIndex: 300,
+          fontWeight: 500, whiteSpace: 'normal', textAlign: 'left',
+          // Opacity-only fade: fade-up would animate `transform`, which is
+          // already carrying this tip's translateX(-50%) centring.
+          animation: 'fr-backdrop-in var(--dur-fast) var(--ease-out)',
         }}>
           {text}
         </div>
@@ -1141,8 +1206,13 @@ function InfoTip({ text }: { text: string }) {
 
 function Toggle({ label, checked, onChange }: { label: string; checked: boolean; onChange: (v: boolean) => void }) {
   return (
-    <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: 'var(--text-muted)', cursor: 'pointer', padding: '4px 0' }}>
-      <input type="checkbox" checked={checked} onChange={e => onChange(e.target.checked)} style={{ accentColor: '#0ea5e9', width: 15, height: 15 }} />
+    <label className="fr-toggle" data-on={checked} style={{
+      display: 'flex', alignItems: 'center', gap: 'var(--space-2)',
+      fontSize: 'var(--fs-sm)', color: checked ? 'var(--text)' : 'var(--text-muted)',
+      cursor: 'pointer', padding: '4px 0', borderRadius: 'var(--radius-sm)',
+    }}>
+      <input type="checkbox" checked={checked} onChange={e => onChange(e.target.checked)}
+        style={{ accentColor: 'var(--blue)', width: 15, height: 15, cursor: 'pointer' }} />
       {label}
     </label>
   );
@@ -1150,7 +1220,7 @@ function Toggle({ label, checked, onChange }: { label: string; checked: boolean;
 
 function SectionLabel({ children }: { children: React.ReactNode }) {
   return (
-    <div style={{ fontSize: 11, fontWeight: 800, color: 'var(--text-dim)', letterSpacing: 1.5, textTransform: 'uppercase', marginBottom: 10, marginTop: 8 }}>
+    <div style={{ fontSize: 'var(--fs-xs)', fontWeight: 800, color: 'var(--text-dim)', letterSpacing: 1.5, textTransform: 'uppercase', marginBottom: 10, marginTop: 'var(--space-2)' }}>
       {children}
     </div>
   );
