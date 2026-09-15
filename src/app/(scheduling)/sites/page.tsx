@@ -2,7 +2,8 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import Link from 'next/link';
-import { PageHeader, Card, Badge, Button, Table, EmptyState, Modal } from '@/components/ui';
+import { interpretListRead } from '../providers/listRead';
+import { PageHeader, Card, Badge, Button, Table, EmptyState, Banner, Modal } from '@/components/ui';
 
 interface Site {
   id: string;
@@ -13,7 +14,8 @@ interface Site {
   timezone: string | null;
   is_active: boolean;
   display_order: number | null;
-  shift_types?: { id: string }[];
+  /** undefined ⇒ the shift-type read failed, so the count is UNKNOWN, not zero. */
+  shift_types?: { site_id: string }[];
 }
 
 const SITE_TYPE_COLORS: Record<string, { color: string; bg: string; label: string }> = {
@@ -28,31 +30,54 @@ export default function SitesPage() {
   const [sites, setSites] = useState<Site[]>([]);
   const [orgId, setOrgId] = useState('');
   const [loading, setLoading] = useState(true);
+  const [orgError, setOrgError] = useState<string | null>(null);
+  const [sitesError, setSitesError] = useState<string | null>(null);
+  const [shiftTypesError, setShiftTypesError] = useState<string | null>(null);
   const [showAdd, setShowAdd] = useState(false);
 
   useEffect(() => {
     (async () => {
-      const orgRes = await fetch('/api/scheduling/organizations');
-      const orgs = await orgRes.json();
-      if (orgs.length > 0) {
-        setOrgId(orgs[0].id);
+      try {
+        const res = await fetch('/api/scheduling/organizations');
+        const read = interpretListRead<{ id: string }>(res, await res.json().catch(() => null), 'organizations');
+        // A failed org read leaves orgId empty, which stops the sites read from
+        // ever running — indistinguishable from a group with no sites unless
+        // the failure is said out loud.
+        if (!read.ok) { setOrgError(read.error); return; }
+        if (read.rows.length > 0) setOrgId(read.rows[0].id);
+      } catch (e) {
+        setOrgError(e instanceof Error ? e.message : 'Network error loading organizations');
+      } finally {
+        setLoading(false);
       }
-      setLoading(false);
     })();
   }, []);
 
   const loadSites = useCallback(async () => {
     if (!orgId) return;
-    const res = await fetch('/api/scheduling/sites?org_id=' + orgId);
-    const data = await res.json();
-    // Also load shift type counts per site
-    const stRes = await fetch('/api/scheduling/shift-types');
-    const shiftTypes = await stRes.json();
-    const enriched = data.map((s: Site) => ({
-      ...s,
-      shift_types: Array.isArray(shiftTypes) ? shiftTypes.filter((st: { site_id: string }) => st.site_id === s.id) : [],
-    }));
-    setSites(enriched);
+    try {
+      const res = await fetch('/api/scheduling/sites?org_id=' + orgId);
+      const read = interpretListRead<Site>(res, await res.json().catch(() => null), 'sites');
+      // A failed read must not fall through to the empty-list path: that path
+      // invites the user to onboard sites that already exist, which duplicates
+      // every hospital in the group.
+      if (!read.ok) { setSitesError(read.error); return; }
+
+      // Shift-type counts decorate the rows; a failed read must not blank the
+      // site list, but "0 shift types" would be a lie, so it is flagged and the
+      // count is left unknown instead.
+      const stRes = await fetch('/api/scheduling/shift-types');
+      const stRead = interpretListRead<{ site_id: string }>(stRes, await stRes.json().catch(() => null), 'shift types');
+      setShiftTypesError(stRead.ok ? null : stRead.error);
+
+      setSites(read.rows.map(s => ({
+        ...s,
+        shift_types: stRead.ok ? stRead.rows.filter(st => st.site_id === s.id) : undefined,
+      })));
+      setSitesError(null);
+    } catch (e) {
+      setSitesError(e instanceof Error ? e.message : 'Network error loading sites');
+    }
   }, [orgId]);
 
   useEffect(() => { loadSites(); }, [loadSites]);
@@ -68,13 +93,31 @@ export default function SitesPage() {
     );
   }
 
+  if (orgError) {
+    return (
+      <div>
+        <PageHeader title="Sites" />
+        <Banner tone="error">{orgError} Reload the page to try again.</Banner>
+      </div>
+    );
+  }
+
   return (
     <div>
       <PageHeader
         title="Sites"
-        subtitle={`${sites.length} site${sites.length !== 1 ? 's' : ''} configured`}
+        subtitle={sitesError
+          ? 'Site list unavailable'
+          : `${sites.length} site${sites.length !== 1 ? 's' : ''} configured`}
         actions={<Button onClick={() => setShowAdd(true)}>+ Add Site</Button>}
       />
+
+      {(sitesError || shiftTypesError) && (
+        <div style={{ marginBottom: 16, display: 'grid', gap: 8 }}>
+          {sitesError && <Banner tone="error">{sitesError}</Banner>}
+          {shiftTypesError && <Banner tone="warn">{shiftTypesError} Shift-type counts are shown as unknown.</Banner>}
+        </div>
+      )}
 
       <Card pad={false}>
         <Table
@@ -82,7 +125,7 @@ export default function SitesPage() {
           minWidth={720}
           rows={sites.map(site => {
             const tc = SITE_TYPE_COLORS[site.site_type] || SITE_TYPE_COLORS.hospital;
-            const shiftCount = site.shift_types?.length || 0;
+            const shiftCount = site.shift_types?.length;
             return [
               <Link key="name" href={`/sites/${site.id}`} style={{ textDecoration: 'none', color: 'var(--text)' }}>
                 <div style={{ fontWeight: 700, color: 'var(--text-strong)' }}>{site.name}</div>
@@ -95,18 +138,26 @@ export default function SitesPage() {
                 background: tc.bg, color: tc.color, whiteSpace: 'nowrap',
               }}>{tc.label}</span>,
               <Badge key="status" tone={site.is_active ? 'ok' : 'neutral'}>{site.is_active ? 'Active' : 'Inactive'}</Badge>,
-              <Badge key="st" tone="info">{shiftCount} shift type{shiftCount !== 1 ? 's' : ''}</Badge>,
+              shiftCount === undefined
+                ? <Badge key="st" tone="neutral">Shift types unknown</Badge>
+                : <Badge key="st" tone="info">{shiftCount} shift type{shiftCount !== 1 ? 's' : ''}</Badge>,
               site.address || '—',
               site.timezone || '—',
             ];
           })}
-          empty={
-            <EmptyState
-              icon="⬡"
-              title="No sites configured yet"
-              hint="Add the hospitals, surgery centers, and offices your group covers — shift types and schedules hang off each site."
-              action={<Button size="sm" onClick={() => setShowAdd(true)}>+ Add Site</Button>}
-            />
+          empty={sitesError
+            // Only ever the onboarding pitch when the read genuinely SUCCEEDED
+            // and came back empty — a failed read offering "+ Add Site" is how
+            // an existing hospital gets entered twice.
+            ? <EmptyState icon="⚠" title="Sites could not be loaded" hint={`${sitesError} Reload the page to try again.`} />
+            : (
+              <EmptyState
+                icon="⬡"
+                title="No sites configured yet"
+                hint="Add the hospitals, surgery centers, and offices your group covers — shift types and schedules hang off each site."
+                action={<Button size="sm" onClick={() => setShowAdd(true)}>+ Add Site</Button>}
+              />
+            )
           }
         />
       </Card>

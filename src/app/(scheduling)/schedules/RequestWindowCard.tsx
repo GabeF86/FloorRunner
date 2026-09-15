@@ -17,7 +17,7 @@ interface Site {
   short_name: string | null;
 }
 
-interface RequestWindow {
+export interface RequestWindow {
   id: string;
   site_id: string;
   block_start: string;
@@ -32,6 +32,30 @@ interface RequestWindow {
   closed_at: string | null;
 }
 
+/**
+ * What the card's body should show. A failed read is its OWN state: it must
+ * never collapse into "no open window", because that both tells the chief
+ * intake is closed when it may be wide open (providers are submitting against
+ * a link he thinks is dead) and offers him the open-window form, whose POST
+ * then 409s against the window he was never shown.
+ */
+export type RequestWindowView =
+  | { mode: 'loading' }
+  | { mode: 'error'; message: string }
+  | { mode: 'open'; window: RequestWindow }
+  | { mode: 'none' };
+
+export function requestWindowView(
+  loading: boolean,
+  loadError: string | null,
+  windows: RequestWindow[],
+): RequestWindowView {
+  if (loading) return { mode: 'loading' };
+  if (loadError) return { mode: 'error', message: loadError };
+  const open = windows.find(w => w.status === 'open');
+  return open ? { mode: 'open', window: open } : { mode: 'none' };
+}
+
 export default function RequestWindowCard({ sites, initialSiteId }: {
   sites: Site[];
   initialSiteId?: string;
@@ -40,6 +64,9 @@ export default function RequestWindowCard({ sites, initialSiteId }: {
   const [windows, setWindows] = useState<RequestWindow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  // Kept apart from `error` (which reports open/close actions) so the render
+  // can tell "the read failed" from "the read said there is no open window".
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
 
   // Open form state
@@ -66,11 +93,23 @@ export default function RequestWindowCard({ sites, initialSiteId }: {
   }, [sites, siteId]);
 
   const load = useCallback(async () => {
-    if (!siteId) { setWindows([]); setLoading(false); return; }
+    if (!siteId) { setWindows([]); setLoadError(null); setLoading(false); return; }
     setLoading(true);
+    setLoadError(null);
     try {
       const res = await fetch(`/api/scheduling/request-windows?site_id=${siteId}`);
-      setWindows(res.ok ? await res.json() : []);
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        setLoadError(body.error || `Failed to load request windows (${res.status})`);
+        setWindows([]);
+        return;
+      }
+      setWindows(await res.json());
+    } catch (e) {
+      // Network failure / unparseable body: same rule as a non-OK response —
+      // report it, never render it as "no open window".
+      setLoadError(e instanceof Error ? e.message : 'Failed to load request windows.');
+      setWindows([]);
     } finally {
       setLoading(false);
     }
@@ -124,7 +163,8 @@ export default function RequestWindowCard({ sites, initialSiteId }: {
   const fmt = (d: string) =>
     new Date(d + 'T12:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 
-  const open = windows.find(w => w.status === 'open') || null;
+  const view = requestWindowView(loading, loadError, windows);
+  const open = view.mode === 'open' ? view.window : null;
   const recentClosed = windows.filter(w => w.status === 'closed').slice(0, 3);
   const link = open && typeof window !== 'undefined'
     ? `${window.location.origin}/requests/submit/${open.token}`
@@ -176,8 +216,20 @@ export default function RequestWindowCard({ sites, initialSiteId }: {
         }}>{error}</div>
       )}
 
-      {loading ? (
+      {view.mode === 'loading' ? (
         <div style={{ fontSize: 12, color: 'var(--text-dim)' }}>Loading…</div>
+      ) : view.mode === 'error' ? (
+        <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+          <div style={{
+            flex: 1, minWidth: 260, color: 'var(--danger)', fontSize: 12,
+            padding: '6px 10px', background: 'var(--danger-bg)',
+            border: '1px solid rgba(220,38,38,0.25)', borderRadius: 6, lineHeight: 1.5,
+          }}>
+            Couldn&apos;t load this site&apos;s request window — {view.message}. A window may still
+            be open and accepting submissions; the link and the open form stay hidden until this loads.
+          </div>
+          <Button size="sm" variant="secondary" onClick={load}>Retry</Button>
+        </div>
       ) : open ? (
         <div>
           <div style={{ fontSize: 13, color: 'var(--text)', marginBottom: 8 }}>

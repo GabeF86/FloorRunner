@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import Link from 'next/link';
-import { PageHeader, Card, Badge, Button, Modal, EmptyState } from '@/components/ui';
+import { PageHeader, Card, Badge, Button, Modal, EmptyState, Banner } from '@/components/ui';
 
 /* ── Interfaces ──────────────────────────────────────────────────────────── */
 
@@ -136,10 +136,25 @@ export default function SiteDetailPage({ params }: { params: { id: string } }) {
   const [holidays, setHolidays] = useState<Holiday[]>([]);
   const [tab, setTab] = useState<Tab>('general');
   const [saving, setSaving] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   const loadSite = useCallback(async () => {
-    const res = await fetch(`/api/scheduling/sites/${id}`);
-    setSite(await res.json());
+    try {
+      const res = await fetch(`/api/scheduling/sites/${id}`, { cache: 'no-store' });
+      const data = await res.json().catch(() => null);
+      // The route answers a failure with `{ error }`, which is NOT a site:
+      // storing it would blank the header and show every tab as empty, so a
+      // failed read has to surface as an error and keep the last-known site.
+      if (!res.ok) {
+        setLoadError(data?.error || `Failed to load site (${res.status})`);
+        return;
+      }
+      setLoadError(null);
+      setSite(data);
+    } catch (e) {
+      setLoadError(e instanceof Error ? e.message : 'Network error loading site');
+    }
   }, [id]);
 
   const loadHolidays = useCallback(async () => {
@@ -153,16 +168,42 @@ export default function SiteDetailPage({ params }: { params: { id: string } }) {
 
   const saveSite = async (updates: Record<string, unknown>) => {
     setSaving(true);
-    const res = await fetch(`/api/scheduling/sites/${id}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(updates),
-    });
-    setSite(await res.json());
-    setSaving(false);
+    setSaveError(null);
+    try {
+      const res = await fetch(`/api/scheduling/sites/${id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(updates),
+      });
+      const data = await res.json().catch(() => null);
+      // Same reason as loadSite: on failure the body is `{ error }`, and
+      // assigning it would replace the site with a blank header while the
+      // edits the user just made silently appear to have "saved".
+      if (!res.ok) {
+        setSaveError(data?.error || `Save failed (${res.status})`);
+        return;
+      }
+      setSite(data);
+    } catch (e) {
+      setSaveError(e instanceof Error ? e.message : 'Network error saving site');
+    } finally {
+      setSaving(false);
+    }
   };
 
-  if (!site) return <div style={{ padding: 40, color: 'var(--text-muted)' }}>Loading...</div>;
+  if (!site) {
+    if (loadError) {
+      return (
+        <div style={{ padding: '24px 32px', maxWidth: 640 }}>
+          <Banner tone="error">{loadError}</Banner>
+          <div style={{ marginTop: 16 }}>
+            <Link href="/sites" style={{ color: 'var(--blue)', fontSize: 13, textDecoration: 'none' }}>← Back to sites</Link>
+          </div>
+        </div>
+      );
+    }
+    return <div style={{ padding: 40, color: 'var(--text-muted)' }}>Loading...</div>;
+  }
 
   const tc = SITE_TYPE_COLORS[site.site_type] || SITE_TYPE_COLORS.hospital;
 
@@ -196,6 +237,14 @@ export default function SiteDetailPage({ params }: { params: { id: string } }) {
         }
         actions={saving ? <span style={{ fontSize: 11, color: 'var(--blue)' }}>Saving...</span> : undefined}
       />
+
+      {/* Errors — the site on screen is the last good copy, not the failed one */}
+      {(saveError || loadError) && (
+        <div style={{ display: 'grid', gap: 8, marginBottom: 16 }}>
+          {saveError && <Banner tone="error" onDismiss={() => setSaveError(null)}>{saveError}</Banner>}
+          {loadError && <Banner tone="error" onDismiss={() => setLoadError(null)}>{loadError} — showing the last loaded version of this site.</Banner>}
+        </div>
+      )}
 
       {/* Tabs */}
       <div style={{ display: 'flex', gap: 0, borderBottom: '1px solid var(--border)', marginBottom: 24 }}>

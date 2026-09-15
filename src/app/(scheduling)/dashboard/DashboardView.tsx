@@ -267,9 +267,17 @@ function StaffChips({ people }: { people: StaffChip[] }) {
   );
 }
 
-/** 1 → "1.0", 0.75 → "0.75" — enough places to be exact, no more. */
-function formatFte(n: number): string {
-  return Number.isInteger(n * 100) && n * 100 % 10 !== 0 ? n.toFixed(2) : n.toFixed(1);
+/**
+ * 1 → "1.0", 0.75 → "0.75" — enough places to be exact, no more.
+ *
+ * Decided by rounding to two places and dropping a trailing zero, NOT by
+ * testing `Number.isInteger(n * 100)`: 0.55 * 100 is 55.00000000000001 in
+ * binary floating point, so that test failed for real contract values and
+ * rendered 0.55 FTE as "0.6".
+ */
+export function formatFte(n: number): string {
+  const two = n.toFixed(2);
+  return two.endsWith('0') ? two.slice(0, -1) : two;
 }
 
 function StaffSection({

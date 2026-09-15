@@ -1,8 +1,9 @@
 'use client';
 
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import Link from 'next/link';
 import { isValidEmail } from '@/lib/validation/providers';
+import { interpretListRead } from './listRead';
 import { PageHeader, Card, Badge, Button, Table, EmptyState, Banner, Modal, type BadgeTone } from '@/components/ui';
 
 interface Provider {
@@ -60,12 +61,21 @@ const STATUS_TONES: Record<string, BadgeTone> = {
 
 const TABLE_HEADERS = ['Name', 'Type', 'Status', 'Employment', 'FTE', 'Home Site', 'Call Taker', 'Fellowship', ''];
 
+/** How long the search box sits idle before the roster is refetched. */
+const SEARCH_DEBOUNCE_MS = 250;
+
 export default function ProvidersPage() {
   const [providers, setProviders] = useState<Provider[]>([]);
   const [sites, setSites] = useState<Site[]>([]);
   const [orgId, setOrgId] = useState<string>('');
   const [loading, setLoading] = useState(true);
+  const [orgError, setOrgError] = useState<string | null>(null);
+  const [providersError, setProvidersError] = useState<string | null>(null);
+  const [sitesError, setSitesError] = useState<string | null>(null);
   const [search, setSearch] = useState('');
+  // The query the roster is actually fetched for — `search` lags behind it by
+  // SEARCH_DEBOUNCE_MS so typing doesn't fire one request per keystroke.
+  const [searchQuery, setSearchQuery] = useState('');
   const [typeFilter, setTypeFilter] = useState('');
   const [statusFilter, setStatusFilter] = useState('active');
   const [homeSiteFilter, setHomeSiteFilter] = useState('');
@@ -73,34 +83,70 @@ export default function ProvidersPage() {
   const [roleFilter, setRoleFilter] = useState('');
   const [showAdd, setShowAdd] = useState(false);
 
+  // Monotonic id of the newest roster request in flight. A slow earlier
+  // response must never overwrite a newer one's results (type "smith" fast and
+  // the "s" response can land after the "smith" one).
+  const providersReq = useRef(0);
+
   // Load org, then providers
   useEffect(() => {
     (async () => {
-      const orgRes = await fetch('/api/scheduling/organizations');
-      const orgs = await orgRes.json();
-      if (orgs.length > 0) {
-        setOrgId(orgs[0].id);
+      try {
+        const res = await fetch('/api/scheduling/organizations');
+        const read = interpretListRead<{ id: string }>(res, await res.json().catch(() => null), 'organizations');
+        // A failed read must not fall through to the empty-list path: that
+        // path tells the user their organization doesn't exist and offers to
+        // create one.
+        if (!read.ok) { setOrgError(read.error); return; }
+        if (read.rows.length > 0) setOrgId(read.rows[0].id);
+      } catch (e) {
+        setOrgError(e instanceof Error ? e.message : 'Network error loading organizations');
+      } finally {
+        setLoading(false);
       }
-      setLoading(false);
     })();
   }, []);
 
+  // Debounce the search box. loadProviders refetches on every change of its
+  // inputs, so typing straight into `search` issues a request per character.
+  useEffect(() => {
+    const t = setTimeout(() => setSearchQuery(search), SEARCH_DEBOUNCE_MS);
+    return () => clearTimeout(t);
+  }, [search]);
+
   const loadProviders = useCallback(async () => {
     if (!orgId) return;
+    const seq = ++providersReq.current;
     const params = new URLSearchParams({ org_id: orgId });
     if (statusFilter) params.set('status', statusFilter);
     if (typeFilter) params.set('provider_type', typeFilter);
-    if (search) params.set('search', search);
+    if (searchQuery) params.set('search', searchQuery);
     if (homeSiteFilter) params.set('home_site_id', homeSiteFilter);
     if (credentialedSiteFilter) params.set('credentialed_site_id', credentialedSiteFilter);
-    const res = await fetch('/api/scheduling/providers?' + params);
-    setProviders(await res.json());
-  }, [orgId, statusFilter, typeFilter, search, homeSiteFilter, credentialedSiteFilter]);
+    try {
+      const res = await fetch('/api/scheduling/providers?' + params);
+      const read = interpretListRead<Provider>(res, await res.json().catch(() => null), 'providers');
+      if (seq !== providersReq.current) return; // superseded — a newer request owns the state
+      if (!read.ok) { setProvidersError(read.error); return; }
+      setProviders(read.rows);
+      setProvidersError(null);
+    } catch (e) {
+      if (seq !== providersReq.current) return;
+      setProvidersError(e instanceof Error ? e.message : 'Network error loading providers');
+    }
+  }, [orgId, statusFilter, typeFilter, searchQuery, homeSiteFilter, credentialedSiteFilter]);
 
   const loadSites = useCallback(async () => {
     if (!orgId) return;
-    const res = await fetch('/api/scheduling/sites?org_id=' + orgId);
-    setSites(await res.json());
+    try {
+      const res = await fetch('/api/scheduling/sites?org_id=' + orgId);
+      const read = interpretListRead<Site>(res, await res.json().catch(() => null), 'sites');
+      if (!read.ok) { setSitesError(read.error); return; }
+      setSites(read.rows);
+      setSitesError(null);
+    } catch (e) {
+      setSitesError(e instanceof Error ? e.message : 'Network error loading sites');
+    }
   }, [orgId]);
 
   useEffect(() => { loadProviders(); }, [loadProviders]);
@@ -155,6 +201,17 @@ export default function ProvidersPage() {
     );
   }
 
+  // Only ever reached when the organizations read genuinely SUCCEEDED and came
+  // back empty — never on a failure, which would invite a duplicate org.
+  if (orgError) {
+    return (
+      <div>
+        <PageHeader title="Providers" />
+        <Banner tone="error">{orgError} Reload the page to try again.</Banner>
+      </div>
+    );
+  }
+
   if (!orgId) {
     return <NoOrgSetup onCreated={(id) => setOrgId(id)} />;
   }
@@ -163,9 +220,20 @@ export default function ProvidersPage() {
     <div>
       <PageHeader
         title="Providers"
-        subtitle={`${filteredProviders.length} provider${filteredProviders.length !== 1 ? 's' : ''}${roleFilter && providers.length !== filteredProviders.length ? ` of ${providers.length}` : ''}`}
+        subtitle={providersError
+          ? 'Provider list unavailable'
+          : `${filteredProviders.length} provider${filteredProviders.length !== 1 ? 's' : ''}${roleFilter && providers.length !== filteredProviders.length ? ` of ${providers.length}` : ''}`}
         actions={<Button onClick={() => setShowAdd(true)}>+ Add Provider</Button>}
       />
+
+      {(providersError || sitesError) && (
+        <div style={{ marginBottom: 16, display: 'grid', gap: 8 }}>
+          {providersError && <Banner tone="error">{providersError}</Banner>}
+          {/* Sites feed the two site filters and the Home Site column, so a
+              failed sites read leaves them empty and needs saying out loud. */}
+          {sitesError && <Banner tone="error">{sitesError}</Banner>}
+        </div>
+      )}
 
       {/* Filters */}
       <div style={{ display: 'flex', gap: 10, marginBottom: 20, flexWrap: 'wrap' }}>
@@ -284,13 +352,20 @@ export default function ProvidersPage() {
               </div>,
             ];
           })}
-          empty={
+          empty={providersError ? (
+            // A failed read must never read as a confirmed "no providers".
+            <EmptyState
+              icon="!"
+              title="Could not load providers"
+              hint={providersError}
+            />
+          ) : (
             <EmptyState
               icon="◆"
               title="No providers found"
               hint="Add your first provider, or loosen the search and filters to see more of the roster."
             />
-          }
+          )}
         />
       </Card>
 

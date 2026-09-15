@@ -3759,13 +3759,42 @@ const BURDEN_BUCKETS = ['weekday_call', 'friday_call', 'weekend_call', 'holiday_
 function HistoryTab({ providerId }: { providerId: string }) {
   const [data, setData] = useState<BurdenData | null>(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [year, setYear] = useState(new Date().getFullYear());
 
   useEffect(() => {
+    // The stepper can be clicked faster than the route answers. Without this
+    // guard a slower EARLIER response can resolve last and paint the previous
+    // year's burden under the current year's heading — silently wrong numbers,
+    // which is worse than a spinner. The cleanup runs before the next effect,
+    // so only the newest request is allowed to write state.
+    let cancelled = false;
     setLoading(true);
-    fetch(`/api/scheduling/providers/${providerId}/burden?from=${year}-01-01&to=${year}-12-31`)
-      .then(r => r.json())
-      .then(d => { setData(d); setLoading(false); });
+    setError(null);
+    (async () => {
+      try {
+        const res = await fetch(`/api/scheduling/providers/${providerId}/burden?from=${year}-01-01&to=${year}-12-31`);
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({}));
+          if (cancelled) return;
+          // A failed read must never render as a clean zero-burden year, so the
+          // stale figures are dropped and the error path takes over.
+          setData(null);
+          setError(body.error || `Could not load assignment history (${res.status})`);
+          return;
+        }
+        const json = await res.json();
+        if (cancelled) return;
+        setData(json);
+      } catch (e) {
+        if (cancelled) return;
+        setData(null);
+        setError(e instanceof Error ? e.message : 'Network error');
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
   }, [providerId, year]);
 
   const formatDate = (d: string) => {
@@ -3801,7 +3830,9 @@ function HistoryTab({ providerId }: { providerId: string }) {
     return (
       <TabStack>
         {yearBar}
-        <Banner tone="error">Could not load this provider&rsquo;s assignment history.</Banner>
+        <Banner tone="error">
+          Could not load this provider&rsquo;s assignment history{error ? `: ${error}` : '.'}
+        </Banner>
       </TabStack>
     );
   }

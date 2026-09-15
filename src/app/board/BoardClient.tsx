@@ -39,6 +39,54 @@ const HOSPITAL_BASELINES: Record<string, { name: string; color: string; icon: st
   ],
 };
 
+/**
+ * One board sub-request, resolved rather than thrown.
+ *
+ * The board reloads six endpoints per date. Letting any one of them reject
+ * would abandon the whole reload, leaving the PREVIOUS date's rows under the
+ * new date's header — a plausible-looking wrong day, which on a live OR board
+ * is worse than a blank one. So every failure comes back as `{ rows: null,
+ * error }` and the caller decides per-slice. `rows: null` is never an empty
+ * list: a failed read must never render as "nobody is assigned".
+ */
+export async function readDailyList<T>(url: string, label: string): Promise<{ rows: T[] | null; error: string | null }> {
+  try {
+    const res = await fetch(url);
+    if (!res.ok) {
+      const detail = await res.text().catch(() => '');
+      return { rows: null, error: `${label}: ${res.status}${detail ? ' ' + detail.slice(0, 160) : ''}` };
+    }
+    const body = await res.json();
+    // These routes answer with an array on success and `{ error }` on failure;
+    // anything else means the shape changed and cannot be trusted as data.
+    if (!Array.isArray(body)) {
+      const msg = body && typeof body === 'object' && 'error' in body ? String((body as { error: unknown }).error) : 'unexpected response';
+      return { rows: null, error: `${label}: ${msg}` };
+    }
+    return { rows: body as T[], error: null };
+  } catch (e) {
+    return { rows: null, error: `${label}: ${e instanceof Error ? e.message : String(e)}` };
+  }
+}
+
+// Unique per optimistic row. Two drops inside the same millisecond would share
+// a `Date.now()` id, and the server-row reconcile below would then retire the
+// wrong one. The 'opt-' prefix is load-bearing — useBoardRealtime keys off it.
+let optimisticSeq = 0;
+export const optimisticId = () => 'opt-' + Date.now() + '-' + (++optimisticSeq);
+
+/**
+ * Swap an optimistic row for the row the server stored. Also drops any other
+ * row for the same room+person so the confirmed one is the only copy — and so
+ * the id on screen is always an id DELETE can find.
+ */
+export function withServerAssignment(prev: Assignment[], optId: string, row: Assignment): Assignment[] {
+  return [
+    ...prev.filter((a) => a.id !== optId && !(a.room_id === row.room_id && a.staff_id === row.staff_id)),
+    row,
+  ];
+}
+
 export default function BoardClient({ initialSites, initialStaff, initialAssignments, today }: Props) {
   const [sites,         setSites]         = useState<Site[]>(initialSites);
   const [staff,         setStaff]         = useState<StaffMember[]>(initialStaff);
@@ -48,6 +96,7 @@ export default function BoardClient({ initialSites, initialStaff, initialAssignm
   const [breaks,        setBreaks]        = useState<Break[]>([]);
   const [reliefLog,     setReliefLog]     = useState<ReliefEntry[]>([]);
   const [activeStaffIds,setActiveStaffIds]= useState<Set<string>>(new Set());
+  const [loadError,     setLoadError]     = useState<string | null>(null);
   const [dragging,      setDragging]      = useState<DraggedPerson | null>(null);
   const [dragOver,      setDragOver]      = useState<string | null>(null);
   const [saving,        setSaving]        = useState(false);
@@ -117,31 +166,49 @@ export default function BoardClient({ initialSites, initialStaff, initialAssignm
   }, []);
 
   // ── Load daily data ───────────────────────────────────────────────────────
-  async function loadDailyData(date: string) {
-    const [dR, sR, bR, rR, aR, acR] = await Promise.all([
-      fetch('/api/designations?date='   + date),
-      fetch('/api/daily-shifts?date='   + date),
-      fetch('/api/breaks?date='         + date),
-      fetch('/api/relief?date='         + date),
-      fetch('/api/assignments?date='    + date),
-      fetch('/api/daily-active?date='   + date),
-    ]);
-    const [dD, sD, bD, rD, aD, acD] = await Promise.all([
-      dR.json(), sR.json(), bR.json(), rR.json(), aR.json(), acR.json()
-    ]);
-    const dm: Record<string, MDDesignation> = {};
-    (dD as DailyDesignation[]).forEach((d) => { dm[d.staff_id] = d.designation; });
-    setDesignations(dm);
-    const sm: Record<string, ShiftHours> = {};
-    (sD as DailyShift[]).forEach((s) => { sm[s.staff_id] = s.hours; });
-    setDailyShifts(sm);
-    setBreaks(bD as Break[]);
-    setReliefLog(rD as ReliefEntry[]);
-    setAssignments(aD as Assignment[]);
-    setActiveStaffIds(new Set((acD as { staff_id: string }[]).map((r) => r.staff_id)));
-  }
+  // Monotonic token: a slow load for an abandoned date must not overwrite the
+  // date the user is now looking at.
+  const loadSeq = useRef(0);
 
-  useEffect(() => { loadDailyData(viewDate); }, [viewDate]);
+  const loadDailyData = useCallback(async (date: string) => {
+    const seq = ++loadSeq.current;
+    const [dR, sR, bR, rR, aR, acR] = await Promise.all([
+      readDailyList<DailyDesignation>('/api/designations?date='  + date, 'designations'),
+      readDailyList<DailyShift>('/api/daily-shifts?date='        + date, 'shifts'),
+      readDailyList<Break>('/api/breaks?date='                   + date, 'breaks'),
+      readDailyList<ReliefEntry>('/api/relief?date='             + date, 'relief log'),
+      readDailyList<Assignment>('/api/assignments?date='         + date, 'assignments'),
+      readDailyList<{ staff_id: string }>('/api/daily-active?date=' + date, 'active staff'),
+    ]);
+    if (seq !== loadSeq.current) return;
+
+    // Every slice lands independently. A slice that failed is CLEARED, never
+    // left holding the previous date's rows — an empty section beside a loud
+    // banner is honest; the old day's staffing shown under the new day's
+    // header is not.
+    const errors: string[] = [];
+    if (dR.rows) {
+      const dm: Record<string, MDDesignation> = {};
+      dR.rows.forEach((d) => { dm[d.staff_id] = d.designation; });
+      setDesignations(dm);
+    } else { setDesignations({}); errors.push(dR.error!); }
+
+    if (sR.rows) {
+      const sm: Record<string, ShiftHours> = {};
+      sR.rows.forEach((s) => { sm[s.staff_id] = s.hours; });
+      setDailyShifts(sm);
+    } else { setDailyShifts({}); errors.push(sR.error!); }
+
+    if (bR.rows) setBreaks(bR.rows); else { setBreaks([]); errors.push(bR.error!); }
+    if (rR.rows) setReliefLog(rR.rows); else { setReliefLog([]); errors.push(rR.error!); }
+    if (aR.rows) setAssignments(aR.rows); else { setAssignments([]); errors.push(aR.error!); }
+    if (acR.rows) setActiveStaffIds(new Set(acR.rows.map((r) => r.staff_id)));
+    else { setActiveStaffIds(new Set()); errors.push(acR.error!); }
+
+    setLoadError(errors.length ? errors.join(' · ') : null);
+  }, []);
+
+  useEffect(() => { loadDailyData(viewDate); }, [viewDate, loadDailyData]);
 
   // ── Load staff client-side (re-fetch when hospital changes) ───────────────
   useEffect(() => {
@@ -205,60 +272,123 @@ export default function BoardClient({ initialSites, initialStaff, initialAssignm
   }, []);
 
   // ── Site reorder ──────────────────────────────────────────────────────────
-  const draggingSiteId = useRef<string | null>(null);
+  const draggingSiteId  = useRef<string | null>(null);
+  const siteOrderDirty  = useRef(false);
+  // Latest order, readable from a drag handler without re-creating the
+  // callbacks on every sites change. Updated eagerly by the reorder below so
+  // successive dragover events in one frame build on each other.
+  const sitesRef = useRef<Site[]>(sites);
+  useEffect(() => { sitesRef.current = sites; }, [sites]);
+
+  // Drag-time reorder is LOCAL ONLY. dragover fires continuously — persisting
+  // here issued one PATCH per site per pixel of travel, and those responses
+  // raced, so the stored order was whichever batch landed last. The order is
+  // written once, on dragend.
   const handleReorderSite = useCallback((siteId: string, targetSiteId: string) => {
-    setSites((prev) => {
-      const arr     = [...prev];
-      const fromIdx = arr.findIndex((s) => s.id === siteId);
-      const toIdx   = arr.findIndex((s) => s.id === targetSiteId);
-      if (fromIdx === -1 || toIdx === -1) return arr;
-      const [moved] = arr.splice(fromIdx, 1);
-      arr.splice(toIdx, 0, moved);
-      arr.forEach((s, i) => {
-        fetch('/api/sites', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: s.id, position: i }) });
-      });
-      return arr;
-    });
+    const prev    = sitesRef.current;
+    const fromIdx = prev.findIndex((s) => s.id === siteId);
+    const toIdx   = prev.findIndex((s) => s.id === targetSiteId);
+    if (fromIdx === -1 || toIdx === -1 || fromIdx === toIdx) return;
+    const arr = [...prev];
+    const [moved] = arr.splice(fromIdx, 1);
+    arr.splice(toIdx, 0, moved);
+    sitesRef.current     = arr;
+    siteOrderDirty.current = true;
+    setSites(arr);
+  }, []);
+
+  const persistSiteOrder = useCallback(async () => {
+    if (!siteOrderDirty.current) return;
+    siteOrderDirty.current = false;
+    const ordered = sitesRef.current;
+    const oks = await Promise.all(ordered.map((s, i) =>
+      fetch('/api/sites', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: s.id, position: i }) })
+        .then((r) => r.ok, () => false),
+    ));
+    if (oks.every(Boolean)) return;
+    // Part of the order did not save; show what the server actually holds
+    // rather than an on-screen order that will vanish on the next reload.
+    alert('Site order could not be saved — reloading the stored order.');
+    try {
+      const res  = await fetch('/api/sites');
+      const body = res.ok ? await res.json() : null;
+      if (Array.isArray(body)) setSites(body as Site[]);
+    } catch { /* the alert already told them; leave the screen as-is */ }
   }, []);
 
   // ── Drag staff ────────────────────────────────────────────────────────────
   const handleDragStart = useCallback((person: DraggedPerson) => setDragging(person), []);
 
+  // The POST answers with the row PostgREST actually stored — real id included.
+  // Throwing that away leaves the synthetic 'opt-' id in state, and a later
+  // Remove then DELETEs an id no row has: the chip silently refuses to go away
+  // (visible in Planning mode, where no realtime refetch papers over it).
+  const confirmAssignment = useCallback((optId: string, row: Assignment) => {
+    setAssignments((prev) => withServerAssignment(prev, optId, row));
+  }, []);
+
+  // A write that failed must not leave a person sitting in a room nobody was
+  // actually assigned to. Drop the optimistic row, say so, and re-read the day
+  // because the optimistic path may also have cleared the person's other rooms.
+  const failAssignment = useCallback((optId: string, detail: string, date: string) => {
+    setAssignments((prev) => prev.filter((a) => a.id !== optId));
+    alert('Could not save that assignment: ' + detail);
+    loadDailyData(date);
+  }, [loadDailyData]);
+
   const handleDrop = useCallback(async (roomId: string) => {
     if (!dragging) return;
+    const person = dragging;
     setSaving(true);
-    const isPhysician = dragging.role === 'physician';
+    const isPhysician = person.role === 'physician';
+    const optId = optimisticId();
     setAssignments((prev) => {
-      const filtered    = isPhysician ? prev : prev.filter((a) => a.staff_id !== dragging.id);
-      const alreadyThere = filtered.some((a) => a.staff_id === dragging.id && a.room_id === roomId);
+      const filtered    = isPhysician ? prev : prev.filter((a) => a.staff_id !== person.id);
+      const alreadyThere = filtered.some((a) => a.staff_id === person.id && a.room_id === roomId);
       if (alreadyThere) return filtered;
-      return [...filtered, { id: 'opt-' + Date.now(), room_id: roomId, staff_id: dragging.id, board_date: viewDate, staff: dragging } as Assignment];
+      return [...filtered, { id: optId, room_id: roomId, staff_id: person.id, board_date: viewDate, staff: person } as Assignment];
     });
-    await fetch('/api/assignments', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ room_id: roomId, staff_id: dragging.id, board_date: viewDate, role: dragging.role }),
-    });
-    setDragging(null); setDragOver(null); setSaving(false);
-  }, [dragging, viewDate]);
+    try {
+      const res = await fetch('/api/assignments', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ room_id: roomId, staff_id: person.id, board_date: viewDate, role: person.role }),
+      });
+      if (!res.ok) throw new Error((await res.text().catch(() => '')) || String(res.status));
+      confirmAssignment(optId, await res.json() as Assignment);
+    } catch (e) {
+      failAssignment(optId, e instanceof Error ? e.message : String(e), viewDate);
+    } finally {
+      setDragging(null); setDragOver(null); setSaving(false);
+    }
+  }, [dragging, viewDate, confirmAssignment, failAssignment]);
 
   const handleDropFloat = useCallback(async (siteId: string) => {
     if (!dragging) return;
+    const person = dragging;
     setSaving(true);
-    const isPhysician   = dragging.role === 'physician';
-    const existing      = assignments.filter((a) => a.staff_id === dragging.id);
+    const isPhysician   = person.role === 'physician';
+    const existing      = assignments.filter((a) => a.staff_id === person.id);
     const alreadyFloat  = existing.some((a) => a.room_id === siteId);
     if (alreadyFloat) { setDragging(null); setDragOver(null); setSaving(false); return; }
+    const optId = optimisticId();
     if (!isPhysician) {
-      setAssignments((prev) => prev.filter((a) => a.staff_id !== dragging.id));
+      setAssignments((prev) => prev.filter((a) => a.staff_id !== person.id));
       await Promise.all(existing.map((a) => fetch('/api/assignments?id=' + a.id, { method: 'DELETE' })));
     }
-    setAssignments((prev) => [...prev, { id: 'opt-' + Date.now(), room_id: siteId, staff_id: dragging.id, board_date: viewDate, staff: dragging } as Assignment]);
-    await fetch('/api/assignments', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ room_id: siteId, staff_id: dragging.id, board_date: viewDate, role: dragging.role }),
-    });
-    setDragging(null); setDragOver(null); setSaving(false);
-  }, [dragging, assignments, viewDate]);
+    setAssignments((prev) => [...prev, { id: optId, room_id: siteId, staff_id: person.id, board_date: viewDate, staff: person } as Assignment]);
+    try {
+      const res = await fetch('/api/assignments', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ room_id: siteId, staff_id: person.id, board_date: viewDate, role: person.role }),
+      });
+      if (!res.ok) throw new Error((await res.text().catch(() => '')) || String(res.status));
+      confirmAssignment(optId, await res.json() as Assignment);
+    } catch (e) {
+      failAssignment(optId, e instanceof Error ? e.message : String(e), viewDate);
+    } finally {
+      setDragging(null); setDragOver(null); setSaving(false);
+    }
+  }, [dragging, assignments, viewDate, confirmAssignment, failAssignment]);
 
   const handleDropSidebar = useCallback(async () => {
     if (!dragging) return;
@@ -523,6 +653,15 @@ export default function BoardClient({ initialSites, initialStaff, initialAssignm
         </div>
       </header>
 
+      {/* Load failure banner — the cleared sections below are NOT a confirmed
+          "nobody assigned"; say so where the user is already looking. */}
+      {loadError && (
+        <div style={{ background: 'color-mix(in srgb, var(--danger) 10%, transparent)', borderBottom: '0.5px solid color-mix(in srgb, var(--danger) 30%, transparent)', padding: '4px 12px', display: 'flex', alignItems: 'center', gap: 8, fontSize: 11, color: 'var(--danger)', fontWeight: 600 }}>
+          <span>⚠ Could not load part of {dateLabel} — {loadError}. Those sections are blank because the read failed, not because they are empty.</span>
+          <button onClick={() => loadDailyData(viewDate)} style={{ ...ghostButton, marginLeft: 'auto', color: 'var(--danger)', borderColor: 'color-mix(in srgb, var(--danger) 35%, transparent)' }}>Retry</button>
+        </div>
+      )}
+
       {/* Inline planning banner */}
       {isPlanMode && (
         <div style={{ background: 'color-mix(in srgb, var(--warn) 8%, transparent)', borderBottom: '0.5px solid color-mix(in srgb, var(--warn) 25%, transparent)', padding: '4px 12px', display: 'flex', alignItems: 'center', gap: 8, fontSize: 11, color: 'var(--warn)', fontWeight: 600 }}>
@@ -616,7 +755,7 @@ export default function BoardClient({ initialSites, initialStaff, initialAssignm
                       if ((e.target as HTMLElement).closest('button,input,select,textarea')) { e.preventDefault(); return; }
                       if (!site.is_float) { draggingSiteId.current = site.id; e.dataTransfer.effectAllowed = 'move'; }
                     }}
-                    onDragEnd={() => { draggingSiteId.current = null; }}
+                    onDragEnd={() => { draggingSiteId.current = null; persistSiteOrder(); }}
                     onDragOver={(e) => {
                       const siteId = draggingSiteId.current;
                       if (siteId && siteId !== site.id && !site.is_float) { e.preventDefault(); handleReorderSite(siteId, site.id); }

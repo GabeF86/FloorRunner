@@ -53,7 +53,11 @@ import { isActiveSellback } from '@/lib/rulesEngine/shared';
 // actual/required from the SAME function the generation cap uses. The
 // work-days FTE (patch43) is the provider's stated work_days_fte, else their
 // call fte_value; precedence is Limits tab > work_days_fte > fte_value.
-import { requiredWorkDaysWithLimit } from '@/lib/rulesEngine/workDays';
+// ptoWeekdaysCovered = the engine's PTO-netting set, imported for the same
+// reason: the PTO Days column feeds requiredWorkDaysWithLimit, so a second
+// copy of the predicate here would let the modal and the engine disagree about
+// which weekdays PTO covers.
+import { requiredWorkDaysWithLimit, ptoWeekdaysCovered } from '@/lib/rulesEngine/workDays';
 // Pure, client-safe helper shared with the grid API route — one bucket rule
 // (hard / soft / warning-never-soft) for both server and client counting.
 import { validationSummaryFor, type ValidationSummary } from '@/app/api/scheduling/schedules/[id]/grid/route.helpers';
@@ -4772,11 +4776,6 @@ function CallCountsModal(
   // both halves of the table render from the one `columns` array so the
   // regrouping reaches the Extra Calls side identically.
 
-  // Types that count as "PTO days" in the tally column. Sick / jury_duty
-  // are intentionally excluded — that's unplanned or administrative, not
-  // vacation. Only the planned-leave types accrue here.
-  const PTO_TYPES = new Set(['pto', 'fmla', 'parental_leave', 'military_leave']);
-
   const providerById: Record<string, Provider> = {};
   for (const p of grid.providers) providerById[p.id] = p;
 
@@ -4844,29 +4843,8 @@ function CallCountsModal(
   // row (1 + 2 × columns.length + 7) and no colSpan can drift.
   const TRAILING_HEADER_COLS = 7;
 
-  // PTO-days tally — approved planned-leave days overlapping the schedule
-  // window, counted Mon-Fri only (weekends don't consume PTO).
   const scheduleStart = grid.schedule.date_start;
   const scheduleEnd = grid.schedule.date_end;
-  const ptoDaysByPid: Record<string, number> = {};
-  for (const a of grid.availability || []) {
-    if (a.approval_status !== 'approved') continue;
-    if (!PTO_TYPES.has(a.availability_type)) continue;
-    // Clamp to schedule range. A PTO block that straddles the schedule
-    // boundary only counts the portion inside this schedule's window.
-    const start = a.start_date < scheduleStart ? scheduleStart : a.start_date;
-    const end = a.end_date > scheduleEnd ? scheduleEnd : a.end_date;
-    if (start > end) continue;
-    let d = new Date(start + 'T12:00:00Z');
-    const endD = new Date(end + 'T12:00:00Z');
-    while (d.getTime() <= endD.getTime()) {
-      const dow = d.getUTCDay();
-      if (dow >= 1 && dow <= 5) {
-        ptoDaysByPid[a.provider_id] = (ptoDaysByPid[a.provider_id] || 0) + 1;
-      }
-      d.setUTCDate(d.getUTCDate() + 1);
-    }
-  }
 
   // Sort providers alphabetically, only include those with calls (or all?)
   // Show ALL home-site physician providers who could potentially take call.
@@ -4894,8 +4872,6 @@ function CallCountsModal(
     return t;
   };
 
-  const ptoDaysForPid = (pid: string) => ptoDaysByPid[pid] || 0;
-
   // FTE display beside the provider name only — every calculation below goes
   // through census.fteFor (engine coercion) so display quirks can't skew math.
   const fteByPid: Record<string, number> = {};
@@ -4919,6 +4895,28 @@ function CallCountsModal(
   // single-homed rangeComposition the planner card uses, fed by the grid's
   // holiday rows. Powers Days Off (denominator) and Working Days (credit set).
   const composition = rangeComposition(scheduleStart, scheduleEnd, grid.holidays || []);
+
+  // PTO Days = the ENGINE's netting set (rulesEngine/workDays.ptoWeekdaysCovered)
+  // measured against THIS block's working-day set — never a second copy of the
+  // predicate, because the same number feeds requiredForPid / daysOffForPid
+  // below and a private tally here would report different days off than the
+  // engine budgeted. Routing through it also inherits the contract the inline
+  // tally did not have: PENDING leave nets (invariant 2 — pending PTO blocks
+  // everywhere), only denied/canceled rows are dismissed, a live pto_sellback
+  // restores the day as owed again, overlapping rows dedupe by date, and major
+  // holidays never count (the working-day set already excludes them). Clamping
+  // to the schedule window is implicit — the working-day set IS the window.
+  const availRowsByPid = new Map<string, AvailabilityEntry[]>();
+  for (const a of grid.availability || []) {
+    const rows = availRowsByPid.get(a.provider_id);
+    if (rows) rows.push(a);
+    else availRowsByPid.set(a.provider_id, [a]);
+  }
+  const ptoDaysByPid: Record<string, number> = {};
+  for (const [pid, rows] of availRowsByPid) {
+    ptoDaysByPid[pid] = ptoWeekdaysCovered(rows, composition.workingDaySet).size;
+  }
+  const ptoDaysForPid = (pid: string) => ptoDaysByPid[pid] || 0;
 
   // Working Days = credited M–F working days actually scheduled on THIS
   // draft: weekday assignments + post-call rest days credited as worked +

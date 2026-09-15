@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import Link from 'next/link';
-import { PageHeader, Card, Badge, Button, Table, EmptyState, type BadgeTone } from '@/components/ui';
+import { PageHeader, Card, Badge, Button, Table, EmptyState, Banner, type BadgeTone } from '@/components/ui';
 
 interface ProviderInfo {
   id: string;
@@ -56,6 +56,7 @@ const TABLE_HEADERS = ['Provider', 'Type', 'Dates', 'Notes', 'Submitted', 'Statu
 
 export default function RequestsPage() {
   const [requests, setRequests] = useState<Request[]>([]);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [statusFilter, setStatusFilter] = useState('pending');
   const [typeFilter, setTypeFilter] = useState('');
@@ -66,9 +67,27 @@ export default function RequestsPage() {
     const params = new URLSearchParams();
     if (statusFilter) params.set('status', statusFilter);
     if (typeFilter) params.set('request_type', typeFilter);
-    const res = await fetch('/api/scheduling/requests?' + params);
-    if (res.ok) setRequests(await res.json());
-    setLoading(false);
+    try {
+      const res = await fetch('/api/scheduling/requests?' + params);
+      // A 500 from Next can be an HTML error page, so the parse is guarded.
+      const body = await res.json().catch(() => null);
+      if (!res.ok) {
+        const err = (body as { error?: unknown } | null)?.error;
+        throw new Error(typeof err === 'string' && err ? err : `Could not load requests (${res.status})`);
+      }
+      // A malformed 200 (an object, not a list) assigned to array state makes
+      // the next .map() throw and blanks the page, so shape is checked too.
+      if (!Array.isArray(body)) throw new Error('The requests response was malformed.');
+      setRequests(body as Request[]);
+      setLoadError(null);
+    } catch (e) {
+      // A failed read must never render as "0 requests": an unreviewed PTO
+      // request would look handled, and the queue is how they get answered.
+      setRequests([]);
+      setLoadError(e instanceof Error ? e.message : 'Network error loading requests');
+    } finally {
+      setLoading(false);
+    }
   }, [statusFilter, typeFilter]);
 
   useEffect(() => { loadRequests(); }, [loadRequests]);
@@ -118,8 +137,16 @@ export default function RequestsPage() {
     <div>
       <PageHeader
         title="Requests"
-        subtitle={`${requests.length} request${requests.length !== 1 ? 's' : ''}`}
+        subtitle={loadError
+          ? 'Request count unknown — the queue could not be read'
+          : `${requests.length} request${requests.length !== 1 ? 's' : ''}`}
       />
+
+      {loadError && (
+        <div style={{ marginBottom: 20 }}>
+          <Banner tone="error">{loadError} Reload the page to try again.</Banner>
+        </div>
+      )}
 
       {/* Filters */}
       <div style={{ display: 'flex', gap: 10, marginBottom: 20, flexWrap: 'wrap' }}>
@@ -215,13 +242,19 @@ export default function RequestsPage() {
               ),
             ];
           })}
-          empty={
+          empty={loadError ? (
+            <EmptyState
+              icon="⚠"
+              title="Could not load the request queue"
+              hint={`${loadError} This is NOT an empty queue — pending requests may be waiting.`}
+            />
+          ) : (
             <EmptyState
               icon="✉"
               title={`No requests found${statusFilter ? ` with status "${STATUS_INFO[statusFilter]?.label || statusFilter}"` : ''}`}
               hint="PTO, no-call, and availability requests submitted by providers land here for review. Try clearing the status filter to see older decisions."
             />
-          }
+          )}
         />
       </Card>
     </div>

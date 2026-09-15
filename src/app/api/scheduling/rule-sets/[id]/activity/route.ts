@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { sbSchedulingServer } from '@/lib/supabaseScheduling';
+import { readAllRows } from '@/lib/pagedRead';
 
 // Never prerender — this route walks every assignment at the rule set's site
 // and aggregates validation_flags counts. Always per-request.
@@ -72,14 +73,27 @@ export async function GET(
   // We do this in a separate query (rather than a join) because Supabase's
   // PostgREST schema layer doesn't always pick up cross-table FKs cleanly when
   // pulling jsonb columns.
-  const { data: slots, error: slotErr } = await sb
-    .from('schedule_slots')
-    .select('id')
-    .eq('site_id', ruleSet.site_id);
-  if (slotErr) {
-    return NextResponse.json({ error: slotErr.message }, { status: 500 });
+  //
+  // PAGED. This is the whole site across every version, not one block, so it is
+  // the read most likely to cross PostgREST's silent 1000-row cap (the table
+  // held 1,225 rows site-wide as of 2026-09-15). A short read here truncates the
+  // slot set every later number is measured against, so the panel would show a
+  // smaller "fired N times" with nothing to say it was short — the stats would
+  // look plausible and be wrong. readAllRows returns no rows alongside an error,
+  // so a failure surfaces as a 500 rather than a confident undercount.
+  const slotsRead = await readAllRows<{ id: string }>(
+    (from, to) => sb
+      .from('schedule_slots')
+      .select('id', { count: 'exact' })
+      .eq('site_id', ruleSet.site_id)
+      .order('id')
+      .range(from, to),
+    'Failed to load slots',
+  );
+  if (slotsRead.error) {
+    return NextResponse.json({ error: slotsRead.error }, { status: 500 });
   }
-  const slotIds = (slots || []).map((s: { id: string }) => s.id);
+  const slotIds = slotsRead.rows.map(s => s.id);
 
   if (slotIds.length === 0) {
     const empty: ActivityResponse = {
@@ -96,8 +110,13 @@ export async function GET(
     return NextResponse.json(empty);
   }
 
-  // 3. Walk assignments at this site, pulling validation_flags. Page in chunks
-  // of 1000 to stay under PostgREST's IN clause and row caps.
+  // 3. Walk assignments at this site, pulling validation_flags. Two separate
+  // limits apply and only one of them is the IN clause: slot ids are batched so
+  // the request URL stays sane, and EACH batch is then paged, because a batch of
+  // 1000 slots routinely carries more than 1000 assignments and an un-ranged
+  // select would silently return only the first 1000 of them. Counting that
+  // array is what made `assignments_checked` and `total_violations` report the
+  // cap as if it were the truth.
   let assignmentsChecked = 0;
   let assignmentsWithViolations = 0;
   let totalViolations = 0;
@@ -109,15 +128,20 @@ export async function GET(
   const CHUNK = 1000;
   for (let i = 0; i < slotIds.length; i += CHUNK) {
     const batch = slotIds.slice(i, i + CHUNK);
-    const { data: assignments, error: aErr } = await sb
-      .from('assignments')
-      .select('validation_flags')
-      .in('schedule_slot_id', batch)
-      .not('validation_flags', 'is', null);
-    if (aErr) {
-      return NextResponse.json({ error: aErr.message }, { status: 500 });
+    const assignmentsRead = await readAllRows<{ validation_flags: ValidationFlag[] }>(
+      (from, to) => sb
+        .from('assignments')
+        .select('validation_flags', { count: 'exact' })
+        .in('schedule_slot_id', batch)
+        .not('validation_flags', 'is', null)
+        .order('id')
+        .range(from, to),
+      'Failed to load assignments',
+    );
+    if (assignmentsRead.error) {
+      return NextResponse.json({ error: assignmentsRead.error }, { status: 500 });
     }
-    for (const row of (assignments || []) as { validation_flags: ValidationFlag[] }[]) {
+    for (const row of assignmentsRead.rows) {
       assignmentsChecked++;
       const flags = row.validation_flags || [];
       if (flags.length > 0) assignmentsWithViolations++;

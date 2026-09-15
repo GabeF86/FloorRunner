@@ -9,7 +9,7 @@
 // block-prep route, and the view decisions (which years to offer, button
 // copy) are lib/blockPrepView.ts.
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Banner, Button, PageHeader } from '@/components/ui';
 import AnnualTallyCard from '@/components/AnnualTallyCard';
@@ -78,17 +78,38 @@ export default function BlockPrepPage() {
   // roster and tally card refetch together.
   const [refreshKey, setRefreshKey] = useState(0);
 
+  // Monotonic id of the most recently STARTED /block-prep request. Responses
+  // can land out of order (switch site A→B and B's smaller payload often
+  // answers first), and the last `setData` wins — so without this, A's late
+  // response overwrites B's, `freshFor` correctly rejects it as stamped for
+  // another site, and both cards sit in a skeleton FOREVER: nothing is left in
+  // flight to correct it and no effect is scheduled to refetch. Every load
+  // claims the next id and only applies its own result if it is still the
+  // newest; a superseded request drops its result (including its error —
+  // the newer request for the site actually on screen always sets state,
+  // success or failure, so this can never leave a failure rendering as a
+  // clean empty card).
+  const requestSeq = useRef(0);
+
   const load = useCallback(async () => {
+    // Claimed BEFORE the no-site early return on purpose: clearing the board
+    // because no site is chosen must also supersede whatever is still in
+    // flight for the site that just went away.
+    const seq = ++requestSeq.current;
     if (!siteId) { setData(null); return; }
     try {
       const res = await fetch(`/api/scheduling/block-prep?site_id=${siteId}&year=${year}`);
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
+        if (seq !== requestSeq.current) return;
         setData(loadFailure(siteId, year, body.error || `Request failed (${res.status})`));
         return;
       }
-      setData(await res.json());
+      const payload = await res.json();
+      if (seq !== requestSeq.current) return;
+      setData(payload);
     } catch (e) {
+      if (seq !== requestSeq.current) return;
       setData(loadFailure(siteId, year, e instanceof Error ? e.message : 'Network error'));
     }
   }, [siteId, year]);

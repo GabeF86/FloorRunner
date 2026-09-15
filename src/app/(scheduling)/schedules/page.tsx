@@ -320,7 +320,7 @@ export default function SchedulesPage() {
           initialSiteId={presetSiteId}
           initialGroup={presetGroup}
           onClose={() => { setShowCreate(false); setPresetGroup('both'); }}
-          onCreated={() => { setShowCreate(false); setPresetGroup('both'); loadSchedules(); loadAllSchedules(); }}
+          onFailed={() => { loadSchedules(); loadAllSchedules(); }}
         />
       )}
       {showAssistantPicker && (
@@ -405,7 +405,9 @@ function AssistantSchedulePicker({ schedules, onClose, onPick }: {
 }
 
 // ── Create Schedule Modal ────────────────────────────────────────────────────
-function CreateScheduleModal({ orgId, sites, initialSiteId = '', initialGroup = 'both', onClose, onCreated }: { orgId: string; sites: Site[]; initialSiteId?: string; initialGroup?: string; onClose: () => void; onCreated: () => void }) {
+// `onFailed` refreshes the list WITHOUT closing the modal — the failed POST may
+// have left a partial schedule the user has to see (and delete) before retrying.
+function CreateScheduleModal({ orgId, sites, initialSiteId = '', initialGroup = 'both', onClose, onFailed }: { orgId: string; sites: Site[]; initialSiteId?: string; initialGroup?: string; onClose: () => void; onFailed: () => void }) {
   const [siteId, setSiteId] = useState(initialSiteId);
   const [providerGroup, setProviderGroup] = useState(initialGroup);
   const [dateStart, setDateStart] = useState('');
@@ -415,6 +417,7 @@ function CreateScheduleModal({ orgId, sites, initialSiteId = '', initialGroup = 
   // single-homed helper the POST route uses, so the preview can't drift).
   const [name, setName] = useState('');
   const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const siteName = sites.find(s => s.id === siteId)?.name;
   const namePlaceholder = siteName && dateStart
@@ -433,28 +436,51 @@ function CreateScheduleModal({ orgId, sites, initialSiteId = '', initialGroup = 
     setDateEnd(d.toISOString().slice(0, 10));
   };
 
+  // A failed create must never look like a successful one. The POST route
+  // inserts the schedule, then its version, slots and assignments in sequence
+  // and 500s at the first failure, so a rejected request can leave a PARTIAL
+  // schedule behind — closing the modal silently (the old behaviour) hid both
+  // the failure and the debris. On failure we keep the modal open with the
+  // route's own message and refresh the list underneath, so a half-built
+  // schedule is visible and can be deleted.
   const submit = async () => {
     if (!siteId || !dateStart || !dateEnd) return;
     setSaving(true);
-    const res = await fetch('/api/scheduling/schedules', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        organization_id: orgId,
-        site_id: siteId,
-        schedule_type: 'combined',
-        provider_group: providerGroup,
-        date_start: dateStart,
-        date_end: dateEnd,
-        // Blank → the route falls back to the generated default.
-        schedule_name: name,
-      }),
-    });
-    const data = await res.json();
-    if (data.id) {
+    setError(null);
+    try {
+      const res = await fetch('/api/scheduling/schedules', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          organization_id: orgId,
+          site_id: siteId,
+          schedule_type: 'combined',
+          provider_group: providerGroup,
+          date_start: dateStart,
+          date_end: dateEnd,
+          // Blank → the route falls back to the generated default.
+          schedule_name: name,
+        }),
+      });
+      // A 500 from Next can be an HTML error page, so the parse is guarded.
+      const data = await res.json().catch(() => ({} as { id?: string; error?: string }));
+      if (!res.ok || !data.id) {
+        setSaving(false);
+        // 400 is the route's name validation, which runs BEFORE any insert —
+        // nothing was written, so don't send the user hunting for debris.
+        const partial = res.status !== 400
+          ? ' — a partially created schedule may now be in the list below; delete it before retrying.'
+          : '';
+        setError((data.error || `Schedule creation failed (${res.status})`) + partial);
+        onFailed();
+        return;
+      }
       window.location.href = `/schedules/${data.id}`;
-    } else {
+    } catch (e) {
+      // The request may still have been applied server-side, so this refreshes
+      // the list too rather than asserting nothing happened.
       setSaving(false);
-      onCreated();
+      setError(`Schedule creation failed: ${e instanceof Error ? e.message : String(e)}`);
+      onFailed();
     }
   };
 
@@ -486,6 +512,12 @@ function CreateScheduleModal({ orgId, sites, initialSiteId = '', initialGroup = 
         </>
       }
     >
+      {error && (
+        <div style={{ marginBottom: 12 }}>
+          <Banner tone="error" onDismiss={() => setError(null)}>{error}</Banner>
+        </div>
+      )}
+
       <label style={labelStyle}>Site *</label>
       <select value={siteId} onChange={e => setSiteId(e.target.value)} style={{ ...inputStyle, cursor: 'pointer' }}>
         <option value="">— Select Site —</option>

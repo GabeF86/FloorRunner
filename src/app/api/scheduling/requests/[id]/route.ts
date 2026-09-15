@@ -26,25 +26,50 @@ export async function PATCH(
     fields.reviewed_at = new Date().toISOString();
     if (body.decision_reason !== undefined) fields.decision_reason = body.decision_reason;
 
-    // When approved, auto-create a matching availability record
+    // When approved, auto-create a matching availability record.
+    // Every failure below returns before the request row is updated: an
+    // approval whose availability never landed is invisible leave — the
+    // engine would keep scheduling the provider — so approved-with-no-row is
+    // never an acceptable outcome. Better a 500 the chief can retry.
     if (body.status === 'approved') {
-      const { data: request } = await sb
+      const { data: request, error: readErr } = await sb
         .from('provider_requests')
         .select('provider_id, request_type, start_date, end_date, site_id')
         .eq('id', id)
-        .single();
+        .maybeSingle();
+      if (readErr) return NextResponse.json({ error: readErr.message }, { status: 500 });
+      if (!request) return NextResponse.json({ error: 'Request not found' }, { status: 404 });
 
-      if (request) {
-        // Map request_type → availability_type
-        const typeMap: Record<string, string> = {
-          pto: 'pto',
-          no_call: 'no_call_request',
-          extra_call: 'call_request',
-          availability_change: 'unavailable',
-        };
-        const availType = typeMap[request.request_type] || 'unavailable';
+      // Map request_type → availability_type
+      const typeMap: Record<string, string> = {
+        pto: 'pto',
+        no_call: 'no_call_request',
+        extra_call: 'call_request',
+        availability_change: 'unavailable',
+      };
+      const availType = typeMap[request.request_type] || 'unavailable';
 
-        await sb.from('provider_availability').insert({
+      // Idempotency guard. Approving twice (double-click, retried PATCH, an
+      // already-approved request re-approved) must not stack duplicate leave.
+      // provider_availability has no unique constraint to lean on, so the
+      // guard matches the fields this route writes — which also covers rows
+      // written before this check existed.
+      let dupQuery = sb
+        .from('provider_availability')
+        .select('id')
+        .eq('provider_id', request.provider_id)
+        .eq('availability_type', availType)
+        .eq('start_date', request.start_date)
+        .eq('end_date', request.end_date)
+        .eq('source', 'request');
+      dupQuery = request.site_id
+        ? dupQuery.eq('site_id', request.site_id)
+        : dupQuery.is('site_id', null);
+      const { data: existing, error: dupErr } = await dupQuery.limit(1);
+      if (dupErr) return NextResponse.json({ error: dupErr.message }, { status: 500 });
+
+      if (!existing || existing.length === 0) {
+        const { error: insertErr } = await sb.from('provider_availability').insert({
           provider_id: request.provider_id,
           site_id: request.site_id || null,
           availability_type: availType,
@@ -54,6 +79,7 @@ export async function PATCH(
           source: 'request',
           approval_status: 'approved',
         });
+        if (insertErr) return NextResponse.json({ error: insertErr.message }, { status: 500 });
       }
     }
   }
