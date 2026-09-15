@@ -200,7 +200,28 @@ describe('scoreSolution — committed seeds count toward fairness and burnout', 
 
   it('sees burnout between a seeded call and a newly planned one', () => {
     // A call the day after a committed one is exactly the pair the optimizer
-    // should be penalised for and previously could not see.
+    // should be penalised for and previously could not see. Sun seed + Mon
+    // plan: no Saturday anchor exists, so no window opens and the 1-day gap
+    // counts.
+    const plan = {
+      assignments: [callA({ slot_date: '2026-01-12', derived_day_type: 'weekday' })],
+      unfilled: [],
+    } as unknown as SolutionPlan;
+    const m = scoreSolution(plan, ctx([prov('pA')], new Map(), {
+      seedAssignments: [seed({ slot_date: '2026-01-11', derived_day_type: 'sunday' })] as never,
+    }));
+    expect(m.burnout).toBeGreaterThan(0);
+  });
+
+  it('does NOT penalise a chain pair just because its anchor was committed', () => {
+    // The regression this pairs with. Seed Sat 01-10 + plan Sun 01-11 is the
+    // classic pattern's own weekend chain — the identical situation the
+    // plan-only test above scores 0. Folding seeds into the burnout numerator
+    // without also folding them into the exemption anchors scored it 1, so the
+    // same weekend was penalised or not purely by whether stage 1 had already
+    // committed the Saturday. That is the staged flow's normal case, and the
+    // optimizer would steer a movable Friday/Sunday fill away from exactly the
+    // provider the pattern wants paired.
     const plan = {
       assignments: [callA({ slot_date: '2026-01-11', derived_day_type: 'sunday' })],
       unfilled: [],
@@ -208,7 +229,30 @@ describe('scoreSolution — committed seeds count toward fairness and burnout', 
     const m = scoreSolution(plan, ctx([prov('pA')], new Map(), {
       seedAssignments: [seed()] as never,
     }));
-    expect(m.burnout).toBeGreaterThan(0);
+    expect(m.burnout).toBe(0);
+  });
+
+  it('scores a committed chain the same as a planned one', () => {
+    // States the invariant directly: the score must not depend on which side
+    // of a commit boundary the Saturday fell.
+    const bothPlanned = scoreSolution(
+      {
+        assignments: [
+          callA({ slot_id: 'a', slot_date: '2026-01-10', derived_day_type: 'saturday' }),
+          callA({ slot_id: 'b', slot_date: '2026-01-11', derived_day_type: 'sunday' }),
+        ],
+        unfilled: [],
+      } as unknown as SolutionPlan,
+      ctx([prov('pA')]),
+    );
+    const satCommitted = scoreSolution(
+      {
+        assignments: [callA({ slot_id: 'b', slot_date: '2026-01-11', derived_day_type: 'sunday' })],
+        unfilled: [],
+      } as unknown as SolutionPlan,
+      ctx([prov('pA')], new Map(), { seedAssignments: [seed()] as never }),
+    );
+    expect(satCommitted.burnout).toBe(bothPlanned.burnout);
   });
 
   it('ignores seeded NON-call assignments', () => {

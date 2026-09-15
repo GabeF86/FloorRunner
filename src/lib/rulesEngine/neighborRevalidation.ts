@@ -41,11 +41,26 @@ export async function revalidateNeighbors(
     // Draft isolation (invariant 3): revalidate only the provider's neighbors
     // that are committed (published) or in the version being edited — an edit
     // in one draft must not rewrite a different draft's stored flags.
-    const { data: neighbors } = await fetchCommittedAssignments(
+    const { data: neighbors, error: neighborsErr } = await fetchCommittedAssignments(
       sb,
       'id, schedule_slot_id, schedule_slots!inner(slot_date, schedule_versions!inner(version_status))',
       { providerId, start, end, includeVersionId: versionId },
     );
+    // This function's contract is best-effort and it has no error channel (it
+    // returns slot ids, and both callers treat the result as advisory), so a
+    // failed read cannot be propagated without changing that contract. What it
+    // must not be is INVISIBLE: with the error dropped, the loop below is a
+    // no-op and the caller receives an empty list that reads exactly like "no
+    // neighbor needed revalidating". The read is now paged, so data: null also
+    // arrives for a missing count, a stalled page or the page budget — three
+    // more ways to quietly mean "nothing nearby".
+    if (neighborsErr) {
+      console.warn(
+        `[neighborRevalidation] skipped for provider ${providerId} around ${center}: ` +
+        `${neighborsErr.message}. Stored validation_flags on nearby assignments may now be stale.`,
+      );
+      return revalidatedSlotIds;
+    }
 
     for (const row of (neighbors || []) as Array<{
       id: string;

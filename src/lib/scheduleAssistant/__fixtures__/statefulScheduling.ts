@@ -50,15 +50,28 @@ export function makeStatefulSupabase(seed: Record<string, Row[]> = {}) {
     let payload: Row | Row[] | null = null;
     let onConflict: string[] = [];
     const filters: Filter[] = [];
+    // .range(from, to) + an exact count, so code that pages through PostgREST's
+    // 1000-row cap can be tested. Without these a paged read throws on the
+    // missing method, and a helper that (correctly) treats a null count as a
+    // possible truncation refuses to proceed.
+    let rangeFrom: number | null = null;
+    let rangeTo: number | null = null;
 
-    function resolve(): { data: unknown; error: unknown } {
+    function resolve(): { data: unknown; error: unknown; count: number | null } {
       const rows = rowsOf(table);
       if (op === 'select') {
-        return { data: clone(rows.filter((r) => matches(r, filters))), error: null };
+        const hit = rows.filter((r) => matches(r, filters));
+        // count is the FULL match count, independent of the range — that is
+        // what makes truncation detectable.
+        const count = hit.length;
+        const page = rangeFrom == null
+          ? hit
+          : hit.slice(rangeFrom, (rangeTo ?? hit.length - 1) + 1);
+        return { data: clone(page), error: null, count };
       }
       if (op === 'delete') {
         tables[table] = rows.filter((r) => !matches(r, filters));
-        return { data: null, error: null };
+        return { data: null, error: null, count: null };
       }
       if (op === 'update') {
         const patch = payload as Row;
@@ -69,7 +82,7 @@ export function makeStatefulSupabase(seed: Record<string, Row[]> = {}) {
             updated.push(r);
           }
         }
-        return { data: clone(updated), error: null };
+        return { data: clone(updated), error: null, count: updated.length };
       }
       // insert / upsert
       const incoming = (Array.isArray(payload) ? payload : [payload]).filter(Boolean) as Row[];
@@ -90,12 +103,13 @@ export function makeStatefulSupabase(seed: Record<string, Row[]> = {}) {
         rows.push(row);
         written.push(row);
       }
-      return { data: clone(written), error: null };
+      return { data: clone(written), error: null, count: written.length };
     }
 
     const builder: Record<string, unknown> = {};
     builder.select = () => builder; // op stays put; embed string ignored
     builder.order = () => builder;
+    builder.range = (from: number, to: number) => { rangeFrom = from; rangeTo = to; return builder; };
     builder.eq = (col: string, val: unknown) => { filters.push({ kind: 'eq', col, val }); return builder; };
     builder.in = (col: string, val: unknown) => { filters.push({ kind: 'in', col, val }); return builder; };
     builder.gte = (col: string, val: unknown) => { filters.push({ kind: 'gte', col, val }); return builder; };

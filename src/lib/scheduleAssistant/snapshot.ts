@@ -79,10 +79,16 @@ async function orgProviderIds(sb: SchedulingClient, siteId: string): Promise<str
   if (siteErr) throw new Error(`site org lookup failed: ${siteErr.message}`);
   const orgId = (site as { organization_id?: string } | null)?.organization_id;
   if (!orgId) return [];
-  const { data, error } = await sb
-    .from('providers').select('id').eq('organization_id', orgId);
-  if (error) throw new Error(`org providers read failed: ${error.message}`);
-  return ((data ?? []) as Array<{ id: string }>).map(p => p.id);
+  const { rows, error } = await readAllRows<{ id: string }>(
+    (from, to) => sb
+      .from('providers').select('id', { count: 'exact' })
+      .eq('organization_id', orgId)
+      .order('id')
+      .range(from, to),
+    'org providers',
+  );
+  if (error) throw new Error(`org providers read failed: ${error}`);
+  return rows.map(p => p.id);
 }
 
 // Provider-availability rows for the org, overlapping [dateStart −, dateEnd +]
@@ -101,14 +107,27 @@ async function readOrgAvailabilityWindow(
   const availEnd = addDays(dateEnd, AVAIL_WINDOW_DAYS);
   const out: Array<Record<string, unknown>> = [];
   for (const ids of chunk(orgPids, READ_CHUNK)) {
-    const { data, error } = await sb
-      .from('provider_availability')
-      .select(columns)
-      .in('provider_id', ids)
-      .lte('start_date', availEnd)
-      .gte('end_date', availStart);
-    if (error) throw new Error(`provider_availability read failed: ${error.message}`);
-    out.push(...((data ?? []) as Array<Record<string, unknown>>));
+    // Chunking by provider id is for URL length, NOT row count — a chunk is
+    // 200 providers over a ~105-day window, which crosses PostgREST's 1000-row
+    // cap easily. Truncation here is not merely a short read: the revert path
+    // below treats every row it did not capture as "created after the
+    // snapshot" and DELETES it, so a silent cut destroys real approved PTO.
+    // The .order('id') is load-bearing for the same reason it is in
+    // pagedRead's contract — without a stable order the pages overlap and miss
+    // rows, which reproduces the bug it is here to prevent.
+    const { rows, error } = await readAllRows<Record<string, unknown>>(
+      (from, to) => sb
+        .from('provider_availability')
+        .select(columns, { count: 'exact' })
+        .in('provider_id', ids)
+        .lte('start_date', availEnd)
+        .gte('end_date', availStart)
+        .order('id')
+        .range(from, to),
+      'provider_availability',
+    );
+    if (error) throw new Error(`provider_availability read failed: ${error}`);
+    out.push(...rows);
   }
   return out;
 }

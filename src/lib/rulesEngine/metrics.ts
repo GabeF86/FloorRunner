@@ -34,13 +34,24 @@ function populationStdev(values: number[]): number {
 // with the previous WEEKEND_BLOCK_DAY_TYPES behavior on engine-produced plans.
 // Deliberately broad: windows anchor on ANY assignment matching anchorDayType
 // and exempt ALL pairs inside — this is a metric tiebreak only, never validity.
+//
+// Anchors come from plan assignments AND call seeds, which must stay in step
+// with what noteCall counts. When the numerator folded in seeds but this did
+// not, the metric contradicted itself: a pattern-designed Sat/Sun chain scored
+// 0 burnout when both halves were planned and 1 when the Saturday happened to
+// be committed in an earlier pass — the same clinical situation, scored
+// differently by an accident of staging. That mattered in the staged flow this
+// change exists for: a Friday C2 left open by stage 1 and filled on Continue
+// is movable, so at equal skips and fairness the optimizer was steering it
+// AWAY from the provider the pattern wants paired.
 function blockExemptionWindows(
-  doc: CallPatternDoc, plan: SolutionPlan,
+  doc: CallPatternDoc,
+  anchors: Array<{ slot_date: string; derived_day_type: string }>,
 ): Array<{ start: string; end: string }> {
   const windows: Array<{ start: string; end: string }> = [];
   if (doc.blocks.length === 0) return windows;
   const datesByDayType = new Map<string, Set<string>>();
-  for (const a of plan.assignments) {
+  for (const a of anchors) {
     let set = datesByDayType.get(a.derived_day_type);
     if (!set) { set = new Set(); datesByDayType.set(a.derived_day_type, set); }
     set.add(a.slot_date);
@@ -108,7 +119,10 @@ export function scoreSolution(plan: SolutionPlan, ctx: GenerationContext): Solut
   // Burnout: per provider, count adjacent (date-sorted) call pairs spaced
   // < BURNOUT_MIN_GAP_DAYS apart that do NOT both fall inside the same
   // pattern-block exemption window.
-  const windows = blockExemptionWindows(doc, plan);
+  const windows = blockExemptionWindows(doc, [
+    ...plan.assignments,
+    ...ctx.seedAssignments.filter(s => s.shift_type_category === 'call'),
+  ]);
   const exemptPair = (d1: string, d2: string) => // d1 <= d2
     windows.some(w => w.start <= d1 && d2 <= w.end);
   let burnout = 0;

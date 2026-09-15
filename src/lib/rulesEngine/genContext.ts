@@ -17,7 +17,7 @@ import {
   buildPrePtoByThursday,
   type SupabaseClient,
 } from './shared';
-import { readAllRows } from '@/lib/pagedRead';
+import { readAllRows, truncationOf } from '@/lib/pagedRead';
 
 import type {
   GenerationContext,
@@ -240,7 +240,7 @@ export async function loadGenerationContext(
       .order('slot_index')
       .order('id')
       .range(from, to),
-    'Failed to load slots',
+    'slots',   // bare — the message template below re-prefixes it
   );
   const rawSlots = slotsRead.rows;
   const slotsErr = slotsRead.error ? { message: slotsRead.error } : null;
@@ -618,6 +618,20 @@ export async function loadGenerationContext(
     countQ(); // the retry is a second real round trip
     profilesRes = await selectProfiles(CALL_POOL_PROFILE_COLUMNS_PRE43);
   }
+  // Only the missing-column case is handled above. Any OTHER failure — a
+  // timeout, an RLS denial, a transient outage — left `profiles` null, which
+  // empties providerIds and surfaced below as "No call-takers found at this
+  // site. Providers must have home_site_id set…". It fails closed, so no
+  // invariant is at risk, but it sends a chief off to edit provider records
+  // during a database incident. Say what actually happened.
+  if (profilesRes.error) {
+    return {
+      ctx: null,
+      error: `Failed to load provider employment profiles: ${profilesRes.error.message ?? 'query failed'}`,
+      dbQueries,
+      totalSlots: rawSlots.length,
+    };
+  }
   const profiles = profilesRes.data as Array<Record<string, unknown>> | null;
 
   const profileByPid = new Map<string, {
@@ -699,20 +713,20 @@ export async function loadGenerationContext(
   countQ();
   const providersQ = sb
     .from('providers')
-    .select('id, provider_type, short_display_name')
+    .select('id, provider_type, short_display_name', { count: 'exact' })
     .in('id', providerIds)
     .eq('status', 'active')
     .order('id');
   countQ();
   const credsQ = sb
     .from('provider_site_credentials')
-    .select('provider_id, is_active, credentialed, can_take_call, can_take_weekend_call, can_take_holiday_call, allowed_shift_types, excluded_shift_types, skill_tags')
+    .select('provider_id, is_active, credentialed, can_take_call, can_take_weekend_call, can_take_holiday_call, allowed_shift_types, excluded_shift_types, skill_tags', { count: 'exact' })
     .eq('site_id', siteId)
     .in('provider_id', providerIds);
   countQ();
   const availQ = sb
     .from('provider_availability')
-    .select('provider_id, availability_type, start_date, end_date, approval_status, reason_code')
+    .select('provider_id, availability_type, start_date, end_date, approval_status, reason_code', { count: 'exact' })
     .in('provider_id', providerIds)
     .lte('start_date', waveAvailEnd)
     .gte('end_date', waveAvailStart);
@@ -759,6 +773,18 @@ export async function loadGenerationContext(
         dbQueries,
         totalSlots: rawSlots.length,
       };
+    }
+    // A SHORT read fails the same way a failed one does, and more quietly.
+    // PostgREST caps an un-ranged select at 1000 rows with error null, so a
+    // truncated availability read drops PTO rows for the providers that sort
+    // last — indistinguishable from those providers having no PTO. These three
+    // are scoped by the site pool and under the cap today, so this detects
+    // rather than pages: staying in the parallel wave is worth more than
+    // pre-emptive paging, and failing loudly is the correct behaviour for a
+    // read whose truncation cannot otherwise be seen.
+    const short = truncationOf(res as { data: unknown; count: number | null }, label);
+    if (short) {
+      return { ctx: null, error: `Failed to load ${label}: ${short}`, dbQueries, totalSlots: rawSlots.length };
     }
   }
 
@@ -1025,7 +1051,7 @@ export async function loadGenerationContext(
     // in code via the one shared home. Shape (per-site `.eq` + unbounded `.lt`,
     // no cross-version include) doesn't fit fetchCommittedAssignments' option
     // bag, so we layer the predicate on directly.
-    const { data: hist } = await filterPublishedVersions(
+    const { data: hist, error: histErr } = await filterPublishedVersions(
       sb
         .from('assignments')
         .select('provider_id, schedule_slots!inner(slot_date, site_id, derived_day_type, schedule_versions!inner(version_status), shift_types!inner(code, category))')
@@ -1035,6 +1061,18 @@ export async function loadGenerationContext(
         .eq('schedule_slots.shift_types.category', 'call')
         .lt('schedule_slots.slot_date', minDate),
     );
+    // Warn rather than bail: cross-block fairness memory resetting to zero is
+    // a degraded result, not a safety failure, so generation may proceed. But
+    // it must not proceed SILENTLY — this is the last dropped .error in the
+    // file, and without it every provider looks like they have taken no past
+    // call and burden distribution quietly restarts from scratch (invariant 5).
+    // The RPC path above already warns on its own failure; this fallback did
+    // not.
+    if (histErr) {
+      warnings.push(
+        `historical call scan failed — cross-block fairness starts from zero this run: ${histErr.message}`,
+      );
+    }
 
     for (const row of (hist || []) as Array<Record<string, unknown>>) {
       const pid = row.provider_id as string | null;

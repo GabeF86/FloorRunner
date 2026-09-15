@@ -19,7 +19,7 @@
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type SupabaseClient = any;
 import { addDays, NEIGHBOR_WINDOW_DAYS, AVAIL_WINDOW_DAYS } from './shared';
-import { readAllRows } from '@/lib/pagedRead';
+import { readAllRows, truncationOf } from '@/lib/pagedRead';
 import { embedArray } from '@/lib/embed';
 // Function-level-only cycle (commit.ts imports batchValidateVersion/chunk from
 // here); nothing crosses at module top level, so evaluation order is safe.
@@ -187,12 +187,12 @@ export async function batchValidateVersion(
     dbQueries++;
     const provQ = sb
       .from('providers')
-      .select('id, provider_type, provider_employment_profiles(fte_value, call_taker, partial_call_taker, is_day_doc)')
+      .select('id, provider_type, provider_employment_profiles(fte_value, call_taker, partial_call_taker, is_day_doc)', { count: 'exact' })
       .in('id', providerIds);
     dbQueries++;
     const availQ = sb
       .from('provider_availability')
-      .select('id, provider_id, availability_type, start_date, end_date, approval_status')
+      .select('id, provider_id, availability_type, start_date, end_date, approval_status', { count: 'exact' })
       .in('provider_id', providerIds)
       .lte('start_date', addDays(maxDate, AVAIL_WINDOW_DAYS))
       .gte('end_date', addDays(minDate, -AVAIL_WINDOW_DAYS));
@@ -212,11 +212,33 @@ export async function batchValidateVersion(
       .from('provider_site_credentials')
       .select(
         'provider_id, site_id, is_active, credentialed, can_take_call, can_take_weekend_call, can_take_holiday_call, can_take_backup_call, allowed_shift_types, excluded_shift_types, skill_tags',
+        { count: 'exact' },
       )
       .in('provider_id', providerIds)
       .eq('site_id', siteId);
 
     const [provRes, availRes, rowsRes, credRes] = await Promise.all([provQ, availQ, rowsQ, credQ]);
+
+    // Invariant 6 is at its most fragile here. A truncated availability read
+    // does not error and does not look empty overall — it just omits rows for
+    // the providers that sort last. Those providers then validate against an
+    // empty PTO list, `evaluated` stays true, and CLEAN validation_flags get
+    // written over a collision nobody ever looked at. That is validation
+    // silently reporting clean on failure, which is the one thing it may
+    // never do, so a short read bails exactly like a failed one.
+    for (const [label, res] of [
+      ['providers', provRes],
+      ['provider_availability', availRes],
+      ['provider_site_credentials', credRes],
+    ] as Array<[string, { data: unknown; count: number | null; error?: unknown }]>) {
+      // A failed query also has a null count, and truncationOf would report it
+      // as "count unavailable" — technically true but it buries the real
+      // message. Leave those to the per-section error checks below, which say
+      // what actually broke.
+      if (res.error) continue;
+      const short = truncationOf(res, label);
+      if (short) return bail(label, short);
+    }
 
     // ── 2. Provider info: group + FTE + pool flags ──
     if (provRes.error) return bail('providers', provRes.error.message);
