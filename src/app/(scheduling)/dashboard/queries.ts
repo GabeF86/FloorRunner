@@ -158,6 +158,8 @@ export interface MixRow {
   partial_call_taker: boolean | null;
   is_day_doc: boolean | null;
   employment_status: string | null;
+  /** The partner flag. Named is_shareholder in the DB; "partner" in the UI. */
+  is_shareholder: boolean | null;
   providers: MixProviderRef | MixProviderRef[] | null;
 }
 
@@ -168,13 +170,15 @@ export interface MixRow {
  * capacity is there" and "how many CRNAs' worth of coverage" are FTE
  * questions; who the day docs are and how many per diems there are is not.
  *
- * fte_value arrives from a Postgres numeric as a STRING through PostgREST, so
- * it is coerced rather than added — string concatenation here would silently
- * produce something like "1.000.750.70".
+ * fte_value is coerced with Number() rather than added directly. On THIS
+ * project PostgREST returns the numeric as a JSON number (measured:
+ * 0.75 -> number), so the coercion is belt-and-braces rather than load-bearing
+ * — an earlier version of this comment claimed strings arrive and that is not
+ * true here. It stays because the guard also catches null and NaN.
  */
 export function summarizeMix(rows: readonly MixRow[]): ProviderMix {
   const mix: ProviderMix = {
-    callTakerFte: 0, callTakerCount: 0,
+    callTakerFte: 0, callTakerCount: 0, partnerCount: 0,
     crnaFte: 0, crnaCount: 0,
     dayDocs: [], perDiem: 0,
     physicians: [], crnas: [], perDiems: [],
@@ -193,6 +197,7 @@ export function summarizeMix(rows: readonly MixRow[]): ProviderMix {
     const name = providerDisplayName(p);
     const id = p.id ?? '';
     const isCrna = type === 'crna' || type === 'aa';
+    const partner = !!r.is_shareholder;
 
     // PHYSICIAN call takers only — see ProviderMix.callTakerFte.
     if (r.call_taker && type === 'physician') { mix.callTakerFte += fte; mix.callTakerCount++; }
@@ -209,11 +214,12 @@ export function summarizeMix(rows: readonly MixRow[]): ProviderMix {
 
     if (perDiem) {
       mix.perDiem++;
-      mix.perDiems.push({ id, name, fte: null, call });
+      mix.perDiems.push({ id, name, fte: null, call, partner, crna: isCrna });
     } else if (type === 'physician') {
-      mix.physicians.push({ id, name, fte, call });
+      mix.physicians.push({ id, name, fte, call, partner });
+      if (partner) mix.partnerCount++;
     } else if (isCrna) {
-      mix.crnas.push({ id, name, fte, call });
+      mix.crnas.push({ id, name, fte, call, partner, crna: true });
     }
   }
 
@@ -368,6 +374,14 @@ export interface StaffChip {
   call: boolean;
   /** Contracted hours a week. Day docs only; null when unrecorded. */
   weeklyHours?: number | null;
+  /** Partner (is_shareholder). Drawn as a thin orange ring on the chip. */
+  partner?: boolean;
+  /**
+   * CRNA or AA. Drives the chip's SHAPE, not its colour — the per-diem list
+   * mixes physicians and CRNAs, and there the group heading cannot tell them
+   * apart.
+   */
+  crna?: boolean;
 }
 
 /** The staffing figures the dashboards head with. */
@@ -382,6 +396,17 @@ export interface ProviderMix {
    */
   callTakerFte: number;
   callTakerCount: number;
+  /**
+   * Partners among the physicians listed here — the parenthetical beside
+   * "FTE call takers".
+   *
+   * Counted over the same people the chips show, so the number is checkable
+   * against the rings beside it. Gabriel's ruling that shareholders are
+   * inherently call takers is about eligibility, not about this count: a
+   * partner who is somehow not flagged call_taker is still a partner, and
+   * hiding them here would make the figure disagree with the visible rings.
+   */
+  partnerCount: number;
   /** ΣFTE across CRNAs. */
   crnaFte: number;
   crnaCount: number;
@@ -606,7 +631,7 @@ export async function loadDashboardData(
   let mixQ = sb
     .from('provider_employment_profiles')
     .select(
-      'fte_value, max_weekly_hours, call_taker, partial_call_taker, is_day_doc, employment_status, '
+      'fte_value, max_weekly_hours, call_taker, partial_call_taker, is_day_doc, employment_status, is_shareholder, '
       + 'providers!inner(id, provider_type, status, organization_id, first_name, last_name, '
       + 'preferred_display_name, short_display_name)',
       { count: 'exact' })

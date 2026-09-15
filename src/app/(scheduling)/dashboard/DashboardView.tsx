@@ -16,7 +16,7 @@ import type { ReactNode } from 'react';
 import { sbSchedulingServer } from '@/lib/supabaseScheduling';
 import { PageHeader, Card, Badge, Table, EmptyState, Banner, Button, scheduleStatusTone } from '@/components/ui';
 import type { DashboardData, Panel, ProviderMix, ScheduleRow, StaffChip } from './queries';
-import { formatShare, type SiteCallObligation } from '@/lib/siteCallObligation';
+import { formatShare, obligationColumns, type SiteCallObligation } from '@/lib/siteCallObligation';
 import PhysicianPlannerCard from './PhysicianPlannerCard';
 import DashboardTallyCard from './DashboardTallyCard';
 
@@ -218,7 +218,7 @@ function AttentionPanel({ panel }: { panel: DashboardData['attention'] }) {
 
 // ── Staffing mix ───────────────────────────────────────────────────────────
 
-function StaffChips({ people }: { people: StaffChip[] }) {
+export function StaffChips({ people }: { people: StaffChip[] }) {
   if (people.length === 0) {
     return (
       <div style={{ fontSize: 'var(--fs-sm)', color: 'var(--text-dim)', fontStyle: 'italic' }}>
@@ -232,12 +232,19 @@ function StaffChips({ people }: { people: StaffChip[] }) {
         <Link
           key={p.id || p.name}
           href={p.id ? `/providers/${p.id}` : '/providers'}
-          title={p.name}
           className="fr-chip"
+          title={[p.name, p.partner ? 'partner' : null, p.crna ? 'CRNA' : null]
+            .filter(Boolean).join(' — ')}
           style={{
             display: 'inline-flex', alignItems: 'baseline', gap: 5,
-            padding: '3px 9px', borderRadius: 999, textDecoration: 'none',
-            border: '1px solid var(--border)', background: 'var(--bg-deep)',
+            padding: '3px 9px', textDecoration: 'none',
+            // SHAPE carries the physician/CRNA distinction, not colour: the
+            // per-diem list mixes both, and shape survives printing and
+            // colour-vision deficiency. A pill is a person on the call slate;
+            // a tag is a CRNA.
+            borderRadius: p.crna ? 'var(--radius-sm)' : 999,
+            border: `1px solid ${p.partner ? 'var(--partner-ring)' : 'var(--border)'}`,
+            background: 'var(--bg-deep)',
             fontSize: 'var(--fs-xs)', color: 'var(--text)', lineHeight: 1.6,
           }}
         >
@@ -332,7 +339,10 @@ function StaffingCard({ panel, site }: { panel: Panel<ProviderMix>; site: boolea
           is always checkable against the names beside it. */}
       <StaffSection
         value={String(m.callTakerFte)}
-        label="FTE call takers"
+        // The parenthetical is the partner headcount, and the orange rings on
+        // the chips below are the same people — so the figure is checkable by
+        // counting, which is the whole arrangement of this card.
+        label={`FTE call takers (${m.partnerCount} partner${m.partnerCount === 1 ? '' : 's'})`}
         sub={`${m.callTakerCount} physician${m.callTakerCount === 1 ? '' : 's'} take call`}
         people={m.physicians}
       />
@@ -432,7 +442,7 @@ function SchedulesByGroupCard({ panel }: { panel: DashboardData['schedules'] }) 
 
 // ── Annual call obligation ─────────────────────────────────────────────────
 
-function ObligationCard({ panel }: { panel: Panel<SiteCallObligation> }) {
+export function ObligationCard({ panel }: { panel: Panel<SiteCallObligation> }) {
   if (panel.error) {
     return <Card title="Annual call obligation"><Banner tone="error">{panel.error}</Banner></Card>;
   }
@@ -468,12 +478,19 @@ function ObligationCard({ panel }: { panel: Panel<SiteCallObligation> }) {
         gridTemplateColumns: 'repeat(auto-fit, minmax(230px, 1fr))',
         gap: 'var(--space-4)',
       }}>
-        {o.groups.map(g => (
-          <div key={g.bucket} style={{ minWidth: 0 }}>
+        {obligationColumns(o).map(g => (
+          <div key={g.key} style={{ minWidth: 0 }}>
             <div style={{
               fontSize: 'var(--fs-xs)', textTransform: 'uppercase', letterSpacing: 1,
-              color: 'var(--text-dim)', fontWeight: 700,
-              paddingBottom: 6, borderBottom: '1px solid var(--border)', marginBottom: 6,
+              // A total is a different KIND of column, not a louder one, so the
+              // heading takes the same red as its figures and nothing else
+              // changes — no fill, no heavier rule. Red alone would be the only
+              // cue, so the label also spells out what is being added.
+              color: g.isSum ? 'var(--danger)' : 'var(--text-dim)',
+              fontWeight: 700,
+              paddingBottom: 6,
+              borderBottom: `1px solid ${g.isSum ? 'var(--danger)' : 'var(--border)'}`,
+              marginBottom: 6,
             }}>
               {g.label}
             </div>
@@ -489,7 +506,10 @@ function ObligationCard({ panel }: { panel: Panel<SiteCallObligation> }) {
                 <span style={{ fontWeight: 700, color: 'var(--text)', minWidth: 42 }}>{r.code}</span>
                 {/* The number Gabriel reads this table for: what ONE 1.0 FTE
                     owes of this call type on this kind of day. */}
-                <span style={{ ...num, flex: 1, fontWeight: 800, color: 'var(--blue)', fontSize: 'var(--fs-md)' }}>
+                <span style={{
+                  ...num, flex: 1, fontWeight: 800, fontSize: 'var(--fs-md)',
+                  color: g.isSum ? 'var(--danger)' : 'var(--blue)',
+                }}>
                   {formatShare(r.perFte)}
                 </span>
                 <span style={{ ...num, fontSize: 'var(--fs-xs)', color: 'var(--text-dim)', minWidth: 58 }}>
@@ -505,7 +525,10 @@ function ObligationCard({ panel }: { panel: Panel<SiteCallObligation> }) {
               <span style={{ fontWeight: 700, color: 'var(--text-muted)', minWidth: 42, fontSize: 'var(--fs-sm)' }}>
                 All
               </span>
-              <span style={{ ...num, flex: 1, fontWeight: 800, color: 'var(--text-strong)' }}>
+              <span style={{
+                ...num, flex: 1, fontWeight: 800,
+                color: g.isSum ? 'var(--danger)' : 'var(--text-strong)',
+              }}>
                 {formatShare(g.perFte)}
               </span>
               <span style={{ ...num, fontSize: 'var(--fs-xs)', color: 'var(--text-dim)', minWidth: 58 }}>

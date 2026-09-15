@@ -799,7 +799,7 @@ describe('summarizeMix', () => {
 
   it('returns all zeros for an empty roster', () => {
     expect(summarizeMix([])).toEqual({
-      callTakerFte: 0, callTakerCount: 0, crnaFte: 0, crnaCount: 0,
+      callTakerFte: 0, callTakerCount: 0, partnerCount: 0, crnaFte: 0, crnaCount: 0,
       dayDocs: [], perDiem: 0, physicians: [], crnas: [], perDiems: [],
     });
   });
@@ -813,6 +813,7 @@ describe('summarizeMix — the staffing chips', () => {
     partial_call_taker: false,
     is_day_doc: false,
     employment_status: 'full_time',
+    is_shareholder: false,
     providers: { id: 'x', provider_type: 'physician', short_display_name: 'X' },
     ...over,
   } as MixRow);
@@ -989,5 +990,76 @@ describe('summarizeMix — chips use real names', () => {
       },
     } as MixRow]);
     expect(mix.physicians[0].name).toBe('Eduardo Alvarado');
+  });
+});
+
+// ── Partners and CRNAs on the chips (Gabriel 2026-09-15) ───────────────────
+describe('summarizeMix — partner and CRNA markers', () => {
+  const row = (over: Partial<MixRow> = {}): MixRow => ({
+    fte_value: 1,
+    max_weekly_hours: null,
+    call_taker: true,
+    partial_call_taker: false,
+    is_day_doc: false,
+    employment_status: 'full_time',
+    is_shareholder: false,
+    providers: { id: 'x', provider_type: 'physician', first_name: 'A', last_name: 'B' },
+    ...over,
+  });
+
+  it('flags a partner on their chip and counts them', () => {
+    const mix = summarizeMix([
+      row({ is_shareholder: true, providers: { id: 'p1', provider_type: 'physician', first_name: 'Ann', last_name: 'Partner' } }),
+      row({ is_shareholder: false, providers: { id: 'p2', provider_type: 'physician', first_name: 'Ben', last_name: 'Employed' } }),
+    ]);
+    expect(mix.partnerCount).toBe(1);
+    expect(mix.physicians.find(p => p.id === 'p1')?.partner).toBe(true);
+    expect(mix.physicians.find(p => p.id === 'p2')?.partner).toBe(false);
+  });
+
+  it('counts partners over the SAME people the chips show, so the figure is checkable', () => {
+    // The parenthetical sits above the physician chips, so it must count those
+    // and not, say, a partner who is a CRNA or a per diem — otherwise the
+    // number disagrees with the rings underneath it.
+    const mix = summarizeMix([
+      row({ is_shareholder: true, providers: { id: 'a', provider_type: 'physician', first_name: 'A', last_name: 'A' } }),
+      row({ is_shareholder: true, providers: { id: 'b', provider_type: 'crna', first_name: 'B', last_name: 'B' } }),
+      row({ is_shareholder: true, employment_status: 'per_diem', fte_value: 0,
+            providers: { id: 'c', provider_type: 'physician', first_name: 'C', last_name: 'C' } }),
+    ]);
+    expect(mix.partnerCount).toBe(1);
+    expect(mix.physicians.map(p => p.id)).toEqual(['a']);
+    // The ring still shows wherever the person appears — it is who they are.
+    expect(mix.crnas[0].partner).toBe(true);
+    expect(mix.perDiems[0].partner).toBe(true);
+  });
+
+  it('marks CRNAs so the chip can take a different SHAPE', () => {
+    const mix = summarizeMix([
+      row({ providers: { id: 'd', provider_type: 'physician', first_name: 'D', last_name: 'D' } }),
+      row({ providers: { id: 'n', provider_type: 'crna', first_name: 'N', last_name: 'N' } }),
+      row({ providers: { id: 'a', provider_type: 'aa', first_name: 'A', last_name: 'A' } }),
+    ]);
+    expect(mix.physicians[0].crna).toBeFalsy();
+    expect(mix.crnas.every(c => c.crna === true)).toBe(true);
+  });
+
+  it('distinguishes a CRNA per diem from a physician per diem', () => {
+    // The reason shape exists at all: this ONE list mixes both, so its heading
+    // cannot tell them apart.
+    const mix = summarizeMix([
+      row({ employment_status: 'per_diem', fte_value: 0,
+            providers: { id: 'pd1', provider_type: 'physician', first_name: 'Doc', last_name: 'Casual' } }),
+      row({ employment_status: 'per_diem', fte_value: 0,
+            providers: { id: 'pd2', provider_type: 'crna', first_name: 'Nurse', last_name: 'Casual' } }),
+    ]);
+    expect(mix.perDiems.find(p => p.id === 'pd1')?.crna).toBe(false);
+    expect(mix.perDiems.find(p => p.id === 'pd2')?.crna).toBe(true);
+  });
+
+  it('treats a missing partner flag as not a partner', () => {
+    const mix = summarizeMix([{ ...row(), is_shareholder: null }]);
+    expect(mix.partnerCount).toBe(0);
+    expect(mix.physicians[0].partner).toBe(false);
   });
 });

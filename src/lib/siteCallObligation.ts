@@ -85,6 +85,91 @@ export interface ObligationGroup {
   perFte: number;
 }
 
+/**
+ * A column in the rendered table: either one day-type bucket, or a running
+ * total across two of them.
+ */
+export interface ObligationColumn {
+  key: string;
+  label: string;
+  /** True for the two derived totals — the view prints these in red. */
+  isSum: boolean;
+  rows: ObligationRow[];
+  slots: number;
+  perFte: number;
+}
+
+/**
+ * The two sums Gabriel reads the table by (2026-09-15): weekday call and
+ * weekend call, per code.
+ *
+ * Placement is by bucket ORDER, not by which buckets happen to exist — the
+ * weekday total sits where Friday would be even at a site with no Friday call,
+ * so the columns line up when two sites are compared side by side.
+ */
+const SUM_COLUMNS = [
+  { key: 'weekday_total', label: 'M–Th + F', after: 'friday', of: ['weekday', 'friday'] },
+  { key: 'weekend_total', label: 'Sat + Sun', after: 'sunday', of: ['saturday', 'sunday'] },
+] as const satisfies ReadonlyArray<{
+  key: string; label: string; after: ObligationBucket; of: readonly ObligationBucket[];
+}>;
+
+/**
+ * Bucket columns with the two totals interleaved.
+ *
+ * Kept pure and separate from `computeSiteCallObligation` so the arithmetic is
+ * unit-testable without a slate, and so `SiteCallObligation` stays the shape
+ * the engine's own fairness buckets describe — the sums are a reading aid, not
+ * a fifth and sixth bucket the scheduler knows about.
+ */
+export function obligationColumns(o: {
+  groups: ObligationGroup[];
+  parLevel: number;
+}): ObligationColumn[] {
+  const byBucket = new Map(o.groups.map(g => [g.bucket, g]));
+  const out: ObligationColumn[] = [];
+
+  for (const bucket of OBLIGATION_BUCKETS) {
+    const g = byBucket.get(bucket);
+    if (g) {
+      out.push({ key: g.bucket, label: g.label, isSum: false, rows: g.rows, slots: g.slots, perFte: g.perFte });
+    }
+
+    for (const sum of SUM_COLUMNS) {
+      if (sum.after !== bucket) continue;
+
+      // Union of codes across the members: a code that runs on Saturday but
+      // not Sunday still belongs in the weekend total, counted once.
+      const slotsByCode = new Map<string, number>();
+      for (const b of sum.of) {
+        for (const r of byBucket.get(b)?.rows ?? []) {
+          slotsByCode.set(r.code, (slotsByCode.get(r.code) ?? 0) + r.slots);
+        }
+      }
+      if (slotsByCode.size === 0) continue; // neither member has call — no column
+
+      const rows = [...slotsByCode.entries()]
+        .map(([code, slots]) => ({ code, slots, perFte: perFteShare(slots, o.parLevel) }))
+        .sort((a, b) => a.code.localeCompare(b.code, undefined, { numeric: true }));
+      const slots = rows.reduce((acc, r) => acc + r.slots, 0);
+
+      out.push({
+        key: sum.key,
+        label: sum.label,
+        isSum: true,
+        rows,
+        // Divided ONCE from the summed slots rather than adding the members'
+        // perFte values, which is the same rule the bucket groups follow and
+        // keeps a total from drifting a hundredth away from its parts.
+        slots,
+        perFte: perFteShare(slots, o.parLevel),
+      });
+    }
+  }
+
+  return out;
+}
+
 export interface SiteCallObligation {
   year: number;
   parLevel: number;

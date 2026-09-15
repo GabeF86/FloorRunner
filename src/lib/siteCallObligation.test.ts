@@ -5,6 +5,7 @@ import {
   datesInYear,
   perFteShare,
   formatShare,
+  obligationColumns,
   OBLIGATION_BUCKETS,
   type ObligationTemplate,
 } from './siteCallObligation';
@@ -246,5 +247,101 @@ describe('formatShare', () => {
   });
   it('renders a non-number as a dash', () => {
     expect(formatShare(NaN)).toBe('—');
+  });
+});
+
+// ── The two derived totals (Gabriel 2026-09-15) ────────────────────────────
+describe('obligationColumns', () => {
+  const g = (
+    bucket: 'weekday' | 'friday' | 'saturday' | 'sunday',
+    label: string,
+    rows: Array<[string, number]>,
+  ) => ({
+    bucket,
+    label,
+    rows: rows.map(([code, slots]) => ({ code, slots, perFte: slots / 10 })),
+    slots: rows.reduce((a, [, s]) => a + s, 0),
+    perFte: rows.reduce((a, [, s]) => a + s, 0) / 10,
+  });
+
+  const paoli = () => obligationColumns({
+    parLevel: 10,
+    groups: [
+      g('weekday',  'M–Th',     [['C1', 200], ['C2', 200]]),
+      g('friday',   'Friday',   [['C1', 50],  ['C2', 50]]),
+      g('saturday', 'Saturday', [['C1', 52],  ['C2', 52], ['C3', 52]]),
+      g('sunday',   'Sunday',   [['C1', 52],  ['C2', 52], ['C3', 52]]),
+    ],
+  });
+
+  it('puts the weekday total between Friday and Saturday, and the weekend total last', () => {
+    expect(paoli().map(c => c.key)).toEqual([
+      'weekday', 'friday', 'weekday_total', 'saturday', 'sunday', 'weekend_total',
+    ]);
+  });
+
+  it('sums each code across its two buckets', () => {
+    const wk = paoli().find(c => c.key === 'weekday_total')!;
+    expect(wk.rows).toEqual([
+      { code: 'C1', slots: 250, perFte: 25 },
+      { code: 'C2', slots: 250, perFte: 25 },
+    ]);
+    const we = paoli().find(c => c.key === 'weekend_total')!;
+    expect(we.rows.map(r => [r.code, r.slots])).toEqual([['C1', 104], ['C2', 104], ['C3', 104]]);
+  });
+
+  it('marks the totals so the view can print them in red, and the buckets not', () => {
+    const cols = paoli();
+    expect(cols.filter(c => c.isSum).map(c => c.key)).toEqual(['weekday_total', 'weekend_total']);
+    expect(cols.filter(c => !c.isSum)).toHaveLength(4);
+  });
+
+  it('divides the summed slots once rather than adding the parts', () => {
+    // par 3 makes the difference visible: 1/3 + 1/3 accumulates float error,
+    // 2/3 does not. The column total must agree with its own slot count.
+    const cols = obligationColumns({
+      parLevel: 3,
+      groups: [
+        g('weekday', 'M–Th',   [['C1', 1]]),
+        g('friday',  'Friday', [['C1', 1]]),
+      ],
+    });
+    const wk = cols.find(c => c.key === 'weekday_total')!;
+    expect(wk.rows[0].perFte).toBe(2 / 3);
+    expect(wk.slots).toBe(2);
+  });
+
+  it('carries a code that runs on only ONE of the two days', () => {
+    // C3 (Neuro) on Saturday but not Sunday still belongs to the weekend, once.
+    const cols = obligationColumns({
+      parLevel: 10,
+      groups: [
+        g('saturday', 'Saturday', [['C1', 52], ['C3', 52]]),
+        g('sunday',   'Sunday',   [['C1', 52]]),
+      ],
+    });
+    const we = cols.find(c => c.key === 'weekend_total')!;
+    expect(we.rows.map(r => [r.code, r.slots])).toEqual([['C1', 104], ['C3', 52]]);
+  });
+
+  it('holds the weekday total in place when a site has no Friday call', () => {
+    // Column order must not shift per site, or two sites cannot be compared.
+    const cols = obligationColumns({
+      parLevel: 10,
+      groups: [g('weekday', 'M–Th', [['C1', 200]]), g('saturday', 'Saturday', [['C1', 52]])],
+    });
+    expect(cols.map(c => c.key)).toEqual(['weekday', 'weekday_total', 'saturday', 'weekend_total']);
+  });
+
+  it('omits a total when neither of its days has call', () => {
+    const cols = obligationColumns({
+      parLevel: 10,
+      groups: [g('weekday', 'M–Th', [['C1', 200]])],
+    });
+    expect(cols.map(c => c.key)).toEqual(['weekday', 'weekday_total']);
+  });
+
+  it('returns nothing for a site with no slate at all', () => {
+    expect(obligationColumns({ parLevel: 10, groups: [] })).toEqual([]);
   });
 });

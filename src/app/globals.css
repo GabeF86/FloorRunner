@@ -58,6 +58,11 @@
   /* Brand accents — deeper on light surfaces so small accent text meets AA */
   --blue:    #0284c7;
   --indigo:  #4f46e5;
+  /* The ring that marks a partner on a staffing chip. Its own token rather
+     than --warn: --warn is amber-700, a brown-leaning advisory colour, and
+     partnership is an identity marker, not a warning. Orange-600 reads as
+     orange against white at 1px. */
+  --partner-ring: #ea580c;
   --on-accent: #ffffff; /* text placed on a solid accent fill (theme-invariant) */
 
   /* ── Design scales (theme-invariant) ── */
@@ -140,6 +145,7 @@
   /* Brand accents — brighter on dark surfaces */
   --blue:    #0ea5e9;
   --indigo:  #6366f1;
+  --partner-ring: #fb923c; /* orange-400 — carries on a dark surface */
 
   /* Semantic status — brighter tones for dark surfaces */
   --ok:     #34d399; --ok-bg:     rgba(52,211,153,.12);
