@@ -42,8 +42,18 @@ function makeSb(handlers: Record<string, Canned | ((verb: string, calls: Call[])
       const c = typeof h === 'function' ? h(verb, calls) : (h ?? { data: null });
       return { data: c.data ?? null, error: c.error ?? null };
     };
-    b.single = () => Promise.resolve(resolve());
-    b.maybeSingle = () => Promise.resolve(resolve());
+    // PostgREST returns an ARRAY for an ordinary select; .single() and
+    // .maybeSingle() are what collapse it to one row. The fake models that
+    // distinction on purpose: collapsing in both directions is what let a
+    // duplicate-row bug reach production, where .maybeSingle() on two rows
+    // raises "JSON object requested, multiple (or no) rows returned".
+    const unwrap = () => {
+      const r = resolve();
+      if (r.error) return r;
+      return { data: Array.isArray(r.data) ? (r.data[0] ?? null) : r.data, error: null };
+    };
+    b.single = () => Promise.resolve(unwrap());
+    b.maybeSingle = () => Promise.resolve(unwrap());
     b.then = (ok: (v: unknown) => unknown, err?: (e: unknown) => unknown) =>
       Promise.resolve(resolve()).then(ok, err);
     return b;
@@ -77,7 +87,7 @@ function happy(over: Record<string, Canned | ((v: string, c: Call[]) => Canned)>
       verb === 'select' ? { data: pendingInvite } : { data: [{ id: 'inv-1' }] },
     providers: (verb) =>
       verb === 'select' ? { data: unlinkedProvider } : { data: [{ id: PROVIDER }] },
-    roles: { data: { id: 'role-provider' } },
+    roles: { data: [{ id: 'role-provider' }] },
     users: { data: null },
     user_roles: { data: null },
     ...over,
@@ -280,7 +290,7 @@ describe('acceptInvitation — refuses invalid tokens', () => {
   it('resolves the role BEFORE creating the account', async () => {
     // Discovering a missing role afterwards would mean unwinding a live
     // credential; failing first means there is nothing to unwind.
-    const { sb } = happy({ roles: { data: null } });
+    const { sb } = happy({ roles: { data: [] } });
     const auth = makeAuth();
     let created = false;
     auth.createUser = async () => { created = true; return { data: { user: { id: 'x' } }, error: null }; };
@@ -427,5 +437,31 @@ describe('invitation role', () => {
     const lookup = calls.find(c => c.table === 'roles' && c.method === 'eq'
       && (c.args as string[])[0] === 'name')!;
     expect(lookup.args[1]).toBe('provider');
+  });
+});
+
+describe('duplicate role rows do not break acceptance', () => {
+  it('takes the first role when an organization somehow has two', async () => {
+    // This is not hypothetical. Merging two organizations left UAS holding two
+    // 'admin' and two 'provider' rows, and the first real acceptance died on
+    // PostgREST's "JSON object requested, multiple (or no) rows returned" --
+    // shown to someone in the middle of setting their password. A duplicate
+    // role is a data problem; it must not deny a person their account.
+    const { sb } = happy({
+      roles: { data: [{ id: 'role-a' }, { id: 'role-b' }] },
+    });
+    const res = await acceptInvitation(sb, makeAuth(), {
+      token: TOKEN, password: 'correct-horse-battery', now: NOW,
+    });
+    expect(res.ok).toBe(true);
+  });
+
+  it('still fails cleanly when the role genuinely does not exist', async () => {
+    const { sb } = happy({ roles: { data: [] } });
+    const res = await acceptInvitation(sb, makeAuth(), {
+      token: TOKEN, password: 'correct-horse-battery', now: NOW,
+    });
+    expect(res.ok).toBe(false);
+    expect(res.error).toMatch(/role/i);
   });
 });

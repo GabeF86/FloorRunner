@@ -155,6 +155,29 @@ async function main() {
   }
   console.log(`  1. repointed ${ORG_TABLES.length} org-scoped tables`);
 
+  // Roles are seeded PER ORGANIZATION, so repointing merges two sets of the
+  // same two names into one org. Left alone that breaks invitation acceptance:
+  // the role lookup uses a single-row read and PostgREST answers "JSON object
+  // requested, multiple (or no) rows returned" — shown to someone mid-way
+  // through setting their password. Learned the hard way on the first real
+  // acceptance. There is now a UNIQUE (organization_id, name) constraint, so a
+  // re-run would fail at step 1 instead; this keeps the script correct anyway.
+  const { data: dupRoles } = await sb.from('roles')
+    .select('id, name, created_at').eq('organization_id', UAS).order('created_at');
+  const seenRole = new Set<string>();
+  for (const r of dupRoles ?? []) {
+    const n = r.name as string;
+    if (!seenRole.has(n)) { seenRole.add(n); continue; }
+    const grants = await count('user_roles', 'role_id', r.id as string);
+    if (grants > 0) {
+      // Never orphan a real grant; re-point it instead of deleting blindly.
+      const keepId = (dupRoles ?? []).find(x => x.name === n)!.id as string;
+      await sb.from('user_roles').update({ role_id: keepId }).eq('role_id', r.id as string);
+    }
+    await sb.from('roles').delete().eq('id', r.id as string);
+    console.log(`     removed duplicate role '${n}'`);
+  }
+
   // ── 2. De-duplicate sites ────────────────────────────────────────────────
   const { data: sites } = await sb.from('sites').select('id, name, created_at').eq('organization_id', UAS);
   const byName = new Map<string, Array<{ id: string; created_at: string }>>();

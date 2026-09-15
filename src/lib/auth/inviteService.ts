@@ -194,16 +194,25 @@ export async function acceptInvitation(
     return fail(409, 'This provider already has a login. Try signing in instead.');
   }
 
-  const role = await sb
+  // The role the INVITATION names, not one the redeemer chose. Anything
+  // unrecognised falls back to provider -- an invitation carrying a garbled
+  // role must never widen into admin.
+  //
+  // limit(1) rather than maybeSingle(): duplicate role rows are a data problem,
+  // not a reason to refuse someone their account. Merging two organizations
+  // produced exactly that and broke the first real acceptance with PostgREST's
+  // "JSON object requested, multiple (or no) rows returned" -- an error that
+  // tells the person setting their password nothing at all. There is now a
+  // UNIQUE (organization_id, name) constraint upstream; this is the belt.
+  const roleRes = await sb
     .from('roles')
     .select('id')
     .eq('organization_id', prov.data.organization_id)
-    // The role the INVITATION names, not one the redeemer chose. Anything
-    // unrecognised falls back to provider -- an invitation carrying a garbled
-    // role must never widen into admin.
     .eq('name', invitation.role === ADMIN_ROLE ? ADMIN_ROLE : PROVIDER_ROLE)
-    .maybeSingle();
-  if (role.error) return fail(500, role.error.message);
+    .order('created_at', { ascending: true })
+    .limit(1);
+  if (roleRes.error) return fail(500, roleRes.error.message);
+  const role = { data: (roleRes.data as Array<{ id: string }> | null)?.[0] ?? null };
   if (!role.data) {
     // Resolved BEFORE the auth user is created, on purpose: discovering a
     // missing role afterwards would mean unwinding a live credential.
