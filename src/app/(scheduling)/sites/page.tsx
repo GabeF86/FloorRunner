@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
+import { cachedFetch, invalidateCache } from '@/lib/clientCache';
 import Link from 'next/link';
 import { interpretListRead } from '../providers/listRead';
 import { PageHeader, Card, Badge, Button, Table, EmptyState, Banner, Modal } from '@/components/ui';
@@ -43,7 +44,7 @@ export default function SitesPage() {
   useEffect(() => {
     (async () => {
       try {
-        const res = await fetch('/api/scheduling/organizations');
+        const res = await cachedFetch('/api/scheduling/organizations');
         const read = interpretListRead<{ id: string }>(res, await res.json().catch(() => null), 'organizations');
         // A failed org read leaves orgId empty, which stops the sites read from
         // ever running — indistinguishable from a group with no sites unless
@@ -61,7 +62,7 @@ export default function SitesPage() {
   const loadSites = useCallback(async () => {
     if (!orgId) return;
     try {
-      const res = await fetch('/api/scheduling/sites?org_id=' + orgId);
+      const res = await cachedFetch('/api/scheduling/sites?org_id=' + orgId);
       const read = interpretListRead<Site>(res, await res.json().catch(() => null), 'sites');
       // A failed read must not fall through to the empty-list path: that path
       // invites the user to onboard sites that already exist, which duplicates
@@ -190,6 +191,9 @@ function AddSiteModal({ orgId, onClose, onAdded }: { orgId: string; onClose: () 
   const submit = async () => {
     if (!name.trim()) return;
     setSaving(true);
+    // The site list is cached for the tab, so a newly created site would not
+    // appear on the pages that read it until the TTL expired.
+    invalidateCache('/api/scheduling/sites');
     await fetch('/api/scheduling/sites', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },

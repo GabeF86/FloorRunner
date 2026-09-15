@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
+import { cachedFetch } from '@/lib/clientCache';
 import Link from 'next/link';
 import { PageHeader, Card, Badge, Button, Table, EmptyState, Banner, Modal, scheduleStatusTone, scheduleStatusLabel, SCHEDULE_STATUSES } from '@/components/ui';
 import { SiteScheduleBoard } from './SiteScheduleBoard';
@@ -104,7 +105,7 @@ export default function SchedulesPage() {
   // Load org
   useEffect(() => {
     (async () => {
-      const orgRes = await fetch('/api/scheduling/organizations');
+      const orgRes = await cachedFetch('/api/scheduling/organizations');
       const orgs = await orgRes.json();
       if (orgs.length > 0) {
         setOrgId(orgs[0].id);
@@ -137,7 +138,7 @@ export default function SchedulesPage() {
 
   const loadSites = useCallback(async () => {
     if (!orgId) return;
-    const res = await fetch('/api/scheduling/sites?org_id=' + orgId);
+    const res = await cachedFetch('/api/scheduling/sites?org_id=' + orgId);
     setSites(await res.json());
   }, [orgId]);
 

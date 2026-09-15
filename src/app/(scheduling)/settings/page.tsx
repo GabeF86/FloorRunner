@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useState, type ReactNode } from 'react';
+import { cachedFetch } from '@/lib/clientCache';
 import { CUSTOM_FIELD_TYPES } from '@/lib/validation/customFields';
 import { PROVIDER_TYPES } from '@/lib/validation/providers';
 import { PageHeader, Card, Badge, Button, Table, EmptyState, Banner, Modal } from '@/components/ui';
@@ -39,7 +40,7 @@ export default function SettingsPage() {
 
   useEffect(() => {
     (async () => {
-      const orgRes = await fetch('/api/scheduling/organizations');
+      const orgRes = await cachedFetch('/api/scheduling/organizations');
       const orgs = await orgRes.json();
       if (orgs.length > 0) setOrgId(orgs[0].id);
       setLoading(false);

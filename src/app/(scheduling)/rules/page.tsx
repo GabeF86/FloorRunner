@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
+import { cachedFetch } from '@/lib/clientCache';
 import Link from 'next/link';
 import { PageHeader, Card, Badge, Button, Table, EmptyState, Modal, type BadgeTone } from '@/components/ui';
 
@@ -45,7 +46,7 @@ export default function RulesPage() {
 
   useEffect(() => {
     (async () => {
-      const orgRes = await fetch('/api/scheduling/organizations');
+      const orgRes = await cachedFetch('/api/scheduling/organizations');
       const orgs = await orgRes.json();
       if (orgs.length > 0) setOrgId(orgs[0].id);
       setLoading(false);

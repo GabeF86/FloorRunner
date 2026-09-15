@@ -33,14 +33,46 @@
 //     ever absent from the deployment, even a correct sign-in would bounce
 //     back to /login in a loop. It is present (the app reads RLS-enabled
 //     tables in production, which only the service key can do).
+//
+// ── THE COST OF VERIFYING LOCALLY ──────────────────────────────────────────
+// getClaims() proves a token was signed by this project and has not expired.
+// It does NOT ask Supabase whether the account still exists, so unlike the
+// getUser() call it replaced, DELETING a user or signing them out globally
+// does not take effect until their token expires — up to the JWT lifetime,
+// which defaults to one hour. Role changes have the same shape, bounded by the
+// role cache's own minute.
+//
+// That is the standard bargain every stateless-JWT gate makes, and it is the
+// right one here: the alternative was a network round trip to Supabase Auth on
+// every page load AND every API call, and the pages are client components that
+// make three to seven API calls each. If the revocation window ever needs to
+// be smaller, shorten the JWT expiry in the Supabase dashboard rather than
+// putting the round trip back — that tightens the bound without paying per
+// request.
+//
+// Verified end to end on 2026-09-15 against a throwaway account: a signed-in
+// provider reaches /me (200), is bounced from /dashboard to /me rather than to
+// /login, and is refused the admin API (403); an anonymous request is refused
+// everywhere (307 / 401). The 403-not-401 is the part that proves the token
+// was actually verified rather than merely absent.
 
 import { NextResponse, type NextRequest } from 'next/server';
 import { createServerClient, type CookieOptions } from '@supabase/ssr';
 import { createClient } from '@supabase/supabase-js';
 import { classifyRoute, isAllowed } from '@/lib/auth/routeAccess';
 import { resolveSessionRole } from '@/lib/auth/roles';
+import { makeJwksCache, makeRoleCache } from '@/lib/auth/gateCache';
 
 const ENFORCED = process.env.AUTH_ENFORCED === 'true';
+
+// ── Caching ────────────────────────────────────────────────────────────────
+// Both caches live in lib/auth/gateCache.ts, where their behaviour is
+// unit-tested. They are module scope here on purpose: that is what lets them
+// survive across requests on a warm instance. Neither is load-bearing for
+// correctness — a cold start, an evicted entry or a failed fetch all fall back
+// to the slow path that was here before.
+const jwks = makeJwksCache({ ttlMs: 10 * 60_000 });
+const roles = makeRoleCache({ ttlMs: 60_000, max: 500 });
 
 export async function middleware(req: NextRequest) {
   // The response must be created first and carried through: @supabase/ssr
@@ -68,18 +100,41 @@ export async function middleware(req: NextRequest) {
     },
   });
 
-  // Always refresh, even when not enforcing: it keeps sessions alive during
-  // the rollout so the flip to enforcement does not sign everyone out.
-  const { data: userData } = await supabase.auth.getUser();
-  const user = userData?.user ?? null;
+  // Establish who this is, WITHOUT a network round trip in the common case.
+  //
+  // getClaims() reads the session from the cookie, then verifies the token's
+  // signature locally with WebCrypto against the project's public keys. It
+  // falls back to getUser() only for symmetric (HS*) tokens or where WebCrypto
+  // is unavailable; this project signs ES256, so the local path is the one
+  // taken. The previous getUser() call went to Supabase Auth over the network
+  // on every single request.
+  //
+  // Session refresh still happens and still lands on `res`: getClaims reads
+  // through getSession(), which renews an expired token and writes the new
+  // cookies through the handlers above. That is a network call ONCE an hour
+  // per user, not once per request.
+  const keys = await jwks.get(url);
+  let userId: string | null = null;
+  try {
+    const { data } = await supabase.auth.getClaims(
+      undefined,
+      keys ? { jwks: keys as { keys: never[] } } : undefined,
+    );
+    const sub = data?.claims?.sub;
+    userId = typeof sub === 'string' && sub ? sub : null;
+  } catch {
+    // A malformed or unverifiable token is not a signed-in user. Falls through
+    // as anonymous, which the gate denies.
+    userId = null;
+  }
 
   if (!ENFORCED) return res;
 
   const access = classifyRoute(req.nextUrl.pathname);
   if (access === 'public') return res;
 
-  const role = user
-    ? resolveSessionRole(user.id, await roleNames(user.id))
+  const role = userId
+    ? resolveSessionRole(userId, await roles.get(userId, roleNames))
     : 'anonymous';
 
   if (isAllowed(access, role)) return res;
@@ -87,8 +142,8 @@ export async function middleware(req: NextRequest) {
   const isApi = req.nextUrl.pathname.startsWith('/api/');
   if (isApi) {
     return NextResponse.json(
-      { error: user ? 'Forbidden.' : 'Sign in required.' },
-      { status: user ? 403 : 401 },
+      { error: userId ? 'Forbidden.' : 'Sign in required.' },
+      { status: userId ? 403 : 401 },
     );
   }
 

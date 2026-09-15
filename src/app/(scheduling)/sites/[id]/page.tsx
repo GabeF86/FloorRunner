@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
+import { invalidateCache } from '@/lib/clientCache';
 import Link from 'next/link';
 import { PageHeader, Card, Badge, Button, Modal, EmptyState, Banner } from '@/components/ui';
 
@@ -187,6 +188,9 @@ export default function SiteDetailPage({ params }: { params: { id: string } }) {
     setSaving(true);
     setSaveError(null);
     try {
+      // A rename or a colour change shows up in the cached site list that the
+      // other pages read, so drop it.
+      invalidateCache('/api/scheduling/sites');
       const res = await fetch(`/api/scheduling/sites/${id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },

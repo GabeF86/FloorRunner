@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { cachedFetch, invalidateCache } from '@/lib/clientCache';
 import Link from 'next/link';
 import { isValidEmail } from '@/lib/validation/providers';
 import { interpretListRead } from './listRead';
@@ -108,7 +109,7 @@ export default function ProvidersPage() {
   useEffect(() => {
     (async () => {
       try {
-        const res = await fetch('/api/scheduling/organizations');
+        const res = await cachedFetch('/api/scheduling/organizations');
         const read = interpretListRead<{ id: string }>(res, await res.json().catch(() => null), 'organizations');
         // A failed read must not fall through to the empty-list path: that
         // path tells the user their organization doesn't exist and offers to
@@ -155,7 +156,7 @@ export default function ProvidersPage() {
   const loadSites = useCallback(async () => {
     if (!orgId) return;
     try {
-      const res = await fetch('/api/scheduling/sites?org_id=' + orgId);
+      const res = await cachedFetch('/api/scheduling/sites?org_id=' + orgId);
       const read = interpretListRead<Site>(res, await res.json().catch(() => null), 'sites');
       if (!read.ok) { setSitesError(read.error); return; }
       setSites(read.rows);
@@ -413,6 +414,7 @@ function NoOrgSetup({ onCreated }: { onCreated: (id: string) => void }) {
   const create = async () => {
     if (!name.trim()) return;
     setCreating(true);
+    invalidateCache('/api/scheduling/organizations');
     const res = await fetch('/api/scheduling/organizations', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name: name.trim() }),
