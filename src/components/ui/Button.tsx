@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, type CSSProperties, type ReactNode } from 'react';
+import type { CSSProperties, ReactNode } from 'react';
 
 export type ButtonVariant = 'primary' | 'secondary' | 'ghost' | 'danger';
 export type ButtonSize = 'sm' | 'md';
@@ -19,7 +19,11 @@ export interface ButtonProps {
   children?: ReactNode;
 }
 
-const VARIANTS: Record<ButtonVariant, { base: CSSProperties; hover: CSSProperties }> = {
+// Hover and :active live in globals.css (.fr-btn-*), not in React state.
+// Tracking hover with useState re-rendered this component on every
+// mouse-enter and mouse-leave — costly on a dense screen, and it still could
+// not express :active at all.
+const VARIANTS: Record<ButtonVariant, { base: CSSProperties }> = {
   // The one saturated fill in the kit — every screen gets a single clear primary action.
   primary: {
     base: {
@@ -28,7 +32,6 @@ const VARIANTS: Record<ButtonVariant, { base: CSSProperties; hover: CSSPropertie
       border: '1px solid transparent',
       fontWeight: 700,
     },
-    hover: { filter: 'brightness(1.08)' },
   },
   secondary: {
     base: {
@@ -37,7 +40,6 @@ const VARIANTS: Record<ButtonVariant, { base: CSSProperties; hover: CSSPropertie
       border: '1px solid var(--border)',
       fontWeight: 600,
     },
-    hover: { background: 'var(--tint-surface)' },
   },
   ghost: {
     base: {
@@ -46,7 +48,6 @@ const VARIANTS: Record<ButtonVariant, { base: CSSProperties; hover: CSSPropertie
       border: '1px solid transparent',
       fontWeight: 600,
     },
-    hover: { background: 'var(--tint-surface)', color: 'var(--text)' },
   },
   danger: {
     base: {
@@ -55,7 +56,6 @@ const VARIANTS: Record<ButtonVariant, { base: CSSProperties; hover: CSSPropertie
       border: '1px solid transparent',
       fontWeight: 700,
     },
-    hover: { border: '1px solid var(--danger)' },
   },
 };
 
@@ -76,7 +76,6 @@ export function Button({
   style,
   children,
 }: ButtonProps) {
-  const [hover, setHover] = useState(false);
   const v = VARIANTS[variant];
 
   return (
@@ -87,9 +86,7 @@ export function Button({
       aria-controls={ariaControls}
       disabled={disabled}
       onClick={onClick}
-      className="fr-focus"
-      onMouseEnter={() => setHover(true)}
-      onMouseLeave={() => setHover(false)}
+      className={`fr-focus fr-btn fr-btn-${variant}`}
       style={{
         display: 'inline-flex',
         alignItems: 'center',
@@ -101,10 +98,8 @@ export function Button({
         whiteSpace: 'nowrap',
         cursor: disabled ? 'not-allowed' : 'pointer',
         opacity: disabled ? 0.55 : 1,
-        transition: 'background .12s, color .12s, border-color .12s, filter .12s',
         ...SIZES[size],
         ...v.base,
-        ...(hover && !disabled ? v.hover : undefined),
         ...style,
       }}
     >

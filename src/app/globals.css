@@ -246,3 +246,54 @@ table, .fr-nums, input[type='number'] { font-variant-numeric: tabular-nums; }
 @media (prefers-reduced-motion: reduce) {
   .fr-skeleton, .modal-box, .site-card { animation: none; }
 }
+
+/* ── Buttons ──────────────────────────────────────────────────────────────
+   Hover and press live here rather than in React state. The kit used to
+   track hover with useState, which re-rendered the component on every
+   mouse-enter and mouse-leave — on a dense screen like the schedule grid
+   that is a lot of renders for a colour change, and it still could not
+   express :active. Inline styles cannot hold a pseudo-class, so the variant
+   base stays inline and the states are classes.
+
+   The press state is a 1px downward nudge plus a slightly flattened shadow:
+   the cheapest possible "this is a real control" signal, and the thing whose
+   absence makes a web app feel like a document. */
+.fr-btn {
+  transition:
+    background var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out),
+    border-color var(--dur-fast) var(--ease-out),
+    box-shadow var(--dur-fast) var(--ease-out),
+    filter var(--dur-fast) var(--ease-out),
+    transform var(--dur-instant) var(--ease-out);
+}
+.fr-btn:not(:disabled):active { transform: translateY(1px); }
+
+.fr-btn-primary:not(:disabled):hover   { filter: brightness(1.07); box-shadow: var(--shadow-xs); }
+.fr-btn-secondary:not(:disabled):hover { background: var(--tint-surface); border-color: var(--border-strong); }
+.fr-btn-ghost:not(:disabled):hover     { background: var(--tint-surface); color: var(--text); }
+.fr-btn-danger:not(:disabled):hover    { border-color: var(--danger); background: var(--danger-bg); filter: brightness(1.04); }
+
+/* ── Interactive surfaces ─────────────────────────────────────────────────
+   A card or chip that is a link should say so on hover. Kept deliberately
+   quiet — a 1px lift and a border that warms, not a colour change. */
+.fr-lift {
+  transition:
+    box-shadow var(--dur-fast) var(--ease-out),
+    border-color var(--dur-fast) var(--ease-out),
+    transform var(--dur-fast) var(--ease-out);
+}
+.fr-lift:hover {
+  border-color: var(--border-strong);
+  box-shadow: var(--shadow-raised);
+  transform: translateY(-1px);
+}
+.fr-lift:active { transform: translateY(0); box-shadow: var(--shadow-card); }
+
+/* Quiet chip hover — no lift, just a warmer border and surface. */
+.fr-chip {
+  transition:
+    background var(--dur-fast) var(--ease-out),
+    border-color var(--dur-fast) var(--ease-out);
+}
+.fr-chip:hover { background: var(--tint-surface); border-color: var(--border-strong); }
