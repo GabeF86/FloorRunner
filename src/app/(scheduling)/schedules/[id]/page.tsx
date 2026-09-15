@@ -86,6 +86,58 @@ const DAuditModal = nextDynamic(
 const PrintableSchedule = nextDynamic(
   () => import('./PrintableSchedule').then(m => m.PrintableSchedule), { ssr: false });
 
+/* ── Grid ink (theme-invariant) ──────────────────────────────────────────────
+ * THE ONE RULE THAT DECIDES WHICH COLOURS ON THIS PAGE ARE TOKENS.
+ *
+ * The page is two different surfaces. The chrome around the grid — toolbar,
+ * banners, popovers, modals — is a normal themed surface and everything on it
+ * takes design tokens, so it follows light/dark like the rest of the app.
+ * The GRID ITSELF does not: gridTokens.chrome is #1e293b and gridTokens.bodyCell
+ * is #ffffff in BOTH themes, deliberately, because a schedule is a printed-page
+ * artifact that has to look the same on every screen in the department.
+ * gridTheme.ts owns that decision and is frozen.
+ *
+ * So a mark drawn INSIDE the grid cannot use --danger / --warn / --blue: those
+ * flip with the theme and would land pale-red-on-white one way and
+ * deep-amber-on-near-black the other. gridTokens names most of that vocabulary
+ * already; the handful below are the ones it does not, collected here instead
+ * of scattered inline, and each picked to clear AA on the surface it sits on.
+ * Nothing here is data — no stored colour, no provider-type map. */
+const GRID_INK = {
+  /** OVER tag on an over-par cell. Deeper than the wash's own #ef4444, which
+   *  is ~3.3:1 at 7.5px. Same red the printed sheet uses for OVER/EXTRA. */
+  over: '#b91c1c',
+  /** EXTRA tag on the extra-call wash. Deep enough to read (~6.4:1) and far
+   *  enough from the OVER red that the two tags never blur at scan speed. */
+  extra: '#0369a1',
+  /** Holiday column header — an amber-brown in the CHROME family, so the whole
+   *  column reads as a holiday from the header down. Not derivable from
+   *  gridTokens.bodyHoliday: that is a wash for white cells, this is a fill
+   *  for a near-black bar. */
+  holidayChrome: '#3a3010',
+  /** Holiday ink ON that chrome. --warn is #b45309 in the light theme, which
+   *  is unreadable here — the bar does not follow the theme. */
+  holidayOnChrome: '#fbbf24',
+  /** Weekend day-of-week label — one step brighter than gridTokens.chromeMuted
+   *  so Sat/Sun read first in the header. */
+  weekendChrome: '#cbd5e1',
+  /** The assignment → status-row boundary, drawn twice: once across the sticky
+   *  chrome labels (a lift off chromeBorder) and once across the body cells (a
+   *  hairline that reads on white). */
+  zoneRuleChrome: '#33455f',
+  zoneRuleBody: '#cbd5e1',
+  /** White ink on a SOLID grid fill — the validation badge. Named rather than
+   *  '#fff' so it is obviously the same decision as gridTokens.openCallText. */
+  onSolid: '#ffffff',
+} as const;
+
+/** The violet inside gridTokens.providerFocusOutline, which gridTheme exports
+ *  only pre-baked into a box-shadow. The toolbar controls that TURN focus on
+ *  have to match the ring they produce, so the bare value is stated once here
+ *  rather than re-typed at each of the three call sites. Violet is the one hue
+ *  the grid has free — see the gridTheme note on providerFocusOutline. */
+const FOCUS_VIOLET = 'rgb(124,58,237)';
+
 /* ── Interfaces ──────────────────────────────────────────────────────────── */
 
 // Auto-generate fill modes (mirrors rulesEngine FillMode; the route degrades
@@ -746,6 +798,10 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
           initials,
           shortName,
           shiftCode: code,
+          // DATA, not style: the shift type's stored colour, with the same
+          // neutral fallback for a row that has none. Not a token — it is
+          // handed to colorWithAlpha, which parses #rrggbb, and it has to be
+          // the same value whatever theme is rendering it.
           color: slot.shift_types.color_hex || '#64748b',
           providerType: type,
           countsTowardCount,
@@ -1484,7 +1540,7 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
   /* ── Render ─────────────────────────────────────────────────────────────── */
 
   if (error) {
-    return <div style={{ padding: 40, color: '#f87171' }}>{error}</div>;
+    return <div style={{ padding: 40, color: 'var(--danger)' }}>{error}</div>;
   }
   if (!grid) return <div style={{ padding: 40, color: 'var(--text-muted)' }}>Loading schedule...</div>;
 
@@ -1493,12 +1549,26 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
 
   return (
     <div className="schedule-builder-page" style={{ padding: '4px 8px', height: '100%', display: 'flex', flexDirection: 'column' }}>
+      {/* Page-wide keyboard ring. It was gridTokens.accent (#38bdf8), which is
+          the grid's sky — correct against the dark chrome it was picked for,
+          and ~1.9:1 against the light toolbar and white cells where nearly
+          every focusable control on this page actually lives. --blue is the
+          system's focus colour and tracks the theme, matching the outline that
+          .fr-field / .fr-seg / .fr-focus already draw elsewhere.
+
+          `select` is listed explicitly: the old rule covered only button and
+          input, so the fill-mode, day-scope and provider-focus dropdowns had
+          no visible ring at all.
+
+          One CSS home for the ring, and no inline `outline` anywhere on this
+          page, so this rule can always win. */}
       <style>{`
         .schedule-builder-page button:focus-visible,
+        .schedule-builder-page select:focus-visible,
         .schedule-builder-page input:focus-visible {
-          outline: 2px solid ${gridTokens.accent};
+          outline: 2px solid var(--blue);
           outline-offset: 1px;
-          border-radius: 6px;
+          border-radius: var(--radius-sm);
         }
       `}</style>
       {/* Breadcrumb */}
@@ -1523,11 +1593,12 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
                 if (e.key === 'Escape') setRenaming(false);
               }}
               aria-label="Schedule name"
+              className="fr-field"
               style={{
                 fontSize: 14, fontWeight: 700, minWidth: 280,
-                padding: '3px 8px', borderRadius: 6,
+                padding: '3px 8px', borderRadius: 'var(--radius-sm)',
                 border: '1px solid var(--border)', background: 'var(--bg-deep)',
-                color: 'var(--text-strong)', outline: 'none',
+                color: 'var(--text-strong)',
               }}
             />
             <Button size="sm" onClick={saveRename} disabled={renameBusy || !renameValue.trim()}>
@@ -1544,9 +1615,10 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
               onClick={() => { setRenameValue(schedule.schedule_name); setRenaming(true); }}
               title="Rename this schedule"
               aria-label="Rename schedule"
+              className="fr-btn fr-btn-ghost"
               style={{
-                background: 'none', border: 'none', cursor: 'pointer', padding: 2,
-                color: 'var(--text-dim)', fontSize: 13, lineHeight: 1,
+                cursor: 'pointer', padding: 2, borderRadius: 'var(--radius-sm)',
+                fontSize: 13, lineHeight: 1,
               }}
             >
               ✎
@@ -1565,47 +1637,75 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
           </div>
         }
         actions={
-        /* Rules summary — verify the algorithm is enforcing your rules */
+        /* Rules summary — verify the algorithm is enforcing your rules.
+           ONE tone drives the whole chip: fill, ink, border and dot. It used
+           to carry six values across three states — two different greens
+           (#0e7c52 text, #16a34a dot) and three rgba tints on unrelated base
+           triples from the ones the ink used. Now the state picks a token and
+           everything derives from it, so the chip cannot half-change. */
         <div style={{ position: 'relative' }}>
+          {(() => {
+          const tone = rulesSummary.hardCount > 0
+            ? 'var(--danger)'
+            : rulesSummary.softCount + rulesSummary.warningCount > 0
+              ? 'var(--warn)'
+              : 'var(--ok)';
+          const toneBg = rulesSummary.hardCount > 0
+            ? 'var(--danger-bg)'
+            : rulesSummary.softCount + rulesSummary.warningCount > 0
+              ? 'var(--warn-bg)'
+              : 'var(--ok-bg)';
+          // No .fr-chip / .fr-focus on this button, on purpose. The chip's
+          // FILL is its state and is therefore inline, and an inline value
+          // always beats a class — so .fr-chip's :hover could not have fired,
+          // and a rule that cannot fire is worse than none. Hover and press
+          // are applied inline below instead. The keyboard ring comes from the
+          // page-wide button:focus-visible outline, which is the right ring on
+          // both the toolbar and a popover; .fr-focus paints its halo in
+          // --bg-base and would show as a grey band on any other ground.
+          return (
           <button
             onClick={() => setShowRulesSummary(v => !v)}
+            aria-expanded={showRulesSummary}
             title="Aggregate of validation_flags across every assignment in this schedule"
             style={{
               display: 'inline-flex', alignItems: 'center', gap: 7,
               padding: '5px 11px', borderRadius: 999, cursor: 'pointer',
               fontSize: 11.5, fontFamily: 'var(--font-mono), ui-monospace, monospace',
-              background: rulesSummary.hardCount > 0
-                ? 'rgba(239,68,68,0.10)'
-                : rulesSummary.softCount + rulesSummary.warningCount > 0
-                ? 'rgba(245,158,11,0.10)'
-                : 'rgba(16,185,129,0.10)',
-              color: rulesSummary.hardCount > 0
-                ? '#dc2626'
-                : rulesSummary.softCount + rulesSummary.warningCount > 0
-                ? '#b45309'
-                : '#0e7c52',
-              border: '0.5px solid ' + (
-                rulesSummary.hardCount > 0
-                  ? 'rgba(239,68,68,0.35)'
-                  : rulesSummary.softCount + rulesSummary.warningCount > 0
-                  ? 'rgba(245,158,11,0.35)'
-                  : 'rgba(16,185,129,0.35)'
-              ),
+              fontVariantNumeric: 'tabular-nums',
+              background: toneBg,
+              color: tone,
+              border: `0.5px solid color-mix(in srgb, ${tone} 35%, transparent)`,
+              transition: 'border-color var(--dur-fast) var(--ease-out),'
+                + ' box-shadow var(--dur-fast) var(--ease-out),'
+                + ' transform var(--dur-instant) var(--ease-out)',
             }}
+            // Inline, not .fr-chip's own :hover — that rule repaints
+            // `background`, which is set inline here (the chip's fill IS its
+            // state) and would therefore lose. A border + shadow lift says
+            // "pressable" without touching the tone.
+            onMouseEnter={e => {
+              e.currentTarget.style.borderColor = tone;
+              e.currentTarget.style.boxShadow = 'var(--shadow-xs)';
+            }}
+            onMouseLeave={e => {
+              e.currentTarget.style.borderColor = `color-mix(in srgb, ${tone} 35%, transparent)`;
+              e.currentTarget.style.boxShadow = 'none';
+              e.currentTarget.style.transform = 'none';
+            }}
+            onMouseDown={e => { e.currentTarget.style.transform = 'translateY(1px)'; }}
+            onMouseUp={e => { e.currentTarget.style.transform = 'none'; }}
           >
             <span style={{
-              width: 6, height: 6, borderRadius: '50%',
-              background: rulesSummary.hardCount > 0
-                ? '#dc2626'
-                : rulesSummary.softCount + rulesSummary.warningCount > 0
-                ? '#b45309'
-                : '#16a34a',
+              width: 6, height: 6, borderRadius: '50%', background: tone,
             }} />
             checked {rulesSummary.assignmentsChecked} ·{' '}
             {rulesSummary.hardCount + rulesSummary.softCount + rulesSummary.warningCount === 0
               ? 'all clean'
               : `${rulesSummary.hardCount}H · ${rulesSummary.softCount}S${rulesSummary.warningCount > 0 ? ` · ${rulesSummary.warningCount}W` : ''}`}
           </button>
+          );
+          })()}
           {showRulesSummary && (
             <div
               onMouseLeave={() => setShowRulesSummary(false)}
@@ -1613,7 +1713,7 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
                 position: 'absolute', top: '100%', left: 0, marginTop: 6,
                 background: 'var(--bg-surface)', border: '0.5px solid var(--border)',
                 borderRadius: 6, padding: '8px 10px', minWidth: 280, maxWidth: 360,
-                boxShadow: '0 8px 24px rgba(15,23,42,0.18)', zIndex: 100,
+                boxShadow: 'var(--shadow-popover)', zIndex: 100,
               }}
             >
               <div style={{ fontSize: 9, fontFamily: 'var(--font-mono), ui-monospace, monospace', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 6, paddingBottom: 4, borderBottom: '0.5px solid var(--border)' }}>
@@ -1625,15 +1725,15 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
               </div>
               <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: 'var(--text-muted)', marginBottom: 8 }}>
                 <span>Hard violations</span>
-                <span style={{ fontFamily: 'var(--font-mono), ui-monospace, monospace', color: rulesSummary.hardCount > 0 ? '#dc2626' : 'var(--text-dim)' }}>{rulesSummary.hardCount}</span>
+                <span style={{ fontFamily: 'var(--font-mono), ui-monospace, monospace', color: rulesSummary.hardCount > 0 ? 'var(--danger)' : 'var(--text-dim)' }}>{rulesSummary.hardCount}</span>
               </div>
               <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: 'var(--text-muted)', marginBottom: 8 }}>
                 <span>Soft violations</span>
-                <span style={{ fontFamily: 'var(--font-mono), ui-monospace, monospace', color: rulesSummary.softCount > 0 ? '#b45309' : 'var(--text-dim)' }}>{rulesSummary.softCount}</span>
+                <span style={{ fontFamily: 'var(--font-mono), ui-monospace, monospace', color: rulesSummary.softCount > 0 ? 'var(--warn)' : 'var(--text-dim)' }}>{rulesSummary.softCount}</span>
               </div>
               <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: 'var(--text-muted)', marginBottom: 8 }}>
                 <span>Warnings (needs re-validation)</span>
-                <span style={{ fontFamily: 'var(--font-mono), ui-monospace, monospace', color: rulesSummary.warningCount > 0 ? '#b45309' : 'var(--text-dim)' }}>{rulesSummary.warningCount}</span>
+                <span style={{ fontFamily: 'var(--font-mono), ui-monospace, monospace', color: rulesSummary.warningCount > 0 ? 'var(--warn)' : 'var(--text-dim)' }}>{rulesSummary.warningCount}</span>
               </div>
               {rulesSummary.byRule.length > 0 ? (
                 <>
@@ -1642,14 +1742,14 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
                   </div>
                   {rulesSummary.byRule.map((r) => (
                     <div key={(r.rule_id ?? r.rule_name) + r.severity} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '3px 0', fontSize: 11 }}>
-                      <span style={{ width: 5, height: 5, borderRadius: '50%', background: r.severity === 'hard' ? '#dc2626' : '#b45309', flexShrink: 0 }} />
+                      <span style={{ width: 5, height: 5, borderRadius: '50%', background: r.severity === 'hard' ? 'var(--danger)' : 'var(--warn)', flexShrink: 0 }} />
                       <span style={{ flex: 1, color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.rule_name}</span>
                       <span style={{ fontFamily: 'var(--font-mono), ui-monospace, monospace', color: 'var(--text-muted)', fontSize: 10 }}>×{r.count}</span>
                     </div>
                   ))}
                 </>
               ) : rulesSummary.assignmentsChecked > 0 ? (
-                <div style={{ fontSize: 11, color: '#0e7c52', textAlign: 'center', padding: '6px 0', fontStyle: 'italic' }}>
+                <div style={{ fontSize: 11, color: 'var(--ok)', textAlign: 'center', padding: '6px 0', fontStyle: 'italic' }}>
                   All checked assignments pass every active rule.
                 </div>
               ) : (
@@ -1666,20 +1766,32 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
       {/* Top Bar — toolbar row */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 4, paddingTop: 4, borderTop: '1px solid var(--border)' }}>
 
-        {/* View toggle */}
-        <div style={{ display: 'inline-flex', border: '1px solid var(--border)', borderRadius: 8, overflow: 'hidden' }}>
+        {/* View toggle. .fr-seg is the system's "row of buttons, one of them
+            on", and the arrangement matters: the UNSELECTED look lives in CSS
+            so its :hover and :active can exist at all — an inline
+            `background: transparent` here (which is what was here) silently
+            outranks the class rule, which is why this control had no hover.
+            The SELECTED pill still paints inline and so correctly keeps hover
+            off itself. The tone moved off #7dd3fc, a dark-theme sky that
+            measured ~1.9:1 on this light-default toolbar. */}
+        <div style={{ display: 'inline-flex', border: '1px solid var(--border)', borderRadius: 'var(--radius-md)', overflow: 'hidden' }}>
           {(['week', 'month', 'calendar'] as const).map(m => (
             <button
               key={m}
+              className="fr-seg"
+              aria-pressed={viewMode === m}
               onClick={() => {
                 setViewMode(m);
                 setWeekOffset(0);
                 setCalendarMonthOffset(0);
               }}
               style={{
-                padding: '6px 14px', fontSize: 12, fontWeight: 600, border: 'none', cursor: 'pointer',
-                background: viewMode === m ? 'rgba(56,189,248,0.18)' : 'transparent',
-                color: viewMode === m ? '#7dd3fc' : 'var(--text-muted)',
+                padding: '6px 14px', fontSize: 12, fontWeight: 600,
+                border: 'none', borderRadius: 0, cursor: 'pointer',
+                ...(viewMode === m ? {
+                  background: 'color-mix(in srgb, var(--blue) 14%, transparent)',
+                  color: 'var(--blue)',
+                } : null),
               }}
             >
               {m === 'week' ? 'Week' : m === 'month' ? 'Month' : 'Calendar'}
@@ -1723,18 +1835,25 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
             role="group"
             aria-label="Grid zoom"
             title="Grid zoom — smaller percentages fit more of the schedule on screen"
-            style={{ display: 'inline-flex', border: '1px solid var(--border)', borderRadius: 8, overflow: 'hidden' }}
+            style={{ display: 'inline-flex', border: '1px solid var(--border)', borderRadius: 'var(--radius-md)', overflow: 'hidden' }}
           >
             {GRID_ZOOM_LEVELS.map(level => (
+              // Same .fr-seg arrangement as the view toggle above — see the
+              // note there for why the unselected look must NOT be inline.
               <button
                 key={level}
+                className="fr-seg"
                 onClick={() => changeGridZoom(level)}
                 aria-pressed={gridZoom === level}
                 style={{
-                  padding: '6px 9px', fontSize: 11, fontWeight: 700, border: 'none', cursor: 'pointer',
+                  padding: '6px 9px', fontSize: 11, fontWeight: 700,
+                  border: 'none', borderRadius: 0, cursor: 'pointer',
                   fontFamily: 'var(--font-mono), ui-monospace, monospace',
-                  background: gridZoom === level ? 'rgba(56,189,248,0.18)' : 'transparent',
-                  color: gridZoom === level ? '#7dd3fc' : 'var(--text-muted)',
+                  fontVariantNumeric: 'tabular-nums',
+                  ...(gridZoom === level ? {
+                    background: 'color-mix(in srgb, var(--blue) 14%, transparent)',
+                    color: 'var(--blue)',
+                  } : null),
                 }}
               >
                 {level}%
@@ -1763,9 +1882,10 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
             ? `${availableCalls.total} unfilled call slot${availableCalls.total === 1 ? '' : 's'} to list up for grabs`
             : 'Every call slot in this block is filled'}
           // Same tinted-Button idiom the Pool / Assistant buttons use, keyed to
-          // the grid's own open red rather than a --var: the design system has
-          // --blue and --indigo but no red token, and this button has to match
-          // the cells it is about.
+          // gridTokens.openCall rather than --danger. The system DOES have a
+          // red (--danger, and --danger-bg) — this deliberately does not use it,
+          // because --danger tracks the theme and the cells this button counts
+          // do not. It has to be the same red as the grid it is about.
           style={availableCalls.total > 0 ? {
             background: `color-mix(in srgb, ${gridTokens.openCall} 15%, transparent)`,
             color: gridTokens.openCall,
@@ -1818,14 +1938,16 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
           title={focusPid
             ? 'Showing one provider — pick “Focus provider…” to clear'
             : 'Highlight one provider’s days across the whole block'}
+          className="fr-field"
           style={{
-            height: 30, borderRadius: 6, padding: '0 8px', fontSize: 13, fontWeight: 600,
+            height: 30, borderRadius: 'var(--radius-sm)', padding: '0 8px',
+            fontSize: 13, fontWeight: 600,
             cursor: 'pointer', maxWidth: 190,
             background: focusPid
-              ? 'color-mix(in srgb, rgb(124,58,237) 15%, transparent)' : 'var(--surface)',
-            color: focusPid ? 'rgb(124,58,237)' : 'var(--text)',
+              ? `color-mix(in srgb, ${FOCUS_VIOLET} 15%, transparent)` : 'var(--bg-surface)',
+            color: focusPid ? FOCUS_VIOLET : 'var(--text)',
             border: `1px solid ${focusPid
-              ? 'color-mix(in srgb, rgb(124,58,237) 45%, transparent)' : 'var(--border)'}`,
+              ? `color-mix(in srgb, ${FOCUS_VIOLET} 45%, transparent)` : 'var(--border)'}`,
           }}
         >
           <option value="">Focus provider…</option>
@@ -1888,14 +2010,16 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
                   ? e.target.value : 'all')}
               disabled={generating}
               aria-label="Auto-generate fill mode"
+              className="fr-field"
               title={genFillMode === 'obligatory'
                 ? 'Fill only obligatory call slots — each provider receives at most their rounded call obligation at the site par (par-authoritative); the rest stay open as the paid-pickup layer.'
                 : genFillMode === 'weekend-only'
                   ? 'Fill only the weekend call schedule (Fri/Sat/Sun + chained shifts) now; press Continue in the result banner to fill the rest.'
                   : 'Fill all open slots with the available pool (default).'}
               style={{
-                padding: '7px 10px', fontSize: 12.5, fontWeight: 600, borderRadius: 8,
-                background: 'var(--bg)', color: 'var(--text-muted)',
+                padding: '7px 10px', fontSize: 12.5, fontWeight: 600,
+                borderRadius: 'var(--radius-md)',
+                background: 'var(--bg-surface)', color: 'var(--text-muted)',
                 border: '1px solid var(--border)', cursor: generating ? 'not-allowed' : 'pointer',
               }}
             >
@@ -1914,6 +2038,7 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
                 e.target.value === 'weekday' || e.target.value === 'weekend' ? e.target.value : '')}
               disabled={generating || genFillMode === 'weekend-only'}
               aria-label="Which call slots to attempt"
+              className="fr-field"
               title={genFillMode === 'weekend-only'
                 ? 'Weekend call only already scopes the run.'
                 : dayScope === 'weekday'
@@ -1922,8 +2047,9 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
                     ? 'Attempt only Fri/Sat/Sun call slots. Weekdays are left for a later run.'
                     : 'Attempt every call slot in the block (default).'}
               style={{
-                padding: '7px 10px', fontSize: 12.5, fontWeight: 600, borderRadius: 8,
-                background: 'var(--bg)', color: 'var(--text-muted)',
+                padding: '7px 10px', fontSize: 12.5, fontWeight: 600,
+                borderRadius: 'var(--radius-md)',
+                background: 'var(--bg-surface)', color: 'var(--text-muted)',
                 border: '1px solid var(--border)',
                 cursor: generating || genFillMode === 'weekend-only' ? 'not-allowed' : 'pointer',
                 opacity: genFillMode === 'weekend-only' ? 0.5 : 1,
@@ -1958,9 +2084,9 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
                 disabled={generating}
                 title={`Fill only ${grid.providers.find(p => p.id === focusPid)?.short_display_name ?? 'this provider'}`}
                 style={{
-                  background: 'color-mix(in srgb, rgb(124,58,237) 15%, transparent)',
-                  color: 'rgb(124,58,237)',
-                  border: '1px solid color-mix(in srgb, rgb(124,58,237) 45%, transparent)',
+                  background: `color-mix(in srgb, ${FOCUS_VIOLET} 15%, transparent)`,
+                  color: FOCUS_VIOLET,
+                  border: `1px solid color-mix(in srgb, ${FOCUS_VIOLET} 45%, transparent)`,
                 }}
               >
                 {generating
@@ -2157,8 +2283,8 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
                 <div style={{ marginTop: 4, color: 'var(--text-dim)' }}>
                   <div>
                     Working days: {genResult.workDayReport.length} provider{genResult.workDayReport.length !== 1 ? 's' : ''} —{' '}
-                    <span style={{ color: over.length ? 'var(--danger, #c0392b)' : 'inherit' }}>{over.length} over</span>,{' '}
-                    <span style={{ color: under.length ? 'var(--warn, #b8860b)' : 'inherit' }}>{under.length} under</span>{' '}
+                    <span style={{ color: over.length ? 'var(--danger)' : 'inherit' }}>{over.length} over</span>,{' '}
+                    <span style={{ color: under.length ? 'var(--warn)' : 'inherit' }}>{under.length} under</span>{' '}
                     required.
                   </div>
                   {(over.length > 0 || under.length > 0) && (
@@ -2176,7 +2302,7 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
                             ): worked {r.credited.total} of {r.required} required{' '}
                             ({r.credited.assignments} assigned + {r.credited.postCall} post-call + {r.credited.icu} ICU),{' '}
                             entitled off {r.entitledOff} —{' '}
-                            <b style={{ color: r.delta > 0 ? 'var(--danger, #c0392b)' : 'var(--warn, #b8860b)' }}>
+                            <b style={{ color: r.delta > 0 ? 'var(--danger)' : 'var(--warn)' }}>
                               {r.delta > 0 ? `over ${r.delta}` : `under ${-r.delta}`}
                             </b>
                             {/* Completeness (work-to-required): idle days classified,
@@ -2186,7 +2312,7 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
                               <span>
                                 {r.shortfall.engineGapDates.length > 0 && (
                                   <>
-                                    {' '}· <b style={{ color: 'var(--danger, #c0392b)' }}>under-scheduled: engine gap</b>{' '}
+                                    {' '}· <b style={{ color: 'var(--danger)' }}>under-scheduled: engine gap</b>{' '}
                                     on {r.shortfall.engineGapDates.join(', ')}
                                   </>
                                 )}
@@ -2216,7 +2342,7 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
                     <span key={`${r.provider_id}|${r.code}`}>
                       {i > 0 && ', '}
                       {r.provider_name} {r.code}{' '}
-                      <b style={{ color: r.placed >= r.cap ? 'var(--warn, #b8860b)' : 'inherit' }}>
+                      <b style={{ color: r.placed >= r.cap ? 'var(--warn)' : 'inherit' }}>
                         {r.placed}/{r.cap}
                       </b>
                     </span>
@@ -2307,7 +2433,7 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
       <div style={{
         flex: 1, overflow: 'auto', borderRadius: 8,
         border: '1px solid var(--border)',
-        background: '#ffffff', // data cell background
+        background: gridTokens.bodyCell, // data cell background
       }}>
         {/* Print always renders at 100% regardless of the on-screen zoom
             level. Stylesheet !important beats the inline zoom below. (The
@@ -2333,8 +2459,8 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
           {/* Corner cell */}
           <div style={{
             position: 'sticky', top: 0, left: 0, zIndex: 4,
-            background: gridTokens.chrome, borderBottom: '1px solid #1e3a5f',
-            borderRight: '1px solid #1e3a5f', padding: '6px 12px',
+            background: gridTokens.chrome, borderBottom: '1px solid ' + gridTokens.chromeBorder,
+            borderRight: '1px solid ' + gridTokens.chromeBorder, padding: '6px 12px',
             minHeight: 22,
           }} />
 
@@ -2350,13 +2476,13 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
                 position: 'sticky', top: 0, zIndex: 3,
                 // Holidays get a distinctly yellow-tinted dark header so
                 // the whole column reads as "holiday" at a glance.
-                background: isHoliday ? '#3a3010' : isWeekend ? gridTokens.chromeWeekend : gridTokens.chrome,
-                borderBottom: '1px solid #1e3a5f',
-                borderRight: '1px solid #1e3a5f',
+                background: isHoliday ? GRID_INK.holidayChrome : isWeekend ? gridTokens.chromeWeekend : gridTokens.chrome,
+                borderBottom: '1px solid ' + gridTokens.chromeBorder,
+                borderRight: '1px solid ' + gridTokens.chromeBorder,
                 borderLeft: isToday ? '2px solid ' + gridTokens.accent : isSatBorder ? '2px solid rgba(30,58,95,0.6)' : 'none',
                 padding: '2px 6px', textAlign: 'center',
                 fontSize: 10, fontWeight: 700,
-                color: isHoliday ? '#fbbf24' : isWeekend ? '#cbd5e1' : gridTokens.chromeMuted,
+                color: isHoliday ? GRID_INK.holidayOnChrome : isWeekend ? GRID_INK.weekendChrome : gridTokens.chromeMuted,
                 textTransform: 'uppercase', letterSpacing: '0.05em',
                 minHeight: 22, display: 'flex', alignItems: 'center', justifyContent: 'center',
               }}>
@@ -2370,8 +2496,8 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
           {/* Corner cell "Shifts" */}
           <div style={{
             position: 'sticky', top: 22, left: 0, zIndex: 4,
-            background: gridTokens.chrome, borderBottom: '2px solid #1e3a5f',
-            borderRight: '1px solid #1e3a5f', padding: '2px 10px',
+            background: gridTokens.chrome, borderBottom: '2px solid ' + gridTokens.chromeBorder,
+            borderRight: '1px solid ' + gridTokens.chromeBorder, padding: '2px 10px',
             fontSize: 11, fontWeight: 700, color: gridTokens.chromeMuted,
           }}>
             Shifts
@@ -2389,18 +2515,18 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
             return (
               <div key={`date-${date}`} title={holiday ? holiday.holiday_name : undefined} style={{
                 position: 'sticky', top: 22, zIndex: 3,
-                background: holiday ? '#3a3010' : isWeekend ? gridTokens.chromeWeekend : gridTokens.chrome,
-                borderBottom: '2px solid #1e3a5f',
-                borderRight: '1px solid #1e3a5f',
+                background: holiday ? GRID_INK.holidayChrome : isWeekend ? gridTokens.chromeWeekend : gridTokens.chrome,
+                borderBottom: '2px solid ' + gridTokens.chromeBorder,
+                borderRight: '1px solid ' + gridTokens.chromeBorder,
                 borderLeft: isToday ? '2px solid ' + gridTokens.accent : isSatBorder ? '2px solid rgba(30,58,95,0.6)' : 'none',
                 padding: '2px 6px', textAlign: 'center',
                 fontSize: 12.5, fontWeight: 700,
-                color: isToday ? gridTokens.accent : holiday ? '#fbbf24' : gridTokens.chromeText,
+                color: isToday ? gridTokens.accent : holiday ? GRID_INK.holidayOnChrome : gridTokens.chromeText,
                 boxShadow: isToday ? 'inset 0 -3px 0 ' + gridTokens.accentStrong : undefined,
               }}>
                 {formatMMDD(date)}
                 {holiday && (
-                  <div style={{ fontSize: 9, color: '#fbbf24', fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  <div style={{ fontSize: 9, color: GRID_INK.holidayOnChrome, fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                     {holiday.holiday_name}
                   </div>
                 )}
@@ -2422,7 +2548,7 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
                 )}
                 {(mdCount > 0 || crnaCount > 0) && (
                   <div style={{
-                    fontSize: 9, fontWeight: 700, color: '#94a3b8', marginTop: 2,
+                    fontSize: 9, fontWeight: 700, color: gridTokens.chromeMuted, marginTop: 2,
                     fontFamily: 'var(--font-mono), ui-monospace, monospace',
                   }} title="MDs working (weekday C1 excluded) · CRNAs working">
                     {mdCount} MD{crnaCount > 0 ? ` · ${crnaCount} CRNA` : ''}
@@ -2441,12 +2567,12 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
                 position: 'sticky', left: 0, zIndex: 2,
                 background: gridTokens.chrome,
                 borderLeft: '4px solid ' + gridTokens.accent,
-                borderBottom: '1px solid #1e3a5f',
-                borderRight: '1px solid #1e3a5f',
+                borderBottom: '1px solid ' + gridTokens.chromeBorder,
+                borderRight: '1px solid ' + gridTokens.chromeBorder,
                 padding: '2px 8px', display: 'flex', flexDirection: 'column', justifyContent: 'center',
                 minHeight: 20,
               }}>
-                <div style={{ fontSize: 13, fontWeight: 800, color: '#ffffff', whiteSpace: 'nowrap' }}>{st.code}</div>
+                <div style={{ fontSize: 13, fontWeight: 800, color: gridTokens.chromeText, whiteSpace: 'nowrap' }}>{st.code}</div>
                 <div style={{ fontSize: 9.5, color: gridTokens.chromeMuted, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{st.name}</div>
               </div>
 
@@ -2474,7 +2600,7 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
                         background: cellBackground({ isOverPar: false, isExtraCall: false, isHoliday, isWeekend }),
                         borderBottom: '1px solid ' + gridTokens.line,
                         borderRight: '1px solid ' + gridTokens.line,
-                        borderLeft: isToday ? '2px solid ' + gridTokens.accentStrong : isSatBorder ? '2px solid #1e3a5f' : 'none',
+                        borderLeft: isToday ? '2px solid ' + gridTokens.accentStrong : isSatBorder ? '2px solid ' + gridTokens.chromeBorder : 'none',
                         padding: 0,
                         minHeight: 20,
                         display: 'flex', flexDirection: 'column', justifyContent: 'stretch',
@@ -2581,12 +2707,12 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
                             {segOver ? (
                               <span aria-label="Over par for this shift" style={{
                                 fontSize: 6.5, fontWeight: 800, letterSpacing: '0.03em',
-                                color: '#b91c1c', flexShrink: 0,
+                                color: GRID_INK.over, flexShrink: 0,
                               }}>OVER</span>
                             ) : segExtra ? (
                               <span aria-label="Extra call" style={{
                                 fontSize: 6.5, fontWeight: 800, letterSpacing: '0.03em',
-                                color: '#0369a1', flexShrink: 0,
+                                color: GRID_INK.extra, flexShrink: 0,
                               }}>EXTRA</span>
                             ) : null}
                             {(segHard || segSoft) && (
@@ -2749,13 +2875,13 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
                       opacity: cellOpacity(cellFlags),
                       borderBottom: '1px solid ' + gridTokens.line,
                       borderRight: '1px solid ' + gridTokens.line,
-                      borderLeft: isToday ? '2px solid ' + gridTokens.accentStrong : isSatBorder ? '2px solid #1e3a5f' : 'none',
+                      borderLeft: isToday ? '2px solid ' + gridTokens.accentStrong : isSatBorder ? '2px solid ' + gridTokens.chromeBorder : 'none',
                       padding: '1px 3px',
                       minHeight: 20,
                       display: 'flex', alignItems: 'center', justifyContent: 'center',
                       cursor: slot ? 'pointer' : 'default',
                       position: 'relative',
-                      transition: 'background 0.1s',
+                      transition: 'background var(--dur-instant) var(--ease-out)',
                     }}
                     onMouseEnter={(e) => {
                       if (!slot) return;
@@ -2847,13 +2973,13 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
                       <span aria-label="Over par for this shift" style={{
                         position: 'absolute', bottom: 1, right: 3,
                         fontSize: 7.5, fontWeight: 800, letterSpacing: '0.03em',
-                        color: '#b91c1c', pointerEvents: 'none',
+                        color: GRID_INK.over, pointerEvents: 'none',
                       }}>OVER</span>
                     ) : isExtraCall ? (
                       <span aria-label="Extra call" style={{
                         position: 'absolute', bottom: 1, right: 3,
                         fontSize: 8, fontWeight: 800, letterSpacing: '0.5px',
-                        color: '#0369a1', pointerEvents: 'none',
+                        color: GRID_INK.extra, pointerEvents: 'none',
                       }}>EXTRA</span>
                     ) : null}
 
@@ -2886,9 +3012,9 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
                           position: 'absolute', top: 2, left: 2,
                           minWidth: 12, height: 12, padding: '0 1px', borderRadius: 4,
                           display: 'flex', alignItems: 'center', justifyContent: 'center',
-                          fontSize: 9, fontWeight: 900, lineHeight: 1, color: '#fff',
+                          fontSize: 9, fontWeight: 900, lineHeight: 1, color: GRID_INK.onSolid,
                           background: hardFlag ? gridTokens.hard : gridTokens.soft,
-                          boxShadow: hardFlag ? '0 0 4px rgba(239,68,68,0.6)' : '0 0 4px rgba(245,158,11,0.55)',
+                          boxShadow: '0 0 4px ' + colorWithAlpha(hardFlag ? gridTokens.hard : gridTokens.soft, 0.6),
                         }}
                       >{hardFlag ? '!' : '?'}</span>
                     )}
@@ -3013,8 +3139,8 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
             width: 184,
             background: 'var(--bg-surface)',
             border: '1px solid var(--border)',
-            borderRadius: 12,
-            boxShadow: '0 16px 40px rgba(0,0,0,0.5)',
+            borderRadius: 'var(--radius-lg)',
+            boxShadow: 'var(--shadow-popover)',
             zIndex: 520,
             overflow: 'hidden',
           }}
@@ -3037,10 +3163,23 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
                   onClick={() => setHighlight(paletteCell.assignmentId, color)}
                   style={{
                     display: 'flex', alignItems: 'center', gap: 9,
-                    padding: '7px 9px', borderRadius: 8, cursor: 'pointer',
+                    padding: '7px 9px', borderRadius: 'var(--radius-md)', cursor: 'pointer',
                     border: '1px solid ' + (selected ? 'var(--text-dim)' : 'var(--border)'),
                     background: selected ? 'var(--bg-deep)' : 'transparent',
                     color: 'var(--text)', fontSize: 12.5, fontWeight: 700, textAlign: 'left',
+                    transition: 'background var(--dur-fast) var(--ease-out),'
+                      + ' border-color var(--dur-fast) var(--ease-out)',
+                  }}
+                  // Inline hover: `background` is set inline just above (the
+                  // selected row carries its own fill), so a CSS :hover could
+                  // never win here. Restores to whichever ground this row owns.
+                  onMouseEnter={e => {
+                    e.currentTarget.style.background = 'var(--tint-surface)';
+                    e.currentTarget.style.borderColor = 'var(--border-strong)';
+                  }}
+                  onMouseLeave={e => {
+                    e.currentTarget.style.background = selected ? 'var(--bg-deep)' : 'transparent';
+                    e.currentTarget.style.borderColor = selected ? 'var(--text-dim)' : 'var(--border)';
                   }}
                 >
                   {/* Swatch renders the EXACT token the cell will take,
@@ -3059,14 +3198,13 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
             })}
             <button
               role="menuitem"
+              className="fr-btn fr-btn-secondary"
               onClick={() => setCellComment(paletteCell.assignmentId, paletteCell.note)}
               style={{
                 display: 'flex', alignItems: 'center', gap: 9,
-                padding: '7px 9px', borderRadius: 8, marginTop: 6,
-                cursor: 'pointer', border: '1px solid var(--border)',
-                background: 'transparent', color: 'var(--text-muted)',
-                fontSize: 12.5, fontWeight: 700, textAlign: 'left',
-                borderTop: '1px solid var(--border)',
+                padding: '7px 9px', borderRadius: 'var(--radius-md)', marginTop: 6,
+                cursor: 'pointer',
+                fontSize: 12.5, textAlign: 'left',
               }}
             >
               <span aria-hidden style={{ width: 18, textAlign: 'center', fontSize: 13 }}>&#128172;</span>
@@ -3076,13 +3214,12 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
               role="menuitem"
               onClick={() => setHighlight(paletteCell.assignmentId, null)}
               disabled={paletteCell.current === null}
+              className="fr-btn fr-btn-secondary"
               style={{
                 display: 'flex', alignItems: 'center', gap: 9,
-                padding: '7px 9px', borderRadius: 8, marginTop: 2,
+                padding: '7px 9px', borderRadius: 'var(--radius-md)', marginTop: 2,
                 cursor: paletteCell.current === null ? 'default' : 'pointer',
-                border: '1px solid var(--border)', background: 'transparent',
-                color: paletteCell.current === null ? 'var(--text-dim)' : 'var(--text-muted)',
-                fontSize: 12.5, fontWeight: 700, textAlign: 'left',
+                fontSize: 12.5, textAlign: 'left',
                 opacity: paletteCell.current === null ? 0.5 : 1,
               }}
             >
@@ -3108,8 +3245,8 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
             width: 268,
             background: 'var(--bg-surface)',
             border: '1px solid var(--border)',
-            borderRadius: 12,
-            boxShadow: '0 16px 40px rgba(0,0,0,0.5)',
+            borderRadius: 'var(--radius-lg)',
+            boxShadow: 'var(--shadow-popover)',
             zIndex: 500,
             display: 'flex', flexDirection: 'column',
             overflow: 'hidden',
@@ -3142,13 +3279,13 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
               {activeAssignment?.validation_flags && activeAssignment.validation_flags.length > 0 && (
                 <div style={{
                   marginBottom: 12, padding: 8, borderRadius: 9,
-                  background: 'rgba(239,68,68,0.06)',
-                  border: '1px solid rgba(239,68,68,0.28)',
+                  background: 'var(--danger-bg)',
+                  border: '1px solid color-mix(in srgb, var(--danger) 28%, transparent)',
                   maxHeight: 140, overflowY: 'auto',
                 }}>
                   <div style={{
                     fontSize: 10, fontWeight: 700, letterSpacing: 0.5,
-                    color: '#ef4444', textTransform: 'uppercase', marginBottom: 6,
+                    color: 'var(--danger)', textTransform: 'uppercase', marginBottom: 6,
                   }}>
                     Rule Violations ({activeAssignment.validation_flags.length})
                   </div>
@@ -3171,24 +3308,34 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
                   ))}
                 </div>
               )}
+              {/* Popover actions on .fr-btn-* rather than hand-rolled colour.
+                  None of these had a hover, a press or a focus ring, and the
+                  destructive one was #f87171 — the DARK-theme danger — sitting
+                  on a light popover at ~2.7:1. The classes hold background,
+                  colour and border in CSS, which is the ONLY arrangement in
+                  which their :hover can beat an inline style. So nothing below
+                  sets those three inline; `textAlign` and padding are layout
+                  and are safe to keep. */}
               <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                 <button
+                  className="fr-btn fr-btn-danger"
                   onClick={() => activeAssignment && removeAssignment(activeAssignment.id)}
                   style={{
-                    padding: '9px 12px', fontSize: 12.5, fontWeight: 700, border: '1px solid rgba(239,68,68,0.35)',
-                    borderRadius: 8, background: 'rgba(239,68,68,0.10)', color: '#f87171', cursor: 'pointer',
+                    padding: '9px 12px', fontSize: 12.5,
+                    borderRadius: 'var(--radius-md)', cursor: 'pointer',
                     textAlign: 'left',
                   }}
                 >
                   Remove Assignment
                 </button>
                 <button
+                  className="fr-btn fr-btn-secondary"
                   onClick={() => {
                     if (activeSlot) toggleLock(activeSlot.id, activeSlot.locked);
                   }}
                   style={{
-                    padding: '9px 12px', fontSize: 12.5, fontWeight: 700, border: '1px solid var(--border)',
-                    borderRadius: 8, background: 'transparent', color: 'var(--text-muted)', cursor: 'pointer',
+                    padding: '9px 12px', fontSize: 12.5,
+                    borderRadius: 'var(--radius-md)', cursor: 'pointer',
                     textAlign: 'left',
                   }}
                 >
@@ -3199,10 +3346,11 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
                     which surfaces through the action toast. */}
                 {activeSlot && isSegmentType(activeSlot.shift_types) && (
                   <button
+                    className="fr-btn fr-btn-secondary"
                     onClick={() => unsplitSlot(activeSlot.id)}
                     style={{
-                      padding: '9px 12px', fontSize: 12.5, fontWeight: 700, border: '1px solid var(--border)',
-                      borderRadius: 8, background: 'transparent', color: 'var(--text-muted)', cursor: 'pointer',
+                      padding: '9px 12px', fontSize: 12.5,
+                      borderRadius: 'var(--radius-md)', cursor: 'pointer',
                       textAlign: 'left',
                     }}
                   >
@@ -3223,10 +3371,10 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
                   <div style={{ padding: '10px 10px 0 10px' }}>
                     <button
                       onClick={() => unsplitSlot(activeSlot.id)}
+                      className="fr-btn fr-btn-secondary"
                       style={{
-                        width: '100%', padding: '8px 12px', fontSize: 12, fontWeight: 700,
-                        border: '1px solid var(--border)', borderRadius: 8,
-                        background: 'transparent', color: 'var(--text-muted)', cursor: 'pointer',
+                        width: '100%', padding: '8px 12px', fontSize: 12,
+                        borderRadius: 'var(--radius-md)', cursor: 'pointer',
                         textAlign: 'left',
                       }}
                     >
@@ -3238,10 +3386,10 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
                     <button
                       onClick={() => splitSlot(activeSlot.id, '2x12')}
                       title="Split this call into two 12-hour segments (07-19 and 19-07). Each segment counts 0.5 call."
+                      className="fr-btn fr-btn-secondary"
                       style={{
-                        flex: 1, padding: '8px 10px', fontSize: 12, fontWeight: 700,
-                        border: '1px solid var(--border)', borderRadius: 8,
-                        background: 'transparent', color: 'var(--text-muted)', cursor: 'pointer',
+                        flex: 1, padding: '8px 10px', fontSize: 12,
+                        borderRadius: 'var(--radius-md)', cursor: 'pointer',
                       }}
                     >
                       Split 2×12h
@@ -3249,10 +3397,10 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
                     <button
                       onClick={() => splitSlot(activeSlot.id, '3x8')}
                       title="Split this call into three 8-hour segments (07-15, 15-23, 23-07). Each segment counts one third of a call."
+                      className="fr-btn fr-btn-secondary"
                       style={{
-                        flex: 1, padding: '8px 10px', fontSize: 12, fontWeight: 700,
-                        border: '1px solid var(--border)', borderRadius: 8,
-                        background: 'transparent', color: 'var(--text-muted)', cursor: 'pointer',
+                        flex: 1, padding: '8px 10px', fontSize: 12,
+                        borderRadius: 'var(--radius-md)', cursor: 'pointer',
                       }}
                     >
                       Split 3×8h
@@ -3263,14 +3411,16 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
               <div style={{ padding: '10px 10px 6px 10px' }}>
                 <input
                   ref={searchInputRef}
+                  className="fr-field"
                   type="text"
                   placeholder="Search providers..."
                   value={pickerSearch}
                   onChange={e => setPickerSearch(e.target.value)}
                   style={{
-                    width: '100%', padding: '8px 11px', fontSize: 12.5, borderRadius: 8,
+                    width: '100%', padding: '8px 11px', fontSize: 12.5,
+                    borderRadius: 'var(--radius-md)',
                     border: '1px solid var(--border)', background: 'var(--bg-deep)',
-                    color: 'var(--text)', outline: 'none', boxSizing: 'border-box',
+                    color: 'var(--text)', boxSizing: 'border-box',
                   }}
                 />
               </div>
@@ -3282,8 +3432,8 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
                 {pickerGroups && pickerGroups.unchecked.length > 0 && (
                   <div style={{
                     margin: '0 10px 8px', padding: '7px 9px', borderRadius: 8,
-                    border: '1px solid rgba(251,191,36,0.35)', background: 'rgba(251,191,36,0.10)',
-                    fontSize: 10.5, lineHeight: 1.45, color: '#fcd34d',
+                    border: '1px solid color-mix(in srgb, var(--warn) 35%, transparent)', background: 'var(--warn-bg)',
+                    fontSize: 10.5, lineHeight: 1.45, color: 'var(--warn)',
                   }}>
                     {pickerGroups.unchecked.map(w => <div key={w}>{w}</div>)}
                   </div>
@@ -3310,7 +3460,7 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
                   <>
                     <PickerSectionLabel
                       text={`Flagged — still assignable (${pickerGroups.soft.length})`}
-                      tone="#fbbf24"
+                      tone="var(--warn)"
                     />
                     {pickerGroups.soft.map(c => (
                       <PickerRow key={c.provider.id} candidate={c} onPick={pickCandidate} />
@@ -3321,13 +3471,15 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
                 {pickerGroups && pickerGroups.blocked.length > 0 && (
                   <>
                     <button
+                      className="fr-btn fr-btn-secondary"
+                      aria-expanded={showBlockedCandidates}
                       onClick={() => setShowBlockedCandidates(v => !v)}
                       style={{
                         display: 'flex', alignItems: 'center', gap: 6, width: 'calc(100% - 20px)',
-                        margin: '8px 10px 2px', padding: '6px 8px', borderRadius: 8,
-                        border: '1px solid var(--border)', background: 'transparent',
-                        color: 'var(--text-dim)', fontSize: 10.5, fontWeight: 800,
-                        letterSpacing: 0.5, textTransform: 'uppercase', cursor: 'pointer',
+                        margin: '8px 10px 2px', padding: '6px 8px',
+                        borderRadius: 'var(--radius-md)',
+                        fontSize: 10.5, letterSpacing: 0.5,
+                        textTransform: 'uppercase', cursor: 'pointer',
                         textAlign: 'left',
                       }}
                     >
@@ -3458,7 +3610,8 @@ function PickerRow({
 }: { candidate: SlotCandidate; onPick: (c: SlotCandidate) => void }) {
   const { provider, group, reasonText, reasonTexts, release } = candidate;
   const dimmed = group === 'blocked';
-  const accent = group === 'blocked' ? '#f87171' : group === 'soft' ? '#fbbf24' : '#7dd3fc';
+  const accent = group === 'blocked' ? 'var(--danger)'
+    : group === 'soft' ? 'var(--warn)' : 'var(--blue)';
   return (
     <div
       onClick={() => onPick(candidate)}
@@ -3467,15 +3620,17 @@ function PickerRow({
       style={{
         display: 'flex', alignItems: 'center', gap: 10,
         padding: '8px', borderRadius: 8, cursor: 'pointer',
-        opacity: dimmed ? 0.62 : 1, transition: 'background 0.1s',
+        opacity: dimmed ? 0.62 : 1, transition: 'background var(--dur-instant) var(--ease-out)',
       }}
-      onMouseEnter={e => (e.currentTarget.style.background = 'rgba(56,189,248,0.10)')}
+      onMouseEnter={e => (e.currentTarget.style.background = 'var(--tint-surface)')}
       onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
     >
       <div style={{
         width: 28, height: 28, borderRadius: '50%', fontSize: 10.5, fontWeight: 800,
         display: 'flex', alignItems: 'center', justifyContent: 'center',
-        background: group === 'available' ? 'rgba(56,189,248,0.16)' : 'rgba(100,116,139,0.20)',
+        background: group === 'available'
+          ? 'color-mix(in srgb, var(--blue) 16%, transparent)'
+          : 'var(--tint-surface-strong)',
         color: accent, flexShrink: 0,
       }}>
         {provider.initials}
@@ -3501,7 +3656,7 @@ function PickerRow({
             above. Amber, because it is a consequence, not a reason. */}
         {release && (
           <div style={{
-            fontSize: 10.5, color: '#fbbf24', whiteSpace: 'nowrap',
+            fontSize: 10.5, color: 'var(--warn)', whiteSpace: 'nowrap',
             overflow: 'hidden', textOverflow: 'ellipsis',
           }}>
             {release.text}
@@ -3510,7 +3665,7 @@ function PickerRow({
       </div>
       <span style={{
         fontSize: 9, fontWeight: 800, padding: '2px 6px', borderRadius: 4,
-        background: 'rgba(100,116,139,0.22)', color: 'var(--text-dim)',
+        background: 'var(--tint-surface-strong)', color: 'var(--text-dim)',
         textTransform: 'uppercase', flexShrink: 0,
       }}>
         {provider.provider_type}
@@ -3557,13 +3712,13 @@ function renderVirtualRows({
         position: 'sticky', left: 0, zIndex: 2,
         background: gridTokens.chrome,
         borderLeft: `4px solid ${color}`,
-        borderBottom: '1px solid #1e3a5f',
-        borderRight: '1px solid #1e3a5f',
-        ...(zoneTop && isFirstRow ? { borderTop: '2px solid #33455f' } : {}),
+        borderBottom: '1px solid ' + gridTokens.chromeBorder,
+        borderRight: '1px solid ' + gridTokens.chromeBorder,
+        ...(zoneTop && isFirstRow ? { borderTop: '2px solid ' + GRID_INK.zoneRuleChrome } : {}),
         padding: '2px 8px', display: 'flex', alignItems: 'center',
         minHeight: 18,
       }}>
-        <div style={{ fontSize: 11.5, fontWeight: 700, color: '#e2e8f0', whiteSpace: 'nowrap' }}>
+        <div style={{ fontSize: 11.5, fontWeight: 700, color: gridTokens.chromeText, whiteSpace: 'nowrap' }}>
           {label}{count > 1 ? ` ${idx + 1}` : ''}
         </div>
       </div>
@@ -3595,8 +3750,8 @@ function renderVirtualRows({
           ...(isSellback ? { boxShadow: gridTokens.sellbackOutline } : {}),
           borderBottom: '1px solid ' + gridTokens.line,
           borderRight: '1px solid ' + gridTokens.line,
-          borderLeft: isToday ? '2px solid ' + gridTokens.accentStrong : isSatBorder ? '2px solid #1e3a5f' : 'none',
-          ...(zoneTop && isFirstRow ? { borderTop: '2px solid #cbd5e1' } : {}),
+          borderLeft: isToday ? '2px solid ' + gridTokens.accentStrong : isSatBorder ? '2px solid ' + gridTokens.chromeBorder : 'none',
+          ...(zoneTop && isFirstRow ? { borderTop: '2px solid ' + GRID_INK.zoneRuleBody } : {}),
           padding: '1px 3px',
           minHeight: 18,
           display: 'flex', alignItems: 'center', justifyContent: 'center',

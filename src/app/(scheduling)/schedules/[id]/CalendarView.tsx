@@ -22,6 +22,37 @@ import {
   DAYS_SHORT, parseDate, getDayOfWeek, colorWithAlpha, type Holiday,
 } from './gridShared';
 
+/* ── Grid ink (theme-invariant) ──────────────────────────────────────────────
+ * The calendar draws on the SAME two surfaces the month grid does, and neither
+ * follows the app theme: gridTokens.chrome is #1e293b and gridTokens.bodyCell
+ * is #ffffff in BOTH light and dark (gridTheme.ts owns that decision). So ink
+ * drawn here cannot come from --warn / --blue / --danger: those flip with the
+ * theme and would land deep-amber-on-near-black one way, or pale-amber-on-white
+ * the other. The values below are the ones gridTheme does not already name,
+ * stated once rather than inline, and chosen to clear AA on the surface each
+ * one actually sits on. Mirrors the identical block in page.tsx — the two grids
+ * share a vocabulary but not a module (gridTheme.ts is frozen). */
+const GRID_INK = {
+  /** Weekend day-of-week label on chrome — deliberately a step brighter than
+   *  gridTokens.chromeMuted so Sat/Sun read first in the header. */
+  weekendChrome: '#cbd5e1',
+  /** Holiday ink on the pale holiday wash (gridTokens.bodyHoliday, amber at
+   *  0.22 over white). The amber itself is ~1.6:1 there and unreadable; this
+   *  deep amber is ~6:1. Same value as the light-theme --warn, fixed here
+   *  because the cell under it never goes dark. */
+  holiday: '#b45309',
+  /** Over-obligation name on the over-par wash — the deeper red the month
+   *  grid's OVER tag uses, rather than the wash's own #ef4444 (~3.3:1 at this
+   *  text size). */
+  over: '#b91c1c',
+  /** The grid's sky accent, in the deep form a white body cell needs.
+   *  gridTokens.accentStrong is ~2.9:1 on gridTokens.bodyCell, which is fine
+   *  for a 2px outline and not fine for 9–12px text; this is ~6.4:1 and is the
+   *  same deep blue the month grid's EXTRA tag uses. Carries the today marker
+   *  and the head-count chip. */
+  accentOnBody: '#0369a1',
+} as const;
+
 /* ── Calendar (month grid) View ──────────────────────────────────────────── */
 
 interface CalendarWorker {
@@ -110,39 +141,21 @@ export function CalendarView({
       border: '1px solid var(--border)',
       background: 'var(--bg-surface)', display: 'flex', flexDirection: 'column',
     }}>
-      {/* Month nav bar */}
+      {/* Month nav bar. Grid CHROME, not a themed surface — it sits directly on
+          top of the weekday header below, which is gridTokens.chrome, and the
+          two used to be a shade apart for no reason. Everything in it therefore
+          takes chrome tokens: the text used to be var(--text-muted), which is
+          #475569 in the light theme and effectively invisible on this bar. */}
       <div style={{
         display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-        padding: '10px 16px', borderBottom: '1px solid var(--border)',
-        background: '#0d1b30', color: '#e2e8f0',
+        padding: '10px 16px', borderBottom: '1px solid ' + gridTokens.chromeBorder,
+        background: gridTokens.chrome, color: gridTokens.chromeText,
       }}>
-        <button
-          onClick={onPrevMonth}
-          disabled={!hasPrev}
-          style={{
-            width: 30, height: 30, borderRadius: 8, border: '1px solid var(--border)',
-            background: 'transparent', color: hasPrev ? 'var(--text-muted)' : '#334155',
-            cursor: hasPrev ? 'pointer' : 'not-allowed',
-            fontSize: 14, display: 'flex', alignItems: 'center', justifyContent: 'center',
-          }}
-        >
-          &#8592;
-        </button>
+        <MonthNavButton onClick={onPrevMonth} enabled={hasPrev} label="Previous month" glyph={'←'} />
         <div style={{ fontSize: 16, fontWeight: 800, letterSpacing: '0.02em' }}>
           {monthName} {year}
         </div>
-        <button
-          onClick={onNextMonth}
-          disabled={!hasNext}
-          style={{
-            width: 30, height: 30, borderRadius: 8, border: '1px solid var(--border)',
-            background: 'transparent', color: hasNext ? 'var(--text-muted)' : '#334155',
-            cursor: hasNext ? 'pointer' : 'not-allowed',
-            fontSize: 14, display: 'flex', alignItems: 'center', justifyContent: 'center',
-          }}
-        >
-          &#8594;
-        </button>
+        <MonthNavButton onClick={onNextMonth} enabled={hasNext} label="Next month" glyph={'→'} />
       </div>
 
       {/* Weekday header */}
@@ -155,7 +168,7 @@ export function CalendarView({
           return (
             <div key={d} style={{
               padding: '8px 4px', textAlign: 'center', fontSize: 11, fontWeight: 700,
-              color: isWeekend ? '#cbd5e1' : gridTokens.chromeMuted,
+              color: isWeekend ? GRID_INK.weekendChrome : gridTokens.chromeMuted,
               textTransform: 'uppercase', letterSpacing: '0.05em',
               borderRight: i < 6 ? '1px solid ' + gridTokens.chromeBorder : 'none',
             }}>
@@ -193,8 +206,11 @@ export function CalendarView({
           return (
             <div key={date} style={{
               padding: 6,
-              borderRight: '1px solid var(--border)',
-              borderBottom: '1px solid var(--border)',
+              // gridTokens.line — the month grid's own hairline. var(--border)
+              // is #1e3a5f in the dark theme, which drew a navy lattice across
+              // cells that are white whatever the theme is.
+              borderRight: '1px solid ' + gridTokens.line,
+              borderBottom: '1px solid ' + gridTokens.line,
               background: cellBg,
               opacity: !cell.inMonth ? 0.4 : !cell.inSchedule ? 0.55 : 1,
               display: 'flex', flexDirection: 'column', gap: 4,
@@ -206,14 +222,17 @@ export function CalendarView({
               <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 4 }}>
                 <div style={{ display: 'flex', flexDirection: 'column' }}>
                   <span style={{
-                    fontSize: 12.5, fontWeight: 700,
-                    color: isToday ? '#0ea5e9' : holiday ? '#fbbf24' : 'var(--text)',
+                    fontSize: 12.5, fontWeight: 700, fontVariantNumeric: 'tabular-nums',
+                    // gridTokens.name, not var(--text): the cell under it is
+                    // gridTokens.bodyCell (#ffffff) in both themes, so the
+                    // dark-theme --text (#e2e8f0) would be white-on-white.
+                    color: isToday ? GRID_INK.accentOnBody : holiday ? GRID_INK.holiday : gridTokens.name,
                   }}>
                     {dayNum}
                   </span>
                   {holiday && (
                     <span style={{
-                      fontSize: 9, color: '#fbbf24', fontWeight: 500,
+                      fontSize: 9, color: GRID_INK.holiday, fontWeight: 600,
                       whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
                       maxWidth: 120,
                     }} title={holiday.holiday_name}>
@@ -225,18 +244,22 @@ export function CalendarView({
                   <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 1 }}>
                     <span title="MDs working (weekday C1 excluded)" style={{
                       fontSize: 10, fontWeight: 800,
-                      color: '#0ea5e9',
-                      background: 'rgba(14,165,233,0.12)',
+                      color: GRID_INK.accentOnBody,
+                      background: colorWithAlpha(GRID_INK.accentOnBody, 0.1),
                       padding: '1px 6px', borderRadius: 999,
                       fontFamily: 'var(--font-mono), ui-monospace, monospace',
+                      fontVariantNumeric: 'tabular-nums',
                     }}>
                       {mdCount} MD
                     </span>
                     {crnaCount > 0 && (
                       <span title="CRNAs working" style={{
                         fontSize: 9, fontWeight: 700,
-                        color: '#94a3b8',
+                        // statusName, not chromeMuted: this sits on a white
+                        // body cell, where #94a3b8 is ~2.5:1.
+                        color: gridTokens.statusName,
                         fontFamily: 'var(--font-mono), ui-monospace, monospace',
+                        fontVariantNumeric: 'tabular-nums',
                       }}>
                         {crnaCount} CRNA
                       </span>
@@ -270,7 +293,9 @@ export function CalendarView({
                         style={{
                           display: 'flex', alignItems: 'center', gap: 4,
                           fontSize: 10, lineHeight: 1.25,
-                          color: 'var(--text)',
+                          // gridTokens.name, not var(--text) — see the day
+                          // number above: these cells are white in both themes.
+                          color: gridTokens.name,
                           whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
                           background: marked
                             ? gridTokens.manualHighlight[marked]
@@ -293,7 +318,7 @@ export function CalendarView({
                         <span style={{
                           fontWeight: w.providerType === 'physician' ? 600 : 500,
                           overflow: 'hidden', textOverflow: 'ellipsis',
-                          color: isOverPar ? '#ef4444' : 'var(--text)',
+                          color: isOverPar ? GRID_INK.over : gridTokens.name,
                         }}>
                           {display}
                         </span>
@@ -307,6 +332,48 @@ export function CalendarView({
         })}
       </div>
     </div>
+  );
+}
+
+/* Month prev/next. Its own component because the affordance is three states —
+ * rest, hover, press — and a bare <button> with an inline `background` cannot
+ * express any of them from CSS: an inline background outranks a class :hover,
+ * so a .fr-btn rule here would be dead on arrival. Hover and press are
+ * therefore applied inline too, which is the one arrangement that works.
+ * The keyboard ring is NOT handled here — this renders inside the page's
+ * .schedule-builder-page scope, which already carries a :focus-visible rule. */
+function MonthNavButton({
+  onClick, enabled, label, glyph,
+}: { onClick: () => void; enabled: boolean; label: string; glyph: string }) {
+  const rest = 'transparent';
+  const hover = 'rgba(255,255,255,0.08)';   // chrome is dark in both themes
+  const press = 'rgba(255,255,255,0.14)';
+  return (
+    <button
+      onClick={onClick}
+      disabled={!enabled}
+      aria-label={label}
+      title={enabled ? label : 'No further months in this schedule'}
+      style={{
+        width: 30, height: 30, borderRadius: 'var(--radius-sm)',
+        border: '1px solid ' + gridTokens.chromeBorder,
+        background: rest, color: gridTokens.chromeText,
+        opacity: enabled ? 1 : 0.35,
+        cursor: enabled ? 'pointer' : 'not-allowed',
+        fontSize: 14, display: 'flex', alignItems: 'center', justifyContent: 'center',
+        transition: 'background var(--dur-fast) var(--ease-out),'
+          + ' transform var(--dur-instant) var(--ease-out)',
+      }}
+      onMouseEnter={e => { if (enabled) e.currentTarget.style.background = hover; }}
+      onMouseLeave={e => {
+        e.currentTarget.style.background = rest;
+        e.currentTarget.style.transform = 'none';
+      }}
+      onMouseDown={e => { if (enabled) { e.currentTarget.style.background = press; e.currentTarget.style.transform = 'translateY(1px)'; } }}
+      onMouseUp={e => { if (enabled) { e.currentTarget.style.background = hover; e.currentTarget.style.transform = 'none'; } }}
+    >
+      {glyph}
+    </button>
   );
 }
 

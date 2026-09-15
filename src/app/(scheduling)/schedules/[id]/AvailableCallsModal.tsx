@@ -13,6 +13,7 @@
 
 import { useState } from 'react';
 import { gridTokens } from './gridTheme';
+import { Button } from '@/components/ui';
 import { bucketSummaryText, formatAvailableCallText } from '@/lib/availableCalls';
 // Type-only: the list itself is built by the page and handed down as a prop;
 // this module never calls the builder, it only names its return shape.
@@ -75,17 +76,25 @@ export function AvailableCallsModal({
       className="fr-print-overlay"
       onClick={onClose}
       style={{
-        position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.75)',
-        zIndex: 800, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20,
+        position: 'fixed', inset: 0, background: 'var(--bg-modal-backdrop)',
+        zIndex: 800, display: 'flex', alignItems: 'center', justifyContent: 'center',
+        padding: 'var(--space-5)', animation: 'fr-backdrop-in var(--dur-fast) var(--ease-out)',
       }}
     >
       <div
+        // Deliberately NOT .modal-box: its fade-up keyframe animates
+        // `transform`, and a transformed element is a containing block — the
+        // exact thing the print rules below spend a paragraph neutralising so
+        // the list paginates. The backdrop fades (opacity only); the panel does
+        // not move.
         className="fr-print-panel"
         onClick={e => e.stopPropagation()}
         style={{
-          background: 'var(--bg-deep)', borderRadius: 12, border: '1px solid var(--border)',
-          boxShadow: '0 24px 60px rgba(0,0,0,0.5)',
-          padding: 20, maxWidth: '95vw', maxHeight: '90vh', overflow: 'auto', minWidth: 560,
+          background: 'var(--bg-deep)', borderRadius: 'var(--radius-lg)',
+          border: '1px solid var(--border)',
+          boxShadow: 'var(--shadow-modal)',
+          padding: 'var(--space-5)', maxWidth: '95vw', maxHeight: '90vh',
+          overflow: 'auto', minWidth: 560,
         }}
       >
         {/* Scoped print stylesheet — the Call Counts pattern (everything
@@ -93,6 +102,11 @@ export function AvailableCallsModal({
             black on white because browsers drop background colour when
             printing). PORTRAIT: this is a four-column list, not a wide table,
             and it is meant to be handed round on paper. */}
+        {/* EVERY COLOUR BELOW IS A PAPER COLOUR AND STAYS A LITERAL. A print
+            sheet must not depend on the viewer's theme: --text resolves to
+            #e2e8f0 for anyone in dark mode, which prints as near-white on
+            white. #fff / #000 / #666 are stated outright so the sheet is the
+            same document whichever theme produced it. */}
         <style>{`
           @media print {
             @page { size: portrait; margin: 0.5in; }
@@ -163,30 +177,36 @@ export function AvailableCallsModal({
                 </>
               )}
             </div>
-            <div className="no-print" style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
+            {/* Kit buttons rather than three hand-rolled ones. These had no
+                hover, no press and no keyboard ring, and the Print button was
+                a #0ea5e9→#6366f1 gradient — the DARK-theme blue, in an app
+                that defaults to light. .fr-btn-* keeps each variant's colour in
+                CSS, which is the only arrangement in which its :hover can win. */}
+            <div className="no-print" style={{ display: 'flex', gap: 'var(--space-2)', flexShrink: 0 }}>
               {list.total > 0 && (
-                <button onClick={handleCopy} style={{
-                  padding: '7px 15px', fontSize: 12.5, fontWeight: 700, borderRadius: 8, cursor: 'pointer',
-                  background: 'transparent', border: '1px solid var(--border)', color: 'var(--text-muted)',
-                }}>{copied ? 'Copied ✓' : 'Copy'}</button>
+                <Button variant="secondary" size="sm" onClick={handleCopy}
+                  style={{ padding: '7px 15px' }}>
+                  {copied ? 'Copied ✓' : 'Copy'}
+                </Button>
               )}
               {list.total > 0 && (
-                <button onClick={() => window.print()} style={{
-                  padding: '7px 16px', fontSize: 12.5, fontWeight: 700, border: 'none', borderRadius: 8, cursor: 'pointer',
-                  background: 'linear-gradient(135deg,#0ea5e9,#6366f1)', color: '#fff', boxShadow: '0 4px 14px rgba(56,130,246,0.35)',
-                }}>Print / Save PDF</button>
+                <Button size="sm" onClick={() => window.print()}
+                  style={{ padding: '7px 16px' }}>
+                  Print / Save PDF
+                </Button>
               )}
-              <button onClick={onClose} style={{
-                padding: '7px 15px', fontSize: 12.5, fontWeight: 700, borderRadius: 8, cursor: 'pointer',
-                background: 'transparent', border: '1px solid var(--border)', color: 'var(--text-muted)',
-              }}>Close</button>
+              <Button variant="secondary" size="sm" onClick={onClose}
+                style={{ padding: '7px 15px' }}>
+                Close
+              </Button>
             </div>
           </div>
 
           {list.total === 0 ? (
             <div style={{
               padding: '22px 16px', textAlign: 'center', fontSize: 13, fontWeight: 600,
-              color: 'var(--text-dim)', border: '1px dashed var(--border)', borderRadius: 8,
+              color: 'var(--text-dim)', border: '1px dashed var(--border)',
+              borderRadius: 'var(--radius-md)',
             }}>
               No unfilled call slots — every call in this block is covered.
             </div>
@@ -216,7 +236,10 @@ export function AvailableCallsModal({
                 <table style={{ borderCollapse: 'collapse', width: '100%', fontSize: 12.5 }}>
                   <tbody>
                     {cluster.rows.map(row => (
-                      <tr key={row.slotId}>
+                      // .fr-row = the kit's quiet body-row hover. It works here
+                      // only because the <tr> sets no inline background: a
+                      // class :hover cannot beat an inline background.
+                      <tr key={row.slotId} className="fr-row">
                         <td style={{ padding: '3px 8px 3px 0', width: 34, fontWeight: 700, color: 'var(--text-muted)' }}>
                           {row.dayName}
                         </td>
@@ -229,7 +252,7 @@ export function AvailableCallsModal({
                         <td style={{ padding: '3px 0', color: 'var(--text-dim)' }}>
                           {row.name}
                           {row.holidayName && (
-                            <span style={{ marginLeft: 6, fontWeight: 700, color: '#b45309' }}>
+                            <span style={{ marginLeft: 6, fontWeight: 700, color: 'var(--warn)' }}>
                               ({row.holidayName})
                             </span>
                           )}

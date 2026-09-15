@@ -35,6 +35,25 @@ import {
  * is hidden for print.
  *
  * Layout rationale lives in lib/printableSchedule.ts.
+ *
+ * ── WHY THERE ARE NO DESIGN TOKENS IN THIS FILE ────────────────────────────
+ * Everything here paints PAPER, and paper has no theme. A CSS custom property
+ * resolves against whatever the viewer's document is set to, so `--text` on a
+ * sheet printed by someone in dark mode is #e2e8f0 — near-white ink on white
+ * stock — and `--warn` would swing between #b45309 and #fbbf24 depending on a
+ * preference that has nothing to do with the printer. The literals below
+ * (#fff, #000, the #eee/#f6f6f6/#f2f2f2 shading ramp, #999/#666/#444 rules and
+ * captions, #b91c1c on #fdecec for OVER/EXTRA/open) are therefore stated
+ * outright, and are the same document whichever theme produced them.
+ *
+ * They are also chosen to survive a MONOCHROME printer: the shading ramp is
+ * three distinct greys, and every red carries its meaning in weight and style
+ * (bold, italic for `open`) as well as hue — see the .extra/.open note below,
+ * which already treats the fill as a bonus rather than the signal.
+ *
+ * The only colours that are not literals come from gridTokens (the manual
+ * billing marks and the Off/ICU/PTO category accents). Those are plain values
+ * in a frozen module, not custom properties, so they are theme-invariant too.
  */
 export function PrintableSchedule({
   grid, slotMap, shiftTypes, allDates, holidayMap, observanceByDate,

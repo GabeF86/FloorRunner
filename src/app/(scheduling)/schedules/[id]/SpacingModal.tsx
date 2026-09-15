@@ -52,7 +52,7 @@ export function SpacingModal({
     <div
       onClick={onClose}
       style={{
-        position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.75)', zIndex: 800,
+        position: 'fixed', inset: 0, background: 'var(--bg-modal-backdrop)', zIndex: 800,
         display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20,
       }}
     >
@@ -60,7 +60,7 @@ export function SpacingModal({
         onClick={e => e.stopPropagation()}
         style={{
           background: 'var(--bg-deep)', borderRadius: 12, border: '1px solid var(--border)',
-          boxShadow: '0 24px 60px rgba(0,0,0,0.5)', padding: 20,
+          boxShadow: 'var(--shadow-modal)', padding: 20,
           maxWidth: 780, width: '100%', maxHeight: '85vh', overflow: 'auto',
         }}
       >
@@ -98,7 +98,10 @@ export function SpacingModal({
             onChange={e => setMaxGap(Number(e.target.value))}
             style={{
               padding: '4px 8px', borderRadius: 6, fontWeight: 700,
-              background: 'var(--bg)', color: 'var(--text)', border: '1px solid var(--border)',
+              // --bg is not a token (the app defines --bg-base / --bg-surface); this
+              // select was painting transparent. It sits on the modal's --bg-deep
+              // body, so --bg-surface is what reads as a raised control.
+              background: 'var(--bg-surface)', color: 'var(--text)', border: '1px solid var(--border)',
             }}
           >
             {[2, 3, 4, 5, 6, 7].map(n => <option key={n} value={n}>{n} days</option>)}

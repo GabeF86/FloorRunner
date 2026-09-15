@@ -41,7 +41,8 @@ import {
   type PanelRow, type PoolMember,
 } from '@/lib/blockTargetsPanel';
 import { BlockTargetsTab } from './BlockTargetsTab';
-import { smallBtn, type Provider, type EmploymentProfile } from './gridShared';
+import { Button } from '@/components/ui';
+import { type Provider, type EmploymentProfile } from './gridShared';
 
 /* ── Pool Selector Modal ─────────────────────────────────────────────────────
  * Lets the user hand-pick which providers are eligible for auto-generation
@@ -501,16 +502,19 @@ export function PoolSelectorModal({
     <div
       onClick={onClose}
       style={{
-        position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.75)',
+        position: 'fixed', inset: 0, background: 'var(--bg-modal-backdrop)',
         display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 200,
+        animation: 'fr-backdrop-in var(--dur-fast) var(--ease-out)',
       }}
     >
       <div
+        className="modal-box"
         onClick={e => e.stopPropagation()}
         style={{
-          background: 'var(--bg-surface)', border: '1px solid var(--border)', borderRadius: 12,
-          boxShadow: '0 24px 60px rgba(0,0,0,0.5)',
-          padding: 24,
+          background: 'var(--bg-surface)', border: '1px solid var(--border)',
+          borderRadius: 'var(--radius-lg)',
+          boxShadow: 'var(--shadow-modal)',
+          padding: 'var(--space-6)',
           // The targets grid carries up to nine numeric columns plus a name —
           // it cannot be read at the 560 the other two tabs use.
           width: tab === 'targets' ? 'min(940px, 96vw)' : 560,
@@ -534,16 +538,30 @@ export function PoolSelectorModal({
             expected call counts + working days / days off for this block) |
             Block Targets (per-provider, per-bucket call targets → the engine's
             scenario manifest). */}
+        {/* Tab strip. .fr-seg is the system's "row of buttons, one of them on":
+            it holds the UNSELECTED look (transparent ground, muted text) in
+            CSS, which is the only place a :hover can live — an inline
+            `background: transparent` here would silently outrank the class and
+            these tabs would have no hover at all, which is what they had.
+            So the selected tab paints inline (and correctly keeps hover off
+            itself) and the unselected ones say nothing and inherit. The
+            `border: none` + `borderBottom` pair below still beats .fr-seg's
+            border, which is intended — the underline IS the affordance. */}
         <div style={{ display: 'flex', gap: 4, marginTop: 8, borderBottom: '1px solid var(--border)' }}>
           {(['pool', 'limits', 'targets'] as const).map(t => (
             <button
               key={t}
+              className="fr-seg"
               onClick={() => setTab(t)}
+              aria-pressed={tab === t}
               style={{
-                padding: '7px 14px', fontSize: 12.5, fontWeight: 700, cursor: 'pointer',
-                background: 'transparent', border: 'none',
-                borderBottom: tab === t ? '2px solid #0ea5e9' : '2px solid transparent',
-                color: tab === t ? 'var(--text-strong)' : 'var(--text-muted)',
+                padding: '7px 14px', fontSize: 'var(--fs-sm)', fontWeight: 700,
+                borderRadius: 'var(--radius-sm) var(--radius-sm) 0 0',
+                border: 'none',
+                borderBottom: tab === t ? '2px solid var(--blue)' : '2px solid transparent',
+                ...(tab === t
+                  ? { background: 'var(--tint-surface-faint)', color: 'var(--text-strong)' }
+                  : null),
               }}
             >
               {t === 'pool' ? 'Pool' : t === 'limits' ? 'Limits' : 'Block Targets'}
@@ -552,7 +570,7 @@ export function PoolSelectorModal({
                   title="Unsaved block-target changes"
                   style={{
                     display: 'inline-block', width: 6, height: 6, borderRadius: 999,
-                    background: '#0ea5e9', marginLeft: 6, verticalAlign: 'middle',
+                    background: 'var(--blue)', marginLeft: 6, verticalAlign: 'middle',
                   }}
                 />
               )}
@@ -562,8 +580,10 @@ export function PoolSelectorModal({
 
         {tab === 'pool' && (
           <div style={{ display: 'flex', gap: 6, margin: '10px 0 12px' }}>
-            <button onClick={resetToDefault} style={smallBtn}>Reset to Default</button>
-            <button onClick={clearAll} style={smallBtn}>Clear All</button>
+            <Button variant="secondary" size="sm" onClick={resetToDefault}
+              style={{ padding: '7px 15px', fontWeight: 700 }}>Reset to Default</Button>
+            <Button variant="secondary" size="sm" onClick={clearAll}
+              style={{ padding: '7px 15px', fontWeight: 700 }}>Clear All</Button>
           </div>
         )}
         {tab === 'limits' && (
@@ -584,9 +604,11 @@ export function PoolSelectorModal({
         )}
 
         {error && (
-          <div style={{
-            background: 'rgba(248,113,113,0.1)', border: '1px solid rgba(248,113,113,0.3)',
-            color: '#f87171', padding: '8px 12px', borderRadius: 8, marginBottom: 10, fontSize: 12,
+          <div role="alert" style={{
+            background: 'var(--danger-bg)',
+            border: '1px solid color-mix(in srgb, var(--danger) 35%, transparent)',
+            color: 'var(--danger)', padding: '8px 12px', borderRadius: 'var(--radius-md)',
+            marginBottom: 10, fontSize: 12,
           }}>{error}</div>
         )}
 
@@ -608,7 +630,7 @@ export function PoolSelectorModal({
                   <div
                     style={{
                       display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-                      padding: '8px 12px', background: 'rgba(14,165,233,0.04)',
+                      padding: '8px 12px', background: 'var(--tint-surface-faint)',
                       borderBottom: '1px solid var(--border)',
                     }}
                   >
@@ -618,13 +640,13 @@ export function PoolSelectorModal({
                         checked={allSelected}
                         ref={el => { if (el) el.indeterminate = someSelected; }}
                         onChange={() => toggleGroup(groupIds)}
-                        style={{ accentColor: '#0ea5e9', width: 15, height: 15 }}
+                        style={{ accentColor: 'var(--blue)', width: 15, height: 15, cursor: 'pointer' }}
                       />
                       <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>{group.siteName}</span>
                       {group.siteId === scheduleSiteId && (
                         <span style={{
-                          fontSize: 10, fontWeight: 700, color: '#10b981',
-                          background: 'rgba(16,185,129,0.12)',
+                          fontSize: 10, fontWeight: 700, color: 'var(--ok)',
+                          background: 'var(--ok-bg)',
                           padding: '1px 6px', borderRadius: 4, letterSpacing: 0.5,
                         }}>
                           THIS SITE
@@ -640,26 +662,37 @@ export function PoolSelectorModal({
                     const callLabel = prof?.call_taker ? 'Call'
                       : prof?.partial_call_taker ? 'Partial'
                       : 'Day Doc';
-                    const callColor = prof?.call_taker ? '#10b981'
-                      : prof?.partial_call_taker ? '#fbbf24'
-                      : '#94a3b8';
+                    // Role tone, from the status scale rather than three loose
+                    // hexes. Day Doc was #94a3b8, which is ~2.5:1 on this
+                    // surface; --text-dim is the same neutral at ~4.8:1.
+                    const callColor = prof?.call_taker ? 'var(--ok)'
+                      : prof?.partial_call_taker ? 'var(--warn)'
+                      : 'var(--text-dim)';
                     return (
-                      <label key={p.id} style={{
+                      // .fr-row: a roster of ~85 names is read down, and the
+                      // whole label is the hit target. No inline background
+                      // here, which is what lets the class :hover win.
+                      <label key={p.id} className="fr-row" style={{
                         display: 'flex', alignItems: 'center', gap: 10,
-                        padding: '8px 12px 8px 34px', cursor: 'pointer', borderRadius: 8,
+                        padding: '8px 12px 8px 34px', cursor: 'pointer',
+                        transition: 'background var(--dur-fast) var(--ease-out)',
                       }}>
                         <input
                           type="checkbox"
                           checked={checked.has(p.id)}
                           onChange={() => toggle(p.id)}
-                          style={{ accentColor: '#0ea5e9', width: 14, height: 14 }}
+                          style={{ accentColor: 'var(--blue)', width: 14, height: 14, cursor: 'pointer' }}
                         />
                         <span style={{ fontSize: 13, color: 'var(--text)', flex: 1 }}>
                           {p.first_name} {p.last_name}
                         </span>
                         <span style={{
                           fontSize: 10, fontWeight: 700, color: callColor,
-                          background: `${callColor}15`, padding: '1px 6px', borderRadius: 4,
+                          // color-mix, NOT `${callColor}15`: that trick only
+                          // works on a literal hex, and would emit the
+                          // uninterpretable `var(--ok)15` now these are tokens.
+                          background: `color-mix(in srgb, ${callColor} 12%, transparent)`,
+                          padding: '1px 6px', borderRadius: 4,
                           letterSpacing: 0.5, whiteSpace: 'nowrap',
                         }}>
                           {callLabel}
@@ -683,7 +716,7 @@ export function PoolSelectorModal({
           {limitsState === 'loading' ? (
             <div style={{ padding: 20, color: 'var(--text-dim)', fontSize: 13 }}>Loading limits...</div>
           ) : limitsState === 'failed' ? (
-            <div style={{ padding: 20, color: '#f87171', fontSize: 13 }}>
+            <div role="alert" style={{ padding: 20, color: 'var(--danger)', fontSize: 13 }}>
               Could not load the stored limits — saving will leave them untouched.
               Close and reopen to retry.
             </div>
@@ -717,7 +750,7 @@ export function PoolSelectorModal({
                     {inert && (
                       <span style={{
                         fontSize: 9, fontWeight: 800, marginLeft: 6, padding: '1px 5px',
-                        borderRadius: 4, background: 'rgba(100,116,139,0.22)', color: 'var(--text-dim)',
+                        borderRadius: 4, background: 'var(--tint-surface-strong)', color: 'var(--text-dim)',
                         textTransform: 'uppercase', letterSpacing: 0.5,
                       }}>not in pool</span>
                     )}
@@ -732,19 +765,25 @@ export function PoolSelectorModal({
                     return (
                       <input
                         key={field}
+                        // .fr-field = the system's input hover + keyboard ring.
+                        // It beats the inline `border` shorthand below with
+                        // !important, which is exactly why that class exists.
+                        className="fr-field"
                         type="text"
                         inputMode="numeric"
                         value={fields[field]}
                         placeholder="—"
                         disabled={inert || exclusiveOff}
+                        aria-invalid={invalid || undefined}
                         onChange={e => setLimitField(p.id, field, e.target.value)}
                         title={exclusiveOff ? 'Working Days and Days Off are mutually exclusive' : undefined}
                         style={{
                           width: '100%', padding: '4px 6px', fontSize: 12.5, textAlign: 'center',
-                          borderRadius: 6,
-                          border: invalid ? '1px solid #f87171' : '1px solid var(--border)',
-                          background: (inert || exclusiveOff) ? 'rgba(100,116,139,0.10)' : 'var(--bg-surface)',
-                          color: invalid ? '#f87171' : 'var(--text)',
+                          borderRadius: 'var(--radius-sm)',
+                          fontVariantNumeric: 'tabular-nums',
+                          border: invalid ? '1px solid var(--danger)' : '1px solid var(--border)',
+                          background: (inert || exclusiveOff) ? 'var(--tint-surface)' : 'var(--bg-surface)',
+                          color: invalid ? 'var(--danger)' : 'var(--text)',
                         }}
                       />
                     );
@@ -757,7 +796,9 @@ export function PoolSelectorModal({
                 <div style={{
                   display: 'grid', gridTemplateColumns: '1fr repeat(5, 74px)', gap: 6,
                   padding: '7px 12px', borderBottom: '1px solid var(--border)',
-                  background: 'rgba(14,165,233,0.04)', position: 'sticky', top: 0,
+                  // Sticky over a scrolling list, so it needs an OPAQUE ground,
+                  // not a 4%-alpha tint the rows scroll through.
+                  background: 'var(--bg-deep)', position: 'sticky', top: 0, zIndex: 1,
                 }}>
                   <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-muted)' }}>Provider</span>
                   {COLS.map(c => (
@@ -809,42 +850,44 @@ export function PoolSelectorModal({
         )}
 
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 14, gap: 8 }}>
-          <button
+          {/* Kit buttons throughout. The three neutral ones used gridShared's
+              `smallBtn`, which sets background/colour/border INLINE — so they
+              could never have had a hover, because an inline background
+              outranks any class rule. .fr-btn-secondary keeps those three
+              properties in CSS, which is what makes hover, :active and the
+              focus ring possible at all. The Save button was a
+              #0ea5e9→#6366f1 gradient: the DARK-theme blue on a light-default
+              screen, plus a glow in a blue (#3882f6) that is in no palette. */}
+          <Button
+            variant="secondary"
+            size="sm"
             onClick={() => save(true)}
             disabled={saving || hasInvalidLimit || targetsBlocked}
-            style={{
-              ...smallBtn,
-              opacity: (saving || hasInvalidLimit || targetsBlocked) ? 0.5 : 1,
-              cursor: (saving || hasInvalidLimit || targetsBlocked) ? 'not-allowed' : 'pointer',
-            }}
+            style={{ padding: '7px 15px', fontWeight: 700 }}
             title="Revert to the default rule-based pool (home-site call-takers / day docs). Limits are kept."
           >
             Use Default Pool
-          </button>
+          </Button>
           <div style={{ display: 'flex', gap: 8 }}>
-            <button onClick={onClose} style={smallBtn}>
+            <Button variant="secondary" size="sm" onClick={onClose}
+              style={{ padding: '7px 15px', fontWeight: 700 }}>
               Cancel
-            </button>
-            <button
+            </Button>
+            <Button
+              size="sm"
               onClick={() => save(false)}
               disabled={saving || totalSelected === 0 || hasInvalidLimit || targetsBlocked}
               title={
                 hasInvalidLimit ? 'Fix the highlighted limit values (whole numbers ≥ 0)'
                 : targetPlan.blocked ?? undefined}
-              style={{
-                padding: '7px 16px', fontSize: 12.5, fontWeight: 700, border: 'none', borderRadius: 8,
-                background: 'linear-gradient(135deg,#0ea5e9,#6366f1)',
-                color: '#fff', boxShadow: '0 4px 14px rgba(56,130,246,0.35)',
-                opacity: (saving || totalSelected === 0 || hasInvalidLimit || targetsBlocked) ? 0.5 : 1,
-                cursor: (saving || totalSelected === 0 || hasInvalidLimit || targetsBlocked) ? 'not-allowed' : 'pointer',
-              }}
+              style={{ padding: '7px 16px', fontWeight: 700 }}
             >
               {saving
                 ? 'Saving...'
                 : wantsTargetWrite
                   ? `Save Pool + Targets (${totalSelected})`
                   : `Save Pool (${totalSelected})`}
-            </button>
+            </Button>
           </div>
         </div>
       </div>

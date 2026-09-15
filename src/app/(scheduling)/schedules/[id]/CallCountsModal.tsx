@@ -19,6 +19,7 @@
  * ───────────────────────────────────────────────────────────────────────── */
 
 import { gridTokens } from './gridTheme';
+import { Button } from '@/components/ui';
 import { fteWeightedTarget } from '@/lib/fteTarget';
 // Day-math for the Call Counts modal (bucket day counts, Days Off, Working
 // Days) — pure helpers assembling the single-homed workDays/plannerMath
@@ -127,8 +128,14 @@ export function CallCountsModal(
   // bucket, and the Sun group is followed by a neuro column bucketed saturday.
   const isGroupStart = (i: number) =>
     i === 0 || columns[i].groupKey !== columns[i - 1].groupKey;
+  // Call-tier identity colours. STYLE, not data — nothing stores them and no
+  // other module reads them, so they are the design system's three distinct
+  // accents rather than three hand-picked hues. The previous set (#0ea5e9 /
+  // #34d399 / #a855f7) were all DARK-theme values used on this light-default
+  // sheet: as 9.5–12px column headers they measured 2.5–3:1, under AA. The
+  // tokens flip per theme and clear it on both.
   const codeColor = (code: string) =>
-    code === 'C1' ? '#0ea5e9' : code === 'C2' ? '#34d399' : '#a855f7';
+    code === 'C1' ? 'var(--blue)' : code === 'C2' ? 'var(--ok)' : 'var(--indigo)';
 
   // CHAIN CONNECTORS (Gabriel 2026-07-28) — "a small line connector on top of
   // the C1 C2 etc that connects the call shifts that are linked, so that when
@@ -374,21 +381,33 @@ export function CallCountsModal(
       className="fr-print-overlay"
       onClick={onClose}
       style={{
-        position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.75)',
-        zIndex: 800, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20,
+        position: 'fixed', inset: 0, background: 'var(--bg-modal-backdrop)',
+        zIndex: 800, display: 'flex', alignItems: 'center', justifyContent: 'center',
+        padding: 'var(--space-5)', animation: 'fr-backdrop-in var(--dur-fast) var(--ease-out)',
       }}
     >
       <div
+        // Deliberately NOT .modal-box — its fade-up keyframe animates
+        // `transform`, and a transformed element is a containing block, which
+        // is the exact thing the print rules below neutralise so the table
+        // paginates. The backdrop fades (opacity only); the panel does not move.
         className="fr-print-panel"
         onClick={e => e.stopPropagation()}
         style={{
-          background: 'var(--bg-deep)', borderRadius: 12, border: '1px solid var(--border)',
-          boxShadow: '0 24px 60px rgba(0,0,0,0.5)',
-          padding: 20, maxWidth: '95vw', maxHeight: '90vh', overflow: 'auto', minWidth: 720,
+          background: 'var(--bg-deep)', borderRadius: 'var(--radius-lg)',
+          border: '1px solid var(--border)',
+          boxShadow: 'var(--shadow-modal)',
+          padding: 'var(--space-5)', maxWidth: '95vw', maxHeight: '90vh',
+          overflow: 'auto', minWidth: 720,
         }}
       >
         {/* Scoped print stylesheet: everything outside #call-counts-print is
-            hidden during print so Save as PDF captures just the table. */}
+            hidden during print so Save as PDF captures just the table.
+            EVERY COLOUR IN HERE IS A PAPER COLOUR AND STAYS A LITERAL — a
+            custom property resolves against the viewer's theme, so `--text`
+            would print as #e2e8f0 (near-white on white) for anyone in dark
+            mode. #fff / #000 / #666 are stated outright so the sheet is the
+            same document whichever theme produced it. */}
         <style>{`
           @media print {
             /* LANDSCAPE + tight type (2026-07-28): breaking the extras out by
@@ -469,15 +488,17 @@ export function CallCountsModal(
                 : ' — fully covered'}
             </div>
           </div>
-          <div className="no-print" style={{ display: 'flex', gap: 6 }}>
-            <button onClick={handlePrint} style={{
-              padding: '7px 16px', fontSize: 12.5, fontWeight: 700, border: 'none', borderRadius: 8, cursor: 'pointer',
-              background: 'linear-gradient(135deg,#0ea5e9,#6366f1)', color: '#fff', boxShadow: '0 4px 14px rgba(56,130,246,0.35)',
-            }}>Print / Save PDF</button>
-            <button onClick={onClose} style={{
-              padding: '7px 15px', fontSize: 12.5, fontWeight: 700, borderRadius: 8, cursor: 'pointer',
-              background: 'transparent', border: '1px solid var(--border)', color: 'var(--text-muted)',
-            }}>Close</button>
+          {/* Kit buttons: these had no hover, no press and no keyboard ring,
+              and Print was a #0ea5e9→#6366f1 gradient — the DARK-theme blue on
+              a light-default screen. .fr-btn-* holds each variant's colour in
+              CSS, which is the only way its :hover can outrank an inline one. */}
+          <div className="no-print" style={{ display: 'flex', gap: 'var(--space-2)' }}>
+            <Button size="sm" onClick={handlePrint} style={{ padding: '7px 16px' }}>
+              Print / Save PDF
+            </Button>
+            <Button variant="secondary" size="sm" onClick={onClose} style={{ padding: '7px 15px' }}>
+              Close
+            </Button>
           </div>
         </div>
 
@@ -533,7 +554,7 @@ export function CallCountsModal(
                 </tr>
               );
             })}
-            <tr style={{ background: 'var(--bg)', color: 'var(--text-muted)' }}>
+            <tr style={{ background: 'var(--tint-surface)', color: 'var(--text-muted)' }}>
               <th rowSpan={2} style={{ padding: '6px 10px', textAlign: 'left', borderBottom: '1px solid var(--border)', fontWeight: 700 }}>Provider</th>
               {groups.map(g => (
                 <th key={g.key} colSpan={g.columns.length} title={g.bucket
@@ -558,7 +579,7 @@ export function CallCountsModal(
                 <th colSpan={columns.length} style={{
                   padding: '6px 10px', textAlign: 'center',
                   borderBottom: '1px solid var(--border)', borderLeft: '1px solid var(--border)',
-                  color: '#ef4444',
+                  color: 'var(--danger)',
                 }} title="Calls beyond the provider's TOTAL obligation — ONE ceiling, round(total call slots ÷ par × FTE), across every call code and every day type. The day-type split is for PRICING ONLY (2026-07-28): a pickup is paid by the day it fell on, so an extra Saturday C1 is not priced like an extra Wednesday C1. A number under M–Th C1 does NOT mean the provider is over any M–Th C1 limit — there is no per-day-type or per-code cap here, only the one total. WHICH calls are tagged (2026-07-29): the SMALLEST-weight set of their assignments that brings the rest back to the obligation, later dates winning a tie — so a 12h half (0.5) is tagged ahead of a whole call when a half is all they are over by. Read the size of the overage off the Over By column, NOT off these: a tagged whole call can weigh more than the overage when no smaller combination fits. The stored call par level is the denominator (par-authoritative; never reduced to the pool's summed FTE) — the engine's obligatory-mode denominator. Every call slot counts toward the obligation — holiday-dated included, billed as the day of the week it fell on. Calls up to the obligation are never extra — extras are the paid-pickup layer. Same selection as the red grid cells. Deficit carry-forward is not included. These columns are the SAME columns, in the same order, as the counts half on the left — including the neuro group at the end, whose extras stay split by day because a Saturday neuro pickup is not priced like a Sunday one.">
                   Calls Beyond Total Obligation<br/>
                   <span style={{ fontSize: 10, fontWeight: 500, opacity: 0.8 }}>
@@ -582,7 +603,7 @@ export function CallCountsModal(
               <th rowSpan={2} style={{
                 padding: '6px 10px', textAlign: 'center', fontWeight: 700,
                 borderBottom: '1px solid var(--border)', borderLeft: '1px solid var(--border)',
-                color: '#ef4444', cursor: 'help',
+                color: 'var(--danger)', cursor: 'help',
               }} title="How far past the obligation the provider actually is: Call Total − Obligation, in call units (a 12h split is 0.5, an 8h third 0.3333). THIS is the size of the overage. The tagged calls to the left are the smallest set of whole assignments that covers it, so their weight can be LARGER than this — 1.0 tagged against a 0.7 overage when no smaller combination fits. Blank at or under the obligation.">
                 Over By
               </th>
@@ -596,7 +617,7 @@ export function CallCountsModal(
               <th rowSpan={2} style={{
                 padding: '6px 10px', textAlign: 'center', fontWeight: 700,
                 borderBottom: '1px solid var(--border)', borderLeft: '1px solid var(--border)',
-                color: '#fbbf24',
+                color: 'var(--warn)',
               }}>PTO Days<br/><span style={{ fontSize: 10, fontWeight: 500, opacity: 0.7 }}>(M–F only)</span></th>
               <th rowSpan={2} style={{
                 padding: '6px 10px', textAlign: 'center', fontWeight: 700,
@@ -613,7 +634,7 @@ export function CallCountsModal(
                 Working Days<br/><span style={{ fontSize: 10, fontWeight: 500, opacity: 0.7 }}>actual / required</span>
               </th>
             </tr>
-            <tr style={{ background: 'var(--bg)', color: 'var(--text-muted)' }}>
+            <tr style={{ background: 'var(--tint-surface)', color: 'var(--text-muted)' }}>
               {/* Sub-header: the CODE under a day group, the DAY under the
                   neuro group — the transposition, in one field. */}
               {columns.map((col, i) => (
@@ -645,13 +666,24 @@ export function CallCountsModal(
           </thead>
           <tbody>
             {providers.map(p => (
-              <tr key={p.id} style={{ borderBottom: '1px solid var(--border)' }}>
+              // .fr-row = the kit's quiet body-row hover. A 27-column row read
+              // across is exactly what it is for, and it works here only
+              // because the <tr> sets no inline background.
+              <tr key={p.id} className="fr-row" style={{ borderBottom: '1px solid var(--border)' }}>
                 <td
                   onClick={onFocusProvider ? () => onFocusProvider(p.id) : undefined}
                   title={onFocusProvider ? `Highlight ${p.short_display_name}'s days on the grid` : undefined}
+                  // The name is a link in everything but markup, so it says so
+                  // on hover. Inline, because the underline has to appear only
+                  // when the click actually does something.
+                  onMouseEnter={onFocusProvider
+                    ? e => { e.currentTarget.style.textDecoration = 'underline'; } : undefined}
+                  onMouseLeave={onFocusProvider
+                    ? e => { e.currentTarget.style.textDecoration = 'none'; } : undefined}
                   style={{
                     padding: '6px 10px', color: 'var(--text)', fontWeight: 500,
                     cursor: onFocusProvider ? 'pointer' : undefined,
+                    textUnderlineOffset: 2,
                   }}
                 >
                   {p.short_display_name}
@@ -681,7 +713,7 @@ export function CallCountsModal(
                       title={n ? `${formatCallWeight(n)} extra ${col.code} worked on ${BUCKET_LABELS[col.bucket]} — priced as a ${BUCKET_LABELS[col.bucket]} pickup` : undefined}
                       style={{
                         padding: '6px 8px', textAlign: 'center',
-                        color: n === 0 ? 'var(--text-dim)' : '#ef4444',
+                        color: n === 0 ? 'var(--text-dim)' : 'var(--danger)',
                         borderLeft: isGroupStart(i) ? '1px solid var(--border)' : 'none',
                         fontWeight: n > 0 ? 700 : 400,
                       }}>{n ? formatCallWeight(n) : '—'}</td>
@@ -706,7 +738,7 @@ export function CallCountsModal(
                   style={{
                     padding: '6px 10px', textAlign: 'center', fontWeight: 700,
                     borderLeft: '1px solid var(--border)',
-                    color: rowOverBy(p.id) > 0 ? '#ef4444' : 'var(--text-dim)',
+                    color: rowOverBy(p.id) > 0 ? 'var(--danger)' : 'var(--text-dim)',
                     cursor: rowOverBy(p.id) > 0 ? 'help' : undefined,
                   }}
                 >{rowOverBy(p.id) > 0 ? formatCallWeight(rowOverBy(p.id)) : '—'}</td>
@@ -715,7 +747,7 @@ export function CallCountsModal(
                   style={{
                     padding: '6px 10px', textAlign: 'center', whiteSpace: 'nowrap',
                     borderLeft: '1px solid var(--border)', fontWeight: 600, cursor: 'help',
-                    color: weekendsOver(p.id) ? '#ef4444'
+                    color: weekendsOver(p.id) ? 'var(--danger)'
                       : weekendsForPid(p.id) > 0 || requiredWeekendsForPid(p.id) > 0 ? 'var(--text)' : 'var(--text-dim)',
                   }}
                 >
@@ -726,7 +758,7 @@ export function CallCountsModal(
                 <td style={{
                   padding: '6px 10px', textAlign: 'center',
                   borderLeft: '1px solid var(--border)', fontWeight: 600,
-                  color: ptoDaysForPid(p.id) > 0 ? '#fbbf24' : 'var(--text-dim)',
+                  color: ptoDaysForPid(p.id) > 0 ? 'var(--warn)' : 'var(--text-dim)',
                 }}>{ptoDaysForPid(p.id) || '—'}</td>
                 <td style={{
                   padding: '6px 10px', textAlign: 'center',
@@ -738,7 +770,7 @@ export function CallCountsModal(
                   style={{
                     padding: '6px 10px', textAlign: 'center', whiteSpace: 'nowrap',
                     borderLeft: '1px solid var(--border)', fontWeight: 600,
-                    color: workingDaysForPid(p.id) > requiredForPid(p.id) ? '#ef4444'
+                    color: workingDaysForPid(p.id) > requiredForPid(p.id) ? 'var(--danger)'
                       : workingDaysForPid(p.id) > 0 || requiredForPid(p.id) > 0 ? 'var(--text)' : 'var(--text-dim)',
                   }}
                 >
@@ -749,7 +781,7 @@ export function CallCountsModal(
               </tr>
             ))}
             {/* Totals row */}
-            <tr style={{ background: 'var(--bg)', fontWeight: 700, color: 'var(--text)' }}>
+            <tr style={{ background: 'var(--tint-surface)', fontWeight: 700, color: 'var(--text)' }}>
               <td style={{ padding: '8px 10px', borderTop: '2px solid var(--border)' }}>Total</td>
               {columns.map((col, i) => {
                 const t = colTotal(col.key);
@@ -768,7 +800,7 @@ export function CallCountsModal(
                     padding: '8px 10px', textAlign: 'center',
                     borderLeft: isGroupStart(i) ? '1px solid var(--border)' : 'none',
                     borderTop: '2px solid var(--border)',
-                    color: '#ef4444',
+                    color: 'var(--danger)',
                   }}>{t ? formatCallWeight(t) : '—'}</td>
                 );
               })}
@@ -783,7 +815,7 @@ export function CallCountsModal(
               <td style={{
                 padding: '8px 10px', textAlign: 'center',
                 borderLeft: '1px solid var(--border)', borderTop: '2px solid var(--border)',
-                color: '#ef4444',
+                color: 'var(--danger)',
               }}>{(() => {
                 const t = providers.reduce((s, p) => s + rowOverBy(p.id), 0);
                 return t > 0 ? formatCallWeight(t) : '—';
@@ -799,7 +831,7 @@ export function CallCountsModal(
               <td style={{
                 padding: '8px 10px', textAlign: 'center',
                 borderLeft: '1px solid var(--border)', borderTop: '2px solid var(--border)',
-                color: '#fbbf24',
+                color: 'var(--warn)',
               }}>{providers.reduce((s, p) => s + ptoDaysForPid(p.id), 0) || '—'}</td>
               <td style={{
                 padding: '8px 10px', textAlign: 'center',
