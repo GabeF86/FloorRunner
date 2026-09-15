@@ -120,9 +120,10 @@ export default function IntakeForm({ token, siteName, blockStart, blockEnd, maxN
 
       {error && (
         <div style={{
-          color: 'var(--danger, #dc2626)', fontSize: 12.5, marginBottom: 14,
-          padding: '8px 12px', background: 'rgba(220,38,38,0.07)',
-          border: '1px solid rgba(220,38,38,0.25)', borderRadius: 8,
+          color: 'var(--danger)', fontSize: 12.5, marginBottom: 14,
+          padding: '8px 12px', background: 'var(--danger-bg)',
+          border: '1px solid color-mix(in srgb, var(--danger) 25%, transparent)',
+          borderRadius: 8,
         }}>{error}</div>
       )}
 
@@ -214,8 +215,12 @@ export default function IntakeForm({ token, siteName, blockStart, blockEnd, maxN
         style={{
           width: '100%', padding: '12px 16px', borderRadius: 10, border: 'none',
           fontSize: 14, fontWeight: 800, cursor: canSubmit ? 'pointer' : 'not-allowed',
-          background: canSubmit ? 'linear-gradient(135deg,#0ea5e9,#6366f1)' : 'var(--tint-surface-strong)',
-          color: canSubmit ? '#fff' : 'var(--text-disabled)',
+          // The literals here were the DARK values of --blue/--indigo, so the
+          // submit button on the light default (what an emailed provider
+          // actually opens) was a pale sky-to-periwinkle wash under white text.
+          // The tokens keep the same hue ramp and deepen it in light.
+          background: canSubmit ? 'linear-gradient(135deg, var(--blue), var(--indigo))' : 'var(--tint-surface-strong)',
+          color: canSubmit ? 'var(--on-accent)' : 'var(--text-disabled)',
         }}
       >
         {busy ? 'Submitting…' : 'Submit Requests'}

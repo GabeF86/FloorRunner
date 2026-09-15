@@ -158,8 +158,16 @@ function InfoTip({ text }: { text: string }) {
             position: 'absolute', top: '100%', left: '50%', transform: 'translateX(-50%)',
             marginTop: 6, padding: '8px 12px', borderRadius: 'var(--radius-sm)',
             fontSize: 'var(--fs-xs)', lineHeight: 1.5,
-            background: '#1e293b', color: '#e2e8f0', border: '1px solid #334155',
-            boxShadow: 'var(--shadow-card)', width: 280, zIndex: 300, fontWeight: 500,
+            // Popover chrome, not a fixed dark slab: the literal #1e293b that
+            // used to sit here was a dark-theme surface, so on the light default
+            // this read as a black box, and in dark mode it sat one hair off
+            // --bg-surface (#0d1b30) with a near-invisible #334155 edge. Same
+            // three tokens the rule-editor InfoTip uses. --shadow-popover rather
+            // than --shadow-card because --bg-popover matches the Card beneath
+            // it; the elevation is now the only thing separating them.
+            background: 'var(--bg-popover)', color: 'var(--text-muted)',
+            border: '1px solid var(--border)',
+            boxShadow: 'var(--shadow-popover)', width: 280, zIndex: 300, fontWeight: 500,
             whiteSpace: 'normal',
           }}
         >

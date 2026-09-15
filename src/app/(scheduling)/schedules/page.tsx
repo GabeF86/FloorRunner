@@ -40,10 +40,18 @@ interface Site {
   short_name: string | null;
 }
 
+/* Schedule-type pill. The literals this used to hold — #8b5cf6 / #f87171 /
+   #0ea5e9 — were the DARK-theme values of --indigo / --danger / --blue (the
+   latter two byte-identical), so the pills were tuned for dark and washed out
+   on the light default. Same hues, AA-passing in light, and they follow the
+   accent ramp into dark. `call` genuinely is the alert tone here, matching the
+   `call` row in the site editor's CATEGORY_COLORS. Tints keep their original
+   15% weight rather than the .10/.12 of the paired --*-bg tokens, so the pill
+   fills are unchanged. */
 const TYPE_COLORS: Record<string, { color: string; bg: string; label: string }> = {
-  combined: { color: '#8b5cf6', bg: 'rgba(139,92,246,0.15)', label: 'Combined' },
-  call:     { color: '#f87171', bg: 'rgba(248,113,113,0.15)', label: 'Call' },
-  shifts:   { color: '#0ea5e9', bg: 'rgba(14,165,233,0.15)', label: 'Shifts' },
+  combined: { color: 'var(--indigo)', bg: 'color-mix(in srgb, var(--indigo) 15%, transparent)', label: 'Combined' },
+  call:     { color: 'var(--danger)', bg: 'color-mix(in srgb, var(--danger) 15%, transparent)', label: 'Call' },
+  shifts:   { color: 'var(--blue)',   bg: 'color-mix(in srgb, var(--blue) 15%, transparent)',   label: 'Shifts' },
 };
 
 const GROUP_OPTIONS: { value: string; label: string }[] = [
@@ -491,10 +499,15 @@ function CreateScheduleModal({ orgId, sites, initialSiteId = '', initialGroup = 
   };
   const labelStyle: React.CSSProperties = { fontSize: 11, color: 'var(--text-muted)', display: 'block', marginBottom: 5, fontWeight: 600, letterSpacing: 0.5 };
 
+  // Same amber / sky / violet the provider-type swatches use, but expressed as
+  // tokens so the selected option is legible on the light default too — the
+  // literals here were the dark-theme values. `tint` is pre-mixed rather than
+  // concatenated: a `${g.color}20` suffix is a no-op against a var(), which is
+  // why the fill has to be a finished color-mix string. 13% ≈ the old 0x20.
   const groupOptions = [
-    { value: 'physician', label: 'Physicians', color: '#f59e0b' },
-    { value: 'crna', label: 'CRNAs', color: '#0ea5e9' },
-    { value: 'both', label: 'Both', color: '#8b5cf6' },
+    { value: 'physician', label: 'Physicians', color: 'var(--warn)', tint: 'color-mix(in srgb, var(--warn) 13%, transparent)' },
+    { value: 'crna', label: 'CRNAs', color: 'var(--blue)', tint: 'color-mix(in srgb, var(--blue) 13%, transparent)' },
+    { value: 'both', label: 'Both', color: 'var(--indigo)', tint: 'color-mix(in srgb, var(--indigo) 13%, transparent)' },
   ];
 
   return (
@@ -545,7 +558,7 @@ function CreateScheduleModal({ orgId, sites, initialSiteId = '', initialGroup = 
             onClick={() => setProviderGroup(g.value)}
             style={{
               border: `1px solid ${providerGroup === g.value ? g.color : 'var(--border)'}`,
-              background: providerGroup === g.value ? `${g.color}20` : 'transparent',
+              background: providerGroup === g.value ? g.tint : 'transparent',
               color: providerGroup === g.value ? g.color : 'var(--text-muted)',
               fontWeight: 700,
             }}

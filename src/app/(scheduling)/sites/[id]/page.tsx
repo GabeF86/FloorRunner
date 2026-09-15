@@ -82,12 +82,21 @@ type Tab = 'general' | 'shift-types' | 'templates' | 'holidays';
 const tint = (token: string, pct = 12) => `color-mix(in srgb, ${token} ${pct}%, transparent)`;
 
 /* NOTE: this map is duplicated verbatim in ../page.tsx (the sites list), which
-   renders the same type pill. Left on literals deliberately — moving one copy
-   onto tokens would desynchronise the two. */
+   renders the same type pill. The two are kept byte-identical — change both or
+   neither.
+
+   Site TYPE is a three-way enum, not a database colour (that is `color_hex`),
+   and the literals this used to hold — #0ea5e9 / #10b981 / #f59e0b — were the
+   DARK-theme values of --blue / --ok / --warn. In dark they are byte-identical
+   to those tokens; on the light default they were sky-on-white, emerald-on-white
+   and amber-on-white, none of which clears AA at 11px. Same hues, now AA-passing
+   in light, and they follow the accent into dark. The tint keeps its original
+   15% weight rather than dropping to the .10/.12 of the paired --*-bg tokens,
+   so the pill's fill is unchanged. */
 const SITE_TYPE_COLORS: Record<string, { color: string; bg: string; label: string }> = {
-  hospital: { color: '#0ea5e9', bg: 'rgba(14,165,233,0.15)', label: 'Hospital' },
-  asc:      { color: '#10b981', bg: 'rgba(16,185,129,0.15)', label: 'ASC' },
-  office:   { color: '#f59e0b', bg: 'rgba(245,158,11,0.15)', label: 'Office' },
+  hospital: { color: 'var(--blue)', bg: tint('var(--blue)', 15), label: 'Hospital' },
+  asc:      { color: 'var(--ok)',   bg: tint('var(--ok)', 15),   label: 'ASC' },
+  office:   { color: 'var(--warn)', bg: tint('var(--warn)', 15), label: 'Office' },
 };
 
 const CATEGORY_COLORS: Record<string, { color: string; bg: string; label: string }> = {

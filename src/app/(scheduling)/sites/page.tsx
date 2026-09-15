@@ -18,10 +18,15 @@ interface Site {
   shift_types?: { site_id: string }[];
 }
 
+/* Duplicated verbatim in ./[id]/page.tsx, which renders the same type pill —
+   change both or neither. See the longer note there: site TYPE is a three-way
+   enum (the database colour is `color_hex`), and the literals this used to hold
+   were the DARK values of --blue / --ok / --warn, which is why these pills
+   washed out on the light default. */
 const SITE_TYPE_COLORS: Record<string, { color: string; bg: string; label: string }> = {
-  hospital: { color: '#0ea5e9', bg: 'rgba(14,165,233,0.15)', label: 'Hospital' },
-  asc:      { color: '#10b981', bg: 'rgba(16,185,129,0.15)', label: 'ASC' },
-  office:   { color: '#f59e0b', bg: 'rgba(245,158,11,0.15)', label: 'Office' },
+  hospital: { color: 'var(--blue)', bg: 'color-mix(in srgb, var(--blue) 15%, transparent)', label: 'Hospital' },
+  asc:      { color: 'var(--ok)',   bg: 'color-mix(in srgb, var(--ok) 15%, transparent)',   label: 'ASC' },
+  office:   { color: 'var(--warn)', bg: 'color-mix(in srgb, var(--warn) 15%, transparent)', label: 'Office' },
 };
 
 const TABLE_HEADERS = ['Site', 'Type', 'Status', 'Shift Types', 'Address', 'Timezone'];
