@@ -120,19 +120,28 @@ export interface AttentionEntry {
 // ── Pure aggregation ─────────────────────────────────────────────────────────
 
 /** Counts schedules by status, e.g. { draft: 2, published: 1 }. */
+export interface MixProviderRef {
+  id?: string | null;
+  provider_type?: string | null;
+  first_name?: string | null;
+  last_name?: string | null;
+  short_display_name?: string | null;
+}
+
 export interface MixRow {
   fte_value: number | string | null;
   call_taker: boolean | null;
+  is_day_doc: boolean | null;
   employment_status: string | null;
-  providers: { provider_type?: string | null } | Array<{ provider_type?: string | null }> | null;
+  providers: MixProviderRef | MixProviderRef[] | null;
 }
 
 /**
- * The four staffing figures, from employment profiles.
+ * The staffing figures, from employment profiles.
  *
- * Two are ΣFTE and two are headcount, deliberately: "how much call capacity is
- * there" and "how many CRNAs' worth of coverage" are FTE questions, while
- * "how many part-timers" and "how many per diems" are questions about people.
+ * Two are ΣFTE and the rest are about people, deliberately: "how much call
+ * capacity is there" and "how many CRNAs' worth of coverage" are FTE
+ * questions; who the day docs are and how many per diems there are is not.
  *
  * fte_value arrives from a Postgres numeric as a STRING through PostgREST, so
  * it is coerced rather than added — string concatenation here would silently
@@ -142,23 +151,33 @@ export function summarizeMix(rows: readonly MixRow[]): ProviderMix {
   const mix: ProviderMix = {
     callTakerFte: 0, callTakerCount: 0,
     crnaFte: 0, crnaCount: 0,
-    partTimePhysicians: 0, perDiem: 0,
+    dayDocs: [], perDiem: 0,
   };
 
   for (const r of rows) {
     const rel = r.providers;
-    const p = (Array.isArray(rel) ? rel[0] : rel) ?? {};
+    const p: MixProviderRef = (Array.isArray(rel) ? rel[0] : rel) ?? {};
     const type = p.provider_type ?? '';
     const fteNum = Number(r.fte_value);
     const fte = Number.isFinite(fteNum) && fteNum > 0 ? fteNum : 0;
 
-    if (r.call_taker) { mix.callTakerFte += fte; mix.callTakerCount++; }
+    // PHYSICIAN call takers only — see ProviderMix.callTakerFte.
+    if (r.call_taker && type === 'physician') { mix.callTakerFte += fte; mix.callTakerCount++; }
     // AAs work the CRNA slate (slotCandidates admits both for a 'crna' slot),
     // so they are counted with them rather than vanishing from every figure.
     if (type === 'crna' || type === 'aa') { mix.crnaFte += fte; mix.crnaCount++; }
-    if (type === 'physician' && r.employment_status === 'part_time') mix.partTimePhysicians++;
+    if (r.is_day_doc) {
+      mix.dayDocs.push({
+        id: p.id ?? '',
+        name: p.short_display_name
+          || [p.first_name, p.last_name].filter(Boolean).join(' ')
+          || 'Unnamed provider',
+      });
+    }
     if (r.employment_status === 'per_diem') mix.perDiem++;
   }
+
+  mix.dayDocs.sort((a, b) => a.name.localeCompare(b.name));
 
   // ΣFTE accumulates float error across ~290 rows, so it is rounded — to TWO
   // decimals, not one. Quarter FTEs are real contracts here (0.75, 0.25), and
@@ -282,16 +301,25 @@ export interface Panel<T> {
 
 export type AttentionPanelEntry = AttentionEntry & { schedule_name: string; status: string };
 
-/** The four staffing figures the dashboards head with. */
+export interface DayDoc { id: string; name: string }
+
+/** The staffing figures the dashboards head with. */
 export interface ProviderMix {
-  /** ΣFTE across call takers — capacity, not headcount. */
+  /**
+   * ΣFTE across PHYSICIAN call takers homed here — capacity, not headcount.
+   *
+   * Physicians only (Gabriel 2026-09-15). CRNAs carry their own call and many
+   * are flagged call_taker, but they are not the pool a call schedule is built
+   * from, and including them overstated it badly: Paoli read 12.60 when the
+   * physician pool is 8.70 against a par of 11.
+   */
   callTakerFte: number;
   callTakerCount: number;
   /** ΣFTE across CRNAs. */
   crnaFte: number;
   crnaCount: number;
-  /** Headcount: physicians on a part-time contract. */
-  partTimePhysicians: number;
+  /** Named, not counted — there are only a handful per site. */
+  dayDocs: DayDoc[];
   /** Headcount: anyone per diem, physician or CRNA. */
   perDiem: number;
 }
@@ -498,7 +526,9 @@ export async function loadDashboardData(
   // so the count is checked and a shortfall becomes a panel error.
   let mixQ = sb
     .from('provider_employment_profiles')
-    .select('fte_value, call_taker, employment_status, providers!inner(provider_type, status, organization_id)',
+    .select(
+      'fte_value, call_taker, is_day_doc, employment_status, '
+      + 'providers!inner(id, provider_type, status, organization_id, first_name, last_name, short_display_name)',
       { count: 'exact' })
     .eq('providers.status', 'active');
   if (siteId) mixQ = mixQ.eq('home_site_id', siteId);

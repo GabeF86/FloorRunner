@@ -259,15 +259,46 @@ function StaffingCard({ panel, site }: { panel: Panel<ProviderMix>; site: boolea
         <MixFigure
           value={String(m.callTakerFte)}
           label="FTE call takers"
-          sub={`${m.callTakerCount} ${m.callTakerCount === 1 ? 'person' : 'people'}`}
+          sub={`${m.callTakerCount} physician${m.callTakerCount === 1 ? '' : 's'}`}
         />
         <MixFigure
           value={String(m.crnaFte)}
           label="FTE CRNAs"
           sub={`${m.crnaCount} ${m.crnaCount === 1 ? 'person' : 'people'}`}
         />
-        <MixFigure value={String(m.partTimePhysicians)} label="Part-time physicians" />
         <MixFigure value={String(m.perDiem)} label="Per diems" />
+      </div>
+
+      {/* Day docs are NAMED, not counted — there are only a handful per site,
+          and which people they are is the useful fact. */}
+      <div style={{ marginTop: 'var(--space-4)', paddingTop: 'var(--space-3)', borderTop: '1px solid var(--border-faint)' }}>
+        <div style={{
+          fontSize: 'var(--fs-xs)', textTransform: 'uppercase', letterSpacing: 1,
+          color: 'var(--text-dim)', fontWeight: 700, marginBottom: 'var(--space-2)',
+        }}>
+          Day docs{m.dayDocs.length > 0 && ` (${m.dayDocs.length})`}
+        </div>
+        {m.dayDocs.length === 0 ? (
+          <div style={{ fontSize: 'var(--fs-sm)', color: 'var(--text-dim)', fontStyle: 'italic' }}>
+            {site ? 'None homed at this site.' : 'None in the group.'}
+          </div>
+        ) : (
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+            {m.dayDocs.map(d => (
+              <Link
+                key={d.id || d.name}
+                href={d.id ? `/providers/${d.id}` : '/providers'}
+                style={{
+                  padding: '4px 10px', borderRadius: 999, textDecoration: 'none',
+                  border: '1px solid var(--border)', background: 'var(--bg-deep)',
+                  fontSize: 'var(--fs-sm)', fontWeight: 600, color: 'var(--text)',
+                }}
+              >
+                {d.name}
+              </Link>
+            ))}
+          </div>
+        )}
       </div>
     </Card>
   );

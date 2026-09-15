@@ -691,10 +691,11 @@ describe('summarizeMix', () => {
   const row = (over: Partial<MixRow> = {}): MixRow => ({
     fte_value: 1,
     call_taker: false,
+    is_day_doc: false,
     employment_status: 'full_time',
     providers: { provider_type: 'physician' },
     ...over,
-  });
+  } as MixRow);
 
   it('keeps quarter FTEs intact rather than rounding them away', () => {
     const mix = summarizeMix([
@@ -729,12 +730,33 @@ describe('summarizeMix', () => {
     expect(mix.crnaCount).toBe(2);
   });
 
-  it('counts part-time PHYSICIANS only', () => {
+  it('sums call-taker FTE for PHYSICIANS only', () => {
+    // CRNAs carry their own call and many are flagged call_taker, but they are
+    // not the pool a call schedule is built from. Including them read Paoli as
+    // 12.60 FTE when its physician pool is 8.70 against a par of 11.
     const mix = summarizeMix([
-      row({ providers: { provider_type: 'physician' }, employment_status: 'part_time' }),
-      row({ providers: { provider_type: 'crna' }, employment_status: 'part_time' }),
+      row({ call_taker: true, providers: { provider_type: 'physician' }, fte_value: 1 }),
+      row({ call_taker: true, providers: { provider_type: 'crna' }, fte_value: 1 }),
+      row({ call_taker: true, providers: { provider_type: 'aa' }, fte_value: 1 }),
     ]);
-    expect(mix.partTimePhysicians).toBe(1);
+    expect(mix.callTakerFte).toBe(1);
+    expect(mix.callTakerCount).toBe(1);
+  });
+
+  it('lists day docs by name rather than counting them', () => {
+    const mix = summarizeMix([
+      row({ is_day_doc: true, providers: { id: 'p2', provider_type: 'physician', short_display_name: 'B.Jones' } }),
+      row({ is_day_doc: true, providers: { id: 'p1', provider_type: 'physician', first_name: 'Ada', last_name: 'Adams' } }),
+      row({ is_day_doc: false, providers: { id: 'p3', provider_type: 'physician' } }),
+    ]);
+    expect(mix.dayDocs.map(d => d.name)).toEqual(['Ada Adams', 'B.Jones']); // sorted
+  });
+
+  it('falls back to a full name, then to a placeholder, for a day doc', () => {
+    const mix = summarizeMix([
+      row({ is_day_doc: true, providers: { id: 'x', provider_type: 'physician' } }),
+    ]);
+    expect(mix.dayDocs[0].name).toBe('Unnamed provider');
   });
 
   it('counts per diems of any type', () => {
@@ -775,7 +797,7 @@ describe('summarizeMix', () => {
   it('returns all zeros for an empty roster', () => {
     expect(summarizeMix([])).toEqual({
       callTakerFte: 0, callTakerCount: 0, crnaFte: 0, crnaCount: 0,
-      partTimePhysicians: 0, perDiem: 0,
+      dayDocs: [], perDiem: 0,
     });
   });
 });
