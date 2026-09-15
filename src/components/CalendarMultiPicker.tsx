@@ -177,7 +177,9 @@ export function CalendarMultiPicker({
           height: 28, borderRadius: 6, fontSize: 11, fontWeight: showSelected ? 800 : 500,
           border: `1px solid ${showSelected ? accent : 'transparent'}`,
           background: showSelected
-            ? `${accent}26`
+            // color-mix so `accent` may be a design token rather than a
+            // literal hex — see ShiftTypePicker for the full reasoning.
+            ? `color-mix(in srgb, ${accent} 15%, transparent)`
             : preview
               ? 'transparent'
               : isWeekend ? 'var(--bg-deep)' : 'transparent',

@@ -264,7 +264,15 @@ function Chrome({
               <span key={code} style={{
                 display: 'inline-flex', alignItems: 'center', gap: 5,
                 fontSize: 11, fontWeight: 600, padding: '3px 4px 3px 9px', borderRadius: 6,
-                background: `${accent}20`, color: accent, border: `1px solid ${accent}30`,
+                // color-mix, not a hex alpha suffix. `${accent}20` requires
+                // accent to be a literal 6-digit hex, which is why every
+                // caller had to pass one and why none of them could pass a
+                // design token — the reason ~15 hardcoded colours survive
+                // elsewhere in the app. color-mix accepts a var(), so an
+                // accent can now be `var(--blue)` and follow the theme.
+                background: `color-mix(in srgb, ${accent} 13%, transparent)`,
+                color: accent,
+                border: `1px solid color-mix(in srgb, ${accent} 19%, transparent)`,
               }}>
                 <strong>{code}</strong>
                 {t ? <span style={{ opacity: 0.75, fontWeight: 500 }}>— {t.name}</span> : <span style={{ opacity: 0.6 }}>(unknown)</span>}
