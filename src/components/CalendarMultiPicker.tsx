@@ -45,7 +45,7 @@ export interface CalendarMultiPickerProps {
 }
 
 export function CalendarMultiPicker({
-  selected, onChange, minDate, maxDate, accent = '#0ea5e9',
+  selected, onChange, minDate, maxDate, accent = 'var(--blue)',
 }: CalendarMultiPickerProps) {
   const selectedSet = useMemo(() => new Set(selected), [selected]);
 

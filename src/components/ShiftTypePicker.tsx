@@ -30,7 +30,7 @@ export function SiteShiftTypePicker({
   label,
   values,
   onChange,
-  accent = '#0ea5e9',
+  accent = 'var(--blue)',
   emptyHint,
   includeCategories,
   filter,
@@ -133,7 +133,7 @@ export function OrgShiftTypePicker({
   label,
   values,
   onChange,
-  accent = '#0ea5e9',
+  accent = 'var(--blue)',
 }: BasePickerProps & { orgId: string }) {
   const [shiftTypes, setShiftTypes] = useState<ShiftType[]>([]);
   const [sites, setSites] = useState<Record<string, string>>({});

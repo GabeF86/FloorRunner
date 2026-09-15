@@ -970,7 +970,7 @@ function SchedulingTab({ profile, sites, saveState, onSave }: { profile: Employm
               includeCategories={['regular']}
               filter={(st) => !/^D\d+$/i.test(st.code)}
               emptyHint="No day shift types configured at this provider's home site yet."
-              accent="#0ea5e9"
+              accent="var(--blue)"
             />
           ) : (
             <NoneYet>Set a Home Hospital above to pick preferred day-shift types.</NoneYet>
@@ -1493,14 +1493,14 @@ function SitesTab({ providerId, credentials, sites, onChanged }: {
                     label="Allowed Shift Types (if set, ONLY these are allowed)"
                     values={c.allowed_shift_types}
                     onChange={next => updateCred(c.site_id, { allowed_shift_types: next })}
-                    accent="#10b981"
+                    accent="var(--ok)"
                   />
                   <SiteShiftTypePicker
                     siteId={c.site_id}
                     label="Excluded Shift Types"
                     values={c.excluded_shift_types}
                     onChange={next => updateCred(c.site_id, { excluded_shift_types: next })}
-                    accent="#f87171"
+                    accent="var(--danger)"
                   />
                   <TagInput
                     label="Skill Tags"
@@ -1773,7 +1773,7 @@ function AvailabilityTab({ providerId, profile, orgId, sites }: {
           providerId={providerId}
           availabilityType="pto_sellback"
           addLabel="Add Sell-Back"
-          accent="#dc2626"
+          accent="var(--danger)"
           onAdded={loadAvailability}
         />
         <SectionRows
@@ -2177,7 +2177,7 @@ function PtoAddForm({ providerId, onAdded }: { providerId: string; onAdded: () =
         mode={mode}
         onChange={setMode}
       />
-      {mode === 'calendar' && <CalendarPane days={days} onDaysChange={setDays} accent="#10b981" />}
+      {mode === 'calendar' && <CalendarPane days={days} onDaysChange={setDays} accent="var(--ok)" />}
       <div style={{
         display: 'grid',
         gridTemplateColumns: mode === 'calendar' ? '1fr auto' : '1fr 1fr 1fr auto',
@@ -2239,7 +2239,7 @@ function PtoAddForm({ providerId, onAdded }: { providerId: string; onAdded: () =
 
 // Generic date-range add form used by the Days Off and PTO Sell-Back
 // sections. Date-range and Calendar entry modes.
-function RangeAddForm({ providerId, availabilityType, addLabel, accent = '#0ea5e9', onAdded }: {
+function RangeAddForm({ providerId, availabilityType, addLabel, accent = 'var(--blue)', onAdded }: {
   providerId: string;
   availabilityType: string;
   addLabel: string;
@@ -3032,7 +3032,7 @@ const rangeLabel = (r: DateRange) =>
 // grid plus a live summary of what submit will create (contiguous runs
 // collapse to date-range rows; isolated days become single-day rows —
 // src/lib/dateRanges.ts collapseDatesToRanges).
-function CalendarPane({ days, onDaysChange, accent = '#0ea5e9', minDate, maxDate }: {
+function CalendarPane({ days, onDaysChange, accent = 'var(--blue)', minDate, maxDate }: {
   days: string[];
   onDaysChange: (next: string[]) => void;
   accent?: string;
