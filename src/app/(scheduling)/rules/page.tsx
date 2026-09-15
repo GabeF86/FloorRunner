@@ -1,221 +1,87 @@
-'use client';
+// The rule-set index.
+//
+// This page used to be the client component that now lives in RulesClient.tsx.
+// The HTML arrived empty, the browser hydrated, fetched the organization list,
+// and only THEN — gated behind that id — fetched the rule sets and sites, and
+// only after those had landed did it fetch the rule definitions it counts per
+// row. Three serial round trips before a single rule set appeared.
+//
+// Now the reads happen here, in the same request that renders the shell, using
+// the service client directly: no HTTP hop, no second pass through the
+// middleware, and the first response already contains the rows. The client
+// component keeps every interactive path it had (the status filter, creating a
+// rule set, reloading afterwards) — it simply starts with data.
+//
+// Query logic is shared with /api/scheduling/rule-sets,
+// /api/scheduling/rule-definitions and /api/scheduling/sites via lib/queries,
+// so the list rendered here and the list fetched after a create cannot
+// disagree.
 
-import { useState, useEffect, useCallback } from 'react';
-import { cachedFetch } from '@/lib/clientCache';
-import Link from 'next/link';
-import { PageHeader, Card, Badge, Button, Table, EmptyState, Modal, type BadgeTone } from '@/components/ui';
+import { sbSchedulingServer } from '@/lib/supabaseScheduling';
+import { firstOrg, listSites } from '@/lib/queries/roster';
+import { listRuleSets, listRuleDefinitions } from '@/lib/queries/config';
+import RulesClient, { type RulesClientProps } from './RulesClient';
 
-interface RuleSet {
-  id: string;
-  organization_id: string;
-  site_id: string;
-  name: string;
-  status: 'draft' | 'active' | 'archived';
-  effective_start_date: string | null;
-  effective_end_date: string | null;
-  original_plain_text: string | null;
-  ai_summary: string | null;
-  approved_at: string | null;
-  created_at: string;
-  updated_at: string;
-  sites: { name: string } | null;
-  rule_definitions?: { id: string }[];
-}
+// Never prerender — this reads per-request, per-user data.
+export const dynamic = 'force-dynamic';
+export const revalidate = 0;
 
-interface Site {
-  id: string;
-  name: string;
-  short_name: string | null;
-}
+export default async function RulesPage() {
+  const sb = sbSchedulingServer();
 
-const STATUS_TONES: Record<string, BadgeTone> = {
-  draft:    'neutral',
-  active:   'ok',
-  archived: 'neutral',
-};
+  let orgId = '';
+  let ruleSets: RulesClientProps['initialRuleSets'] = [];
+  let sites: RulesClientProps['initialSites'] = [];
+  let loadError: string | null = null;
 
-const TABLE_HEADERS = ['Name', 'Site', 'Status', 'Rules', 'Created'];
+  try {
+    // firstOrg rather than firstOrgId: a failed organizations read must not
+    // collapse into "this group has no rule sets", which is the view that
+    // offers to create one.
+    const org = await firstOrg(sb);
+    if (!org.ok) loadError = org.error;
+    else orgId = org.rows[0]?.id ?? '';
 
-export default function RulesPage() {
-  const [ruleSets, setRuleSets] = useState<RuleSet[]>([]);
-  const [sites, setSites] = useState<Site[]>([]);
-  const [orgId, setOrgId] = useState('');
-  const [loading, setLoading] = useState(true);
-  const [showCreate, setShowCreate] = useState(false);
-  const [filterStatus, setFilterStatus] = useState<string>('all');
+    if (orgId) {
+      // Three independent reads, so they overlap rather than queue. No status
+      // filter is passed: the client's filter chips start at 'all' and narrow
+      // the list they already hold, so the server must send all of them.
+      const [rs, s, defs] = await Promise.all([
+        listRuleSets(sb, { orgId }),
+        listSites(sb, orgId),
+        // Every definition at once, bucketed per rule set below — one read
+        // instead of one per row, exactly as the client did it.
+        listRuleDefinitions(sb),
+      ]);
 
-  useEffect(() => {
-    (async () => {
-      const orgRes = await cachedFetch('/api/scheduling/organizations');
-      const orgs = await orgRes.json();
-      if (orgs.length > 0) setOrgId(orgs[0].id);
-      setLoading(false);
-    })();
-  }, []);
+      if (!rs.ok) {
+        loadError = rs.error;
+      } else {
+        // A failed DEFINITIONS read leaves every count at zero, which is what
+        // the client did too — the rule sets themselves still render.
+        const allDefs = defs.ok
+          ? (defs.rows as unknown as Array<{ id: string; rule_set_id: string }>)
+          : [];
+        ruleSets = (rs.rows as unknown as RulesClientProps['initialRuleSets']).map(r => ({
+          ...r,
+          rule_definitions: allDefs.filter(d => d.rule_set_id === r.id),
+        }));
+      }
 
-  const loadData = useCallback(async () => {
-    if (!orgId) return;
-    const [rsRes, sitesRes] = await Promise.all([
-      fetch('/api/scheduling/rule-sets?org_id=' + orgId),
-      fetch('/api/scheduling/sites?org_id=' + orgId),
-    ]);
-    const rsData = await rsRes.json();
-    const sitesData = await sitesRes.json();
-    // Load rule counts per rule set
-    const defRes = await fetch('/api/scheduling/rule-definitions');
-    const allDefs = await defRes.json();
-    const enriched = (Array.isArray(rsData) ? rsData : []).map((rs: RuleSet) => ({
-      ...rs,
-      rule_definitions: Array.isArray(allDefs) ? allDefs.filter((d: { rule_set_id: string }) => d.rule_set_id === rs.id) : [],
-    }));
-    setRuleSets(enriched);
-    setSites(Array.isArray(sitesData) ? sitesData : []);
-  }, [orgId]);
-
-  useEffect(() => { loadData(); }, [loadData]);
-
-  const filtered = filterStatus === 'all'
-    ? ruleSets
-    : ruleSets.filter(rs => rs.status === filterStatus);
-
-  if (loading) {
-    return (
-      <div>
-        <PageHeader title="Rules Engine" />
-        <Card pad={false}>
-          <Table headers={TABLE_HEADERS} rows={undefined} minWidth={560} />
-        </Card>
-      </div>
-    );
+      // A failed SITES read only costs the site column and the create modal's
+      // picker, so it must not blank the rule sets.
+      if (s.ok) sites = s.rows as unknown as RulesClientProps['initialSites'];
+    }
+  } catch (e) {
+    loadError = e instanceof Error ? e.message : 'Rule sets could not be loaded.';
   }
 
   return (
-    <div>
-      <PageHeader
-        title="Rules Engine"
-        subtitle="Configure scheduling constraints and automation rules per site"
-        actions={<Button onClick={() => setShowCreate(true)}>+ Create Rule Set</Button>}
-      />
-
-      {/* Status filter */}
-      <div style={{ display: 'flex', gap: 6, marginBottom: 20 }}>
-        {['all', 'draft', 'active', 'archived'].map(s => (
-          <Button
-            key={s}
-            variant="secondary"
-            size="sm"
-            onClick={() => setFilterStatus(s)}
-            style={{
-              textTransform: 'capitalize',
-              ...(filterStatus === s
-                ? { borderColor: 'var(--blue)', background: 'var(--info-bg)', color: 'var(--blue)' }
-                : { color: 'var(--text-muted)' }),
-            }}
-          >
-            {s === 'all' ? `All (${ruleSets.length})` : `${s} (${ruleSets.filter(r => r.status === s).length})`}
-          </Button>
-        ))}
-      </div>
-
-      {/* Table */}
-      <Card pad={false}>
-        <Table
-          headers={TABLE_HEADERS}
-          minWidth={560}
-          rows={filtered.map(rs => {
-            const ruleCount = rs.rule_definitions?.length || 0;
-            return [
-              <Link key="name" href={`/rules/${rs.id}`} style={{ textDecoration: 'none', color: 'var(--text-strong)', fontWeight: 700 }}>
-                {rs.name}
-              </Link>,
-              rs.sites?.name || 'Unknown',
-              <Badge key="status" tone={STATUS_TONES[rs.status] || 'neutral'}>{rs.status}</Badge>,
-              String(ruleCount),
-              new Date(rs.created_at).toLocaleDateString(),
-            ];
-          })}
-          empty={
-            <EmptyState
-              icon="⚖"
-              title={filterStatus === 'all' ? 'No rule sets created yet' : `No ${filterStatus} rule sets`}
-              hint={filterStatus === 'all'
-                ? "Create a rule set to encode a site's scheduling constraints — the engine validates every schedule against them."
-                : 'Switch the status filter to see rule sets in other states.'}
-              action={filterStatus === 'all'
-                ? <Button size="sm" onClick={() => setShowCreate(true)}>+ Create Rule Set</Button>
-                : undefined}
-            />
-          }
-        />
-      </Card>
-
-      {showCreate && (
-        <CreateRuleSetModal
-          orgId={orgId}
-          sites={sites}
-          onClose={() => setShowCreate(false)}
-          onCreated={() => { setShowCreate(false); loadData(); }}
-        />
-      )}
-    </div>
-  );
-}
-
-// ── Create Rule Set Modal ─────────────────────────────────────────────────────
-function CreateRuleSetModal({ orgId, sites, onClose, onCreated }: {
-  orgId: string;
-  sites: Site[];
-  onClose: () => void;
-  onCreated: () => void;
-}) {
-  const [name, setName] = useState('');
-  const [siteId, setSiteId] = useState(sites[0]?.id || '');
-  const [saving, setSaving] = useState(false);
-
-  const submit = async () => {
-    if (!name.trim() || !siteId) return;
-    setSaving(true);
-    await fetch('/api/scheduling/rule-sets', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ organization_id: orgId, site_id: siteId, name: name.trim() }),
-    });
-    onCreated();
-  };
-
-  const inputStyle: React.CSSProperties = {
-    width: '100%', padding: '10px 12px', borderRadius: 8,
-    border: '1px solid var(--border)', background: 'var(--bg-deep)',
-    color: 'var(--text)', fontSize: 14, marginBottom: 12,
-  };
-  const labelStyle: React.CSSProperties = {
-    fontSize: 11, color: 'var(--text-muted)', display: 'block',
-    marginBottom: 5, fontWeight: 600, letterSpacing: 0.5,
-  };
-
-  return (
-    <Modal
-      open
-      onClose={onClose}
-      title="Create Rule Set"
-      width={460}
-      footer={
-        <>
-          <Button variant="secondary" onClick={onClose}>Cancel</Button>
-          <Button onClick={submit} disabled={saving || !name.trim() || !siteId}>
-            {saving ? 'Creating...' : 'Create'}
-          </Button>
-        </>
-      }
-    >
-      <label style={labelStyle}>Rule Set Name *</label>
-      <input style={inputStyle} placeholder="e.g. Paoli Hospital Main Rules" value={name} onChange={e => setName(e.target.value)} />
-
-      <label style={labelStyle}>Site *</label>
-      <select value={siteId} onChange={e => setSiteId(e.target.value)} style={{ ...inputStyle, cursor: 'pointer' }}>
-        {sites.length === 0 && <option value="">No sites available</option>}
-        {sites.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
-      </select>
-    </Modal>
+    <RulesClient
+      initialRuleSets={ruleSets}
+      initialSites={sites}
+      orgId={orgId}
+      loadError={loadError}
+    />
   );
 }

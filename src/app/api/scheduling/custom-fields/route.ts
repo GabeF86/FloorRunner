@@ -1,31 +1,22 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { sbSchedulingServer } from '@/lib/supabaseScheduling';
 import { validateDefinition } from '@/lib/validation/customFields';
+import { listCustomFields } from '@/lib/queries/config';
 
 // GET /api/scheduling/custom-fields?org_id=...&include_inactive=true
 // Never prerender — this route hits Supabase per request.
 export const dynamic = 'force-dynamic';
 
 export async function GET(req: NextRequest) {
-  const sb = sbSchedulingServer();
+  // Query logic lives in lib/queries/config.ts so the /settings server
+  // component that renders this same list cannot drift from it.
   const { searchParams } = new URL(req.url);
-  const orgId = searchParams.get('org_id');
-  if (!orgId) return NextResponse.json({ error: 'org_id is required' }, { status: 400 });
-
-  let query = sb
-    .from('provider_custom_field_definitions')
-    .select('*')
-    .eq('organization_id', orgId)
-    .order('display_order')
-    .order('created_at');
-
-  if (searchParams.get('include_inactive') !== 'true') {
-    query = query.eq('is_active', true);
-  }
-
-  const { data, error } = await query;
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-  return NextResponse.json(data);
+  const result = await listCustomFields(sbSchedulingServer(), {
+    orgId: searchParams.get('org_id'),
+    includeInactive: searchParams.get('include_inactive') === 'true',
+  });
+  if (!result.ok) return NextResponse.json({ error: result.error }, { status: result.status });
+  return NextResponse.json(result.rows);
 }
 
 export async function POST(req: NextRequest) {

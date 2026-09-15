@@ -1,20 +1,18 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { sbSchedulingServer } from '@/lib/supabaseScheduling';
 import { ShiftTypeUpsertSchema, formatZodIssues } from '@/lib/validation/scheduling';
+import { listShiftTypes } from '@/lib/queries/config';
 
 // Never prerender — this route hits Supabase per request.
 export const dynamic = 'force-dynamic';
 
 export async function GET(req: NextRequest) {
-  const sb = sbSchedulingServer();
+  // Query logic lives in lib/queries/config.ts so the /sites server component,
+  // which counts these per site, cannot drift from what this route returns.
   const siteId = new URL(req.url).searchParams.get('site_id');
-
-  let query = sb.from('shift_types').select('*').order('display_order');
-  if (siteId) query = query.eq('site_id', siteId);
-
-  const { data, error } = await query;
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-  return NextResponse.json(data);
+  const result = await listShiftTypes(sbSchedulingServer(), siteId);
+  if (!result.ok) return NextResponse.json({ error: result.error }, { status: result.status });
+  return NextResponse.json(result.rows);
 }
 
 export async function POST(req: NextRequest) {

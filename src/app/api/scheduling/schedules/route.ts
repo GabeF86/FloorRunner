@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { sbSchedulingServer } from '@/lib/supabaseScheduling';
 import { derivedDayTypeFor, slateForDayType, templateSlotCount } from '@/lib/templateSlots';
 import { defaultScheduleName, parseScheduleName } from '@/lib/scheduleName';
-import { loadLastActivity, withLastActivity, type ScheduleActivityRow } from '@/lib/scheduleActivity';
+import { listSchedules, scheduleFiltersFrom } from '@/lib/queries/roster';
 import {
   HOLIDAY_CALL_TYPE,
   planHolidayCallSeeds,
@@ -14,44 +14,13 @@ import {
 export const dynamic = 'force-dynamic';
 
 export async function GET(req: NextRequest) {
-  const sb = sbSchedulingServer();
+  // Query logic lives in lib/queries/roster.ts so the server component that
+  // renders this same list cannot drift from it.
   const { searchParams } = new URL(req.url);
-
-  let query = sb
-    .from('schedules')
-    .select('*, sites(name, short_name)')
-    .order('date_start', { ascending: false });
-
-  const orgId = searchParams.get('org_id');
-  if (orgId) query = query.eq('organization_id', orgId);
-
-  const siteId = searchParams.get('site_id');
-  if (siteId) query = query.eq('site_id', siteId);
-
-  const status = searchParams.get('status');
-  if (status) query = query.eq('status', status);
-
-  const scheduleType = searchParams.get('schedule_type');
-  if (scheduleType) query = query.eq('schedule_type', scheduleType);
-
-  const providerGroup = searchParams.get('provider_group');
-  if (providerGroup) query = query.eq('provider_group', providerGroup);
-
-  const { data, error } = await query;
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-
-  // `last_activity_at` — the last time this schedule's CONTENT changed, which
-  // is emphatically not `schedules.updated_at` (that column only moves when
-  // the row itself does; generation and grid edits write assignments). ONE
-  // extra round trip for the whole list — the patch39 RPC folds all four
-  // sources in Postgres, because this project has PostgREST aggregates
-  // disabled. Degrades to the schedule row (with a warning) if the function
-  // isn't there or the call fails; the list always renders. See
-  // lib/scheduleActivity.ts for the derivation and the write-path evidence.
-  const rows = (data as ScheduleActivityRow[]) || [];
-  const { lastActivityById, warnings } = await loadLastActivity(sb, rows);
-  for (const w of warnings) console.warn(`[schedules] ${w}`);
-  return NextResponse.json(withLastActivity(rows, lastActivityById));
+  const result = await listSchedules(sbSchedulingServer(), scheduleFiltersFrom(searchParams));
+  if (!result.ok) return NextResponse.json({ error: result.error }, { status: result.status });
+  for (const w of result.warnings ?? []) console.warn(`[schedules] ${w}`);
+  return NextResponse.json(result.rows);
 }
 
 export async function POST(req: NextRequest) {

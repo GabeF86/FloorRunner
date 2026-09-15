@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { sbSchedulingServer } from '@/lib/supabaseScheduling';
+import { listProviders, providerFiltersFrom } from '@/lib/queries/roster';
 import {
   buildInitials,
   buildShortDisplay,
@@ -12,95 +13,12 @@ import {
 export const dynamic = 'force-dynamic';
 
 export async function GET(req: NextRequest) {
-  const sb = sbSchedulingServer();
+  // Query logic lives in lib/queries/roster.ts so the server component that
+  // renders this same list cannot drift from it.
   const { searchParams } = new URL(req.url);
-  const orgId = searchParams.get('org_id');
-
-  // NOTE: don't join provider_employment_profiles in the main query —
-  // PostgREST join rows can come back empty intermittently after writes.
-  // We fetch profiles in a second query and attach them in application code.
-  let query = sb.from('providers').select('*').order('last_name');
-  if (orgId) query = query.eq('organization_id', orgId);
-
-  const status = searchParams.get('status');
-  if (status) {
-    if (!(PROVIDER_STATUSES as readonly string[]).includes(status)) {
-      return NextResponse.json({ error: `status must be one of: ${PROVIDER_STATUSES.join(', ')}` }, { status: 400 });
-    }
-    query = query.eq('status', status);
-  }
-
-  const providerType = searchParams.get('provider_type');
-  if (providerType) {
-    if (!(PROVIDER_TYPES as readonly string[]).includes(providerType)) {
-      return NextResponse.json({ error: `provider_type must be one of: ${PROVIDER_TYPES.join(', ')}` }, { status: 400 });
-    }
-    query = query.eq('provider_type', providerType);
-  }
-
-  const search = searchParams.get('search');
-  if (search) {
-    // Escape PostgREST OR-filter reserved chars so a name with a comma/paren
-    // can't break out of the filter expression.
-    const safe = search.replace(/[,()%]/g, ' ').trim();
-    if (safe) query = query.or(`first_name.ilike.%${safe}%,last_name.ilike.%${safe}%`);
-  }
-
-  // Filter by site credentialing — restricts to providers with an active
-  // credentials row for the given site.
-  const credentialedSiteId = searchParams.get('credentialed_site_id');
-  if (credentialedSiteId) {
-    const { data: credRows, error: credErr } = await sb
-      .from('provider_site_credentials')
-      .select('provider_id')
-      .eq('site_id', credentialedSiteId)
-      .eq('is_active', true)
-      .eq('credentialed', true);
-    if (credErr) return NextResponse.json({ error: credErr.message }, { status: 500 });
-    const ids = (credRows || []).map((r: { provider_id: string }) => r.provider_id);
-    if (ids.length === 0) return NextResponse.json([]);
-    query = query.in('id', ids);
-  }
-
-  // Filter by HOME site. It lives on provider_employment_profiles, which is
-  // fetched below rather than joined, so this resolves ids first — the same
-  // shape the credentialing filter above uses.
-  //
-  // Home site and credentialing are different questions and both are offered:
-  // a provider is credentialed at several sites but homed at one, so "who
-  // belongs to Paoli" and "who may work at Paoli" give different answers.
-  const homeSiteId = searchParams.get('home_site_id');
-  if (homeSiteId) {
-    const { data: homeRows, error: homeErr } = await sb
-      .from('provider_employment_profiles')
-      .select('provider_id')
-      .eq('home_site_id', homeSiteId);
-    if (homeErr) return NextResponse.json({ error: homeErr.message }, { status: 500 });
-    const ids = (homeRows || []).map((r: { provider_id: string }) => r.provider_id);
-    if (ids.length === 0) return NextResponse.json([]);
-    query = query.in('id', ids);
-  }
-
-  const { data: providers, error } = await query;
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-  if (!providers || providers.length === 0) return NextResponse.json([]);
-
-  // Attach employment profiles via a separate query keyed by provider_id
-  const providerIds = providers.map((p: { id: string }) => p.id);
-  const { data: profiles } = await sb
-    .from('provider_employment_profiles')
-    .select('*')
-    .in('provider_id', providerIds);
-  const profileByProvider = new Map<string, unknown>();
-  for (const prof of (profiles || []) as Array<{ provider_id: string }>) {
-    profileByProvider.set(prof.provider_id, prof);
-  }
-
-  const withProfiles = (providers as Array<{ id: string }>).map(p => ({
-    ...p,
-    provider_employment_profiles: profileByProvider.has(p.id) ? [profileByProvider.get(p.id)] : [],
-  }));
-  return NextResponse.json(withProfiles);
+  const result = await listProviders(sbSchedulingServer(), providerFiltersFrom(searchParams));
+  if (!result.ok) return NextResponse.json({ error: result.error }, { status: result.status });
+  return NextResponse.json(result.rows);
 }
 
 export async function POST(req: NextRequest) {

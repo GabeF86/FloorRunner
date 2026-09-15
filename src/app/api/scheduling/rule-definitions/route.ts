@@ -1,25 +1,18 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { sbSchedulingServer } from '@/lib/supabaseScheduling';
 import { RuleDefinitionUpsertSchema, formatZodIssues } from '@/lib/validation/scheduling';
+import { listRuleDefinitions } from '@/lib/queries/config';
 
 // Never prerender — this route hits Supabase per request.
 export const dynamic = 'force-dynamic';
 
 export async function GET(req: NextRequest) {
-  const sb = sbSchedulingServer();
+  // Query logic lives in lib/queries/config.ts so the /rules server component,
+  // which reads these to count rules per rule set, cannot drift from it.
   const ruleSetId = new URL(req.url).searchParams.get('rule_set_id');
-
-  let query = sb
-    .from('rule_definitions')
-    .select('*')
-    .order('priority_rank')
-    .order('created_at');
-
-  if (ruleSetId) query = query.eq('rule_set_id', ruleSetId);
-
-  const { data, error } = await query;
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-  return NextResponse.json(data);
+  const result = await listRuleDefinitions(sbSchedulingServer(), ruleSetId);
+  if (!result.ok) return NextResponse.json({ error: result.error }, { status: result.status });
+  return NextResponse.json(result.rows);
 }
 
 export async function POST(req: NextRequest) {

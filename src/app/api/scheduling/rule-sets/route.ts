@@ -1,28 +1,17 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { sbSchedulingServer } from '@/lib/supabaseScheduling';
+import { listRuleSets, ruleSetFiltersFrom } from '@/lib/queries/config';
 
 // Never prerender — this route hits Supabase per request.
 export const dynamic = 'force-dynamic';
 
 export async function GET(req: NextRequest) {
-  const sb = sbSchedulingServer();
-  const url = new URL(req.url);
-  const orgId = url.searchParams.get('org_id');
-  const siteId = url.searchParams.get('site_id');
-  const status = url.searchParams.get('status');
-
-  let query = sb
-    .from('rule_sets')
-    .select('*, sites(name)')
-    .order('created_at', { ascending: false });
-
-  if (orgId) query = query.eq('organization_id', orgId);
-  if (siteId) query = query.eq('site_id', siteId);
-  if (status) query = query.eq('status', status);
-
-  const { data, error } = await query;
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-  return NextResponse.json(data);
+  // Query logic lives in lib/queries/config.ts so the /rules server component
+  // that renders this same list cannot drift from it.
+  const { searchParams } = new URL(req.url);
+  const result = await listRuleSets(sbSchedulingServer(), ruleSetFiltersFrom(searchParams));
+  if (!result.ok) return NextResponse.json({ error: result.error }, { status: result.status });
+  return NextResponse.json(result.rows);
 }
 
 export async function POST(req: NextRequest) {
