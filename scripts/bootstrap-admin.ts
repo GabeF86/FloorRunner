@@ -21,9 +21,22 @@
  */
 
 import { createClient } from '@supabase/supabase-js';
+import { readFileSync } from 'fs';
+import { join } from 'path';
 import { createInvitation } from '../src/lib/auth/inviteService';
 
+/** .env.local, without adding a dotenv dependency for a one-off script. */
+function loadEnv() {
+  try {
+    for (const line of readFileSync(join(__dirname, '..', '.env.local'), 'utf8').split('\n')) {
+      const m = /^([A-Z0-9_]+)\s*=\s*(.*)$/.exec(line.trim());
+      if (m && !process.env[m[1]]) process.env[m[1]] = m[2].replace(/^["']|["']$/g, '');
+    }
+  } catch { /* env may already be present */ }
+}
+
 async function main() {
+  loadEnv();
   const [providerId, email, originArg] = process.argv.slice(2);
   if (!providerId || !email) {
     console.error('Usage: npx tsx scripts/bootstrap-admin.ts <provider-id> <email> [origin]');
