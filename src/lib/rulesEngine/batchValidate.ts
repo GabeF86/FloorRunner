@@ -19,6 +19,7 @@
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type SupabaseClient = any;
 import { addDays, NEIGHBOR_WINDOW_DAYS, AVAIL_WINDOW_DAYS } from './shared';
+import { readAllRows } from '@/lib/pagedRead';
 import { embedArray } from '@/lib/embed';
 // Function-level-only cycle (commit.ts imports batchValidateVersion/chunk from
 // here); nothing crosses at module top level, so evaluation order is safe.
@@ -94,16 +95,31 @@ export async function batchValidateVersion(
 
   // ── 1. All slots + assignment rows for the version ─────────────────────────
   dbQueries++;
-  const { data: slotData, error: slotErr } = await sb
-    .from('schedule_slots')
-    .select(
-      'id, site_id, slot_date, shift_type_id, provider_group, derived_day_type, schedule_version_id, required_count, assignments(id, provider_id, assignment_status)',
-    )
-    .eq('schedule_version_id', scheduleVersionId);
-  if (slotErr) {
-    errors.push(`batch validation: validation-unavailable — slot load failed: ${slotErr.message}`);
+  // PAGED, and this one carries clinical invariant 6 directly. An un-ranged
+  // select silently caps at 1000 rows, and assignments on slots past the cap
+  // would never enter `targets` — so they produce no results, `skipped`
+  // computes to 0 because it is measured against the truncated set, nothing
+  // is pushed to `errors`, and every caller reads the pass as "this version
+  // validated clean". A PTO collision or a cross-site double-booking on the
+  // tail of the block would be invisible everywhere. Validation must never
+  // silently report clean; a short read now fails the whole pass instead.
+  const slotsRead = await readAllRows<RawSlotRow>(
+    (from, to) => sb
+      .from('schedule_slots')
+      .select(
+        'id, site_id, slot_date, shift_type_id, provider_group, derived_day_type, schedule_version_id, required_count, assignments(id, provider_id, assignment_status)',
+        { count: 'exact' },
+      )
+      .eq('schedule_version_id', scheduleVersionId)
+      .order('id')
+      .range(from, to),
+    'slot load',
+  );
+  if (slotsRead.error) {
+    errors.push(`batch validation: validation-unavailable — ${slotsRead.error}`);
     return { results: [], dbQueries, errors, written: 0 };
   }
+  const slotData = slotsRead.rows;
   // UNIQUE(schedule_slot_id) → PostgREST returns each slot's assignments
   // embed as a single OBJECT (or null) against the live DB; dev fakes return
   // arrays. Normalize once here — targets and sameDayFor both walk it.

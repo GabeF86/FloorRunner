@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { MAX_PAGES, PAGE_SIZE } from '@/lib/pagedRead';
 import { sbSchedulingServer } from '@/lib/supabaseScheduling';
 import { embedArray } from '@/lib/embed';
 import { CallPatternDocSchema, type CallPatternDoc } from '@/lib/rulesEngine/callPattern';
@@ -62,14 +63,48 @@ export async function GET(
   // fallback is exact for the DB it serves. This is what keeps the grid
   // rendering in the window between a code deploy and its patch being applied
   // — degraded (the dropped feature is invisible), never a 500.
-  const selectSlots = (columns: string) => sb
-    .from('schedule_slots')
-    .select(columns)
-    .eq('schedule_version_id', version.id)
-    .order('slot_date')
-    .order('slot_index') as unknown as Promise<{
-      data: unknown; error: { message: string; code?: string } | null;
-    }>;
+  // PAGED. An un-ranged select silently caps at 1000 rows, and this read is
+  // ordered by slot_date — so the grid would simply stop rendering partway
+  // through a long block, with no error and no gap to notice.
+  //
+  // Paged inline rather than through lib/pagedRead because the column-fallback
+  // ladder below dispatches on the error CODE ("this column does not exist"
+  // vs a real failure), and the shared helper flattens errors to a string.
+  // Here the error object is handed back untouched.
+  const selectSlots = async (columns: string): Promise<{
+    data: unknown; error: { message: string; code?: string } | null;
+  }> => {
+    const rows: unknown[] = [];
+    for (let page = 0; page < MAX_PAGES; page++) {
+      const from = page * PAGE_SIZE;
+      const res = await sb
+        .from('schedule_slots')
+        .select(columns, { count: 'exact' })
+        .eq('schedule_version_id', version.id)
+        .order('slot_date')
+        .order('slot_index')
+        .order('id')
+        .range(from, from + PAGE_SIZE - 1) as unknown as {
+          data: unknown; error: { message: string; code?: string } | null; count: number | null;
+        };
+
+      if (res.error) return { data: null, error: res.error };
+
+      const batch = Array.isArray(res.data) ? res.data : [];
+      rows.push(...batch);
+
+      // A missing count cannot be distinguished from a complete read, so it is
+      // treated as a failure rather than quietly trusted.
+      if (res.count == null) {
+        return { data: null, error: { message: 'slot row count unavailable (possible truncation)' } };
+      }
+      if (rows.length >= res.count) return { data: rows, error: null };
+      if (batch.length === 0) {
+        return { data: null, error: { message: `slot read stalled at ${rows.length} of ${res.count} rows` } };
+      }
+    }
+    return { data: null, error: { message: `slot read exceeded the ${MAX_PAGES}-page budget` } };
+  };
 
   let slotRes = await selectSlots(GRID_SLOT_COLUMNS);
   if (slotRes.error && isMissingColumnErr(slotRes.error)) {

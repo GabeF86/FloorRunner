@@ -31,7 +31,17 @@ export function makeFakeSupabase(
     const cfg = tables[table];
     const resolve = (): { data: unknown; error: unknown; count: number | null } => {
       const c: Canned = typeof cfg === 'function' ? cfg(filters) : (cfg ?? { data: [], error: null });
-      return { data: c.data ?? null, error: c.error ?? null, count: c.count ?? null };
+      // An unspecified count defaults to the row count, i.e. a COMPLETE read —
+      // which is what PostgREST reports for any select under its 1000-row cap.
+      // Before this the fake returned count: null, and paged readers
+      // (lib/pagedRead) correctly refuse to trust an array with no count, so
+      // every consumer looked broken under test while being right in
+      // production. A test that wants to simulate TRUNCATION still sets
+      // `count` explicitly above data.length.
+      const count = c.count !== undefined
+        ? c.count
+        : (Array.isArray(c.data) ? c.data.length : null);
+      return { data: c.data ?? null, error: c.error ?? null, count };
     };
     const rec = (method: string, args: unknown[]) => {
       filters.push({ method, args });

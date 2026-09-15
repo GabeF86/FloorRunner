@@ -181,7 +181,8 @@ interface RecordedCall { table?: string; fn?: string; method: string; args: unkn
 
 /**
  * Minimal chainable recording fake mirroring genContext's real call shapes:
- *   from().select().eq().in().or().lt().lte().gte().neq().order().single()/.maybeSingle()
+ *   from().select().eq().in().or().lt().lte().gte().neq().order().range().limit().is()
+ *     .single()/.maybeSingle()
  *   rpc(fn, params)
  * Every method records {table/fn, method, args}. Terminal awaits resolve the
  * table's canned {data,error} (computed lazily so a fn-config can branch on the
@@ -195,16 +196,25 @@ function makeFakeSupabase(config: { tables?: Record<string, TableCfg>; rpc?: Rec
   function makeBuilder(table: string) {
     const filters: Filter[] = [];
     const cfg = tables[table];
-    const resolve = (): { data: unknown; error: unknown } => {
+    const resolve = (): { data: unknown; error: unknown; count: number | null } => {
       const c: Canned = typeof cfg === 'function' ? cfg(filters) : (cfg ?? { data: [], error: null });
-      return { data: c.data ?? null, error: c.error ?? null };
+      // `count` defaults to the row count — a COMPLETE read, which is what
+      // PostgREST reports for any select under its 1000-row cap. Paged readers
+      // (lib/pagedRead) refuse to trust an array with no count, so a fake that
+      // omitted it would make every paged consumer look broken under test
+      // while being correct in production. A test simulating TRUNCATION sets
+      // `count` explicitly above data.length.
+      const count = (c as { count?: number | null }).count !== undefined
+        ? (c as { count?: number | null }).count ?? null
+        : (Array.isArray(c.data) ? c.data.length : null);
+      return { data: c.data ?? null, error: c.error ?? null, count };
     };
     const rec = (method: string, args: unknown[]) => {
       filters.push({ method, args });
       calls.push({ table, method, args });
     };
     const builder: Record<string, unknown> = {};
-    for (const m of ['select', 'eq', 'neq', 'in', 'or', 'lt', 'lte', 'gte', 'order']) {
+    for (const m of ['select', 'eq', 'neq', 'in', 'or', 'lt', 'lte', 'gte', 'order', 'range', 'limit', 'is']) {
       builder[m] = (...args: unknown[]) => { rec(m, args); return builder; };
     }
     builder.single = (...args: unknown[]) => { rec('single', args); return Promise.resolve(resolve()); };

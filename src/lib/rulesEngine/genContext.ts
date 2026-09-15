@@ -17,6 +17,7 @@ import {
   buildPrePtoByThursday,
   type SupabaseClient,
 } from './shared';
+import { readAllRows } from '@/lib/pagedRead';
 
 import type {
   GenerationContext,
@@ -219,12 +220,30 @@ export async function loadGenerationContext(
 
   // ── 1. Preload schedule + site + slots ────────────────────────────────────
   countQ();
-  const { data: rawSlots, error: slotsErr } = await sb
-    .from('schedule_slots')
-    .select('id, slot_date, shift_type_id, provider_group, required_count, locked, derived_day_type, site_id, shift_types(code, category), assignments(id, provider_id, assignment_status, source_type)')
-    .eq('schedule_version_id', scheduleVersionId)
-    .order('slot_date')
-    .order('slot_index');
+  // PAGED. An un-ranged select silently caps at 1000 rows (verified live:
+  // schedule_slots holds 1,225 and a bare select returns exactly 1,000 with
+  // error null). Because this read is ordered by slot_date, truncation would
+  // remove the TAIL of the block — blockMax lands weeks early, the obligation
+  // census divides by a short slot count, and the cross-site window shrinks.
+  // Nothing about that surfaces. The largest version today is 717 slots, so
+  // this is not currently biting; Paoli's 11-week block is 717, so a block
+  // past ~15 weeks crosses the cap.
+  const slotsRead = await readAllRows<Record<string, unknown>>(
+    (from, to) => sb
+      .from('schedule_slots')
+      .select(
+        'id, slot_date, shift_type_id, provider_group, required_count, locked, derived_day_type, site_id, shift_types(code, category), assignments(id, provider_id, assignment_status, source_type)',
+        { count: 'exact' },
+      )
+      .eq('schedule_version_id', scheduleVersionId)
+      .order('slot_date')
+      .order('slot_index')
+      .order('id')
+      .range(from, to),
+    'Failed to load slots',
+  );
+  const rawSlots = slotsRead.rows;
+  const slotsErr = slotsRead.error ? { message: slotsRead.error } : null;
 
   if (slotsErr || !rawSlots || rawSlots.length === 0) {
     return {
