@@ -125,7 +125,30 @@ export interface MixProviderRef {
   provider_type?: string | null;
   first_name?: string | null;
   last_name?: string | null;
+  preferred_display_name?: string | null;
   short_display_name?: string | null;
+}
+
+/**
+ * How a person is named on a staffing chip.
+ *
+ * The REAL NAME, not `short_display_name`. That column holds two different
+ * things: 67 providers carry four-letter grid codes (AHMB, ALVE, BANR) from an
+ * older import, 15 carry initial-style names (A.Jones, S.Vu), and 206 carry
+ * nothing. Preferring it made the same card read as codes for some people and
+ * names for others, and looked like the roster upload had lost names — it had
+ * not; every one of the 288 has a first and last name.
+ *
+ * The codes are a deliberate schedule-code naming scheme and are right where
+ * space is tight, which is the grid. A chip has room to spell the name, so it
+ * does. short_display_name survives only as a last resort, ahead of nothing.
+ */
+export function providerDisplayName(p: MixProviderRef): string {
+  const full = [p.first_name, p.last_name].filter(Boolean).join(' ').trim();
+  return p.preferred_display_name?.trim()
+    || full
+    || p.short_display_name?.trim()
+    || 'Unnamed provider';
 }
 
 export interface MixRow {
@@ -167,9 +190,7 @@ export function summarizeMix(rows: readonly MixRow[]): ProviderMix {
     // A partial call taker reads the same as a call taker on a chip — both
     // take call, and the chip answers "do they?" not "how much?".
     const call = !!r.call_taker || !!r.partial_call_taker;
-    const name = p.short_display_name
-      || [p.first_name, p.last_name].filter(Boolean).join(' ')
-      || 'Unnamed provider';
+    const name = providerDisplayName(p);
     const id = p.id ?? '';
     const isCrna = type === 'crna' || type === 'aa';
 
@@ -586,7 +607,8 @@ export async function loadDashboardData(
     .from('provider_employment_profiles')
     .select(
       'fte_value, max_weekly_hours, call_taker, partial_call_taker, is_day_doc, employment_status, '
-      + 'providers!inner(id, provider_type, status, organization_id, first_name, last_name, short_display_name)',
+      + 'providers!inner(id, provider_type, status, organization_id, first_name, last_name, '
+      + 'preferred_display_name, short_display_name)',
       { count: 'exact' })
     .eq('providers.status', 'active');
   if (siteId) mixQ = mixQ.eq('home_site_id', siteId);

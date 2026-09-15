@@ -17,6 +17,7 @@ import {
   attentionFor,
   loadDashboardData,
   summarizeMix,
+  providerDisplayName,
   type MixRow,
   type TodaysCallSlotRow,
   type AttentionSlotRow,
@@ -931,5 +932,62 @@ describe('summarizeMix — day doc weekly hours', () => {
 
   it('coerces the numeric-as-string PostgREST can return', () => {
     expect(summarizeMix([row({ max_weekly_hours: '30' })]).dayDocs[0].weeklyHours).toBe(30);
+  });
+});
+
+describe('providerDisplayName — names, not grid codes', () => {
+  it('prefers the preferred display name', () => {
+    expect(providerDisplayName({
+      preferred_display_name: 'Bilal Ahmad',
+      first_name: 'Bilal', last_name: 'Ahmad',
+      short_display_name: 'AHMB',
+    })).toBe('Bilal Ahmad');
+  });
+
+  it('never shows a four-letter grid code when a real name exists', () => {
+    // 67 providers carry codes like AHMB / ALVE / BANR from an older import.
+    // Preferring them made one card read as codes for some people and names
+    // for others, which looked like the roster upload had lost names.
+    expect(providerDisplayName({
+      first_name: 'Eduardo', last_name: 'Alvarado', short_display_name: 'ALVE',
+    })).toBe('Eduardo Alvarado');
+  });
+
+  it('falls back to first + last when there is no preferred name', () => {
+    expect(providerDisplayName({ first_name: 'Ada', last_name: 'Lovelace' }))
+      .toBe('Ada Lovelace');
+  });
+
+  it('uses the short name only when there is no real name at all', () => {
+    expect(providerDisplayName({ short_display_name: 'BANR' })).toBe('BANR');
+  });
+
+  it('ignores a blank preferred name rather than rendering empty', () => {
+    expect(providerDisplayName({
+      preferred_display_name: '   ', first_name: 'Ada', last_name: 'Lovelace',
+    })).toBe('Ada Lovelace');
+  });
+
+  it('copes with only a last name', () => {
+    expect(providerDisplayName({ last_name: 'Lovelace' })).toBe('Lovelace');
+  });
+
+  it('has a last resort', () => {
+    expect(providerDisplayName({})).toBe('Unnamed provider');
+  });
+});
+
+describe('summarizeMix — chips use real names', () => {
+  it('names a chip from the person, not their grid code', () => {
+    const mix = summarizeMix([{
+      fte_value: 1, max_weekly_hours: null, call_taker: true,
+      partial_call_taker: false, is_day_doc: false, employment_status: 'full_time',
+      providers: {
+        id: 'a', provider_type: 'physician',
+        first_name: 'Eduardo', last_name: 'Alvarado',
+        preferred_display_name: 'Eduardo Alvarado', short_display_name: 'ALVE',
+      },
+    } as MixRow]);
+    expect(mix.physicians[0].name).toBe('Eduardo Alvarado');
   });
 });
