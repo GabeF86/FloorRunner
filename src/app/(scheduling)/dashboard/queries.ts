@@ -131,6 +131,7 @@ export interface MixProviderRef {
 export interface MixRow {
   fte_value: number | string | null;
   call_taker: boolean | null;
+  partial_call_taker: boolean | null;
   is_day_doc: boolean | null;
   employment_status: string | null;
   providers: MixProviderRef | MixProviderRef[] | null;
@@ -152,6 +153,7 @@ export function summarizeMix(rows: readonly MixRow[]): ProviderMix {
     callTakerFte: 0, callTakerCount: 0,
     crnaFte: 0, crnaCount: 0,
     dayDocs: [], perDiem: 0,
+    physicians: [], crnas: [], perDiems: [],
   };
 
   for (const r of rows) {
@@ -160,24 +162,38 @@ export function summarizeMix(rows: readonly MixRow[]): ProviderMix {
     const type = p.provider_type ?? '';
     const fteNum = Number(r.fte_value);
     const fte = Number.isFinite(fteNum) && fteNum > 0 ? fteNum : 0;
+    const perDiem = r.employment_status === 'per_diem';
+    // A partial call taker reads the same as a call taker on a chip — both
+    // take call, and the chip answers "do they?" not "how much?".
+    const call = !!r.call_taker || !!r.partial_call_taker;
+    const name = p.short_display_name
+      || [p.first_name, p.last_name].filter(Boolean).join(' ')
+      || 'Unnamed provider';
+    const id = p.id ?? '';
+    const isCrna = type === 'crna' || type === 'aa';
 
     // PHYSICIAN call takers only — see ProviderMix.callTakerFte.
     if (r.call_taker && type === 'physician') { mix.callTakerFte += fte; mix.callTakerCount++; }
     // AAs work the CRNA slate (slotCandidates admits both for a 'crna' slot),
     // so they are counted with them rather than vanishing from every figure.
-    if (type === 'crna' || type === 'aa') { mix.crnaFte += fte; mix.crnaCount++; }
-    if (r.is_day_doc) {
-      mix.dayDocs.push({
-        id: p.id ?? '',
-        name: p.short_display_name
-          || [p.first_name, p.last_name].filter(Boolean).join(' ')
-          || 'Unnamed provider',
-      });
+    if (isCrna) { mix.crnaFte += fte; mix.crnaCount++; }
+    if (r.is_day_doc) mix.dayDocs.push({ id, name });
+
+    if (perDiem) {
+      mix.perDiem++;
+      mix.perDiems.push({ id, name, fte: null, call });
+    } else if (type === 'physician') {
+      mix.physicians.push({ id, name, fte, call });
+    } else if (isCrna) {
+      mix.crnas.push({ id, name, fte, call });
     }
-    if (r.employment_status === 'per_diem') mix.perDiem++;
   }
 
-  mix.dayDocs.sort((a, b) => a.name.localeCompare(b.name));
+  const byName = (a: { name: string }, b: { name: string }) => a.name.localeCompare(b.name);
+  mix.dayDocs.sort(byName);
+  mix.physicians.sort(byName);
+  mix.crnas.sort(byName);
+  mix.perDiems.sort(byName);
 
   // ΣFTE accumulates float error across ~290 rows, so it is rounded — to TWO
   // decimals, not one. Quarter FTEs are real contracts here (0.75, 0.25), and
@@ -303,6 +319,16 @@ export type AttentionPanelEntry = AttentionEntry & { schedule_name: string; stat
 
 export interface DayDoc { id: string; name: string }
 
+/** One person in the staffing card. */
+export interface StaffChip {
+  id: string;
+  name: string;
+  /** null for per diems, whose FTE is 0 and carries no meaning. */
+  fte: number | null;
+  /** True for a call taker OR a partial call taker — both read "call". */
+  call: boolean;
+}
+
 /** The staffing figures the dashboards head with. */
 export interface ProviderMix {
   /**
@@ -322,6 +348,18 @@ export interface ProviderMix {
   dayDocs: DayDoc[];
   /** Headcount: anyone per diem, physician or CRNA. */
   perDiem: number;
+
+  /**
+   * The people behind each figure, as chips.
+   *
+   * Per diems are listed in `perDiems` ONLY, never among physicians or CRNAs.
+   * Their fte_value is 0 by definition here, so including them would print a
+   * wall of "0.0" chips that say nothing — which is also why their own chips
+   * carry no FTE at all.
+   */
+  physicians: StaffChip[];
+  crnas: StaffChip[];
+  perDiems: StaffChip[];
 }
 
 export interface DashboardData {
@@ -527,7 +565,7 @@ export async function loadDashboardData(
   let mixQ = sb
     .from('provider_employment_profiles')
     .select(
-      'fte_value, call_taker, is_day_doc, employment_status, '
+      'fte_value, call_taker, partial_call_taker, is_day_doc, employment_status, '
       + 'providers!inner(id, provider_type, status, organization_id, first_name, last_name, short_display_name)',
       { count: 'exact' })
     .eq('providers.status', 'active');

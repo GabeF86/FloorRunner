@@ -691,6 +691,7 @@ describe('summarizeMix', () => {
   const row = (over: Partial<MixRow> = {}): MixRow => ({
     fte_value: 1,
     call_taker: false,
+    partial_call_taker: false,
     is_day_doc: false,
     employment_status: 'full_time',
     providers: { provider_type: 'physician' },
@@ -797,7 +798,95 @@ describe('summarizeMix', () => {
   it('returns all zeros for an empty roster', () => {
     expect(summarizeMix([])).toEqual({
       callTakerFte: 0, callTakerCount: 0, crnaFte: 0, crnaCount: 0,
-      dayDocs: [], perDiem: 0,
+      dayDocs: [], perDiem: 0, physicians: [], crnas: [], perDiems: [],
     });
+  });
+});
+
+describe('summarizeMix — the staffing chips', () => {
+  const row = (over: Partial<MixRow> = {}): MixRow => ({
+    fte_value: 1,
+    call_taker: false,
+    partial_call_taker: false,
+    is_day_doc: false,
+    employment_status: 'full_time',
+    providers: { id: 'x', provider_type: 'physician', short_display_name: 'X' },
+    ...over,
+  } as MixRow);
+
+  it('puts each person in exactly one list', () => {
+    const mix = summarizeMix([
+      row({ providers: { id: 'a', provider_type: 'physician', short_display_name: 'Doc' } }),
+      row({ providers: { id: 'b', provider_type: 'crna', short_display_name: 'Nurse' } }),
+      row({ employment_status: 'per_diem', fte_value: 0,
+            providers: { id: 'c', provider_type: 'physician', short_display_name: 'Casual' } }),
+    ]);
+    expect(mix.physicians.map(p => p.name)).toEqual(['Doc']);
+    expect(mix.crnas.map(p => p.name)).toEqual(['Nurse']);
+    expect(mix.perDiems.map(p => p.name)).toEqual(['Casual']);
+  });
+
+  it('keeps a per diem OUT of the physician and CRNA lists', () => {
+    // Their FTE is 0 by definition, so listing them there would print a wall
+    // of meaningless "0.0" chips.
+    const mix = summarizeMix([
+      row({ employment_status: 'per_diem', fte_value: 0,
+            providers: { id: 'c', provider_type: 'crna', short_display_name: 'Casual' } }),
+    ]);
+    expect(mix.physicians).toEqual([]);
+    expect(mix.crnas).toEqual([]);
+    expect(mix.perDiems).toHaveLength(1);
+  });
+
+  it('gives per diem chips no FTE at all', () => {
+    const mix = summarizeMix([
+      row({ employment_status: 'per_diem', fte_value: 0.5,
+            providers: { id: 'c', provider_type: 'physician', short_display_name: 'Casual' } }),
+    ]);
+    expect(mix.perDiems[0].fte).toBeNull();
+  });
+
+  it('marks a call taker and a PARTIAL call taker alike', () => {
+    const mix = summarizeMix([
+      row({ call_taker: true, providers: { id: 'a', provider_type: 'physician', short_display_name: 'Full' } }),
+      row({ partial_call_taker: true, providers: { id: 'b', provider_type: 'physician', short_display_name: 'Partial' } }),
+      row({ providers: { id: 'c', provider_type: 'physician', short_display_name: 'Neither' } }),
+    ]);
+    expect(mix.physicians.find(p => p.name === 'Full')!.call).toBe(true);
+    expect(mix.physicians.find(p => p.name === 'Partial')!.call).toBe(true);
+    expect(mix.physicians.find(p => p.name === 'Neither')!.call).toBe(false);
+  });
+
+  it('marks a per diem who takes call', () => {
+    // Gorelick is exactly this: a per diem call taker at Paoli.
+    const mix = summarizeMix([
+      row({ employment_status: 'per_diem', fte_value: 0, call_taker: true,
+            providers: { id: 'g', provider_type: 'physician', short_display_name: 'Gorelick' } }),
+    ]);
+    expect(mix.perDiems[0].call).toBe(true);
+    expect(mix.perDiems[0].fte).toBeNull();
+  });
+
+  it('carries each chip FTE through unrounded', () => {
+    const mix = summarizeMix([
+      row({ fte_value: '0.75' as unknown as number,
+            providers: { id: 'a', provider_type: 'physician', short_display_name: 'A' } }),
+    ]);
+    expect(mix.physicians[0].fte).toBe(0.75);
+  });
+
+  it('sorts every list by name', () => {
+    const mix = summarizeMix([
+      row({ providers: { id: 'b', provider_type: 'physician', short_display_name: 'Zeta' } }),
+      row({ providers: { id: 'a', provider_type: 'physician', short_display_name: 'Alpha' } }),
+    ]);
+    expect(mix.physicians.map(p => p.name)).toEqual(['Alpha', 'Zeta']);
+  });
+
+  it('counts an AA among the CRNA chips', () => {
+    const mix = summarizeMix([
+      row({ providers: { id: 'a', provider_type: 'aa', short_display_name: 'AA' } }),
+    ]);
+    expect(mix.crnas.map(p => p.name)).toEqual(['AA']);
   });
 });

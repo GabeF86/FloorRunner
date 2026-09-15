@@ -15,7 +15,7 @@ import Link from 'next/link';
 import type { ReactNode } from 'react';
 import { sbSchedulingServer } from '@/lib/supabaseScheduling';
 import { PageHeader, Card, Badge, Table, EmptyState, Banner, Button, scheduleStatusTone } from '@/components/ui';
-import type { DashboardData, Panel, ProviderMix, ScheduleRow } from './queries';
+import type { DashboardData, Panel, ProviderMix, ScheduleRow, StaffChip } from './queries';
 import { formatShare, type SiteCallObligation } from '@/lib/siteCallObligation';
 import PhysicianPlannerCard from './PhysicianPlannerCard';
 import DashboardTallyCard from './DashboardTallyCard';
@@ -218,18 +218,82 @@ function AttentionPanel({ panel }: { panel: DashboardData['attention'] }) {
 
 // ── Staffing mix ───────────────────────────────────────────────────────────
 
-function MixFigure({ value, label, sub }: { value: string; label: string; sub?: string }) {
+function StaffChips({ people }: { people: StaffChip[] }) {
+  if (people.length === 0) {
+    return (
+      <div style={{ fontSize: 'var(--fs-sm)', color: 'var(--text-dim)', fontStyle: 'italic' }}>
+        None.
+      </div>
+    );
+  }
   return (
-    <div style={{ minWidth: 0 }}>
-      <div style={{ fontSize: 'var(--fs-xl)', fontWeight: 800, color: 'var(--text-strong)', letterSpacing: -0.5 }}>
-        {value}
+    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5 }}>
+      {people.map(p => (
+        <Link
+          key={p.id || p.name}
+          href={p.id ? `/providers/${p.id}` : '/providers'}
+          title={p.name}
+          style={{
+            display: 'inline-flex', alignItems: 'baseline', gap: 5,
+            padding: '3px 9px', borderRadius: 999, textDecoration: 'none',
+            border: '1px solid var(--border)', background: 'var(--bg-deep)',
+            fontSize: 'var(--fs-xs)', color: 'var(--text)', lineHeight: 1.6,
+          }}
+        >
+          <span style={{ fontWeight: 700 }}>{p.name}</span>
+          {/* Per diems carry no FTE — theirs is 0 and means nothing. */}
+          {p.fte != null && (
+            <span style={{ color: 'var(--text-muted)', fontVariantNumeric: 'tabular-nums' }}>
+              {formatFte(p.fte)}
+            </span>
+          )}
+          {p.call && (
+            <span style={{
+              fontWeight: 800, letterSpacing: 0.4, textTransform: 'uppercase',
+              fontSize: 9, color: 'var(--blue)',
+            }}>
+              call
+            </span>
+          )}
+        </Link>
+      ))}
+    </div>
+  );
+}
+
+/** 1 → "1.0", 0.75 → "0.75" — enough places to be exact, no more. */
+function formatFte(n: number): string {
+  return Number.isInteger(n * 100) && n * 100 % 10 !== 0 ? n.toFixed(2) : n.toFixed(1);
+}
+
+function StaffSection({
+  value, label, sub, people,
+}: {
+  value: string;
+  label: string;
+  sub?: string;
+  people: StaffChip[];
+}) {
+  return (
+    <div style={{ minWidth: 0, marginBottom: 'var(--space-4)' }}>
+      <div style={{
+        display: 'flex', alignItems: 'baseline', gap: 'var(--space-2)', flexWrap: 'wrap',
+        paddingBottom: 6, marginBottom: 'var(--space-2)',
+        borderBottom: '1px solid var(--border-faint)',
+      }}>
+        <span style={{ fontSize: 'var(--fs-lg)', fontWeight: 800, color: 'var(--text-strong)', letterSpacing: -0.3 }}>
+          {value}
+        </span>
+        <span style={{ fontSize: 'var(--fs-sm)', fontWeight: 600, color: 'var(--text-muted)' }}>
+          {label}
+        </span>
+        {sub && (
+          <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-dim)', marginLeft: 'auto' }}>
+            {sub}
+          </span>
+        )}
       </div>
-      <div style={{ fontSize: 'var(--fs-sm)', fontWeight: 600, color: 'var(--text-muted)', marginTop: 2 }}>
-        {label}
-      </div>
-      {sub && (
-        <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-dim)', marginTop: 2 }}>{sub}</div>
-      )}
+      <StaffChips people={people} />
     </div>
   );
 }
@@ -246,60 +310,38 @@ function StaffingCard({ panel, site }: { panel: Panel<ProviderMix>; site: boolea
       title="Staffing"
       actions={
         <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-dim)' }}>
-          {site ? 'providers homed at this site' : 'whole group'}
+          {site ? 'homed at this site' : 'whole group'}
         </span>
       }
     >
-      <div style={{
-        display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))',
-        gap: 'var(--space-4)',
-      }}>
-        {/* FTE for the two capacity questions, headcount for the two
-            who-are-they questions — they answer different things. */}
-        <MixFigure
-          value={String(m.callTakerFte)}
-          label="FTE call takers"
-          sub={`${m.callTakerCount} physician${m.callTakerCount === 1 ? '' : 's'}`}
-        />
-        <MixFigure
-          value={String(m.crnaFte)}
-          label="FTE CRNAs"
-          sub={`${m.crnaCount} ${m.crnaCount === 1 ? 'person' : 'people'}`}
-        />
-        <MixFigure value={String(m.perDiem)} label="Per diems" />
-      </div>
+      {/* Each headline figure sits with the people it is made of, so the number
+          is always checkable against the names beside it. */}
+      <StaffSection
+        value={String(m.callTakerFte)}
+        label="FTE call takers"
+        sub={`${m.callTakerCount} physician${m.callTakerCount === 1 ? '' : 's'} take call`}
+        people={m.physicians}
+      />
+      <StaffSection
+        value={String(m.crnaFte)}
+        label="FTE CRNAs"
+        sub={`${m.crnaCount} ${m.crnaCount === 1 ? 'person' : 'people'}`}
+        people={m.crnas}
+      />
+      <StaffSection
+        value={String(m.perDiem)}
+        label="Per diems"
+        sub="paid per shift — no FTE"
+        people={m.perDiems}
+      />
 
       {/* Day docs are NAMED, not counted — there are only a handful per site,
           and which people they are is the useful fact. */}
-      <div style={{ marginTop: 'var(--space-4)', paddingTop: 'var(--space-3)', borderTop: '1px solid var(--border-faint)' }}>
-        <div style={{
-          fontSize: 'var(--fs-xs)', textTransform: 'uppercase', letterSpacing: 1,
-          color: 'var(--text-dim)', fontWeight: 700, marginBottom: 'var(--space-2)',
-        }}>
-          Day docs{m.dayDocs.length > 0 && ` (${m.dayDocs.length})`}
-        </div>
-        {m.dayDocs.length === 0 ? (
-          <div style={{ fontSize: 'var(--fs-sm)', color: 'var(--text-dim)', fontStyle: 'italic' }}>
-            {site ? 'None homed at this site.' : 'None in the group.'}
-          </div>
-        ) : (
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-            {m.dayDocs.map(d => (
-              <Link
-                key={d.id || d.name}
-                href={d.id ? `/providers/${d.id}` : '/providers'}
-                style={{
-                  padding: '4px 10px', borderRadius: 999, textDecoration: 'none',
-                  border: '1px solid var(--border)', background: 'var(--bg-deep)',
-                  fontSize: 'var(--fs-sm)', fontWeight: 600, color: 'var(--text)',
-                }}
-              >
-                {d.name}
-              </Link>
-            ))}
-          </div>
-        )}
-      </div>
+      <StaffSection
+        value={String(m.dayDocs.length)}
+        label="Day docs"
+        people={m.dayDocs.map(d => ({ ...d, fte: null, call: false }))}
+      />
     </Card>
   );
 }
