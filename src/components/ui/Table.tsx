@@ -14,7 +14,11 @@ const SKELETON_WIDTHS = ['70%', '45%', '60%'];
 
 const TH_STYLE: React.CSSProperties = {
   textAlign: 'left',
-  padding: 'var(--space-2) var(--space-3)',
+  padding: 'var(--space-3)',
+  // Header row sits on a faint tint. A bare header separated only by a rule
+  // dissolves into the first data row once you are scanning, which is exactly
+  // when you need to know which column you are in.
+  background: 'var(--tint-surface-faint)',
   fontSize: 'var(--fs-xs)',
   fontWeight: 500,
   fontFamily: 'var(--font-mono), ui-monospace, monospace',
@@ -23,6 +27,11 @@ const TH_STYLE: React.CSSProperties = {
   color: 'var(--text-muted)',
   borderBottom: '1px solid var(--border)',
   whiteSpace: 'nowrap',
+  // Sticky so the columns stay readable on the long lists — providers is 288
+  // rows — without the page needing its own scroll container.
+  position: 'sticky',
+  top: 0,
+  zIndex: 1,
 };
 
 const TD_STYLE: React.CSSProperties = {
@@ -36,7 +45,12 @@ const TD_STYLE: React.CSSProperties = {
 export function Table({ headers, rows, empty, minWidth }: TableProps) {
   return (
     <div style={{ overflowX: 'auto' }}>
-      <table style={{ width: '100%', minWidth, borderCollapse: 'collapse' }}>
+      {/* separate, not collapse: a collapsed border drops the sticky header's
+          bottom rule when it scrolls, leaving the columns floating. */}
+      <table style={{
+        width: '100%', minWidth,
+        borderCollapse: 'separate', borderSpacing: 0,
+      }}>
         <thead>
           <tr>
             {headers.map((h, i) => (
