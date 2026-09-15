@@ -70,8 +70,20 @@ describe('buildInterpreterPrompt', () => {
     expect(p).toContain('Friday C1 — the same provider also takes C2 on Sunday.');
   });
 
-  it('lists the codes that exist, so it cannot invent one', () => {
-    expect(buildInterpreterPrompt(INPUT)).toContain('C1, C2, C3, D2');
+  it('lists the codes WITH their names, so a service can be named instead of a code', () => {
+    // Found end to end: asked to give Friday C1 the weekend "neuro" call, the
+    // interpreter declined because nothing connected that word to C3, whose
+    // name is "Neuro Call". A scheduler describes a change the way the service
+    // is spoken about, not in codes.
+    const p = buildInterpreterPrompt({
+      ...INPUT,
+      shiftTypes: [
+        { code: 'C1', name: 'First Call', category: 'call' },
+        { code: 'C3', name: 'Neuro Call', category: 'call' },
+        { code: 'D2', category: 'derived' },
+      ],
+    });
+    expect(p).toContain('C1 (First Call), C3 (Neuro Call), D2');
   });
 
   it('states the offset convention explicitly', () => {

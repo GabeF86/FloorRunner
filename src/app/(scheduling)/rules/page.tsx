@@ -22,6 +22,7 @@ import { firstOrg, listSites } from '@/lib/queries/roster';
 import { listRuleSets, listRuleDefinitions, listShiftTypes, readActiveCallPattern } from '@/lib/queries/config';
 import RulesClient, { type RulesClientProps } from './RulesClient';
 import SchedulingLogicCard from './SchedulingLogicCard';
+import PatternEditor from './PatternEditor';
 import type { ShiftTypeFacts } from '@/lib/schedulingLogic';
 import type { CallPatternDoc } from '@/lib/rulesEngine/callPattern';
 
@@ -48,6 +49,10 @@ export default async function RulesPage(
   let shiftTypes: ShiftTypeFacts[] = [];
   let parLevel: number | null = null;
   let logicError: string | null = null;
+  let previousPattern: { id: string; name: string | null; createdAt: string } | null = null;
+  // Read on the SERVER so the key itself never reaches the browser — only
+  // whether one exists.
+  const hasModelKey = (process.env.ANTHROPIC_API_KEY ?? '').trim().length > 0;
 
   try {
     // firstOrg rather than firstOrgId: a failed organizations read must not
@@ -112,6 +117,20 @@ export default async function RulesPage(
         // A failed shift-type read costs the post-call section only; the rest
         // of the description is still true and still worth showing.
         if (types.ok) shiftTypes = types.rows as unknown as ShiftTypeFacts[];
+
+        // The most recent archived pattern — what "go back" would restore.
+        // replaceActivePattern archives on every write, so this exists as soon
+        // as the site has been edited once, with no bespoke undo table.
+        const { data: prior } = await sb
+          .from('call_patterns')
+          .select('id, name, created_at')
+          .eq('site_id', selectedSiteId)
+          .eq('status', 'archived')
+          .order('created_at', { ascending: false })
+          .limit(1)
+          .maybeSingle();
+        const row = prior as { id: string; name: string | null; created_at: string } | null;
+        previousPattern = row ? { id: row.id, name: row.name, createdAt: row.created_at } : null;
         const par = (siteRow.data as { call_par_level?: number } | null)?.call_par_level;
         parLevel = typeof par === 'number' ? par : null;
       }
@@ -126,6 +145,9 @@ export default async function RulesPage(
           finished schedule and are not consulted while one is built, so
           leading with them put the one thing the engine does not read at the
           top of the page called Rules. */}
+      {/* The editor sits under the description on purpose: you read what the
+          site does now, then change it. Reversing that order invites editing
+          something you have not looked at. */}
       <SchedulingLogicCard
         sites={sites.map(s => ({ id: s.id, name: s.name }))}
         selectedSiteId={selectedSiteId}
@@ -137,6 +159,21 @@ export default async function RulesPage(
         parLevel={parLevel}
         error={logicError}
       />
+      {selectedSiteId && selectedSiteName && !logicError && (
+        <PatternEditor
+          siteId={selectedSiteId}
+          siteName={selectedSiteName}
+          // What the page rendered. Apply compares this against what is live
+          // and refuses if someone else changed the pattern in between, so a
+          // change can never land on a document the reviewer never saw.
+          baselineFingerprint={JSON.stringify(doc ?? null)}
+          // The text box is hidden rather than shown-and-broken when the
+          // deployment has no model key. A group without an LLM subscription
+          // still gets everything else on this page.
+          available={hasModelKey}
+          previous={previousPattern}
+        />
+      )}
       <RulesClient
         initialRuleSets={ruleSets}
         initialSites={sites}

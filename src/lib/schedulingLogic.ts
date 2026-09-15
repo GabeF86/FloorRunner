@@ -145,6 +145,8 @@ function relative(offset: number): string {
 /** Post-call rest — a column on the shift type, not a rule. */
 export interface ShiftTypeFacts {
   code: string;
+  /** "Neuro Call". Carried so a request naming the SERVICE can find its code. */
+  name?: string | null;
   category: string;
   requires_post_call_rule?: boolean | null;
   call_rank?: number | null;

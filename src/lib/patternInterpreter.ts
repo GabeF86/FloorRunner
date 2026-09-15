@@ -126,7 +126,17 @@ export function buildInterpreterPrompt(input: InterpretInput): string {
     .map(s => `${s.title}:\n${s.statements.map(st => `  - ${st.text}`).join('\n') || '  (none)'}`)
     .join('\n\n');
 
-  const codes = [...new Set(input.shiftTypes.map(t => t.code))].sort().join(', ');
+  // Codes WITH their names. Without the names a request phrased in service
+  // terms cannot be translated: asked to give Friday C1 the weekend "neuro"
+  // call, the interpreter declined because nothing connected that word to C3,
+  // whose name is "Neuro Call". A scheduler describes a change the way the
+  // service is spoken about, not in codes.
+  const seen = new Map<string, string | null | undefined>();
+  for (const t of input.shiftTypes) if (!seen.has(t.code)) seen.set(t.code, t.name);
+  const codes = [...seen.entries()]
+    .sort(([a], [b]) => a.localeCompare(b, undefined, { numeric: true }))
+    .map(([code, name]) => (name ? `${code} (${name})` : code))
+    .join(', ');
 
   return [
     `Site: ${input.siteName}`,
