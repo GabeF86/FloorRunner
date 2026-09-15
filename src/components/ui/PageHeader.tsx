@@ -22,7 +22,14 @@ export function PageHeader({ title, subtitle, actions, compact }: PageHeaderProp
         display: 'flex',
         alignItems: 'flex-start',
         gap: 'var(--space-4)',
-        marginBottom: compact ? 4 : 'var(--space-5)',
+        // A hairline under the header, with the margin moved below it. Every
+        // page was a title floating over its content with nothing separating
+        // them, which is what made dense screens read as one undifferentiated
+        // block. The rule is --border-faint, not --border: it should register
+        // as structure, not as a box.
+        paddingBottom: compact ? 6 : 'var(--space-3)',
+        marginBottom: compact ? 6 : 'var(--space-5)',
+        borderBottom: '1px solid var(--border-faint)',
       }}
     >
       <div style={{ minWidth: 0 }}>
@@ -30,7 +37,10 @@ export function PageHeader({ title, subtitle, actions, compact }: PageHeaderProp
           style={{
             fontSize: compact ? 17 : 'var(--fs-xl)',
             fontWeight: 700,
-            letterSpacing: -0.5,
+            // Tighter than the body scale on purpose: at 22px the default
+            // tracking looks loose, and large type is where a product either
+            // reads as designed or as default.
+            letterSpacing: compact ? -0.3 : -0.6,
             lineHeight: 1.15,
             color: 'var(--text-strong)',
           }}
