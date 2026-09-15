@@ -327,27 +327,56 @@ async function fetchRollupRows(
 export async function loadDashboardData(
   sb: SchedulingClient,
   today: string = new Date().toISOString().split('T')[0],
+  /**
+   * Scope every panel to one site. Omitted (or null) keeps the whole-group
+   * view, byte-identical to what this returned before site scoping existed.
+   *
+   * Providers are scoped by their HOME SITE, which is the only site a provider
+   * record names. A provider credentialed at a site but homed elsewhere is
+   * therefore not counted here — deliberate, since the count answers "how big
+   * is this site's group", not "who could theoretically work here".
+   */
+  siteId?: string | null,
 ): Promise<DashboardData> {
+  const scoped = !!siteId;
+
   // 5 independent selects in parallel. Counts are head-only + exact — a row
   // fetch counted client-side silently understates past the 1000-row cap.
+  let providersQ = sb.from('providers').select(
+    scoped ? 'id, provider_employment_profiles!inner(home_site_id)' : 'id',
+    { count: 'exact', head: true },
+  ).eq('status', 'active');
+  if (siteId) providersQ = providersQ.eq('provider_employment_profiles.home_site_id', siteId);
+
+  let sitesQ = sb.from('sites').select('id', { count: 'exact', head: true }).eq('is_active', true);
+  if (siteId) sitesQ = sitesQ.eq('id', siteId);
+
+  let schedulesQ = sb
+    .from('schedules')
+    .select(SCHEDULE_COLUMNS, { count: 'exact' })
+    .neq('status', 'archived')
+    .order('date_start', { ascending: false });
+  if (siteId) schedulesQ = schedulesQ.eq('site_id', siteId);
+
+  let todayQ = sb
+    .from('schedule_slots')
+    .select(TODAYS_CALL_COLUMNS, { count: 'exact' })
+    .eq('slot_date', today)
+    .eq('shift_types.category', 'call')
+    .eq('schedule_versions.version_status', 'published');
+  if (siteId) todayQ = todayQ.eq('site_id', siteId);
+
+  // Pending requests carry their own site_id, but a request raised before a
+  // site was chosen has none. Those are group-level and stay out of a site
+  // view rather than being attributed to an arbitrary site.
+  let pendingQ = sb
+    .from('provider_availability')
+    .select('id', { count: 'exact', head: true })
+    .eq('approval_status', 'pending');
+  if (siteId) pendingQ = pendingQ.eq('site_id', siteId);
+
   const [providersRes, sitesRes, schedulesRes, todayRes, pendingRes] = await Promise.all([
-    sb.from('providers').select('id', { count: 'exact', head: true }).eq('status', 'active'),
-    sb.from('sites').select('id', { count: 'exact', head: true }).eq('is_active', true),
-    sb
-      .from('schedules')
-      .select(SCHEDULE_COLUMNS, { count: 'exact' })
-      .neq('status', 'archived')
-      .order('date_start', { ascending: false }),
-    sb
-      .from('schedule_slots')
-      .select(TODAYS_CALL_COLUMNS, { count: 'exact' })
-      .eq('slot_date', today)
-      .eq('shift_types.category', 'call')
-      .eq('schedule_versions.version_status', 'published'),
-    sb
-      .from('provider_availability')
-      .select('id', { count: 'exact', head: true })
-      .eq('approval_status', 'pending'),
+    providersQ, sitesQ, schedulesQ, todayQ, pendingQ,
   ]);
 
   const schedulesTrunc = schedulesRes.error ? null : truncationOf(schedulesRes, 'Schedules');

@@ -5,6 +5,7 @@ import { usePathname } from 'next/navigation';
 import Link from 'next/link';
 import { Button } from '@/components/ui';
 import { SignOutButton } from '@/components/SignOutButton';
+import { SchedulesFlyout } from '@/components/SchedulesFlyout';
 
 interface NavItem { href: string; label: string; icon: string }
 interface NavSection { label: string; items: NavItem[] }
@@ -171,25 +172,33 @@ export default function AppShell({ fullBleed, children }: { fullBleed?: boolean;
               )}
               {section.items.map((item) => {
                 const active = pathname === item.href || pathname.startsWith(item.href + '/');
+                // One item's styling, shared with SchedulesFlyout so the
+                // flyout's parent row is indistinguishable from its siblings.
+                const linkStyle = (isActive: boolean): React.CSSProperties => ({
+                  display: 'flex', alignItems: 'center',
+                  justifyContent: collapsed ? 'center' : 'flex-start',
+                  gap: collapsed ? 0 : 10,
+                  padding: collapsed ? '9px 0' : '8px var(--space-3)',
+                  width: collapsed ? 40 : undefined,
+                  marginBottom: 2,
+                  marginLeft: collapsed ? 'auto' : undefined,
+                  marginRight: collapsed ? 'auto' : undefined,
+                  borderRadius: 'var(--radius-sm)',
+                  textDecoration: 'none', fontSize: 13, fontWeight: 600,
+                  color: isActive ? 'var(--blue)' : 'var(--text-muted)',
+                  background: isActive ? 'color-mix(in srgb, var(--blue) 10%, transparent)' : 'transparent',
+                  border: '1px solid ' + (isActive ? 'color-mix(in srgb, var(--blue) 25%, transparent)' : 'transparent'),
+                  transition: 'all 0.15s',
+                });
+
+                if (item.href === '/schedules') {
+                  return <SchedulesFlyout key={item.href} collapsed={collapsed} itemStyle={linkStyle} />;
+                }
+
                 return (
                   <Link key={item.href} href={item.href} className="fr-focus"
                     title={collapsed ? item.label : undefined}
-                    style={{
-                      display: 'flex', alignItems: 'center',
-                      justifyContent: collapsed ? 'center' : 'flex-start',
-                      gap: collapsed ? 0 : 10,
-                      padding: collapsed ? '9px 0' : '8px var(--space-3)',
-                      width: collapsed ? 40 : undefined,
-                      marginBottom: 2,
-                      marginLeft: collapsed ? 'auto' : undefined,
-                      marginRight: collapsed ? 'auto' : undefined,
-                      borderRadius: 'var(--radius-sm)',
-                      textDecoration: 'none', fontSize: 13, fontWeight: 600,
-                      color: active ? 'var(--blue)' : 'var(--text-muted)',
-                      background: active ? 'color-mix(in srgb, var(--blue) 10%, transparent)' : 'transparent',
-                      border: '1px solid ' + (active ? 'color-mix(in srgb, var(--blue) 25%, transparent)' : 'transparent'),
-                      transition: 'all 0.15s',
-                    }}>
+                    style={linkStyle(active)}>
                     <span style={{ fontSize: 16, width: 20, textAlign: 'center' }}>{item.icon}</span>
                     {!collapsed && item.label}
                   </Link>

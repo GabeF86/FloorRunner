@@ -608,3 +608,73 @@ describe('loadDashboardData', () => {
     expect(data.todaysCall.error).toContain('slots query failed');
   });
 });
+
+// ── Site scoping ───────────────────────────────────────────────────────────
+
+describe('loadDashboardData — site scoping', () => {
+  const SITE = 'site-42';
+
+  /** Every .eq() the fake recorded for one table, as [column, value] pairs. */
+  function eqsFor(calls: ReturnType<typeof makeFakeSupabase>['calls'], table: string) {
+    return callsFor(calls, table, 'eq').map(c => c.args as [string, unknown]);
+  }
+
+  it('adds no site filter at all when no site is given', () => {
+    // The whole-group view must stay byte-identical to what it was before
+    // site scoping existed — a stray .eq() here would silently narrow it.
+    const { sb, calls } = makeFakeSupabase({});
+    return loadDashboardData(sb as never, '2026-07-10').then(() => {
+      for (const t of ['schedules', 'schedule_slots', 'sites', 'provider_availability']) {
+        expect(eqsFor(calls, t).some(([col]) => col === 'site_id' || col === 'id'), t).toBe(false);
+      }
+    });
+  });
+
+  it('scopes schedules, today’s call and pending requests to the site', async () => {
+    const { sb, calls } = makeFakeSupabase({});
+    await loadDashboardData(sb as never, '2026-07-10', SITE);
+
+    expect(eqsFor(calls, 'schedules')).toContainEqual(['site_id', SITE]);
+    expect(eqsFor(calls, 'schedule_slots')).toContainEqual(['site_id', SITE]);
+    expect(eqsFor(calls, 'provider_availability')).toContainEqual(['site_id', SITE]);
+  });
+
+  it('scopes the site count to that one site', async () => {
+    const { sb, calls } = makeFakeSupabase({});
+    await loadDashboardData(sb as never, '2026-07-10', SITE);
+    expect(eqsFor(calls, 'sites')).toContainEqual(['id', SITE]);
+  });
+
+  it('scopes providers by HOME SITE via an inner join', async () => {
+    const { sb, calls } = makeFakeSupabase({});
+    await loadDashboardData(sb as never, '2026-07-10', SITE);
+
+    const sel = callsFor(calls, 'providers', 'select')[0].args[0] as string;
+    // !inner matters: a left join would count every active provider in the
+    // group, because rows with a non-matching profile would still come back.
+    expect(sel).toContain('provider_employment_profiles!inner');
+    expect(eqsFor(calls, 'providers'))
+      .toContainEqual(['provider_employment_profiles.home_site_id', SITE]);
+  });
+
+  it('keeps the active-status filter when scoped', async () => {
+    const { sb, calls } = makeFakeSupabase({});
+    await loadDashboardData(sb as never, '2026-07-10', SITE);
+    expect(eqsFor(calls, 'providers')).toContainEqual(['status', 'active']);
+  });
+
+  it('treats an empty string as no site rather than a site named ""', async () => {
+    const { sb, calls } = makeFakeSupabase({});
+    await loadDashboardData(sb as never, '2026-07-10', '');
+    expect(eqsFor(calls, 'schedules').some(([c]) => c === 'site_id')).toBe(false);
+  });
+
+  it('still issues the same number of top-level reads when scoped', async () => {
+    // Scoping must add filters, not extra round-trips.
+    const plain = makeFakeSupabase({});
+    const scopedFake = makeFakeSupabase({});
+    await loadDashboardData(plain.sb as never, '2026-07-10');
+    await loadDashboardData(scopedFake.sb as never, '2026-07-10', SITE);
+    expect(fromCount(scopedFake.calls)).toBe(fromCount(plain.calls));
+  });
+});
