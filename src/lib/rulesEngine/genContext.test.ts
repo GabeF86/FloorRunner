@@ -174,7 +174,12 @@ describe('buildPrePtoByThursday', () => {
 
 // ── loadGenerationContext (I/O) — driven by a chainable recording fake ───────
 
-type Canned = { data?: unknown; error?: unknown };
+// `count` is part of the contract, not an extra: resolve() below reads it to
+// simulate PostgREST's { count: 'exact' }, and the truncation tests at the
+// bottom of this file set it above data.length. It was missing from the type
+// while being honoured at runtime via a cast, so those tests type-errored
+// while passing.
+type Canned = { data?: unknown; error?: unknown; count?: number | null };
 type Filter = { method: string; args: unknown[] };
 type TableCfg = Canned | ((filters: Filter[]) => Canned);
 interface RecordedCall { table?: string; fn?: string; method: string; args: unknown[] }
@@ -204,8 +209,8 @@ function makeFakeSupabase(config: { tables?: Record<string, TableCfg>; rpc?: Rec
       // omitted it would make every paged consumer look broken under test
       // while being correct in production. A test simulating TRUNCATION sets
       // `count` explicitly above data.length.
-      const count = (c as { count?: number | null }).count !== undefined
-        ? (c as { count?: number | null }).count ?? null
+      const count = c.count !== undefined
+        ? c.count ?? null
         : (Array.isArray(c.data) ? c.data.length : null);
       return { data: c.data ?? null, error: c.error ?? null, count };
     };
@@ -1338,5 +1343,68 @@ describe('loadGenerationContext — a failed preload aborts rather than looking 
     const { res } = await run({ provider_availability: { data: [], error: null } });
     expect(res.error).toBeUndefined();
     expect(res.ctx).not.toBeNull();
+  });
+});
+
+// ── Truncation detection (the guard IS the safety mechanism here) ───────────
+// These three reads are NOT paged — they sit in a parallel wave and use
+// truncationOf instead, which is defensible because each is scoped to the site
+// pool and comfortably under PostgREST's 1000-row cap. But that makes the
+// detector the whole of invariant 2's protection in this file: if it stops
+// working, a short availability read silently drops PTO for the providers that
+// sort last and they look fully available again. So it gets pinned.
+describe('loadGenerationContext — a SHORT read fails the load', () => {
+  it('rejects a truncated availability read rather than under-blocking PTO', async () => {
+    // count > data.length is exactly what PostgREST reports when it capped the
+    // response: no error, a plausible array, and a count that gives it away.
+    const { res } = await run({
+      provider_availability: {
+        data: [{
+          provider_id: 'p1', availability_type: 'pto',
+          start_date: '2026-01-07', end_date: '2026-01-07', approval_status: 'approved',
+        }],
+        error: null,
+        count: 2,
+      },
+    });
+    expect(res.ctx).toBeNull();
+    expect(res.error).toMatch(/availability/i);
+    expect(res.error).toMatch(/truncat/i);
+  });
+
+  it('rejects a truncated providers read', async () => {
+    const { res } = await run({
+      providers: { data: [BASE_PROVIDERS[0]], error: null, count: BASE_PROVIDERS.length + 1 },
+    });
+    expect(res.ctx).toBeNull();
+    expect(res.error).toMatch(/providers/i);
+  });
+
+  it('rejects a truncated credentials read', async () => {
+    const { res } = await run({
+      provider_site_credentials: { data: [BASE_CREDS[0]], error: null, count: BASE_CREDS.length + 1 },
+    });
+    expect(res.ctx).toBeNull();
+    expect(res.error).toMatch(/credential/i);
+  });
+
+  it('rejects a null count — it means the count option was dropped', async () => {
+    // Believing the array at that point is the mistake truncationOf exists to
+    // prevent, and this is a new hard-fail path that nothing else exercises.
+    const { res } = await run({
+      provider_availability: { data: [], error: null, count: null },
+    });
+    expect(res.ctx).toBeNull();
+    expect(res.error).toMatch(/count unavailable/i);
+  });
+
+  it('a genuinely complete read still loads — the guard is not a blanket bail', async () => {
+    const { res } = await run({
+      provider_availability: { data: [], error: null, count: 0 },
+      providers: { data: BASE_PROVIDERS, error: null, count: BASE_PROVIDERS.length },
+      provider_site_credentials: { data: BASE_CREDS, error: null, count: BASE_CREDS.length },
+    });
+    expect(res.error).toBeUndefined();
+    expect(res.ctx).toBeTruthy();
   });
 });

@@ -348,6 +348,49 @@ describe('batchValidateVersion', () => {
     }
   });
 
+  // ── truncated preloads (invariant 6's quietest failure mode) ─────────────
+  // Worse than a failed read, because nothing looks wrong: the rows for the
+  // providers that sort last are simply absent, those providers validate
+  // against an empty PTO list, `evaluated` stays TRUE and CLEAN
+  // validation_flags get written over a collision nobody looked at. These
+  // reads are not paged — they use truncationOf — so this detector is the
+  // whole of the protection and must stay pinned.
+  describe('truncated preloads → evaluated:false, nothing written', () => {
+    const truncated = (rows: unknown[]) => ({ data: rows, error: null, count: rows.length + 1 });
+    const cases: Array<[string, Record<string, TableCfg>]> = [
+      ['providers', batchTables({ providers: truncated(PROVIDERS) })],
+      ['provider_availability', batchTables({ provider_availability: truncated([]) })],
+      ['provider_site_credentials', batchTables({ provider_site_credentials: truncated(CREDS) })],
+    ];
+
+    for (const [name, tables] of cases) {
+      it(`${name} read is short`, async () => {
+        const { sb, calls } = makeFakeSupabase({ tables });
+        const res = await batchValidateVersion(sb, 'v1', siteCtx);
+        expect(res.results.every(r => r.evaluated === false)).toBe(true);
+        expect(res.written).toBe(0);
+        expect(callsFor(calls, 'assignments', 'upsert')).toHaveLength(0);
+        expect(res.errors.join(' ')).toContain('validation-unavailable');
+        expect(res.errors.join(' ')).toMatch(/truncated|count unavailable/i);
+      });
+    }
+
+    it('a null count aborts too — the count option was dropped', async () => {
+      const { sb } = makeFakeSupabase({
+        tables: batchTables({ provider_availability: { data: [], error: null, count: null } }),
+      });
+      const res = await batchValidateVersion(sb, 'v1', siteCtx);
+      expect(res.results.every(r => r.evaluated === false)).toBe(true);
+      expect(res.errors.join(' ')).toMatch(/count unavailable/i);
+    });
+
+    it('a complete read still validates — the guard is not a blanket bail', async () => {
+      const { sb } = makeFakeSupabase({ tables: batchTables() });
+      const res = await batchValidateVersion(sb, 'v1', siteCtx);
+      expect(res.results.some(r => r.evaluated === true)).toBe(true);
+    });
+  });
+
   it('siteCtx that failed to load → declines to evaluate or write', async () => {
     const { sb, calls } = makeFakeSupabase({ tables: batchTables() });
     const res = await batchValidateVersion(sb, 'v1', {

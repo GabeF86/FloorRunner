@@ -777,11 +777,20 @@ export async function loadGenerationContext(
     // A SHORT read fails the same way a failed one does, and more quietly.
     // PostgREST caps an un-ranged select at 1000 rows with error null, so a
     // truncated availability read drops PTO rows for the providers that sort
-    // last — indistinguishable from those providers having no PTO. These three
-    // are scoped by the site pool and under the cap today, so this detects
-    // rather than pages: staying in the parallel wave is worth more than
-    // pre-emptive paging, and failing loudly is the correct behaviour for a
-    // read whose truncation cannot otherwise be seen.
+    // last — indistinguishable from those providers having no PTO.
+    //
+    // These three DETECT rather than page, and the reason is simplicity, not
+    // the parallel wave: readAllRows returns a Promise and would sit in the
+    // Promise.all below exactly as loadMajorHolidayDates already does, so
+    // there is no trade-off there. The actual argument is that all three are
+    // scoped to the site's call pool — tens of rows, not thousands — so paging
+    // would add machinery for a cap they do not approach. The cost of that
+    // choice is availability, not correctness: the day this fires, generation
+    // stops rather than working. If these ever grow, page them; the detector
+    // is what makes that a decision rather than a discovery.
+    // Pinned by 'a SHORT read fails the load' in genContext.test.ts — without
+    // tests this guard could rot silently, which is the whole failure mode it
+    // exists to prevent.
     const short = truncationOf(res as { data: unknown; count: number | null }, label);
     if (short) {
       return { ctx: null, error: `Failed to load ${label}: ${short}`, dbQueries, totalSlots: rawSlots.length };
@@ -828,6 +837,11 @@ export async function loadGenerationContext(
   // (2026-07-20): the per-date consumers downstream (eligibility's
   // isDateBlocked gate, the §9 netting via ptoWeekdaysCovered) need them to
   // apply the date-level override. Never type-filter this load.
+  //
+  // minDate is the first OPEN CALL slot, not the first date in the block
+  // (that is blockMin, computed above). It is also passed as the historical
+  // cutoff to historical_call_counts below — see the note there for the
+  // double-count this can cause on a partial regenerate.
   const minDate = waveDates[0];
   const avail = (availRes as { data: unknown }).data;
 
@@ -1032,6 +1046,20 @@ export async function loadGenerationContext(
     historicalTotalByBucket.set(key, (historicalTotalByBucket.get(key) || 0) + weighted);
   };
   countQ();
+  // p_before is minDate — the first OPEN CALL slot date — not blockMin, the
+  // first date in the block. On a partial regenerate whose early call slots
+  // are already filled, minDate lands AFTER the block start, so committed
+  // calls that fall inside this block but before it are counted as "history".
+  // Since scoreSolution now also folds committed seeds into blockCallCount,
+  // such a call can land in BOTH historicalAssignedByPid and the seed fold,
+  // double-counting that provider's fairness ratio.
+  //
+  // Narrow: history is published-only, so it needs the version under
+  // generation to itself be published. Deliberately NOT changed here —
+  // switching to blockMin (which is what the comment above describes, and is
+  // already computed) REMOVES history that currently counts, shifting fairness
+  // deficits and therefore the schedules the engine produces. That wants its
+  // own change with its own fixture, not a rider on a correctness fix.
   const rpcRes = await sb.rpc('historical_call_counts', { p_site_id: siteId, p_before: minDate });
   if (rpcRes.error) {
     // "apply patch18" only fits a missing function (42883 undefined_function,
