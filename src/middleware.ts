@@ -6,12 +6,33 @@
 // AUTH_ENFORCED gates enforcement. It exists because RLS and a login wall with
 // zero provisioned users lock everyone out, including the chief. The rollout
 // is: ship this disabled, bootstrap and verify the admin account, then flip it
-// on. It is also the fastest possible remedy if the gate ever misfires in
-// production — one env var, no deploy.
+// on. It is also the fastest remedy if the gate ever misfires in production.
+//
+// "Fastest" is NOT "instant", and the difference matters during an incident:
+// Vercel applies an environment variable at deploy time, so changing it takes
+// effect only on the next deployment. Turning this off means editing the var
+// AND redeploying (Vercel dashboard → Deployments → Redeploy, roughly a
+// minute). An earlier version of this comment said "one env var, no deploy",
+// which would have been a bad thing to be relying on while locked out.
 //
 // Default is DISABLED. That is the safe default for a rollout, and deliberately
 // NOT the safe default for a security control, so it must not stay off: once
 // the admin account is verified, set AUTH_ENFORCED=true in Vercel.
+//
+// Pre-flip checklist, verified 2026-09-15 against the live project:
+//   - /login and /api/auth are 'public' in routeAccess, so the sign-in path
+//     stays reachable once the door closes. This is the one gap that would be
+//     unrecoverable without a redeploy.
+//   - /join is public too, so outstanding invitations keep working.
+//   - auth.users holds exactly ONE account (gabrielfarkas86@gmail.com),
+//     confirmed, carrying the 'admin' role, with a successful recent sign-in.
+//     One account means no second admin to recover with — which is why the
+//     redeploy caveat above is worth knowing BEFORE flipping, not after.
+//   - roleNames() failing returns [] → 'anonymous' → denied. That fails closed
+//     on purpose, but note the consequence: if SUPABASE_SERVICE_ROLE_KEY were
+//     ever absent from the deployment, even a correct sign-in would bounce
+//     back to /login in a loop. It is present (the app reads RLS-enabled
+//     tables in production, which only the service key can do).
 
 import { NextResponse, type NextRequest } from 'next/server';
 import { createServerClient, type CookieOptions } from '@supabase/ssr';
