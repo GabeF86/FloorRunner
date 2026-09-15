@@ -35,6 +35,7 @@ function ScheduleLink({ s }: { s: BoardSchedule }) {
   return (
     <Link
       href={`/schedules/${s.id}`}
+      className="fr-chip"
       style={{
         display: 'block', padding: '7px 9px', borderRadius: 'var(--radius-sm)',
         border: '1px solid var(--border)', background: 'var(--bg-deep)',

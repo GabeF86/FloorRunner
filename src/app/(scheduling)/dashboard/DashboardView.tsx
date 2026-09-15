@@ -233,6 +233,7 @@ function StaffChips({ people }: { people: StaffChip[] }) {
           key={p.id || p.name}
           href={p.id ? `/providers/${p.id}` : '/providers'}
           title={p.name}
+          className="fr-chip"
           style={{
             display: 'inline-flex', alignItems: 'baseline', gap: 5,
             padding: '3px 9px', borderRadius: 999, textDecoration: 'none',
