@@ -227,7 +227,7 @@ export function StaffChips({ people }: { people: StaffChip[] }) {
     );
   }
   return (
-    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5 }}>
+    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
       {people.map(p => (
         <Link
           key={p.id || p.name}
@@ -236,8 +236,11 @@ export function StaffChips({ people }: { people: StaffChip[] }) {
           title={[p.name, p.partner ? 'partner' : null, p.crna ? 'CRNA' : null]
             .filter(Boolean).join(' — ')}
           style={{
-            display: 'inline-flex', alignItems: 'baseline', gap: 5,
-            padding: '3px 9px', textDecoration: 'none',
+            // Tightened 2026-09-15: the group view renders 288 of these and a
+            // single site up to 76, so padding and leading are the difference
+            // between a list and a wall.
+            display: 'inline-flex', alignItems: 'baseline', gap: 4,
+            padding: '2px 7px', textDecoration: 'none',
             // SHAPE carries the physician/CRNA distinction, not colour: the
             // per-diem list mixes both, and shape survives printing and
             // colour-vision deficiency. A pill is a person on the call slate;
@@ -245,10 +248,13 @@ export function StaffChips({ people }: { people: StaffChip[] }) {
             borderRadius: p.crna ? 'var(--radius-sm)' : 999,
             border: `1px solid ${p.partner ? 'var(--partner-ring)' : 'var(--border)'}`,
             background: 'var(--bg-deep)',
-            fontSize: 'var(--fs-xs)', color: 'var(--text)', lineHeight: 1.6,
+            fontSize: 'var(--fs-xs)', color: 'var(--text)', lineHeight: 1.35,
+            whiteSpace: 'nowrap',
           }}
         >
-          <span style={{ fontWeight: 700 }}>{p.name}</span>
+          {/* "Farkas G." rather than "Gabriel Farkas" — roughly half the
+              width, and the full name stays in the tooltip above. */}
+          <span style={{ fontWeight: 700 }}>{p.short || p.name}</span>
           {/* Per diems carry no FTE — theirs is 0 and means nothing. */}
           {p.fte != null && (
             <span style={{ color: 'var(--text-muted)', fontVariantNumeric: 'tabular-nums' }}>
@@ -287,6 +293,24 @@ export function formatFte(n: number): string {
   return two.endsWith('0') ? two.slice(0, -1) : two;
 }
 
+/**
+ * How many names a section shows before it starts closed.
+ *
+ * Twelve is about two rows of tightened chips. Below that, hiding the names
+ * behind a click costs more than it saves; above it, the list stops being
+ * something you read and becomes something you scroll past. The group view has
+ * 135 per diems, which is the case that made this necessary.
+ */
+const OPEN_BELOW = 12;
+
+/**
+ * A staffing figure with the people behind it.
+ *
+ * Built on <details> rather than React state because DashboardView is a SERVER
+ * component — and it is the better answer anyway: the disclosure works with no
+ * JavaScript, and keyboard and screen-reader behaviour come for free rather
+ * than being reimplemented with aria-expanded.
+ */
 function StaffSection({
   value, label, sub, people,
 }: {
@@ -295,13 +319,31 @@ function StaffSection({
   sub?: string;
   people: StaffChip[];
 }) {
+  const collapsible = people.length > 0;
   return (
-    <div style={{ minWidth: 0, marginBottom: 'var(--space-4)' }}>
-      <div style={{
-        display: 'flex', alignItems: 'baseline', gap: 'var(--space-2)', flexWrap: 'wrap',
-        paddingBottom: 6, marginBottom: 'var(--space-2)',
-        borderBottom: '1px solid var(--border-faint)',
-      }}>
+    <details
+      open={people.length <= OPEN_BELOW}
+      style={{ minWidth: 0, marginBottom: 'var(--space-3)' }}
+    >
+      <summary
+        className="fr-focus"
+        style={{
+          display: 'flex', alignItems: 'baseline', gap: 'var(--space-2)', flexWrap: 'wrap',
+          paddingBottom: 5, marginBottom: 'var(--space-2)',
+          borderBottom: '1px solid var(--border-faint)',
+          cursor: collapsible ? 'pointer' : 'default',
+          // The native triangle sits on the text baseline and misaligns with a
+          // 17px figure, so it is replaced by the caret below.
+          listStyle: 'none',
+        }}
+      >
+        {collapsible && (
+          <span aria-hidden="true" className="fr-caret" style={{
+            fontSize: 9, color: 'var(--text-dim)', width: 9, flexShrink: 0,
+          }}>
+            ▸
+          </span>
+        )}
         <span style={{ fontSize: 'var(--fs-lg)', fontWeight: 800, color: 'var(--text-strong)', letterSpacing: -0.3 }}>
           {value}
         </span>
@@ -313,9 +355,9 @@ function StaffSection({
             {sub}
           </span>
         )}
-      </div>
+      </summary>
       <StaffChips people={people} />
-    </div>
+    </details>
   );
 }
 
@@ -463,6 +505,11 @@ export function ObligationCard({ panel }: { panel: Panel<SiteCallObligation> }) 
   }
 
   const num: React.CSSProperties = { textAlign: 'right', fontVariantNumeric: 'tabular-nums' };
+  const cols = obligationColumns(o);
+  // Every code that appears anywhere, so a code that runs only at the weekend
+  // still gets a row and reads as absent on weekdays rather than missing.
+  const codes = [...new Set(cols.flatMap(c => c.rows.map(r => r.code)))]
+    .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
 
   return (
     <Card
@@ -473,70 +520,99 @@ export function ObligationCard({ panel }: { panel: Panel<SiteCallObligation> }) 
         </span>
       }
     >
-      <div style={{
-        display: 'grid',
-        gridTemplateColumns: 'repeat(auto-fit, minmax(230px, 1fr))',
-        gap: 'var(--space-4)',
-      }}>
-        {obligationColumns(o).map(g => (
-          <div key={g.key} style={{ minWidth: 0 }}>
-            <div style={{
-              fontSize: 'var(--fs-xs)', textTransform: 'uppercase', letterSpacing: 1,
-              // A total is a different KIND of column, not a louder one, so the
-              // heading takes the same red as its figures and nothing else
-              // changes — no fill, no heavier rule. Red alone would be the only
-              // cue, so the label also spells out what is being added.
-              color: g.isSum ? 'var(--danger)' : 'var(--text-dim)',
-              fontWeight: 700,
-              paddingBottom: 6,
-              borderBottom: `1px solid ${g.isSum ? 'var(--danger)' : 'var(--border)'}`,
-              marginBottom: 6,
-            }}>
-              {g.label}
-            </div>
-
-            {g.rows.map(r => (
-              <div
-                key={r.code}
-                style={{
-                  display: 'flex', alignItems: 'baseline', gap: 'var(--space-2)',
-                  padding: '5px 0',
-                }}
-              >
-                <span style={{ fontWeight: 700, color: 'var(--text)', minWidth: 42 }}>{r.code}</span>
-                {/* The number Gabriel reads this table for: what ONE 1.0 FTE
-                    owes of this call type on this kind of day. */}
-                <span style={{
-                  ...num, flex: 1, fontWeight: 800, fontSize: 'var(--fs-md)',
-                  color: g.isSum ? 'var(--danger)' : 'var(--blue)',
+      {/* A TABLE, not a column per day type.
+          The previous layout repeated the call code inside every column and
+          printed "of N" beside every figure, so six day types meant six copies
+          of "C1" and twelve slot counts — the same numbers Gabriel reads
+          across, laid out so they cannot be read across. Codes are rows now
+          and day types are columns, which is how the slate is actually spoken
+          about ("C1 on a Saturday"). The site's own slot count moves into each
+          cell's tooltip and stays in the sentence below; the per-FTE figure is
+          what the table is for. */}
+      <div style={{ overflowX: 'auto' }}>
+        <table style={{
+          width: '100%', borderCollapse: 'collapse',
+          fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap',
+        }}>
+          <thead>
+            <tr>
+              <th style={{
+                textAlign: 'left', padding: '0 var(--space-3) 6px 0',
+                fontSize: 'var(--fs-xs)', textTransform: 'uppercase', letterSpacing: 1,
+                color: 'var(--text-dim)', fontWeight: 700,
+                borderBottom: '1px solid var(--border)',
+              }} />
+              {cols.map(g => (
+                <th
+                  key={g.key}
+                  style={{
+                    textAlign: 'right', padding: '0 0 6px var(--space-4)',
+                    fontSize: 'var(--fs-xs)', textTransform: 'uppercase', letterSpacing: 0.6,
+                    fontWeight: 700,
+                    // A total is a different KIND of column, not a louder one.
+                    color: g.isSum ? 'var(--danger)' : 'var(--text-dim)',
+                    borderBottom: `1px solid ${g.isSum ? 'var(--danger)' : 'var(--border)'}`,
+                  }}
+                >
+                  {g.label}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {codes.map(code => (
+              <tr key={code}>
+                <td style={{
+                  padding: '4px var(--space-3) 4px 0', fontWeight: 700,
+                  color: 'var(--text)', fontSize: 'var(--fs-sm)',
                 }}>
-                  {formatShare(r.perFte)}
-                </span>
-                <span style={{ ...num, fontSize: 'var(--fs-xs)', color: 'var(--text-dim)', minWidth: 58 }}>
-                  of {r.slots}
-                </span>
-              </div>
+                  {code}
+                </td>
+                {cols.map(g => {
+                  const r = g.rows.find(x => x.code === code);
+                  return (
+                    <td
+                      key={g.key}
+                      title={r ? `${r.slots} ${code} slots the site must cover on ${g.label}` : undefined}
+                      style={{
+                        ...num, padding: '4px 0 4px var(--space-4)',
+                        fontWeight: 800, fontSize: 'var(--fs-md)',
+                        color: r ? (g.isSum ? 'var(--danger)' : 'var(--blue)') : 'var(--text-faint)',
+                      }}
+                    >
+                      {/* An em dash, not a zero: this code does not run on this
+                          day at all, which is a different fact from owing none
+                          of it. */}
+                      {r ? formatShare(r.perFte) : '—'}
+                    </td>
+                  );
+                })}
+              </tr>
             ))}
-
-            <div style={{
-              display: 'flex', alignItems: 'baseline', gap: 'var(--space-2)',
-              padding: '6px 0 0', marginTop: 4, borderTop: '1px solid var(--border-faint)',
-            }}>
-              <span style={{ fontWeight: 700, color: 'var(--text-muted)', minWidth: 42, fontSize: 'var(--fs-sm)' }}>
-                All
-              </span>
-              <span style={{
-                ...num, flex: 1, fontWeight: 800,
-                color: g.isSum ? 'var(--danger)' : 'var(--text-strong)',
+            <tr>
+              <td style={{
+                padding: '6px var(--space-3) 0 0', fontWeight: 700,
+                color: 'var(--text-muted)', fontSize: 'var(--fs-sm)',
+                borderTop: '1px solid var(--border-faint)',
               }}>
-                {formatShare(g.perFte)}
-              </span>
-              <span style={{ ...num, fontSize: 'var(--fs-xs)', color: 'var(--text-dim)', minWidth: 58 }}>
-                of {g.slots}
-              </span>
-            </div>
-          </div>
-        ))}
+                All
+              </td>
+              {cols.map(g => (
+                <td
+                  key={g.key}
+                  title={`${g.slots} slots in total on ${g.label}`}
+                  style={{
+                    ...num, padding: '6px 0 0 var(--space-4)', fontWeight: 800,
+                    color: g.isSum ? 'var(--danger)' : 'var(--text-strong)',
+                    borderTop: '1px solid var(--border-faint)',
+                  }}
+                >
+                  {formatShare(g.perFte)}
+                </td>
+              ))}
+            </tr>
+          </tbody>
+        </table>
       </div>
 
       <div style={{

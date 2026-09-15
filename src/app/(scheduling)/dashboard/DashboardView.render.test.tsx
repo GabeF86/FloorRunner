@@ -15,35 +15,37 @@ import type { SiteCallObligation } from '@/lib/siteCallObligation';
 describe('staffing chips', () => {
   const html = renderToStaticMarkup(
     <StaffChips people={[
-      { id: '1', name: 'Ann Partner', fte: 1, call: true, partner: true },
-      { id: '2', name: 'Ben Employed', fte: 1, call: true, partner: false },
-      { id: '3', name: 'Cara Crna', fte: 1, call: false, crna: true },
-      { id: '4', name: 'Dee Crna Partner', fte: 1, call: false, crna: true, partner: true },
+      { id: '1', name: 'Ann Partner', short: 'Partner A.', fte: 1, call: true, partner: true },
+      { id: '2', name: 'Ben Employed', short: 'Employed B.', fte: 1, call: true, partner: false },
+      { id: '3', name: 'Cara Crna', short: 'Crna C.', fte: 1, call: false, crna: true },
+      { id: '4', name: 'Dee Crna Partner', short: 'Partner D.', fte: 1, call: false, crna: true, partner: true },
     ]} />,
   );
   // Split on the anchor boundary rather than searching backwards from the
   // name: the name also appears in `title=`, which sits BEFORE `style=`, so a
   // backwards slice captures the tag up to the title and misses every style.
-  const chip = (name: string) => {
-    const one = html.split('<a class="fr-chip"').find(c => c.includes(`>${name}<`));
-    if (!one) throw new Error(`no chip rendered for ${name}`);
+  // Looked up by the SHORT name, because that is what the chip prints. The
+  // full name moved to the title attribute, which the last test asserts.
+  const chip = (short: string) => {
+    const one = html.split('<a class="fr-chip"').find(c => c.includes(`>${short}<`));
+    if (!one) throw new Error(`no chip rendered for ${short}`);
     return one;
   };
 
   it('rings a partner in orange and leaves everyone else on the default border', () => {
-    expect(chip('Ann Partner')).toContain('border:1px solid var(--partner-ring)');
-    expect(chip('Ben Employed')).toContain('border:1px solid var(--border)');
+    expect(chip('Partner A.')).toContain('border:1px solid var(--partner-ring)');
+    expect(chip('Employed B.')).toContain('border:1px solid var(--border)');
   });
 
   it('gives CRNAs a different SHAPE, not a different colour', () => {
     // Shape rather than colour because the per-diem list mixes physicians and
     // CRNAs, and shape survives printing and colour-vision deficiency.
-    expect(chip('Cara Crna')).toContain('border-radius:var(--radius-sm)');
-    expect(chip('Ben Employed')).toContain('border-radius:999px');
+    expect(chip('Crna C.')).toContain('border-radius:var(--radius-sm)');
+    expect(chip('Employed B.')).toContain('border-radius:999px');
   });
 
   it('lets the two markers combine — a CRNA partner is both', () => {
-    const c = chip('Dee Crna Partner');
+    const c = chip('Partner D.');
     expect(c).toContain('border-radius:var(--radius-sm)');
     expect(c).toContain('var(--partner-ring)');
   });
@@ -52,6 +54,15 @@ describe('staffing chips', () => {
     expect(html).toContain('title="Ann Partner — partner"');
     expect(html).toContain('title="Cara Crna — CRNA"');
     expect(html).toContain('title="Ben Employed"');
+  });
+
+  it('prints the compact name and keeps the full one in the tooltip', () => {
+    // "Farkas G." is roughly half the width of "Gabriel Farkas", which is what
+    // makes 288 chips fit. The full name must stay reachable — a dashboard
+    // that only ever shows an abbreviation is one you have to decode.
+    expect(html).toContain('>Partner A.<');
+    expect(html).not.toContain('>Ann Partner<');
+    expect(html).toContain('Ann Partner —');
   });
 });
 
@@ -74,25 +85,41 @@ describe('annual call obligation', () => {
     expect(at('Sat + Sun')).toBeGreaterThan(at('Sunday'));
   });
 
-  // Each column is a `<div style="min-width:0">`. Splitting on that is exact,
-  // whereas slicing between two header LABELS is not: a column's style
-  // attribute precedes its own text, so such a slice swallows the next
-  // column's heading and reports its colour as belonging to this one.
-  const column = (label: string) => {
-    const one = html.split('<div style="min-width:0">').find(c => c.includes(`>${label}<`));
-    if (!one) throw new Error(`no column rendered for ${label}`);
-    return one;
+  // The layout is a TABLE now: codes are rows, day types are columns. A
+  // "column" is therefore a cell, found by the title the cell carries.
+  const cell = (label: string, code: string) => {
+    const marker = `slots the site must cover on ${label}"`;
+    const at = html.indexOf(marker);
+    if (at < 0) throw new Error(`no cell for ${code} on ${label}`);
+    const tdStart = html.lastIndexOf('<td', at);
+    return html.slice(tdStart, html.indexOf('</td>', at));
   };
 
   it('prints the totals in red and the day columns in blue', () => {
-    expect(column('M–Th + F')).toContain('var(--danger)');
-    expect(column('M–Th + F')).not.toContain('var(--blue)');
-    expect(column('Friday')).toContain('var(--blue)');
-    expect(column('Friday')).not.toContain('var(--danger)');
+    expect(cell('M–Th + F', 'C1')).toContain('var(--danger)');
+    expect(cell('M–Th + F', 'C1')).not.toContain('var(--blue)');
+    expect(cell('Friday', 'C1')).toContain('var(--blue)');
+    expect(cell('Friday', 'C1')).not.toContain('var(--danger)');
   });
 
-  it('shows the summed figure, not one of its parts', () => {
-    // 200 + 50 = 250 slots, ÷ par 10 = 25.
-    expect(column('M–Th + F')).toContain('of 250');
+  it('keeps the site slot count reachable without printing it in every cell', () => {
+    // 200 + 50 = 250. It used to sit beside every figure, six times over; the
+    // table is the denser form precisely because that moved to the tooltip.
+    expect(html).toContain('250 C1 slots the site must cover on M–Th + F');
+  });
+
+  it('gives a code that does not run on a day an em dash, not a zero', () => {
+    // "Does not run here" and "owes none of it" are different facts.
+    const weekend = renderToStaticMarkup(
+      <ObligationCard panel={{ error: null, data: { ...obligation, groups: [
+        { bucket: 'saturday', label: 'Saturday', rows: [
+          { code: 'C1', slots: 52, perFte: 5.2 }, { code: 'C3', slots: 52, perFte: 5.2 },
+        ], slots: 104, perFte: 10.4 },
+        { bucket: 'sunday', label: 'Sunday', rows: [
+          { code: 'C1', slots: 52, perFte: 5.2 },
+        ], slots: 52, perFte: 5.2 },
+      ] } }} />,
+    );
+    expect(weekend).toContain('—');
   });
 });

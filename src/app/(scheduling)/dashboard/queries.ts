@@ -151,6 +151,19 @@ export function providerDisplayName(p: MixProviderRef): string {
     || 'Unnamed provider';
 }
 
+/**
+ * The compact form for a chip: surname plus first initial.
+ *
+ * Falls back to the full display name when either part is missing, because a
+ * dangling initial reads as a data fault.
+ */
+export function providerShortName(p: MixProviderRef): string {
+  const last = p.last_name?.trim();
+  const initial = p.first_name?.trim()?.[0];
+  if (last && initial) return `${last} ${initial.toUpperCase()}.`;
+  return providerDisplayName(p);
+}
+
 export interface MixRow {
   fte_value: number | string | null;
   max_weekly_hours: number | string | null;
@@ -195,6 +208,7 @@ export function summarizeMix(rows: readonly MixRow[]): ProviderMix {
     // take call, and the chip answers "do they?" not "how much?".
     const call = !!r.call_taker || !!r.partial_call_taker;
     const name = providerDisplayName(p);
+    const short = providerShortName(p);
     const id = p.id ?? '';
     const isCrna = type === 'crna' || type === 'aa';
     const partner = !!r.is_shareholder;
@@ -207,19 +221,19 @@ export function summarizeMix(rows: readonly MixRow[]): ProviderMix {
     if (r.is_day_doc) {
       const h = Number(r.max_weekly_hours);
       mix.dayDocs.push({
-        id, name,
+        id, name, short,
         weeklyHours: Number.isFinite(h) && h > 0 ? h : null,
       });
     }
 
     if (perDiem) {
       mix.perDiem++;
-      mix.perDiems.push({ id, name, fte: null, call, partner, crna: isCrna });
+      mix.perDiems.push({ id, name, short, fte: null, call, partner, crna: isCrna });
     } else if (type === 'physician') {
-      mix.physicians.push({ id, name, fte, call, partner });
+      mix.physicians.push({ id, name, short, fte, call, partner });
       if (partner) mix.partnerCount++;
     } else if (isCrna) {
-      mix.crnas.push({ id, name, fte, call, partner, crna: true });
+      mix.crnas.push({ id, name, short, fte, call, partner, crna: true });
     }
   }
 
@@ -354,6 +368,8 @@ export type AttentionPanelEntry = AttentionEntry & { schedule_name: string; stat
 export interface DayDoc {
   id: string;
   name: string;
+  /** "Vu S." — see StaffChip.short for why the initial is required. */
+  short: string;
   /**
    * provider_employment_profiles.max_weekly_hours — the "Weekly Hours" field
    * on the profile. NOT derivable from FTE: Stella Vu is 0.60 FTE at 30 hours
@@ -367,7 +383,19 @@ export interface DayDoc {
 /** One person in the staffing card. */
 export interface StaffChip {
   id: string;
+  /** Full name — the tooltip, and what a search would match. */
   name: string;
+  /**
+   * "Farkas G." — what the chip actually prints.
+   *
+   * The first initial is NOT decoration: Vu Stella and Vu Jonathan are two
+   * different people on this roster, and a surname alone would merge them.
+   *
+   * This is also not the four-letter grid-code scheme (AHMB, ALVE) that made
+   * the roster look like it had lost people's names — it is derived from the
+   * real first and last name every provider has.
+   */
+  short: string;
   /** null for per diems, whose FTE is 0 and carries no meaning. */
   fte: number | null;
   /** True for a call taker OR a partial call taker — both read "call". */

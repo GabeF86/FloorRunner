@@ -404,3 +404,20 @@ table, .fr-nums, input[type='number'] { font-variant-numeric: tabular-nums; }
    these pickers appear both on the page background and inside modals, and the
    focus-ring halo is painted in --bg-base. */
 .fr-seg:focus-visible { outline: 2px solid var(--blue); outline-offset: 1px; }
+
+/* ── Disclosure sections (dashboard staffing) ───────────────────────────────
+   <details> rather than React state, because the dashboard is a server
+   component and because the native element brings keyboard and
+   screen-reader behaviour with it. Two details of the native rendering have
+   to be overridden: Safari draws its marker via a pseudo-element that
+   `list-style: none` does not reach, and the default triangle sits on the
+   text baseline where it misaligns with a 17px figure. */
+summary::-webkit-details-marker { display: none; }
+.fr-caret {
+  display: inline-block;
+  transition: transform var(--dur-fast) var(--ease-out);
+}
+details[open] > summary .fr-caret { transform: rotate(90deg); }
+/* The whole header is the hit target, so it gets the same hover the other
+   interactive rows do — without it a clickable row looks like a static one. */
+details > summary:hover .fr-caret { color: var(--text-muted); }
