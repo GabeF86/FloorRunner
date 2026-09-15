@@ -16,6 +16,8 @@ import {
   todaysCall,
   attentionFor,
   loadDashboardData,
+  summarizeMix,
+  type MixRow,
   type TodaysCallSlotRow,
   type AttentionSlotRow,
 } from './queries';
@@ -347,11 +349,15 @@ function fullFake() {
 }
 
 describe('loadDashboardData', () => {
-  it('loads every panel in ≤6 logical selects and shapes the results', async () => {
+  it('loads every panel in ≤7 logical selects and shapes the results', async () => {
+    // The budget moved 6 → 7 when the staffing-mix panel was added (ΣFTE has
+    // no PostgREST aggregate, so the rows must come back). It is asserted at
+    // all because an N+1 creeping in here would be invisible: every panel
+    // would still render correctly, just slower on every page load.
     const { sb, calls } = fullFake();
     const data = await loadDashboardData(sb, TODAY);
 
-    expect(fromCount(calls)).toBeLessThanOrEqual(6);
+    expect(fromCount(calls)).toBeLessThanOrEqual(7);
     expect(data.today).toBe(TODAY);
     expect(data.providers).toEqual({ data: 3, error: null });
     expect(data.sites).toEqual({ data: 2, error: null });
@@ -676,5 +682,100 @@ describe('loadDashboardData — site scoping', () => {
     await loadDashboardData(plain.sb as never, '2026-07-10');
     await loadDashboardData(scopedFake.sb as never, '2026-07-10', SITE);
     expect(fromCount(scopedFake.calls)).toBe(fromCount(plain.calls));
+  });
+});
+
+// ── Staffing mix ───────────────────────────────────────────────────────────
+
+describe('summarizeMix', () => {
+  const row = (over: Partial<MixRow> = {}): MixRow => ({
+    fte_value: 1,
+    call_taker: false,
+    employment_status: 'full_time',
+    providers: { provider_type: 'physician' },
+    ...over,
+  });
+
+  it('keeps quarter FTEs intact rather than rounding them away', () => {
+    const mix = summarizeMix([
+      row({ call_taker: true, fte_value: 1 }),
+      row({ call_taker: true, fte_value: 0.75 }),
+      row({ call_taker: true, fte_value: 0.5 }),
+      row({ call_taker: false, fte_value: 1 }),
+    ]);
+    expect(mix.callTakerFte).toBe(2.25);
+    expect(mix.callTakerCount).toBe(3);
+  });
+
+  it('coerces the numeric-as-string PostgREST returns', () => {
+    // Postgres numeric arrives as a STRING. Adding without coercion yields
+    // "1.000.75" — plausible-looking nonsense.
+    const mix = summarizeMix([
+      row({ call_taker: true, fte_value: '1.00' as unknown as number }),
+      row({ call_taker: true, fte_value: '0.75' as unknown as number }),
+    ]);
+    expect(mix.callTakerFte).toBe(1.75);
+  });
+
+  it('sums CRNA FTE and counts AAs with them', () => {
+    // A 'crna' slot admits AAs (slotCandidates), so an AA excluded here would
+    // vanish from every staffing figure on the page.
+    const mix = summarizeMix([
+      row({ providers: { provider_type: 'crna' }, fte_value: 1 }),
+      row({ providers: { provider_type: 'aa' }, fte_value: 0.5 }),
+      row({ providers: { provider_type: 'physician' }, fte_value: 1 }),
+    ]);
+    expect(mix.crnaFte).toBe(1.5);
+    expect(mix.crnaCount).toBe(2);
+  });
+
+  it('counts part-time PHYSICIANS only', () => {
+    const mix = summarizeMix([
+      row({ providers: { provider_type: 'physician' }, employment_status: 'part_time' }),
+      row({ providers: { provider_type: 'crna' }, employment_status: 'part_time' }),
+    ]);
+    expect(mix.partTimePhysicians).toBe(1);
+  });
+
+  it('counts per diems of any type', () => {
+    const mix = summarizeMix([
+      row({ providers: { provider_type: 'physician' }, employment_status: 'per_diem' }),
+      row({ providers: { provider_type: 'crna' }, employment_status: 'per_diem' }),
+      row({ employment_status: 'full_time' }),
+    ]);
+    expect(mix.perDiem).toBe(2);
+  });
+
+  it('treats a per diem 0.00 FTE as zero capacity, not as missing', () => {
+    const mix = summarizeMix([
+      row({ call_taker: true, fte_value: 0, employment_status: 'per_diem' }),
+    ]);
+    expect(mix.callTakerFte).toBe(0);
+    expect(mix.callTakerCount).toBe(1); // they are a call taker, worth 0 FTE
+    expect(mix.perDiem).toBe(1);
+  });
+
+  it('survives a null or embedded-array provider relation', () => {
+    const mix = summarizeMix([
+      row({ providers: null }),
+      row({ providers: [{ provider_type: 'crna' }], fte_value: 1 }),
+    ]);
+    expect(mix.crnaFte).toBe(1);
+  });
+
+  it('ignores a negative or non-numeric FTE rather than subtracting', () => {
+    const mix = summarizeMix([
+      row({ call_taker: true, fte_value: -5 }),
+      row({ call_taker: true, fte_value: 'abc' as unknown as number }),
+      row({ call_taker: true, fte_value: 1 }),
+    ]);
+    expect(mix.callTakerFte).toBe(1);
+  });
+
+  it('returns all zeros for an empty roster', () => {
+    expect(summarizeMix([])).toEqual({
+      callTakerFte: 0, callTakerCount: 0, crnaFte: 0, crnaCount: 0,
+      partTimePhysicians: 0, perDiem: 0,
+    });
   });
 });

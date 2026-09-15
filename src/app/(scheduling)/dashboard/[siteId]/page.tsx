@@ -3,7 +3,7 @@
 
 import { notFound } from 'next/navigation';
 import { sbSchedulingServer } from '@/lib/supabaseScheduling';
-import { loadDashboardData, type DashboardData } from '../queries';
+import { loadDashboardData, loadSiteCallObligation, type DashboardData } from '../queries';
 import { DashboardView } from '../DashboardView';
 
 export const dynamic = 'force-dynamic';
@@ -39,8 +39,16 @@ export default async function SiteDashboardPage({
 
   let data: DashboardData | null = null;
   let fatal: string | null = null;
+  // The obligation is its own panel and fails on its own: a template read that
+  // goes wrong must not take the whole page down with it.
+  let obligation: Awaited<ReturnType<typeof loadSiteCallObligation>> | null = null;
+
+  const year = new Date().getUTCFullYear();
   try {
-    data = await loadDashboardData(sb, undefined, siteId);
+    [data, obligation] = await Promise.all([
+      loadDashboardData(sb, undefined, siteId),
+      loadSiteCallObligation(sb, siteId, year),
+    ]);
   } catch (e) {
     fatal = e instanceof Error ? e.message : 'Dashboard data could not be loaded.';
   }
@@ -50,6 +58,7 @@ export default async function SiteDashboardPage({
       data={data}
       fatal={fatal}
       site={{ id: site.id as string, name: site.name as string }}
+      obligation={obligation}
     />
   );
 }

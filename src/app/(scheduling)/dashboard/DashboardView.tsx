@@ -15,7 +15,11 @@ import Link from 'next/link';
 import type { ReactNode } from 'react';
 import { sbSchedulingServer } from '@/lib/supabaseScheduling';
 import { PageHeader, Card, Badge, Table, EmptyState, Banner, Button, scheduleStatusTone } from '@/components/ui';
-import { loadDashboardData, type DashboardData, type Panel } from './queries';
+import type { DashboardData, Panel, ProviderMix, ScheduleRow } from './queries';
+import {
+  BUCKET_LABELS, OBLIGATION_BUCKETS, formatShare, perFteShare,
+  type SiteCallObligation,
+} from '@/lib/siteCallObligation';
 import PhysicianPlannerCard from './PhysicianPlannerCard';
 import DashboardTallyCard from './DashboardTallyCard';
 
@@ -215,14 +219,229 @@ function AttentionPanel({ panel }: { panel: DashboardData['attention'] }) {
 }
 
 
+// ── Staffing mix ───────────────────────────────────────────────────────────
+
+function MixFigure({ value, label, sub }: { value: string; label: string; sub?: string }) {
+  return (
+    <div style={{ minWidth: 0 }}>
+      <div style={{ fontSize: 'var(--fs-xl)', fontWeight: 800, color: 'var(--text-strong)', letterSpacing: -0.5 }}>
+        {value}
+      </div>
+      <div style={{ fontSize: 'var(--fs-sm)', fontWeight: 600, color: 'var(--text-muted)', marginTop: 2 }}>
+        {label}
+      </div>
+      {sub && (
+        <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-dim)', marginTop: 2 }}>{sub}</div>
+      )}
+    </div>
+  );
+}
+
+function StaffingCard({ panel, site }: { panel: Panel<ProviderMix>; site: boolean }) {
+  if (panel.error) {
+    return <Card title="Staffing"><Banner tone="error">{panel.error}</Banner></Card>;
+  }
+  const m = panel.data;
+  if (!m) return <Card title="Staffing"><Banner tone="error">Staffing could not be loaded.</Banner></Card>;
+
+  return (
+    <Card
+      title="Staffing"
+      actions={
+        <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-dim)' }}>
+          {site ? 'providers homed at this site' : 'whole group'}
+        </span>
+      }
+    >
+      <div style={{
+        display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))',
+        gap: 'var(--space-4)',
+      }}>
+        {/* FTE for the two capacity questions, headcount for the two
+            who-are-they questions — they answer different things. */}
+        <MixFigure
+          value={String(m.callTakerFte)}
+          label="FTE call takers"
+          sub={`${m.callTakerCount} ${m.callTakerCount === 1 ? 'person' : 'people'}`}
+        />
+        <MixFigure
+          value={String(m.crnaFte)}
+          label="FTE CRNAs"
+          sub={`${m.crnaCount} ${m.crnaCount === 1 ? 'person' : 'people'}`}
+        />
+        <MixFigure value={String(m.partTimePhysicians)} label="Part-time physicians" />
+        <MixFigure value={String(m.perDiem)} label="Per diems" />
+      </div>
+    </Card>
+  );
+}
+
+// ── Schedules by provider group ────────────────────────────────────────────
+
+const GROUP_LABEL: Record<string, string> = {
+  physician: 'Physician schedules',
+  crna: 'CRNA schedules',
+  both: 'Combined schedules',
+};
+
+function ScheduleGroup({ label, rows }: { label: string; rows: ScheduleRow[] }) {
+  return (
+    <div style={{ marginBottom: 'var(--space-4)' }}>
+      <div style={{
+        fontSize: 'var(--fs-xs)', textTransform: 'uppercase', letterSpacing: 1,
+        color: 'var(--text-dim)', fontWeight: 700, marginBottom: 'var(--space-2)',
+      }}>
+        {label}
+      </div>
+      {rows.length === 0 ? (
+        <div style={{ fontSize: 'var(--fs-sm)', color: 'var(--text-dim)', fontStyle: 'italic' }}>
+          None yet.
+        </div>
+      ) : (
+        <div style={{ display: 'grid', gap: 6 }}>
+          {rows.map(r => (
+            <Link
+              key={r.id}
+              href={`/schedules/${r.id}`}
+              style={{
+                display: 'flex', alignItems: 'center', gap: 'var(--space-3)',
+                padding: '8px var(--space-3)', borderRadius: 'var(--radius-sm)',
+                border: '1px solid var(--border)', background: 'var(--bg-deep)',
+                textDecoration: 'none', fontSize: 'var(--fs-sm)',
+              }}
+            >
+              <span style={{ fontWeight: 700, color: 'var(--text)', flex: 1, minWidth: 0 }}>
+                {r.schedule_name}
+              </span>
+              <span style={{ color: 'var(--text-dim)', fontSize: 'var(--fs-xs)', whiteSpace: 'nowrap' }}>
+                {r.date_start} → {r.date_end}
+              </span>
+              <Badge tone={scheduleStatusTone(r.status)}>{r.status}</Badge>
+            </Link>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SchedulesByGroupCard({ panel }: { panel: DashboardData['schedules'] }) {
+  if (panel.error) {
+    return <Card title="Schedules"><Banner tone="error">{panel.error}</Banner></Card>;
+  }
+  const rows = panel.data?.rows ?? [];
+  // 'both' only gets a section when something is actually in it — an empty
+  // "Combined" heading on every site would be noise.
+  const groups: Array<[string, ScheduleRow[]]> = [
+    ['physician', rows.filter(r => (r.provider_group ?? 'both') === 'physician')],
+    ['crna', rows.filter(r => r.provider_group === 'crna')],
+    ['both', rows.filter(r => (r.provider_group ?? 'both') === 'both')],
+  ];
+  return (
+    <Card title="Schedules">
+      {groups
+        .filter(([key, g]) => key !== 'both' || g.length > 0)
+        .map(([key, g]) => <ScheduleGroup key={key} label={GROUP_LABEL[key]} rows={g} />)}
+    </Card>
+  );
+}
+
+// ── Annual call obligation ─────────────────────────────────────────────────
+
+function ObligationCard({ panel }: { panel: Panel<SiteCallObligation> }) {
+  if (panel.error) {
+    return <Card title="Annual call obligation"><Banner tone="error">{panel.error}</Banner></Card>;
+  }
+  const o = panel.data;
+  if (!o) return null;
+
+  if (o.noSlate) {
+    // Six of eight sites are here. "0 calls a year" would be a claim; this is
+    // the truth, and it names the fix.
+    return (
+      <Card title="Annual call obligation">
+        <Banner tone="info">
+          This site has no active call templates, so there is no call load to
+          compute. Define its call shift types and templates under Sites first.
+        </Banner>
+      </Card>
+    );
+  }
+
+  const cell: React.CSSProperties = {
+    padding: '7px 10px', textAlign: 'right', fontVariantNumeric: 'tabular-nums',
+  };
+  const head: React.CSSProperties = {
+    ...cell, fontSize: 'var(--fs-xs)', textTransform: 'uppercase', letterSpacing: 0.6,
+    color: 'var(--text-dim)', fontWeight: 700,
+  };
+
+  return (
+    <Card
+      title="Annual call obligation"
+      actions={
+        <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-dim)' }}>
+          {o.year} · par {o.parLevel}
+        </span>
+      }
+    >
+      <div style={{ overflowX: 'auto' }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 'var(--fs-sm)' }}>
+          <thead>
+            <tr style={{ borderBottom: '1px solid var(--border)' }}>
+              <th style={{ ...head, textAlign: 'left' }}>Code</th>
+              {OBLIGATION_BUCKETS.map(b => <th key={b} style={head}>{BUCKET_LABELS[b]}</th>)}
+              <th style={head}>Year</th>
+              <th style={head}>Per 1.0 FTE</th>
+            </tr>
+          </thead>
+          <tbody>
+            {o.codes.map(c => (
+              <tr key={c.code} style={{ borderBottom: '1px solid var(--border-faint)' }}>
+                <td style={{ ...cell, textAlign: 'left', fontWeight: 700, color: 'var(--text)' }}>{c.code}</td>
+                {OBLIGATION_BUCKETS.map(b => (
+                  <td key={b} style={{ ...cell, color: 'var(--text-muted)' }}>{c.byBucket[b]}</td>
+                ))}
+                <td style={{ ...cell, fontWeight: 700, color: 'var(--text)' }}>{c.total}</td>
+                <td style={{ ...cell, color: 'var(--blue)', fontWeight: 700 }}>
+                  {formatShare(perFteShare(c.total, o.parLevel))}
+                </td>
+              </tr>
+            ))}
+            <tr>
+              <td style={{ ...cell, textAlign: 'left', fontWeight: 800, color: 'var(--text-strong)' }}>All</td>
+              {OBLIGATION_BUCKETS.map(b => (
+                <td key={b} style={{ ...cell, fontWeight: 700, color: 'var(--text)' }}>{o.bucketTotals[b]}</td>
+              ))}
+              <td style={{ ...cell, fontWeight: 800, color: 'var(--text-strong)' }}>{o.grandTotal}</td>
+              <td style={{ ...cell, fontWeight: 800, color: 'var(--blue)' }}>
+                {formatShare(perFteShare(o.grandTotal, o.parLevel))}
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-dim)', marginTop: 'var(--space-3)', lineHeight: 1.6 }}>
+        Slots the site must cover in {o.year}, simulated day by day through the
+        same rules that create real schedules. <strong>Per 1.0 FTE</strong> is that
+        divided by the par level of {o.parLevel} — a 0.75 FTE owes three quarters
+        of it. When the pool&rsquo;s total FTE is below par, obligations
+        deliberately under-cover the year; the remainder is the paid-pickup layer.
+      </div>
+    </Card>
+  );
+}
+
 export interface DashboardViewProps {
   data: DashboardData | null;
   fatal: string | null;
   /** Whole-group view when absent. */
   site?: { id: string; name: string } | null;
+  /** Site pages only — the annual call load. */
+  obligation?: Panel<SiteCallObligation> | null;
 }
 
-export function DashboardView({ data, fatal, site }: DashboardViewProps) {
+export function DashboardView({ data, fatal, site, obligation }: DashboardViewProps) {
   const header = (
     <PageHeader
       title={site ? site.name : 'UAS Dashboard'}
@@ -298,6 +517,22 @@ export function DashboardView({ data, fatal, site }: DashboardViewProps) {
           href="/requests"
         />
       </div>
+
+      <div style={{ marginBottom: 'var(--space-4)' }}>
+        <StaffingCard panel={data.providerMix} site={!!site} />
+      </div>
+
+      {site && obligation && (
+        <div style={{ marginBottom: 'var(--space-4)' }}>
+          <ObligationCard panel={obligation} />
+        </div>
+      )}
+
+      {site && (
+        <div style={{ marginBottom: 'var(--space-4)' }}>
+          <SchedulesByGroupCard panel={data.schedules} />
+        </div>
+      )}
 
       <div
         style={{

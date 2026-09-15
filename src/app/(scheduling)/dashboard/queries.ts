@@ -16,6 +16,11 @@
 // clean), and 'warning' severity never counts as a hard violation.
 
 import { validationSummaryFor } from '@/app/api/scheduling/schedules/[id]/grid/route.helpers';
+import {
+  computeSiteCallObligation,
+  type ObligationTemplate,
+  type SiteCallObligation,
+} from '@/lib/siteCallObligation';
 import { assignmentFills } from '@/lib/plannerMath';
 
 // Same loose client type the other DB-coupled modules use at this seam
@@ -28,6 +33,8 @@ type SchedulingClient = any;
 // ── Row shapes (mirror the select strings below) ─────────────────────────────
 
 export interface ScheduleRow {
+  /** 'physician' | 'crna' | 'both' — how the dashboard splits the list. */
+  provider_group?: string | null;
   id: string;
   schedule_name: string;
   status: string; // scheduling.schedule_status: draft | review | published | revised | archived
@@ -113,6 +120,55 @@ export interface AttentionEntry {
 // ── Pure aggregation ─────────────────────────────────────────────────────────
 
 /** Counts schedules by status, e.g. { draft: 2, published: 1 }. */
+export interface MixRow {
+  fte_value: number | string | null;
+  call_taker: boolean | null;
+  employment_status: string | null;
+  providers: { provider_type?: string | null } | Array<{ provider_type?: string | null }> | null;
+}
+
+/**
+ * The four staffing figures, from employment profiles.
+ *
+ * Two are ΣFTE and two are headcount, deliberately: "how much call capacity is
+ * there" and "how many CRNAs' worth of coverage" are FTE questions, while
+ * "how many part-timers" and "how many per diems" are questions about people.
+ *
+ * fte_value arrives from a Postgres numeric as a STRING through PostgREST, so
+ * it is coerced rather than added — string concatenation here would silently
+ * produce something like "1.000.750.70".
+ */
+export function summarizeMix(rows: readonly MixRow[]): ProviderMix {
+  const mix: ProviderMix = {
+    callTakerFte: 0, callTakerCount: 0,
+    crnaFte: 0, crnaCount: 0,
+    partTimePhysicians: 0, perDiem: 0,
+  };
+
+  for (const r of rows) {
+    const rel = r.providers;
+    const p = (Array.isArray(rel) ? rel[0] : rel) ?? {};
+    const type = p.provider_type ?? '';
+    const fteNum = Number(r.fte_value);
+    const fte = Number.isFinite(fteNum) && fteNum > 0 ? fteNum : 0;
+
+    if (r.call_taker) { mix.callTakerFte += fte; mix.callTakerCount++; }
+    // AAs work the CRNA slate (slotCandidates admits both for a 'crna' slot),
+    // so they are counted with them rather than vanishing from every figure.
+    if (type === 'crna' || type === 'aa') { mix.crnaFte += fte; mix.crnaCount++; }
+    if (type === 'physician' && r.employment_status === 'part_time') mix.partTimePhysicians++;
+    if (r.employment_status === 'per_diem') mix.perDiem++;
+  }
+
+  // ΣFTE accumulates float error across ~290 rows, so it is rounded — to TWO
+  // decimals, not one. Quarter FTEs are real contracts here (0.75, 0.25), and
+  // one decimal turns a roster of 2.25 into 2.3; Gabriel quotes these figures
+  // to two places ("8.82 FTE").
+  mix.callTakerFte = Math.round(mix.callTakerFte * 100) / 100;
+  mix.crnaFte = Math.round(mix.crnaFte * 100) / 100;
+  return mix;
+}
+
 export function summarizeSchedules(rows: Array<{ status: string }>): Record<string, number> {
   const byStatus: Record<string, number> = {};
   for (const r of rows) byStatus[r.status] = (byStatus[r.status] ?? 0) + 1;
@@ -226,8 +282,23 @@ export interface Panel<T> {
 
 export type AttentionPanelEntry = AttentionEntry & { schedule_name: string; status: string };
 
+/** The four staffing figures the dashboards head with. */
+export interface ProviderMix {
+  /** ΣFTE across call takers — capacity, not headcount. */
+  callTakerFte: number;
+  callTakerCount: number;
+  /** ΣFTE across CRNAs. */
+  crnaFte: number;
+  crnaCount: number;
+  /** Headcount: physicians on a part-time contract. */
+  partTimePhysicians: number;
+  /** Headcount: anyone per diem, physician or CRNA. */
+  perDiem: number;
+}
+
 export interface DashboardData {
   today: string;
+  providerMix: Panel<ProviderMix>;
   providers: Panel<number>;
   sites: Panel<number>;
   schedules: Panel<{ byStatus: Record<string, number>; rows: ScheduleRow[] }>;
@@ -236,7 +307,7 @@ export interface DashboardData {
   attention: Panel<AttentionPanelEntry[]>;
 }
 
-const SCHEDULE_COLUMNS = 'id, schedule_name, status, date_start, date_end, current_version_number';
+const SCHEDULE_COLUMNS = 'id, schedule_name, status, date_start, date_end, current_version_number, provider_group';
 
 // Join shapes mirror the grid/master-schedule routes (explicit columns, no '*').
 const TODAYS_CALL_COLUMNS =
@@ -420,13 +491,106 @@ export async function loadDashboardData(
     }
   }
 
+  // ── Staffing mix ─────────────────────────────────────────────────────────
+  // ΣFTE cannot be done in PostgREST without an RPC, so the rows come back and
+  // are summed here. That makes the row cap a correctness problem rather than a
+  // performance one: a truncated read would understate ΣFTE and look plausible,
+  // so the count is checked and a shortfall becomes a panel error.
+  let mixQ = sb
+    .from('provider_employment_profiles')
+    .select('fte_value, call_taker, employment_status, providers!inner(provider_type, status, organization_id)',
+      { count: 'exact' })
+    .eq('providers.status', 'active');
+  if (siteId) mixQ = mixQ.eq('home_site_id', siteId);
+  const mixRes = await mixQ.range(0, PAGE_SIZE - 1);
+
+  const mixTrunc = mixRes.error ? null : truncationOf(mixRes, 'Staffing mix');
+  const mixPanel: Panel<ProviderMix> = mixRes.error
+    ? panel<ProviderMix>(null, mixRes.error, 'Staffing mix')
+    : mixTrunc
+      ? { data: null, error: mixTrunc }
+      : { data: summarizeMix((mixRes.data ?? []) as unknown as MixRow[]), error: null };
+
   return {
     today,
+    providerMix: mixPanel,
     providers: countPanel(providersRes, 'Providers'),
     sites: countPanel(sitesRes, 'Sites'),
     schedules,
     todaysCall: todaysCallPanel,
     pendingRequests: countPanel(pendingRes, 'Pending requests'),
     attention,
+  };
+}
+
+// ── Annual call obligation (site pages only) ───────────────────────────────
+
+/**
+ * A site's annual call load, simulated through the SAME helpers that
+ * materialize real slots — see siteCallObligation.ts for why a naive template
+ * read gets Fridays wrong.
+ *
+ * Separate from loadDashboardData because only the site pages show it and it
+ * costs two extra reads; the group view would pay for something it never
+ * renders.
+ */
+export async function loadSiteCallObligation(
+  sb: SchedulingClient,
+  siteId: string,
+  year: number,
+): Promise<Panel<SiteCallObligation>> {
+  const [siteRes, tmplRes, holRes] = await Promise.all([
+    sb.from('sites').select('call_par_level').eq('id', siteId).maybeSingle(),
+    sb
+      .from('shift_templates')
+      .select('day_type, shift_type_id, required_count, shift_types!inner(code, category, parent_call_code)',
+        { count: 'exact' })
+      .eq('site_id', siteId)
+      .eq('is_active', true),
+    sb
+      .from('holiday_calendars')
+      .select('holiday_date, is_major_holiday', { count: 'exact' })
+      .gte('holiday_date', `${year}-01-01`)
+      .lte('holiday_date', `${year}-12-31`),
+  ]);
+
+  if (siteRes.error) return panel<SiteCallObligation>(null, siteRes.error, 'Call obligation');
+  if (tmplRes.error) return panel<SiteCallObligation>(null, tmplRes.error, 'Call obligation');
+  if (holRes.error) return panel<SiteCallObligation>(null, holRes.error, 'Call obligation');
+
+  // A truncated template or holiday read would silently understate the year.
+  const trunc = truncationOf(tmplRes, 'Call obligation (templates)')
+    ?? truncationOf(holRes, 'Call obligation (holidays)');
+  if (trunc) return { data: null, error: trunc };
+
+  const templates: ObligationTemplate[] = [];
+  for (const row of (tmplRes.data ?? []) as Array<Record<string, unknown>>) {
+    const rel = row.shift_types;
+    const st = (Array.isArray(rel) ? rel[0] : rel) as
+      { code?: string; category?: string; parent_call_code?: string | null } | undefined;
+    if (!st || st.category !== 'call') continue;
+    templates.push({
+      code: st.code ?? '',
+      parent_call_code: st.parent_call_code ?? null,
+      day_type: row.day_type,
+      shift_type_id: row.shift_type_id,
+      required_count: row.required_count,
+    });
+  }
+
+  const holidays = new Map<string, { is_major_holiday: boolean; holiday_type: string }>();
+  for (const h of (holRes.data ?? []) as Array<Record<string, unknown>>) {
+    holidays.set(h.holiday_date as string, {
+      is_major_holiday: !!h.is_major_holiday,
+      holiday_type: '',
+    });
+  }
+
+  // `?? 12` mirrors the column default; plannerMath applies the same fallback.
+  const parLevel = Number((siteRes.data as { call_par_level?: number } | null)?.call_par_level ?? 12);
+
+  return {
+    data: computeSiteCallObligation({ year, parLevel, templates, holidays }),
+    error: null,
   };
 }
