@@ -18,6 +18,7 @@ import {
   loadDashboardData,
   summarizeMix,
   providerDisplayName,
+  providerShortName,
   type MixRow,
   type TodaysCallSlotRow,
   type AttentionSlotRow,
@@ -994,6 +995,32 @@ describe('summarizeMix — chips use real names', () => {
 });
 
 // ── Partners and CRNAs on the chips (Gabriel 2026-09-15) ───────────────────
+describe('providerShortName', () => {
+  it('is initial-dot-surname, the form the roster data already uses', () => {
+    expect(providerShortName({ first_name: 'Gabriel', last_name: 'Farkas' })).toBe('G.Farkas');
+    expect(providerShortName({ first_name: 'ann', last_name: 'Jones' })).toBe('A.Jones');
+  });
+
+  it('keeps two people with the same surname apart', () => {
+    // Vu Stella and Vu Jonathan are DIFFERENT people on this roster. A
+    // surname-only chip would render one name twice and read as a duplicate.
+    const stella = providerShortName({ first_name: 'Stella', last_name: 'Vu' });
+    const jonathan = providerShortName({ first_name: 'Jonathan', last_name: 'Vu' });
+    expect(stella).toBe('S.Vu');
+    expect(jonathan).toBe('J.Vu');
+    expect(stella).not.toBe(jonathan);
+  });
+
+  it('falls back to the full display name rather than printing a dangling initial', () => {
+    expect(providerShortName({ first_name: 'Gabriel', last_name: null }))
+      .toBe('Gabriel');
+    expect(providerShortName({ last_name: 'Farkas' })).toBe('Farkas');
+    expect(providerShortName({ preferred_display_name: 'Doc Holliday' }))
+      .toBe('Doc Holliday');
+    expect(providerShortName({})).toBe('Unnamed provider');
+  });
+});
+
 describe('summarizeMix — partner and CRNA markers', () => {
   const row = (over: Partial<MixRow> = {}): MixRow => ({
     fte_value: 1,

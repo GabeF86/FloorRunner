@@ -294,16 +294,6 @@ export function formatFte(n: number): string {
 }
 
 /**
- * How many names a section shows before it starts closed.
- *
- * Twelve is about two rows of tightened chips. Below that, hiding the names
- * behind a click costs more than it saves; above it, the list stops being
- * something you read and becomes something you scroll past. The group view has
- * 135 per diems, which is the case that made this necessary.
- */
-const OPEN_BELOW = 12;
-
-/**
  * A staffing figure with the people behind it.
  *
  * Built on <details> rather than React state because DashboardView is a SERVER
@@ -319,31 +309,32 @@ function StaffSection({
   sub?: string;
   people: StaffChip[];
 }) {
-  const collapsible = people.length > 0;
+  // Every section starts CLOSED (Gabriel 2026-09-15). An adaptive default —
+  // open when the list was short — meant the same section opened at one site
+  // and closed at another, so the card's height changed depending on where you
+  // were. One rule is easier to live with than a clever one, and the figures
+  // that matter stay in the header either way.
   return (
-    <details
-      open={people.length <= OPEN_BELOW}
-      style={{ minWidth: 0, marginBottom: 'var(--space-3)' }}
-    >
+    <details style={{ minWidth: 0, marginBottom: 'var(--space-3)' }}>
       <summary
         className="fr-focus"
         style={{
           display: 'flex', alignItems: 'baseline', gap: 'var(--space-2)', flexWrap: 'wrap',
           paddingBottom: 5, marginBottom: 'var(--space-2)',
           borderBottom: '1px solid var(--border-faint)',
-          cursor: collapsible ? 'pointer' : 'default',
+          cursor: 'pointer',
           // The native triangle sits on the text baseline and misaligns with a
           // 17px figure, so it is replaced by the caret below.
           listStyle: 'none',
         }}
       >
-        {collapsible && (
-          <span aria-hidden="true" className="fr-caret" style={{
-            fontSize: 9, color: 'var(--text-dim)', width: 9, flexShrink: 0,
-          }}>
-            ▸
-          </span>
-        )}
+        {/* Always shown, including for an empty section: expanding to find
+            "None." confirms the list is genuinely empty rather than broken. */}
+        <span aria-hidden="true" className="fr-caret" style={{
+          fontSize: 9, color: 'var(--text-dim)', width: 9, flexShrink: 0,
+        }}>
+          ▸
+        </span>
         <span style={{ fontSize: 'var(--fs-lg)', fontWeight: 800, color: 'var(--text-strong)', letterSpacing: -0.3 }}>
           {value}
         </span>

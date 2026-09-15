@@ -152,7 +152,16 @@ export function providerDisplayName(p: MixProviderRef): string {
 }
 
 /**
- * The compact form for a chip: surname plus first initial.
+ * The compact form for a chip: "G.Farkas" — first initial, then surname, no
+ * space (Gabriel 2026-09-15).
+ *
+ * That is not an arbitrary style: 15 providers already carry exactly this form
+ * in `short_display_name` from an earlier import (A.Jones, S.Vu), so the
+ * dashboard now speaks the convention the data already used.
+ *
+ * The initial is load-bearing rather than decorative — Vu Stella and Vu
+ * Jonathan are two different people on this roster, and a surname alone would
+ * silently merge them into one name appearing twice.
  *
  * Falls back to the full display name when either part is missing, because a
  * dangling initial reads as a data fault.
@@ -160,7 +169,7 @@ export function providerDisplayName(p: MixProviderRef): string {
 export function providerShortName(p: MixProviderRef): string {
   const last = p.last_name?.trim();
   const initial = p.first_name?.trim()?.[0];
-  if (last && initial) return `${last} ${initial.toUpperCase()}.`;
+  if (last && initial) return `${initial.toUpperCase()}.${last}`;
   return providerDisplayName(p);
 }
 
@@ -368,7 +377,7 @@ export type AttentionPanelEntry = AttentionEntry & { schedule_name: string; stat
 export interface DayDoc {
   id: string;
   name: string;
-  /** "Vu S." — see StaffChip.short for why the initial is required. */
+  /** "S.Vu" — see StaffChip.short for why the initial is required. */
   short: string;
   /**
    * provider_employment_profiles.max_weekly_hours — the "Weekly Hours" field
@@ -386,7 +395,7 @@ export interface StaffChip {
   /** Full name — the tooltip, and what a search would match. */
   name: string;
   /**
-   * "Farkas G." — what the chip actually prints.
+   * "G.Farkas" — what the chip actually prints.
    *
    * The first initial is NOT decoration: Vu Stella and Vu Jonathan are two
    * different people on this roster, and a surname alone would merge them.
