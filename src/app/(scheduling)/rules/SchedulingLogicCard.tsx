@@ -44,9 +44,10 @@ export default function SchedulingLogicCard(p: SchedulingLogicCardProps) {
         fontSize: 'var(--fs-sm)', color: 'var(--text-muted)', lineHeight: 1.6,
         marginBottom: 'var(--space-4)',
       }}>
-        Everything below is read from the live call pattern and shift types — it is the
-        contract the generator obeys, not a description of it. If a sentence here is
-        wrong, the schedule is wrong too.
+        These sections are read from the live call pattern and shift types — the contract
+        the generator obeys, not a description of it. If a sentence here is wrong, the
+        schedule is wrong too. The last section is the exception and is marked as such:
+        coverage notes are written by hand and the engine never reads them.
       </p>
 
       {p.sites.length > 1 && (
@@ -102,12 +103,27 @@ export default function SchedulingLogicCard(p: SchedulingLogicCardProps) {
           }).map(section => (
             <section key={section.key}>
               <h3 style={{
+                display: 'flex', alignItems: 'baseline', gap: 'var(--space-2)', flexWrap: 'wrap',
                 fontSize: 'var(--fs-xs)', textTransform: 'uppercase', letterSpacing: 1,
                 color: 'var(--text-dim)', fontWeight: 700,
                 paddingBottom: 5, marginBottom: 'var(--space-2)',
                 borderBottom: '1px solid var(--border-faint)',
               }}>
                 {section.title}
+                {/* The one distinction this page has to keep sharp. Everything
+                    else here is derived from what the engine reads and cannot
+                    be wrong without the schedule also being wrong; coverage
+                    notes are prose the engine never sees. Unlabelled, a reader
+                    would reasonably assume it acts on them. */}
+                {section.kind === 'described' && (
+                  <span style={{
+                    textTransform: 'none', letterSpacing: 0, fontWeight: 600,
+                    color: 'var(--warn)', background: 'var(--warn-bg)',
+                    padding: '1px 7px', borderRadius: 999, fontSize: 'var(--fs-xs)',
+                  }}>
+                    described, not enforced
+                  </span>
+                )}
               </h3>
 
               {section.statements.length === 0 ? (

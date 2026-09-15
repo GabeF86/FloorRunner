@@ -26,6 +26,9 @@ export async function listShiftTypes(
   sb: SchedulingClient,
   siteId?: string | null,
 ): Promise<QueryResult<Record<string, unknown>>> {
+  // select('*') on purpose: this feeds both the site editor (which needs every
+  // column) and the scheduling-logic view. Naming columns here would mean
+  // remembering to add coverage_notes-style additions in two places.
   let query = sb.from('shift_types').select('*').order('display_order');
   if (siteId) query = query.eq('site_id', siteId);
   const { data, error } = await query;

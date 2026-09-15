@@ -149,6 +149,19 @@ export interface ShiftTypeFacts {
   requires_post_call_rule?: boolean | null;
   call_rank?: number | null;
   is_overlay?: boolean | null;
+  /** Free text: what the shift actually covers. NOT read by the engine. */
+  coverage_notes?: string | null;
+}
+
+export interface LogicSectionWithKind extends LogicSection {
+  /**
+   * 'enforced' — derived from data the engine reads, so it cannot be wrong
+   * without the schedule also being wrong.
+   * 'described' — written by a human. True, load-bearing, and invisible to
+   * the engine. The distinction is shown on the page, because a reader who
+   * cannot tell them apart will assume the engine acts on prose it never sees.
+   */
+  kind: 'enforced' | 'described';
 }
 
 function restSection(shiftTypes: readonly ShiftTypeFacts[]): LogicSection {
@@ -174,6 +187,33 @@ function restSection(shiftTypes: readonly ShiftTypeFacts[]): LogicSection {
     key: 'rest',
     title: 'Post-call rest',
     emptyNote: 'No shift type at this site forces a post-call day off.',
+    statements,
+  };
+}
+
+/**
+ * What each call actually covers, in the words of whoever runs the service.
+ *
+ * This is the only section NOT derived from what the engine reads, and it
+ * exists because the most load-bearing facts about a call are often in nobody's
+ * schema. Paoli's C2 cross-covers neuro on Friday nights — which is WHY that
+ * site has no Friday C3 template. A reader can see the absence in the slate but
+ * not the reason, and could reasonably "fix" it by adding one.
+ */
+function coverageSection(shiftTypes: readonly ShiftTypeFacts[]): LogicSection {
+  const statements: LogicStatement[] = shiftTypes
+    .filter(t => t.coverage_notes?.trim())
+    .sort((a, b) => a.code.localeCompare(b.code, undefined, { numeric: true }))
+    .map(t => ({ text: `${t.code} — ${t.coverage_notes!.trim()}`, source: 'coverage note' }));
+
+  return {
+    key: 'coverage',
+    title: 'What each call covers',
+    emptyNote:
+      'No coverage notes recorded for this site. These describe what a shift actually '
+      + 'involves — beeper versus in-house, home call, cross-coverage of another service — '
+      + 'and are worth writing down: the engine cannot infer them, and a slate that looks '
+      + 'like a gap is sometimes deliberate cross-coverage.',
     statements,
   };
 }
@@ -317,14 +357,23 @@ export interface SchedulingLogicInput {
   parLevel: number | null;
 }
 
-/** Every section, in reading order. */
-export function describeSchedulingLogic(input: SchedulingLogicInput): LogicSection[] {
+/**
+ * Every section, in reading order, each labelled with whether the engine acts
+ * on it.
+ *
+ * Coverage notes come LAST on purpose. They are the only descriptive section,
+ * and putting prose among the derived sections would blur the one distinction
+ * this page has to keep sharp.
+ */
+export function describeSchedulingLogic(input: SchedulingLogicInput): LogicSectionWithKind[] {
+  const enforced = (s: LogicSection): LogicSectionWithKind => ({ ...s, kind: 'enforced' });
   return [
-    blockSection(input.doc),
-    dayChainSection(input.doc),
-    restSection(input.shiftTypes),
-    orderSection(input.doc),
-    obligationSection(input.doc, input.parLevel),
-    invariantSection(),
+    enforced(blockSection(input.doc)),
+    enforced(dayChainSection(input.doc)),
+    enforced(restSection(input.shiftTypes)),
+    enforced(orderSection(input.doc)),
+    enforced(obligationSection(input.doc, input.parLevel)),
+    enforced(invariantSection()),
+    { ...coverageSection(input.shiftTypes), kind: 'described' },
   ];
 }

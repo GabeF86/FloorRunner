@@ -203,3 +203,46 @@ describe('every statement', () => {
     }
   });
 });
+
+describe('coverage notes', () => {
+  const withNotes: ShiftTypeFacts[] = [
+    { code: 'C2', category: 'call', coverage_notes: 'Weekdays: day plus overnight backup. Weekends: home call.' },
+    { code: 'C1', category: 'call', coverage_notes: '   ' },
+    { code: 'C3', category: 'call' },
+  ];
+
+  it('lists only the shifts that actually have a note', () => {
+    // A blank or whitespace-only note is not a note; printing "C1 —" would
+    // look like the text had gone missing.
+    const s = section(CLASSIC_PATTERN, 'coverage', withNotes);
+    expect(s.statements.map(x => x.text)).toEqual([
+      'C2 — Weekdays: day plus overnight backup. Weekends: home call.',
+    ]);
+  });
+
+  it('is marked DESCRIBED, and every other section ENFORCED', () => {
+    // The distinction this page has to keep sharp: a reader who cannot tell
+    // them apart will assume the engine acts on prose it never sees.
+    const all = describeSchedulingLogic({
+      doc: CLASSIC_PATTERN, shiftTypes: withNotes, parLevel: 11,
+    });
+    const described = all.filter(s => s.kind === 'described');
+    expect(described.map(s => s.key)).toEqual(['coverage']);
+    expect(all.filter(s => s.kind === 'enforced').length).toBe(all.length - 1);
+  });
+
+  it('comes last, so prose never sits among the derived sections', () => {
+    const all = describeSchedulingLogic({
+      doc: CLASSIC_PATTERN, shiftTypes: withNotes, parLevel: 11,
+    });
+    expect(all[all.length - 1].key).toBe('coverage');
+  });
+
+  it('explains what the notes are FOR when a site has none', () => {
+    const s = section(CLASSIC_PATTERN, 'coverage', [{ code: 'C1', category: 'call' }]);
+    expect(s.statements).toHaveLength(0);
+    // Not a bare "none" — the empty state is where a chief learns the field
+    // exists and why a slate gap is sometimes deliberate cross-coverage.
+    expect(s.emptyNote).toContain('cross-coverage');
+  });
+});
