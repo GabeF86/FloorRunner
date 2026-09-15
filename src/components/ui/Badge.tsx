@@ -38,6 +38,12 @@ export function Badge({ tone, children }: BadgeProps) {
         borderRadius: 999,
         background: t.bg,
         color: t.fg,
+        // A hairline in the badge's own ink at low alpha. Without it the pill
+        // is a flat tint with no edge, which reads washed out on a light
+        // surface — the tint and the card behind it are too close in value.
+        // color-mix keeps it derived from the tone rather than hand-picked
+        // per colour, so it stays right in both themes.
+        border: `1px solid color-mix(in srgb, ${t.fg} 22%, transparent)`,
         fontSize: 'var(--fs-xs)',
         fontWeight: 500,
         fontFamily: 'var(--font-mono), ui-monospace, monospace',
