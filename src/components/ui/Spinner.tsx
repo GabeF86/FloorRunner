@@ -7,6 +7,10 @@ export function Spinner({ size = 16 }: SpinnerProps) {
     <span
       role="status"
       aria-label="Loading"
+      // The class is what exempts this from the global prefers-reduced-motion
+      // rule in globals.css: a frozen spinner reads as a hung app, so it is
+      // slowed rather than stopped.
+      className="fr-spinner"
       style={{
         display: 'inline-block',
         width: size,

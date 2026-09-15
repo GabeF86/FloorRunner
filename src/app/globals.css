@@ -155,14 +155,21 @@ body {
    data-dense product can have. */
 table, .fr-nums, input[type='number'] { font-variant-numeric: tabular-nums; }
 
-/* Respect the OS setting. Every animation here is decorative; none of it
-   carries meaning that would be lost by removing it. */
+/* Respect the OS setting — with ONE exception. Almost every animation here is
+   decorative (skeleton pulse, modal rise, card stagger) and nothing is lost by
+   stopping it. The spinner is not: its rotation IS the signal that work is in
+   progress, and a frozen spinner reads as a hung app rather than a calm one.
+   It is slowed rather than stopped. */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
     scroll-behavior: auto !important;
+  }
+  .fr-spinner, .fr-spinner::before, .fr-spinner::after {
+    animation-duration: 1.4s !important;
+    animation-iteration-count: infinite !important;
   }
 }
 
@@ -234,18 +241,28 @@ table, .fr-nums, input[type='number'] { font-variant-numeric: tabular-nums; }
 .fr-toggle:focus-within { outline: 2px solid var(--blue); outline-offset: 1px; }
 
 /* Skeleton shimmer */
-@keyframes skeleton-pulse {
-  0%, 100% { opacity: 1; }
-  50%      { opacity: 0.4; }
+/* A sweep rather than an opacity pulse. A whole page of blocks fading in and
+   out together throbs; a sweep reads as one surface being filled, which is
+   what is actually happening. background-position animates on the compositor,
+   so this is no more expensive than the fade it replaces. */
+@keyframes skeleton-sweep {
+  from { background-position: 200% 0; }
+  to   { background-position: -200% 0; }
 }
-.fr-skeleton { animation: skeleton-pulse 1.4s ease-in-out infinite; }
+.fr-skeleton {
+  background-image: linear-gradient(
+    90deg,
+    transparent 0%,
+    var(--tint-surface-strong) 50%,
+    transparent 100%
+  );
+  background-size: 200% 100%;
+  background-repeat: no-repeat;
+  animation: skeleton-sweep 1.6s linear infinite;
+}
 
 /* Spinner rotation */
 @keyframes fr-spin { to { transform: rotate(360deg); } }
-
-@media (prefers-reduced-motion: reduce) {
-  .fr-skeleton, .modal-box, .site-card { animation: none; }
-}
 
 /* ── Buttons ──────────────────────────────────────────────────────────────
    Hover and press live here rather than in React state. The kit used to
