@@ -40,11 +40,16 @@ const tok = {
   cyan: '#0ea5e9',
 };
 
-// MD border colors per staffing-calculator (lines 853-855).
+// MD border colors per staffing-calculator (lines 853-855). These three are
+// the role KEY — blue = supervising, purple = solo, teal = float — mirrored by
+// the canvas legend, so they stay literal in both themes.
 const COLOR_SUPERVISING = '#4A90D9';
 const COLOR_SOLO = '#B06AE8';
 const COLOR_FLOAT = '#80CBC4';
-const COLOR_OVER_RATIO = '#dc2626';
+// Over-ratio is not a role, it is a VIOLATION, so it takes the status token.
+// --danger is #dc2626 on light (what this was) and lifts to #f87171 on dark,
+// where the old value sat at ~3:1 against the near-black surface.
+const COLOR_OVER_RATIO = 'var(--danger)';
 
 export type AnesthesiologistVariant = 'supervising' | 'solo' | 'float';
 
@@ -128,10 +133,10 @@ export default function AnesthesiologistCard({
           border: `1.5px ${borderStyle} ${borderCol}`,
           minWidth: 110,
           flexShrink: 0,
-          transition: 'all 0.15s',
+          transition: 'all var(--dur-fast) var(--ease-out)',
           position: 'relative',
           boxShadow: overRatio
-            ? '0 0 0 1px rgba(220,38,38,0.18), 0 1px 4px rgba(220,38,38,0.12)'
+            ? '0 0 0 1px color-mix(in srgb, var(--danger) 18%, transparent), 0 1px 4px color-mix(in srgb, var(--danger) 12%, transparent)'
             : 'none',
         }}
       >
@@ -141,7 +146,11 @@ export default function AnesthesiologistCard({
             width: 22,
             height: 22,
             borderRadius: 5,
-            background: borderCol + '20',
+            // Was `borderCol + '20'` — string-concatenating hex alpha. That
+            // silently produces "var(--danger)20" the moment borderCol is a
+            // token, which is not a colour at all; color-mix takes either.
+            // 0x20/0xff ≈ 12%.
+            background: `color-mix(in srgb, ${borderCol} 12%, transparent)`,
             border: `1.5px ${borderStyle} ${borderCol}`,
             display: 'flex',
             alignItems: 'center',
@@ -230,12 +239,15 @@ export default function AnesthesiologistCard({
   );
 }
 
-function Badge({ color, text, dark }: { color: string; text: string; dark?: boolean }) {
+// `color` is always a solid role fill, so the ink is --on-accent in both
+// themes. (There used to be a `dark` prop switching to near-black ink; no call
+// site ever passed it, and it had no token that stayed dark in dark mode.)
+function Badge({ color, text }: { color: string; text: string }) {
   return (
     <span
       style={{
         background: color,
-        color: dark ? '#1a1a1a' : '#fff',
+        color: 'var(--on-accent)',
         fontSize: 7,
         fontWeight: 800,
         padding: '1px 4px',

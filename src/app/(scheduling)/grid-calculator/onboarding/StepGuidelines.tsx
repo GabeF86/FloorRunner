@@ -33,9 +33,7 @@ import {
   type WizardAction,
 } from './wizardState';
 
-const CYAN = '#0ea5e9';
-const AMBER = '#f59e0b';
-const SLATE = '#64748b';
+const ACCENT = 'var(--blue)';
 
 export interface StepGuidelinesProps {
   guidelines: string;
@@ -158,7 +156,7 @@ export default function StepGuidelines({
               borderRadius: 6,
               padding: '4px 10px',
               fontSize: 11,
-              color: SLATE,
+              color: 'var(--text-muted)',
               cursor: 'pointer',
               fontFamily: 'inherit',
               fontWeight: 600,
@@ -178,7 +176,7 @@ export default function StepGuidelines({
               <span
                 style={{
                   fontSize: 10,
-                  color: SLATE,
+                  color: 'var(--text-muted)',
                   fontFamily: 'var(--font-mono), ui-monospace, monospace',
                 }}
               >
@@ -277,8 +275,8 @@ function PaoliExample({
   return (
     <div
       style={{
-        background: 'rgba(245,158,11,0.06)',
-        border: '1px solid rgba(245,158,11,0.3)',
+        background: 'var(--warn-bg)',
+        border: '1px solid color-mix(in srgb, var(--warn) 30%, transparent)',
         borderRadius: 8,
         padding: 12,
         display: 'flex',
@@ -290,7 +288,7 @@ function PaoliExample({
         style={{
           fontSize: 10,
           fontWeight: 700,
-          color: AMBER,
+          color: 'var(--warn)',
           textTransform: 'uppercase',
           letterSpacing: 0.5,
           fontFamily: 'var(--font-mono), ui-monospace, monospace',
@@ -307,8 +305,8 @@ function PaoliExample({
         style={{
           alignSelf: 'flex-start',
           background: 'transparent',
-          border: `1px solid ${AMBER}55`,
-          color: AMBER,
+          border: '1px solid color-mix(in srgb, var(--warn) 33%, transparent)',
+          color: 'var(--warn)',
           borderRadius: 6,
           padding: '4px 10px',
           fontSize: 11,
@@ -355,6 +353,9 @@ function SiteRulesList({ rules, sites }: { rules: CoverageRuleSet; sites: GridSi
 }
 
 function SiteRuleCard({ rule, site }: { rule: SiteRule; site?: GridSite }) {
+  // Stand-in for a site the parser named but step 2 never created. Stays a
+  // literal hex because it is fed to hexA(), which parses #rrggbb — a var()
+  // would silently fall through to that helper's own slate default.
   const color = site?.color ?? '#94a3b8';
   return (
     <div
@@ -397,10 +398,10 @@ function SiteRuleCard({ rule, site }: { rule: SiteRule; site?: GridSite }) {
               marginLeft: 'auto',
               fontSize: 9,
               fontFamily: 'var(--font-mono), ui-monospace, monospace',
-              color: '#ef4444',
+              color: 'var(--danger)',
               fontWeight: 700,
               padding: '1px 5px',
-              border: '1px solid rgba(239,68,68,0.4)',
+              border: '1px solid color-mix(in srgb, var(--danger) 40%, transparent)',
               borderRadius: 3,
             }}
             title="No matching site found in step 2 — check the spelling."
@@ -425,7 +426,7 @@ function SiteRuleCard({ rule, site }: { rule: SiteRule; site?: GridSite }) {
           style={{
             margin: '2px 0 0',
             fontSize: 10,
-            color: SLATE,
+            color: 'var(--text-muted)',
             lineHeight: 1.4,
             fontStyle: 'italic',
           }}
@@ -472,7 +473,7 @@ function GlobalRulesList({ rules }: { rules: CoverageRuleSet }) {
                 margin: 0,
                 fontSize: 10,
                 lineHeight: 1.4,
-                color: SLATE,
+                color: 'var(--text-muted)',
                 fontFamily: 'var(--font-mono), ui-monospace, monospace',
                 whiteSpace: 'pre-wrap',
                 wordBreak: 'break-word',
@@ -497,8 +498,8 @@ function UnmappedBanner({
   return (
     <div
       style={{
-        background: 'rgba(245,158,11,0.06)',
-        border: '1px solid rgba(245,158,11,0.3)',
+        background: 'var(--warn-bg)',
+        border: '1px solid color-mix(in srgb, var(--warn) 30%, transparent)',
         borderRadius: 8,
         padding: 12,
         display: 'flex',
@@ -510,7 +511,7 @@ function UnmappedBanner({
         style={{
           fontSize: 10,
           fontWeight: 700,
-          color: AMBER,
+          color: 'var(--warn)',
           textTransform: 'uppercase',
           letterSpacing: 0.5,
           fontFamily: 'var(--font-mono), ui-monospace, monospace',
@@ -525,7 +526,7 @@ function UnmappedBanner({
           </li>
         ))}
       </ul>
-      <p style={{ margin: 0, fontSize: 10, color: SLATE, lineHeight: 1.5 }}>
+      <p style={{ margin: 0, fontSize: 10, color: 'var(--text-muted)', lineHeight: 1.5 }}>
         Try rephrasing these sentences and re-parsing. If they truly belong in
         the rule set, A4 (the normalizer agent) will flag them for review.
       </p>
@@ -535,8 +536,8 @@ function UnmappedBanner({
         style={{
           alignSelf: 'flex-start',
           background: 'transparent',
-          border: `1px solid ${AMBER}55`,
-          color: AMBER,
+          border: '1px solid color-mix(in srgb, var(--warn) 33%, transparent)',
+          color: 'var(--warn)',
           borderRadius: 6,
           padding: '4px 10px',
           fontSize: 11,
@@ -556,12 +557,12 @@ function ErrorBanner({ message }: { message: string }) {
     <div
       role="alert"
       style={{
-        background: 'rgba(239,68,68,0.06)',
-        border: '1px solid rgba(239,68,68,0.3)',
+        background: 'var(--danger-bg)',
+        border: '1px solid color-mix(in srgb, var(--danger) 30%, transparent)',
         borderRadius: 8,
         padding: 10,
         fontSize: 11,
-        color: '#dc2626',
+        color: 'var(--danger)',
         lineHeight: 1.5,
       }}
     >
@@ -569,7 +570,7 @@ function ErrorBanner({ message }: { message: string }) {
         style={{
           fontSize: 10,
           fontWeight: 700,
-          color: '#b91c1c',
+          color: 'var(--danger)',
           textTransform: 'uppercase',
           letterSpacing: 0.5,
           fontFamily: 'var(--font-mono), ui-monospace, monospace',
@@ -650,7 +651,7 @@ function Card({ title, children }: { title: string; children: React.ReactNode })
         style={{
           fontSize: 10,
           fontWeight: 700,
-          color: SLATE,
+          color: 'var(--text-muted)',
           textTransform: 'uppercase',
           letterSpacing: 0.5,
           fontFamily: 'var(--font-mono), ui-monospace, monospace',
@@ -677,7 +678,7 @@ function KV({ k, v }: { k: string; v: string }) {
       <span
         style={{
           minWidth: 84,
-          color: SLATE,
+          color: 'var(--text-muted)',
           fontFamily: 'var(--font-mono), ui-monospace, monospace',
           fontSize: 10,
           textTransform: 'uppercase',
@@ -696,7 +697,7 @@ function EmptyState({ children }: { children: React.ReactNode }) {
     <div
       style={{
         padding: '14px 12px',
-        color: SLATE,
+        color: 'var(--text-muted)',
         fontSize: 11,
         textAlign: 'center',
         lineHeight: 1.6,
@@ -717,9 +718,9 @@ function primaryButtonStyle(disabled: boolean): React.CSSProperties {
     fontSize: 11,
     fontWeight: 700,
     borderRadius: 6,
-    background: disabled ? '#cbd5e1' : CYAN,
-    color: 'white',
-    border: `1px solid ${disabled ? '#cbd5e1' : CYAN}`,
+    background: disabled ? 'var(--border)' : ACCENT,
+    color: 'var(--on-accent)',
+    border: `1px solid ${disabled ? 'var(--border)' : ACCENT}`,
     cursor: disabled ? 'not-allowed' : 'pointer',
     opacity: disabled ? 0.6 : 1,
     fontFamily: 'inherit',

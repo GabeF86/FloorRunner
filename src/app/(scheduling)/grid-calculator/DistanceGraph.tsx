@@ -50,7 +50,9 @@ interface LaidOutNode {
 }
 
 // Stroke styles per edge classification. Kept here as constants so the legend
-// stays in sync.
+// stays in sync. These three are the graph's key — the line colour IS the
+// classification — so they stay literal; the card, the labels and the legend
+// text around them are chrome and take tokens.
 const STROKE_STYLES: Record<
   EdgeRenderStyle,
   { stroke: string; strokeWidth: number; strokeDasharray?: string; opacity: number }
@@ -188,8 +190,8 @@ export default function DistanceGraph({
         height={height - 1}
         rx={10}
         ry={10}
-        fill="rgba(15,23,42,0.02)"
-        stroke="rgba(15,23,42,0.08)"
+        fill="var(--tint-surface-faint)"
+        stroke="var(--border-faint)"
         strokeWidth={1}
       />
 
@@ -236,7 +238,7 @@ export default function DistanceGraph({
               textAnchor="middle"
               fontSize={9}
               fontWeight={600}
-              fill="rgb(15,23,42)"
+              fill="var(--text)"
               style={{ pointerEvents: 'none' }}
             >
               {n.shortLabel.slice(0, 4)}
@@ -246,7 +248,7 @@ export default function DistanceGraph({
               y={22}
               textAnchor="middle"
               fontSize={9}
-              fill="rgb(71,85,105)"
+              fill="var(--text-muted)"
               style={{ pointerEvents: 'none' }}
             >
               {n.name}
@@ -288,7 +290,7 @@ function LegendSwatch({
         opacity={style.opacity}
         strokeLinecap="round"
       />
-      <text x={30} y={9} fontSize={9} fill="rgb(71,85,105)">
+      <text x={30} y={9} fontSize={9} fill="var(--text-muted)">
         {label}
       </text>
     </g>

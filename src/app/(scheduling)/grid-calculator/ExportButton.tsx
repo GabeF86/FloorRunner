@@ -48,13 +48,16 @@ const BASE_STYLE: CSSProperties = {
   fontWeight: 700,
   fontFamily: 'var(--font-mono), ui-monospace, monospace',
   letterSpacing: 0.4,
-  color: '#0ea5e9',
-  background: 'rgba(14,165,233,0.10)',
-  border: '1px solid rgba(14,165,233,0.35)',
+  // This was #0ea5e9 — the DARK-mode blue, painted on the light default, where
+  // it is both off-system and short of AA. --blue is the accent that tracks the
+  // theme; the fill and rule are mixed off the same token.
+  color: 'var(--blue)',
+  background: 'color-mix(in srgb, var(--blue) 10%, transparent)',
+  border: '1px solid color-mix(in srgb, var(--blue) 35%, transparent)',
   cursor: 'pointer',
   textDecoration: 'none',
   whiteSpace: 'nowrap',
-  transition: 'all 0.15s',
+  transition: 'all var(--dur-fast) var(--ease-out)',
 };
 
 export default function ExportButton({

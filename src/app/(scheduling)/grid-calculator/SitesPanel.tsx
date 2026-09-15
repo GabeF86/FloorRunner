@@ -28,12 +28,15 @@ const tok = {
   textMuted: 'var(--text-muted)',
   textDim: 'var(--text-dim)',
   mono: 'var(--font-mono), ui-monospace, monospace',
-  accent: '#0284c7',
+  accent: 'var(--blue)',
   radius: 14,
-  shadow: '0 1px 2px rgba(15,23,42,0.05), 0 10px 28px -16px rgba(15,23,42,0.18)',
+  shadow: 'var(--shadow-card)',
 };
 
 // Palette cycled through when adding sites — avoids the user having to pick.
+// Site colour is DATA: it is stored on the site, echoed by the lane header, the
+// cross-site badge and the distance graph, and has to mean the same thing on a
+// dark canvas as a light one. These stay literal.
 const SITE_COLOR_PALETTE = [
   '#0ea5e9', // sky
   '#a855f7', // purple
@@ -192,7 +195,7 @@ export default function SitesPanel({
                 borderRadius: 8,
                 border: `1px solid ${tok.accent}`,
                 background: tok.accent,
-                color: '#fff',
+                color: 'var(--on-accent)',
                 fontSize: 11,
                 fontWeight: 700,
                 cursor: 'pointer',
@@ -228,12 +231,12 @@ export default function SitesPanel({
               padding: '8px 12px',
               borderRadius: 8,
               border: `1px dashed ${tok.accent}`,
-              background: 'rgba(2,132,199,0.06)',
+              background: 'color-mix(in srgb, var(--blue) 6%, transparent)',
               color: tok.accent,
               fontSize: 12,
               fontWeight: 700,
               cursor: 'pointer',
-              transition: 'background 0.12s',
+              transition: 'background var(--dur-fast) var(--ease-out)',
             }}
           >
             + Add site
@@ -384,7 +387,7 @@ function SiteRow({
               onClick={onSubmit}
               style={{
                 background: accent,
-                color: '#fff',
+                color: 'var(--on-accent)',
                 border: 'none',
                 padding: '2px 8px',
                 borderRadius: 999,

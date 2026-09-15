@@ -7,8 +7,8 @@
 // Visual rules (restyled to match the Staffing-Calculator):
 //   - Lives in the left 312px config column (vertical stack, not a top bar).
 //   - Each section is a row inside a premium card surface.
-//   - Active pill = `background: rgba(2,132,199,0.12), color: #0284c7`,
-//     matching staffing-calculator's `tok.accent` family.
+//   - Active pill = a 12% wash of `--blue` under `--blue` text, matching
+//     staffing-calculator's `tok.accent` family.
 //   - Position kept as `sticky` + `top: 0` so the aesthetic-audit baseline
 //     check (rule 7.7) still finds the locked tokens.
 //
@@ -25,9 +25,9 @@ const tok = {
   textMuted: 'var(--text-muted)',
   textDim: 'var(--text-dim)',
   mono: 'var(--font-mono), ui-monospace, monospace',
-  accent: '#0284c7',
+  accent: 'var(--blue)',
   radius: 14,
-  shadow: '0 1px 2px rgba(15,23,42,0.05), 0 10px 28px -16px rgba(15,23,42,0.18)',
+  shadow: 'var(--shadow-card)',
 };
 
 export interface ToggleBarProps {
@@ -138,7 +138,11 @@ export default function ToggleBar({ toggles, onToggle }: ToggleBarProps) {
             fontWeight: 700,
             cursor: 'pointer',
             fontFamily: tok.mono,
-            background: toggles.showWorstCase ? `${tok.accent}25` : 'transparent',
+            // 0x25/0xff ≈ 14%. Hex-alpha concatenation would break now that
+            // tok.accent is a var().
+            background: toggles.showWorstCase
+              ? 'color-mix(in srgb, var(--blue) 14%, transparent)'
+              : 'transparent',
             border: `0.5px solid ${toggles.showWorstCase ? tok.accent : tok.border}`,
             color: toggles.showWorstCase ? tok.accent : tok.textMuted,
           }}
@@ -215,11 +219,16 @@ function ToggleGroup({ label, description, options, value, onSelect }: ToggleGro
                 fontSize: 10,
                 fontWeight: 700,
                 fontFamily: tok.mono,
-                background: active ? `${tok.accent}1F` : 'transparent',
+                // 0x1F ≈ 12%, 0x80 ≈ 50%.
+                background: active
+                  ? 'color-mix(in srgb, var(--blue) 12%, transparent)'
+                  : 'transparent',
                 color: active ? tok.accent : tok.textMuted,
-                border: `0.5px solid ${active ? tok.accent + '80' : tok.border}`,
+                border: `0.5px solid ${
+                  active ? 'color-mix(in srgb, var(--blue) 50%, transparent)' : tok.border
+                }`,
                 cursor: 'pointer',
-                transition: 'all 0.12s',
+                transition: 'all var(--dur-fast) var(--ease-out)',
                 whiteSpace: 'nowrap',
               }}
             >

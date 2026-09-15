@@ -42,10 +42,12 @@ const REVIEW_DEFAULT_TOGGLES: GridToggles = {
   showWorstCase: true,
 };
 
-const CYAN = '#0ea5e9';
+const ACCENT = 'var(--blue)';
+// The float count is a neutral metric sitting between a blue pill and a
+// green/red one — amber is telling it apart from its neighbours, not warning
+// about anything, so it stays a literal mid-tone that holds up on both a white
+// and a near-black surface. (--warn's light value is a much browner amber-700.)
 const AMBER = '#f59e0b';
-const SLATE = '#64748b';
-const EMERALD = '#10b981';
 
 export interface StepReviewProps {
   state: WizardState;
@@ -176,7 +178,7 @@ export default function StepReview({
               border: '1px dashed var(--border)',
             }}
           >
-            <span style={{ fontSize: 11, color: SLATE, lineHeight: 1.5 }}>
+            <span style={{ fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.5 }}>
               No grid generated yet. Click below to solve a sample day. We use
               a synthesized roster sized to your rooms; the real roster lands
               from A2 (Provider Profile) post-onboarding.
@@ -209,7 +211,7 @@ export default function StepReview({
               }}
             >
               <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-                <Pill label="Rooms staffed" value={`${generated.grid.assignments.length}`} color={CYAN} />
+                <Pill label="Rooms staffed" value={`${generated.grid.assignments.length}`} color={ACCENT} />
                 <Pill
                   label="Floats positioned"
                   value={`${generated.grid.floats.length}`}
@@ -219,7 +221,7 @@ export default function StepReview({
                   label="Solver violations"
                   value={`${generated.grid.violations.length}`}
                   color={
-                    generated.grid.violations.length === 0 ? EMERALD : '#ef4444'
+                    generated.grid.violations.length === 0 ? 'var(--ok)' : 'var(--danger)'
                   }
                 />
               </div>
@@ -254,8 +256,8 @@ export default function StepReview({
         />
         <div
           style={{
-            background: 'rgba(14,165,233,0.06)',
-            border: '1px solid rgba(14,165,233,0.25)',
+            background: 'color-mix(in srgb, var(--blue) 6%, transparent)',
+            border: '1px solid color-mix(in srgb, var(--blue) 25%, transparent)',
             borderRadius: 8,
             padding: 12,
             display: 'flex',
@@ -267,7 +269,7 @@ export default function StepReview({
             style={{
               fontSize: 10,
               fontWeight: 700,
-              color: CYAN,
+              color: ACCENT,
               textTransform: 'uppercase',
               letterSpacing: 0.5,
               fontFamily: 'var(--font-mono), ui-monospace, monospace',
@@ -293,8 +295,8 @@ export default function StepReview({
           <div
             role="status"
             style={{
-              background: 'rgba(16,185,129,0.08)',
-              border: '1px solid rgba(16,185,129,0.3)',
+              background: 'var(--ok-bg)',
+              border: '1px solid color-mix(in srgb, var(--ok) 30%, transparent)',
               borderRadius: 8,
               padding: 12,
               display: 'flex',
@@ -306,7 +308,7 @@ export default function StepReview({
               style={{
                 fontSize: 10,
                 fontWeight: 700,
-                color: EMERALD,
+                color: 'var(--ok)',
                 textTransform: 'uppercase',
                 letterSpacing: 0.5,
                 fontFamily: 'var(--font-mono), ui-monospace, monospace',
@@ -332,7 +334,7 @@ export default function StepReview({
               <a
                 href="/grid-calculator"
                 style={{
-                  color: CYAN,
+                  color: ACCENT,
                   textDecoration: 'underline',
                   textUnderlineOffset: 2,
                 }}
@@ -368,12 +370,12 @@ export default function StepReview({
           <div
             role="alert"
             style={{
-              background: 'rgba(239,68,68,0.06)',
-              border: '1px solid rgba(239,68,68,0.3)',
+              background: 'var(--danger-bg)',
+              border: '1px solid color-mix(in srgb, var(--danger) 30%, transparent)',
               borderRadius: 8,
               padding: 10,
               fontSize: 11,
-              color: '#dc2626',
+              color: 'var(--danger)',
               lineHeight: 1.5,
             }}
           >
@@ -551,7 +553,7 @@ function SummaryCard({
       style={{
         background: 'var(--bg-base)',
         border: '1px solid var(--border)',
-        borderLeft: `3px solid ${ok ? EMERALD : '#ef4444'}`,
+        borderLeft: `3px solid ${ok ? 'var(--ok)' : 'var(--danger)'}`,
         borderRadius: 8,
         padding: 10,
         display: 'flex',
@@ -563,7 +565,7 @@ function SummaryCard({
         style={{
           fontSize: 10,
           fontWeight: 700,
-          color: ok ? EMERALD : '#ef4444',
+          color: ok ? 'var(--ok)' : 'var(--danger)',
           textTransform: 'uppercase',
           letterSpacing: 0.5,
           fontFamily: 'var(--font-mono), ui-monospace, monospace',
@@ -584,7 +586,7 @@ function SummaryCard({
       <span
         style={{
           fontSize: 9,
-          color: SLATE,
+          color: 'var(--text-muted)',
           fontFamily: 'var(--font-mono), ui-monospace, monospace',
           marginTop: 4,
           textTransform: 'uppercase',
@@ -606,8 +608,8 @@ function Pill({ label, value, color }: { label: string; value: string; color: st
         gap: 6,
         padding: '2px 8px',
         borderRadius: 5,
-        background: `${color}1A`,
-        border: `1px solid ${color}55`,
+        background: `color-mix(in srgb, ${color} 10%, transparent)`,
+        border: `1px solid color-mix(in srgb, ${color} 33%, transparent)`,
         color,
         fontSize: 11,
         fontWeight: 700,
@@ -668,7 +670,7 @@ function ChecklistSummary({ state }: { state: WizardState }) {
             display: 'flex',
             alignItems: 'center',
             gap: 6,
-            color: c.ok ? EMERALD : SLATE,
+            color: c.ok ? 'var(--ok)' : 'var(--text-muted)',
           }}
         >
           <span
@@ -694,13 +696,13 @@ function primaryButtonStyle(disabled: boolean): React.CSSProperties {
     fontSize: 12,
     fontWeight: 700,
     borderRadius: 8,
-    background: disabled ? '#cbd5e1' : CYAN,
-    color: 'white',
-    border: `1px solid ${disabled ? '#cbd5e1' : CYAN}`,
+    background: disabled ? 'var(--border)' : ACCENT,
+    color: 'var(--on-accent)',
+    border: `1px solid ${disabled ? 'var(--border)' : ACCENT}`,
     cursor: disabled ? 'not-allowed' : 'pointer',
     opacity: disabled ? 0.6 : 1,
     fontFamily: 'inherit',
-    boxShadow: disabled ? undefined : '0 1px 2px rgba(14,165,233,0.3)',
+    boxShadow: disabled ? undefined : '0 1px 2px color-mix(in srgb, var(--blue) 30%, transparent)',
   };
 }
 
@@ -712,7 +714,7 @@ function ghostButtonStyle(): React.CSSProperties {
     fontWeight: 700,
     borderRadius: 6,
     background: 'transparent',
-    color: SLATE,
+    color: 'var(--text-muted)',
     border: '1px solid var(--border)',
     cursor: 'pointer',
     fontFamily: 'inherit',

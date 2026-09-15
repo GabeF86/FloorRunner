@@ -27,13 +27,19 @@ const tok = {
   textMuted: 'var(--text-muted)',
   textDim: 'var(--text-dim)',
   mono: 'var(--font-mono), ui-monospace, monospace',
+  // Role tone map for the three BigStats — Anesthesiologist indigo, CRNA blue,
+  // backup-call indigo. Same trio as GridCanvas's `tok`, and the same family the
+  // canvas legend and the CRNA chip paint, so a reader can tie the headcount
+  // back to the thing being counted. Left literal as category colour; note that
+  // `md.bg` / `crna.bg` are OPAQUE light tints, so these three tiles keep their
+  // light face on a dark canvas (flagged in the tokenisation report).
   md: { fg: '#4338CA', bg: '#EEF1FE', bd: '#CBD2F7' },
   crna: { fg: '#0A6CB4', bg: '#E7F2FB', bd: '#B2D8F1' },
   backup: { fg: '#4F46E5', bg: 'rgba(79,70,229,0.08)', bd: 'rgba(79,70,229,0.30)' },
-  accent: '#0284c7',
+  accent: 'var(--blue)',
   radius: 14,
   radiusSm: 9,
-  shadow: '0 1px 2px rgba(15,23,42,0.05), 0 10px 28px -16px rgba(15,23,42,0.18)',
+  shadow: 'var(--shadow-card)',
 };
 
 const cardStyle: React.CSSProperties = {
@@ -119,10 +125,14 @@ export default function FTEPanel({
                   letterSpacing: 0.5,
                   textTransform: 'uppercase',
                   border: 'none',
-                  background: active ? `${tok.accent}1F` : 'transparent',
+                  // `${tok.accent}1F` concatenated hex alpha onto what is now a
+                  // var() — 0x1F/0xff ≈ 12%.
+                  background: active
+                    ? 'color-mix(in srgb, var(--blue) 12%, transparent)'
+                    : 'transparent',
                   color: active ? tok.accent : tok.textMuted,
                   cursor: 'pointer',
-                  transition: 'all 0.12s',
+                  transition: 'all var(--dur-fast) var(--ease-out)',
                 }}
               >
                 {t === 'worst' ? 'Worst case' : 'Expected'}
@@ -208,11 +218,12 @@ export default function FTEPanel({
           fontFamily: tok.mono,
           letterSpacing: 0.5,
           color: tok.accent,
-          background: `${tok.accent}14`,
-          border: `1px solid ${tok.accent}66`,
+          // 0x14/0xff ≈ 8%, 0x66/0xff ≈ 40%.
+          background: 'color-mix(in srgb, var(--blue) 8%, transparent)',
+          border: '1px solid color-mix(in srgb, var(--blue) 40%, transparent)',
           cursor: loading ? 'wait' : 'pointer',
           opacity: loading ? 0.6 : 1,
-          transition: 'all 0.15s',
+          transition: 'all var(--dur-fast) var(--ease-out)',
           width: '100%',
         }}
       >

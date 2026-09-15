@@ -43,6 +43,11 @@ export interface CrnaChipProps {
 }
 
 // Staffing-calculator CRNA token family (lines 27-28 of staffing-calculator/page.tsx).
+// DELIBERATELY LITERAL: this trio is the CRNA identity — the pale-blue pill is
+// how a CRNA is told apart from an Anesthesiologist card and from a site colour
+// at a glance, and it has to be the same pill on the canvas, in the legend and
+// in the print sheet. See the note in the tokenisation report: CRNA_BG is an
+// opaque light tint, so the pill keeps its light face on a dark canvas.
 const CRNA_FG = '#0A6CB4';
 const CRNA_BG = '#E7F2FB';
 const CRNA_BD = '#B2D8F1';
@@ -96,7 +101,7 @@ export default function CrnaChip({
         border: `1.5px ${borderStyle} ${borderColor}`,
         whiteSpace: 'nowrap',
         cursor: 'default',
-        transition: 'opacity 0.12s',
+        transition: 'opacity var(--dur-fast) var(--ease-out)',
         flexShrink: 0,
         position: 'relative',
       }}

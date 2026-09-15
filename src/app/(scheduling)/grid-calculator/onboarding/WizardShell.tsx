@@ -27,9 +27,13 @@ import {
   isStepComplete,
 } from './wizardState';
 
-const CYAN = '#0ea5e9';
+// The trail accent is the brand blue (was the literal #0ea5e9 — the DARK-mode
+// value of that token, painted on the light default). AMBER stays literal: it
+// marks a completed-but-revisited step, it is a mid-tone that reads on both a
+// white and a near-black surface, and --warn's light value is a much browner
+// amber-700 that would visibly re-colour the trail.
+const ACCENT = 'var(--blue)';
 const AMBER = '#f59e0b';
-const SLATE = '#64748b';
 
 export interface WizardShellProps {
   state: WizardState;
@@ -127,7 +131,7 @@ export default function WizardShell({
               onClick={onReset}
               style={{
                 fontSize: 10,
-                color: SLATE,
+                color: 'var(--text-muted)',
                 background: 'transparent',
                 border: '1px solid var(--border)',
                 borderRadius: 6,
@@ -185,7 +189,10 @@ export default function WizardShell({
           display: 'flex',
           justifyContent: 'flex-end',
           gap: 8,
-          // Tiny shadow so the bar reads as a floating action band.
+          // Tiny shadow so the bar reads as a floating action band. Kept as a
+          // literal black wash on purpose: shadows are black in BOTH themes
+          // here (see the --shadow-* dark values), and the ramp has no
+          // upward-cast step to borrow.
           boxShadow: '0 -2px 8px rgba(0,0,0,0.04)',
         }}
       >
@@ -280,7 +287,10 @@ function ProgressTrail({
                 <span
                   style={{
                     fontSize: 10,
-                    color: isCurrent ? CYAN : isCompleted ? AMBER : SLATE,
+                    // A step still ahead of the user is deliberately dimmed —
+                    // --text-dim is that role, and its light value is the
+                    // #64748b this used to hardcode.
+                    color: isCurrent ? ACCENT : isCompleted ? AMBER : 'var(--text-dim)',
                     fontWeight: isCurrent ? 700 : 500,
                     fontFamily: 'var(--font-mono), ui-monospace, monospace',
                     textTransform: 'uppercase',
@@ -318,8 +328,11 @@ function Dot({
   completed: boolean;
   past: boolean;
 }) {
-  const bg = current ? CYAN : completed ? AMBER : past ? '#cbd5e1' : '#e2e8f0';
-  const ring = current ? CYAN : completed ? AMBER : 'transparent';
+  // An inert dot is a filled hairline, not a colour: --border is the hairline
+  // (its light value is the #cbd5e1 this used to hardcode) and the faintest
+  // surface tint stands in for the old slate-200 "not reached yet" fill.
+  const bg = current ? ACCENT : completed ? AMBER : past ? 'var(--border)' : 'var(--tint-surface-strong)';
+  const ring = current ? ACCENT : completed ? AMBER : null;
   return (
     <span
       style={{
@@ -327,11 +340,13 @@ function Dot({
         height: 18,
         borderRadius: '50%',
         background: bg,
-        boxShadow: ring !== 'transparent' ? `0 0 0 3px ${ring}22` : undefined,
+        // `${ring}22` concatenated hex alpha — which stops being a colour the
+        // moment `ring` is a var(). 0x22/0xff ≈ 13%.
+        boxShadow: ring ? `0 0 0 3px color-mix(in srgb, ${ring} 13%, transparent)` : undefined,
         display: 'inline-flex',
         alignItems: 'center',
         justifyContent: 'center',
-        color: 'white',
+        color: 'var(--on-accent)',
         fontSize: 10,
         fontWeight: 800,
       }}
@@ -355,23 +370,23 @@ function buttonStyle(variant: 'primary' | 'ghost', disabled: boolean) {
     padding: '6px 16px',
     border: '1px solid transparent',
     cursor: disabled ? 'not-allowed' : 'pointer',
-    transition: 'all 120ms ease',
+    transition: 'all var(--dur-fast) var(--ease-out)',
     fontFamily: 'inherit',
     opacity: disabled ? 0.55 : 1,
   } as const;
   if (variant === 'primary') {
     return {
       ...base,
-      background: CYAN,
-      color: 'white',
-      borderColor: CYAN,
-      boxShadow: '0 1px 2px rgba(14,165,233,0.3)',
+      background: ACCENT,
+      color: 'var(--on-accent)',
+      borderColor: ACCENT,
+      boxShadow: '0 1px 2px color-mix(in srgb, var(--blue) 30%, transparent)',
     };
   }
   return {
     ...base,
     background: 'transparent',
-    color: SLATE,
+    color: 'var(--text-muted)',
     borderColor: 'var(--border)',
   };
 }

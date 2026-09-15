@@ -29,8 +29,7 @@ import {
   type WizardAction,
 } from './wizardState';
 
-const CYAN = '#0ea5e9';
-const SLATE = '#64748b';
+const ACCENT = 'var(--blue)';
 
 export interface StepSitesProps {
   sites: GridSite[];
@@ -100,7 +99,7 @@ export default function StepSites({ sites, dispatch }: StepSitesProps) {
           <div
             style={{
               padding: '20px 12px',
-              color: SLATE,
+              color: 'var(--text-muted)',
               fontStyle: 'italic',
               fontSize: 12,
               textAlign: 'center',
@@ -186,7 +185,7 @@ function PresetButton({
       <span
         style={{
           fontSize: 10,
-          color: SLATE,
+          color: 'var(--text-muted)',
           fontFamily: 'var(--font-mono), ui-monospace, monospace',
         }}
       >
@@ -403,7 +402,7 @@ function SiteRow({ site, dispatch }: { site: GridSite; dispatch: Dispatch<Wizard
         <span
           style={{
             fontSize: 10,
-            color: SLATE,
+            color: 'var(--text-muted)',
             fontFamily: 'var(--font-mono), ui-monospace, monospace',
             minWidth: 50,
             textAlign: 'right',
@@ -432,8 +431,8 @@ function SiteRow({ site, dispatch }: { site: GridSite; dispatch: Dispatch<Wizard
           }}
           style={{
             ...ghostButtonStyle(),
-            color: '#ef4444',
-            borderColor: 'rgba(239,68,68,0.35)',
+            color: 'var(--danger)',
+            borderColor: 'color-mix(in srgb, var(--danger) 35%, transparent)',
           }}
           title="Remove site"
         >
@@ -495,8 +494,8 @@ function SiteRow({ site, dispatch }: { site: GridSite; dispatch: Dispatch<Wizard
                   }
                   style={{
                     ...ghostButtonStyle(),
-                    color: '#ef4444',
-                    borderColor: 'rgba(239,68,68,0.35)',
+                    color: 'var(--danger)',
+                    borderColor: 'color-mix(in srgb, var(--danger) 35%, transparent)',
                   }}
                   title="Remove room"
                 >
@@ -616,9 +615,11 @@ function primaryButtonStyle(disabled: boolean): React.CSSProperties {
     fontSize: 11,
     fontWeight: 700,
     borderRadius: 6,
-    background: disabled ? '#cbd5e1' : CYAN,
-    color: 'white',
-    border: `1px solid ${disabled ? '#cbd5e1' : CYAN}`,
+    // A disabled fill is an inert hairline, not a colour — --border's light
+    // value is the #cbd5e1 this used to hardcode.
+    background: disabled ? 'var(--border)' : ACCENT,
+    color: 'var(--on-accent)',
+    border: `1px solid ${disabled ? 'var(--border)' : ACCENT}`,
     cursor: disabled ? 'not-allowed' : 'pointer',
     opacity: disabled ? 0.6 : 1,
     fontFamily: 'inherit',
@@ -633,7 +634,7 @@ function ghostButtonStyle(): React.CSSProperties {
     fontWeight: 700,
     borderRadius: 6,
     background: 'transparent',
-    color: SLATE,
+    color: 'var(--text-muted)',
     border: '1px solid var(--border)',
     cursor: 'pointer',
     fontFamily: 'inherit',

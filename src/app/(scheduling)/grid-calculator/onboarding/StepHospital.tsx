@@ -21,7 +21,7 @@ import {
   type WizardAction,
 } from './wizardState';
 
-const CYAN = '#0ea5e9';
+const ACCENT = 'var(--blue)';
 
 export interface StepHospitalProps {
   hospital: HospitalIdentity;
@@ -209,7 +209,7 @@ function Field({
       >
         {label}
         {required && (
-          <span style={{ color: '#ef4444', marginLeft: 4 }} aria-label="required">
+          <span style={{ color: 'var(--danger)', marginLeft: 4 }} aria-label="required">
             ●
           </span>
         )}
@@ -221,7 +221,7 @@ function Field({
         </span>
       )}
       {error && (
-        <span style={{ fontSize: 10, color: '#ef4444', lineHeight: 1.4 }}>
+        <span style={{ fontSize: 10, color: 'var(--danger)', lineHeight: 1.4 }}>
           {error}
         </span>
       )}
@@ -233,12 +233,12 @@ function HelpBox({ children }: { children: React.ReactNode }) {
   return (
     <div
       style={{
-        background: 'rgba(14,165,233,0.06)',
-        border: '1px solid rgba(14,165,233,0.25)',
+        background: 'color-mix(in srgb, var(--blue) 6%, transparent)',
+        border: '1px solid color-mix(in srgb, var(--blue) 25%, transparent)',
         borderRadius: 8,
         padding: '8px 12px',
         fontSize: 11,
-        color: CYAN,
+        color: ACCENT,
         fontStyle: 'italic',
         lineHeight: 1.5,
       }}

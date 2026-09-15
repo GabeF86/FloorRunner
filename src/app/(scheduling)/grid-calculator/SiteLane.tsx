@@ -411,10 +411,12 @@ function renderRooms(props: SiteLaneProps): React.ReactNode {
             style={{
               padding: '5px 9px',
               borderRadius: 8,
-              border: '1.5px dashed #ef4444',
-              background: 'rgba(239,68,68,0.06)',
+              // An unstaffed room is an alert, not a colour-coded category, so
+              // it takes the status token and follows the theme.
+              border: '1.5px dashed var(--danger)',
+              background: 'var(--danger-bg)',
               fontSize: 11,
-              color: '#ef4444',
+              color: 'var(--danger)',
               fontWeight: 700,
               fontFamily: tok.mono,
               minWidth: 110,

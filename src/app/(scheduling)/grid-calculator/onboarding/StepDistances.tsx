@@ -32,7 +32,15 @@ import type {
 
 import type { WizardAction } from './wizardState';
 
-const SLATE = '#64748b';
+// safe / warning / blocked is a POLICY verdict on a pair, not a category the
+// reader has to tell apart from other categories — so it reads from the
+// semantic status tokens and follows the theme. Same three tones drive the row
+// chip and the legend below it, which is why they live in one place.
+const LEVEL_TONE = {
+  safe: 'var(--ok)',
+  warning: 'var(--warn)',
+  blocked: 'var(--danger)',
+} as const;
 
 export interface StepDistancesProps {
   sites: GridSite[];
@@ -133,8 +141,7 @@ function DistanceRow({
   onToggleSupervisable: (next: boolean) => void;
 }) {
   const level = defaultBandLevel(band);
-  const levelColor =
-    level === 'safe' ? '#10b981' : level === 'warning' ? '#f59e0b' : '#ef4444';
+  const levelColor = LEVEL_TONE[level];
 
   return (
     <div
@@ -152,7 +159,7 @@ function DistanceRow({
       <span
         aria-hidden
         style={{
-          color: SLATE,
+          color: 'var(--text-muted)',
           fontSize: 11,
           fontFamily: 'var(--font-mono), ui-monospace, monospace',
         }}
@@ -198,8 +205,10 @@ function DistanceRow({
           textTransform: 'uppercase',
           padding: '2px 6px',
           borderRadius: 4,
-          background: `${levelColor}1A`,
-          border: `1px solid ${levelColor}55`,
+          // `${levelColor}1A` / `55` concatenated hex alpha, which stops being
+          // a colour now that levelColor is a var(). 0x1A ≈ 10%, 0x55 ≈ 33%.
+          background: `color-mix(in srgb, ${levelColor} 10%, transparent)`,
+          border: `1px solid color-mix(in srgb, ${levelColor} 33%, transparent)`,
         }}
       >
         ● {level}
@@ -213,7 +222,7 @@ function DistanceRow({
           gap: 4,
           fontSize: 10,
           fontFamily: 'var(--font-mono), ui-monospace, monospace',
-          color: SLATE,
+          color: 'var(--text-muted)',
           cursor: 'pointer',
           fontWeight: 600,
         }}
@@ -222,7 +231,8 @@ function DistanceRow({
           type="checkbox"
           checked={supervisable}
           onChange={(e) => onToggleSupervisable(e.target.checked)}
-          style={{ accentColor: '#0ea5e9' }}
+          // accent-color resolves var() natively, so the tick tracks the theme.
+          style={{ accentColor: 'var(--blue)' }}
         />
         sup
       </label>
@@ -277,12 +287,12 @@ function BandLegend() {
         padding: '6px 0 2px',
         fontSize: 10,
         fontFamily: 'var(--font-mono), ui-monospace, monospace',
-        color: SLATE,
+        color: 'var(--text-muted)',
       }}
     >
-      <LegendChip color="#10b981" label="safe — supervise freely" />
-      <LegendChip color="#f59e0b" label="warning — flagged, solver biases away" />
-      <LegendChip color="#ef4444" label="blocked — not supervisable by default" />
+      <LegendChip color={LEVEL_TONE.safe} label="safe — supervise freely" />
+      <LegendChip color={LEVEL_TONE.warning} label="warning — flagged, solver biases away" />
+      <LegendChip color={LEVEL_TONE.blocked} label="blocked — not supervisable by default" />
     </div>
   );
 }
@@ -365,7 +375,7 @@ function EmptyState({ children }: { children: React.ReactNode }) {
     <div
       style={{
         padding: '20px 12px',
-        color: SLATE,
+        color: 'var(--text-muted)',
         fontSize: 12,
         textAlign: 'center',
         lineHeight: 1.6,

@@ -33,7 +33,9 @@ export interface SidebarProps {
   onToggleSupervisable?: (siteAId: string, siteBId: string, next: boolean) => void;
 }
 
-const ACCENT = '#0ea5e9'; // cyan — matches FloorRunner sidebar accent
+// Brand accent. Was the literal #0ea5e9, which is the DARK-mode value of this
+// token — so on the light default it was both off-system and short of AA.
+const ACCENT = 'var(--blue)';
 
 /**
  * Sidebar layout:
@@ -80,11 +82,21 @@ export default function Sidebar({
             {sortedSites.reduce((n, s) => n + s.rooms.length, 0)} rooms
           </span>
         </div>
+        {/* The Tailwind colour utilities on this button were already dead: an
+            inline background/borderColor/color outranks a class, so
+            hover:bg-cyan-100 never fired. Only the layout utilities are kept,
+            and the colour now comes from the accent token. */}
         <button
           type="button"
           onClick={onAddSite}
-          className="rounded-md border border-cyan-300/60 bg-cyan-50 px-2.5 py-0.5 text-[10px] font-bold text-cyan-600 hover:bg-cyan-100"
-          style={{ borderColor: 'rgba(14,165,233,0.3)', background: 'rgba(14,165,233,0.12)', color: ACCENT }}
+          className="rounded-md px-2.5 py-0.5 text-[10px] font-bold"
+          style={{
+            borderWidth: 1,
+            borderStyle: 'solid',
+            borderColor: 'color-mix(in srgb, var(--blue) 30%, transparent)',
+            background: 'color-mix(in srgb, var(--blue) 12%, transparent)',
+            color: ACCENT,
+          }}
         >
           + Add Site
         </button>

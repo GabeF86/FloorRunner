@@ -46,13 +46,16 @@ const tok = {
   textMuted: 'var(--text-muted)',
   textDim: 'var(--text-dim)',
   mono: 'var(--font-mono), ui-monospace, monospace',
+  // Role tone maps (Anesthesiologist indigo / CRNA blue). These are the
+  // provider-identity families shared with FTEPanel + the legend, so they stay
+  // literal — see the note on FTEPanel's copy.
   md: { fg: '#4338CA', bg: '#EEF1FE', bd: '#CBD2F7' },
   crna: { fg: '#0A6CB4', bg: '#E7F2FB', bd: '#B2D8F1' },
-  accent: '#0284c7',
+  accent: 'var(--blue)',
   warning: '#E8C854',
   radius: 14,
   radiusSm: 9,
-  shadow: '0 1px 2px rgba(15,23,42,0.05), 0 10px 28px -16px rgba(15,23,42,0.18)',
+  shadow: 'var(--shadow-card)',
 };
 
 // One premium card surface used by every panel — generous padding, soft
@@ -455,6 +458,10 @@ function Legend() {
       }}
     >
       <span style={{ fontWeight: 700, color: tok.textMuted }}>LEGEND</span>
+      {/* These four hexes are the key to the drawing, not chrome: each one has
+          to be the SAME value the card or chip paints, or the legend lies. They
+          are copied from AnesthesiologistCard / CrnaChip / SiteLane and stay
+          literal for that reason. */}
       <LegendDot color="#4A90D9" label="Supervising Anesthesiologist" shape="square" />
       <LegendDot color="#B06AE8" label="Solo Anesthesiologist" shape="square" />
       <LegendDot color="#80CBC4" label="Float" shape="square" dashed />
@@ -502,11 +509,37 @@ function FloatHealthPill({
   level: 'ok' | 'tight' | 'warning' | 'critical';
   binding: string;
 }) {
+  // Float health is a STATUS, not an identity — so it reads from the semantic
+  // status pairs rather than four hand-mixed ambers. `tight` and `warning`
+  // share the warn tone (they differed only in the alpha of the fill before,
+  // which was not a distinction anyone could see); the label carries the
+  // difference. Borders are mixed off the same token so they track the theme
+  // instead of staying amber-500 on a near-black surface.
   const COLORS = {
-    ok: { fg: '#085041', bg: '#E1F5EE', bd: '#A8DBC9', label: 'Float ok' },
-    tight: { fg: '#b45309', bg: 'rgba(245,158,11,0.10)', bd: 'rgba(245,158,11,0.40)', label: 'Float tight' },
-    warning: { fg: '#b45309', bg: 'rgba(234,88,12,0.12)', bd: 'rgba(234,88,12,0.40)', label: 'Float warning' },
-    critical: { fg: '#dc2626', bg: 'rgba(239,68,68,0.10)', bd: 'rgba(239,68,68,0.40)', label: 'Float critical' },
+    ok: {
+      fg: 'var(--ok)',
+      bg: 'var(--ok-bg)',
+      bd: 'color-mix(in srgb, var(--ok) 40%, transparent)',
+      label: 'Float ok',
+    },
+    tight: {
+      fg: 'var(--warn)',
+      bg: 'var(--warn-bg)',
+      bd: 'color-mix(in srgb, var(--warn) 40%, transparent)',
+      label: 'Float tight',
+    },
+    warning: {
+      fg: 'var(--warn)',
+      bg: 'color-mix(in srgb, var(--warn) 14%, transparent)',
+      bd: 'color-mix(in srgb, var(--warn) 45%, transparent)',
+      label: 'Float warning',
+    },
+    critical: {
+      fg: 'var(--danger)',
+      bg: 'var(--danger-bg)',
+      bd: 'color-mix(in srgb, var(--danger) 40%, transparent)',
+      label: 'Float critical',
+    },
   } as const;
   const c = COLORS[level];
   return (
@@ -538,10 +571,10 @@ function ViolationBanner({ violations }: { violations: string[] }) {
         padding: '10px 14px',
         marginBottom: 14,
         borderRadius: 6,
-        background: 'rgba(245,158,11,0.10)',
-        border: '0.5px solid rgba(245,158,11,0.30)',
+        background: 'var(--warn-bg)',
+        border: '0.5px solid color-mix(in srgb, var(--warn) 30%, transparent)',
         fontSize: 12,
-        color: '#b45309',
+        color: 'var(--warn)',
         display: 'flex',
         flexDirection: 'column',
         gap: 2,
@@ -554,7 +587,7 @@ function ViolationBanner({ violations }: { violations: string[] }) {
           fontWeight: 800,
           letterSpacing: 0.5,
           textTransform: 'uppercase',
-          color: '#b45309',
+          color: 'var(--warn)',
         }}
       >
         {violations.length} solver violation{violations.length === 1 ? '' : 's'}
