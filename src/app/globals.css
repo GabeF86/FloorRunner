@@ -108,13 +108,21 @@
   --border-subtle:  rgba(255,255,255,0.08);
   --border-input:   rgba(255,255,255,0.12);
 
+  /* The secondary ramp is derived from CONTRAST, not from mirroring the light
+     palette's slate steps. Reusing the light steps is what broke it: slate-700
+     reads as secondary text on white, but on #0d1b30 it is 1.67:1 — text you
+     genuinely cannot see. Worse, it left the ramp inverted, with --text-dim
+     less legible than --text-faint, the opposite of light.
+     Each value below matches its light-mode ratio on --bg-surface:
+       muted 6.73:1 (light 7.58)   dim 4.78:1 (light 4.76, clears AA body text)
+       faint 2.28:1 (light 2.56)   disabled matches faint, as it does in light. */
   --text:          #e2e8f0;
   --text-strong:   #f1f5f9;
   --text-bright:   #f8fafc;
-  --text-muted:    #64748b;
-  --text-dim:      #334155;
+  --text-muted:    #94a3b8;
+  --text-dim:      #78889e;
   --text-faint:    #475569;
-  --text-disabled: #8899aa;
+  --text-disabled: #475569;
 
   --tint-surface:        rgba(255,255,255,0.05);
   --tint-surface-strong: rgba(255,255,255,0.08);

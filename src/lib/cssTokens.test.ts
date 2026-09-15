@@ -57,12 +57,23 @@ const files = sourceFiles(SRC).filter(f => !f.endsWith('cssTokens.test.ts'));
 const defined = new Set<string>();
 for (const f of files) for (const t of definitionsIn(readFileSync(f, 'utf8'))) defined.add(t);
 
+/**
+ * A `var(--token)` written in prose is documentation, not a use — boardTheme.ts
+ * explains its own conventions that way. Comments are stripped before uses are
+ * counted so the guard stays quiet about them.
+ */
+function stripComments(src: string, file: string): string {
+  const noBlocks = src.replace(/\/\*[\s\S]*?\*\//g, '');
+  // `//` is a comment in TS but not in CSS, and `https://` is neither.
+  return /\.css$/.test(file) ? noBlocks : noBlocks.replace(/(^|[^:])\/\/.*$/gm, '$1');
+}
+
 describe('CSS custom properties', () => {
   it('defines every token that is used without a fallback', () => {
     const orphans: string[] = [];
 
     for (const file of files) {
-      const src = readFileSync(file, 'utf8');
+      const src = stripComments(readFileSync(file, 'utf8'), file);
       // `var(--x)` with no comma — nothing catches it if --x is missing.
       // `var(--x, #fff)` is safe by construction, so it is not checked.
       for (const m of src.matchAll(/var\(\s*(--[a-zA-Z0-9-]+)\s*\)/g)) {
@@ -91,5 +102,84 @@ describe('CSS custom properties', () => {
     expect(defined.has('--bg-base')).toBe(true);
     expect(defined.has('--text')).toBe(true);
     expect(defined.size).toBeGreaterThan(50);
+  });
+});
+
+/**
+ * The secondary text ramp must mean the same thing in both themes.
+ *
+ * The dark palette was originally written by mirroring light's slate steps,
+ * which is the wrong operation: slate-700 reads as secondary text on white and
+ * as 1.67:1 on #0d1b30 — text a sighted user simply cannot read. It also left
+ * the ramp inverted, --text-dim less legible than --text-faint, so a component
+ * that reached for the *more* prominent token got the *less* prominent one.
+ * --text-dim had 197 uses across 50 files when this was found.
+ *
+ * What is asserted is the design rule, not the hex values: a token carries the
+ * same weight in either theme, and the ramp orders the way its names promise.
+ */
+const THEME_CSS = readFileSync(join(SRC, 'app/globals.css'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+
+function themeBlock(which: 'light' | 'dark'): Record<string, string> {
+  // The dark selector also appears inside a comment above :root, which is why
+  // comments are stripped before any index is taken.
+  const darkAt = THEME_CSS.indexOf("[data-theme='dark']");
+  const rootAt = THEME_CSS.indexOf(':root');
+  if (rootAt < 0 || darkAt < rootAt) throw new Error('theme blocks not found in globals.css');
+  const body = which === 'light' ? THEME_CSS.slice(rootAt, darkAt) : THEME_CSS.slice(darkAt);
+  const out: Record<string, string> = {};
+  for (const m of body.matchAll(/(--[a-z0-9-]+)\s*:\s*(#[0-9a-fA-F]{6})\s*;/g)) out[m[1]] = m[2];
+  // Dark only overrides theme-variant tokens; the rest inherit from :root.
+  return which === 'dark' ? { ...themeBlockLight, ...out } : out;
+}
+
+function relativeLuminance(hex: string): number {
+  const ch = [1, 3, 5].map(i => parseInt(hex.slice(i, i + 2), 16) / 255)
+    .map(v => (v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4)));
+  return 0.2126 * ch[0] + 0.7152 * ch[1] + 0.0722 * ch[2];
+}
+
+function contrast(a: string, b: string): number {
+  const [hi, lo] = [relativeLuminance(a), relativeLuminance(b)].sort((x, y) => y - x);
+  return (hi + 0.05) / (lo + 0.05);
+}
+
+const themeBlockLight = themeBlock('light');
+const themes = { light: themeBlockLight, dark: themeBlock('dark') };
+
+describe('secondary text ramp', () => {
+  for (const theme of ['light', 'dark'] as const) {
+    const t = themes[theme];
+    const on = (tok: string) => contrast(t[tok], t['--bg-surface']);
+
+    it(`orders muted > dim > faint in ${theme}`, () => {
+      expect(t['--text-muted']).toBeTruthy();
+      expect(on('--text-muted')).toBeGreaterThan(on('--text-dim'));
+      expect(on('--text-dim')).toBeGreaterThan(on('--text-faint'));
+    });
+
+    it(`keeps body-weight text readable in ${theme}`, () => {
+      // WCAG AA for normal-size text. --text-faint and --text-disabled are
+      // exempt by role (decorative and disabled respectively).
+      for (const tok of ['--text', '--text-muted', '--text-dim']) {
+        expect.soft(on(tok), `${tok} on --bg-surface in ${theme}`).toBeGreaterThanOrEqual(4.5);
+      }
+    });
+
+    it(`does not let disabled out-shout secondary text in ${theme}`, () => {
+      expect(on('--text-disabled')).toBeLessThanOrEqual(on('--text-dim'));
+    });
+  }
+
+  it('gives a token the same weight in both themes', () => {
+    // The actual invariant the original bug broke. A component author picks a
+    // token by how prominent it should be; that choice has to survive a theme
+    // switch, or every screen needs per-theme review.
+    for (const tok of ['--text-muted', '--text-dim', '--text-faint']) {
+      const l = contrast(themes.light[tok], themes.light['--bg-surface']);
+      const d = contrast(themes.dark[tok], themes.dark['--bg-surface']);
+      expect.soft(d / l, `${tok}: light ${l.toFixed(2)}:1 vs dark ${d.toFixed(2)}:1`)
+        .toBeGreaterThan(0.7);
+    }
   });
 });
