@@ -65,7 +65,7 @@ export default function Sidebar(props: Props) {
           return (
             <button key={g.label} onClick={onToggleCollapse} title={`${g.label}: ${working} working today — click to expand`} style={{ position: 'relative', width: 28, height: 28, borderRadius: 8, background: 'var(--bg-deep)', border: '1px solid var(--border)', cursor: 'pointer', fontSize: 12 }}>
               {g.icon}
-              {working > 0 && <span style={{ position: 'absolute', top: -5, right: -5, background: '#1e3a8a', color: '#fff', fontSize: 8, fontWeight: 800, borderRadius: 6, padding: '0 3px', minWidth: 12 }}>{working}</span>}
+              {working > 0 && <span style={{ position: 'absolute', top: -5, right: -5, background: BT.color.railBadge.bg, color: BT.color.railBadge.text, fontSize: 8, fontWeight: 800, borderRadius: 6, padding: '0 3px', minWidth: 12 }}>{working}</span>}
             </button>
           );
         })}
@@ -473,7 +473,8 @@ function DesignationBadge({ designation }: { designation: MDDesignation }) {
   const isCall    = designation === 'C1';
   const isLastOut = designation === 'C2';
   const isPerDiem = designation === '8hr' || designation === '10hr';
-  const color = isCall ? '#a78bfa' : isLastOut ? '#fb7185' : isPerDiem ? '#94a3b8' : '#f59e0b';
+  const d = BT.color.designation;
+  const color = isCall ? d.call : isLastOut ? d.lastOut : isPerDiem ? d.perDiem : d.out;
   return (
     <span style={{ fontSize: 9, fontWeight: 800, padding: '1px 5px', borderRadius: 3, background: 'rgba(' + hexToRgb(color) + ',0.15)', color, border: '1px solid rgba(' + hexToRgb(color) + ',0.35)', fontFamily: 'var(--font-mono), ui-monospace, monospace' }}>
       {isCall ? '☾' + designation : designation}

@@ -4,7 +4,7 @@ import { useState, useEffect, useRef } from 'react';
 import { Role, ROLE_META, HOUR_OPTIONS, ShiftHours, HOSPITALS } from '@/types';
 import { hexToRgb } from './BoardClient';
 import { Modal, Button } from '@/components/ui';
-import { SITE_COLOR_CHOICES } from './boardTheme';
+import { BT, LATE_SHIFT_TONE, SITE_COLOR_CHOICES } from './boardTheme';
 
 // ── Shared dialog shell — thin wrapper over the shared Modal so the three
 // dialogs keep their (title, onClose, onConfirm, confirmLabel) call shape ────
@@ -91,7 +91,7 @@ export function AddSiteModal({ onClose, onConfirm }: {
               style={{
                 width: 28, height: 28, borderRadius: 7, padding: 0, cursor: 'pointer',
                 background: c,
-                border: active ? '2px solid #fff' : '1px solid var(--border)',
+                border: active ? '2px solid ' + BT.color.onSite.selectedRing : '1px solid var(--border)',
                 boxShadow: active ? `0 0 0 2px ${c}` : 'none',
               }} />
           );
@@ -198,7 +198,7 @@ export function AddStaffModal({ onClose, onConfirm }: {
             {HOUR_OPTIONS.map((h) => {
               const active = hours === h;
               const is24   = h === '24hr';
-              const c      = is24 && active ? '#f87171' : (active ? meta.color : 'var(--text-muted)');
+              const c      = is24 && active ? LATE_SHIFT_TONE['24hr'] : (active ? meta.color : 'var(--text-muted)');
               return (
                 <button key={h} onClick={() => setHours(h as ShiftHours)}
                   style={{

@@ -2,19 +2,16 @@
 
 import { Role, ROLE_META } from '@/types';
 import { hexToRgb } from './BoardClient';
+import { BT, LATE_SHIFT_TONE } from './boardTheme';
 
-// Moved out of Sidebar.tsx (2026-07-13, board visual refresh) — neutral home
-// since it's imported by Sidebar, SiteCard, and PersonChip alike.
-const LATE_SHIFT_COLORS: Record<string, string> = {
-  '10hr': '#f59e0b',  // amber
-  '12hr': '#f97316',  // orange
-  '16hr': '#ef4444',  // red-orange
-  '24hr': '#f87171',  // bright red
-};
+// The badge component lives here — a neutral home, since it's imported by
+// Sidebar, SiteCard, and PersonChip alike (2026-07-13, board visual refresh).
+// The tones themselves are in boardTheme, which AddStaffModal also reads for
+// the 24hr option so a long shift is the same red wherever it appears.
 
 export function ShiftBadge({ hours, role }: { hours: string; role: Role }) {
-  const lateColor = LATE_SHIFT_COLORS[hours];
-  const roleColor = ROLE_META[role]?.color || '#94a3b8';
+  const lateColor = LATE_SHIFT_TONE[hours];
+  const roleColor = ROLE_META[role]?.color || BT.color.roleFallback;
   const color     = lateColor ?? roleColor;
   return (
     <span style={{

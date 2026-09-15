@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react';
 import { ReliefEntry, DraggedPerson, ROLE_META } from '@/types';
 import { hexToRgb } from './BoardClient';
+import { BT } from './boardTheme';
 
 interface Props {
   reliefLog:      ReliefEntry[];
@@ -36,7 +37,7 @@ export default function RelievedBox({ reliefLog, today, dragging, onDropRelieved
   const fmt = (iso: string) =>
     new Date(iso).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
 
-  const roleColor = (role: string) => (ROLE_META as any)[role]?.color || '#94a3b8';
+  const roleColor = (role: string) => (ROLE_META as any)[role]?.color || BT.color.roleFallback;
 
   return (
     <div
@@ -91,7 +92,7 @@ export default function RelievedBox({ reliefLog, today, dragging, onDropRelieved
                     <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{entry.staff_name}</div>
                     <div style={{ fontSize: 9, color: 'var(--text-dim)', display: 'flex', gap: 5 }}>
                       <span>{fmt(entry.relieved_at)}</span>
-                      {entry.designation && <span style={{ color: '#f59e0b' }}>{entry.designation}</span>}
+                      {entry.designation && <span style={{ color: BT.color.designation.out }}>{entry.designation}</span>}
                       {entry.shift_hours && <span>{entry.shift_hours}</span>}
                     </div>
                   </div>
@@ -121,7 +122,7 @@ export default function RelievedBox({ reliefLog, today, dragging, onDropRelieved
                     <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{entry.staff_name}</div>
                     <div style={{ fontSize: 9, color: 'var(--text-dim)', display: 'flex', gap: 5 }}>
                       <span>{fmt(entry.relieved_at)}</span>
-                      {entry.designation && <span style={{ color: '#f59e0b' }}>{entry.designation}</span>}
+                      {entry.designation && <span style={{ color: BT.color.designation.out }}>{entry.designation}</span>}
                       {entry.shift_hours && <span>{entry.shift_hours}</span>}
                     </div>
                   </div>

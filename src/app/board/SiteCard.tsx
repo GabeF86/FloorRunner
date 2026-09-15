@@ -124,12 +124,12 @@ export function SiteHeader({ site, showDelete, onAddRoom, onDeleteSite }: {
   return (
     <div style={{ padding: BT.siteHeader.pad, display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: site.color, borderRadius: `${BT.siteHeader.radius}px ${BT.siteHeader.radius}px 0 0` }}>
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
-        <span style={{ fontSize: BT.siteHeader.nameSize, fontWeight: 750, color: '#fff', letterSpacing: -0.3 }}>{site.name}</span>
-        <span style={{ fontSize: BT.siteHeader.countSize, color: 'rgba(255,255,255,.65)', fontFamily: 'var(--font-mono), ui-monospace, monospace' }}>· {site.rooms.length} rooms</span>
+        <span style={{ fontSize: BT.siteHeader.nameSize, fontWeight: 750, color: BT.color.onSite.text, letterSpacing: -0.3 }}>{site.name}</span>
+        <span style={{ fontSize: BT.siteHeader.countSize, color: BT.color.onSite.textMuted, fontFamily: 'var(--font-mono), ui-monospace, monospace' }}>· {site.rooms.length} rooms</span>
       </div>
       <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-        <button draggable={false} onClick={(e) => { e.stopPropagation(); onAddRoom(); }} style={{ background: 'rgba(255,255,255,.14)', border: '1px solid rgba(255,255,255,.3)', color: '#fff', borderRadius: BT.chip.radius, padding: '2px 8px', fontSize: BT.font.chip, fontWeight: 700, cursor: 'pointer' }}>+ Room</button>
-        {showDelete && <button draggable={false} onClick={(e) => { e.stopPropagation(); onDeleteSite(); }} style={{ background: 'rgba(255,255,255,.12)', border: '1px solid rgba(254,202,202,.4)', color: '#fecaca', borderRadius: BT.chip.radius, padding: '2px 8px', fontSize: BT.font.chip, fontWeight: 700, cursor: 'pointer' }}>Delete Site</button>}
+        <button draggable={false} onClick={(e) => { e.stopPropagation(); onAddRoom(); }} style={{ background: BT.color.onSite.buttonBg, border: '1px solid ' + BT.color.onSite.buttonBorder, color: BT.color.onSite.text, borderRadius: BT.chip.radius, padding: '2px 8px', fontSize: BT.font.chip, fontWeight: 700, cursor: 'pointer' }}>+ Room</button>
+        {showDelete && <button draggable={false} onClick={(e) => { e.stopPropagation(); onDeleteSite(); }} style={{ background: BT.color.onSite.dangerBg, border: '1px solid ' + BT.color.onSite.dangerBorder, color: BT.color.onSite.dangerText, borderRadius: BT.chip.radius, padding: '2px 8px', fontSize: BT.font.chip, fontWeight: 700, cursor: 'pointer' }}>Delete Site</button>}
       </div>
     </div>
   );
@@ -183,7 +183,7 @@ function RoomCell({ room, site, people, isOver, dragging, alertLevels, dailyShif
         borderRadius: BT.room.radius, border: '1px solid',
         borderColor: isOver ? site.color : needsMd ? 'color-mix(in srgb, var(--warn) 50%, transparent)' : draggingRoom ? site.color : 'var(--border-faint)',
         background: isOver ? 'rgba(' + rgb + ',0.09)' : draggingRoom ? 'rgba(' + rgb + ',0.04)' : 'var(--bg-deep)',
-        boxShadow: isOver ? '0 0 16px rgba(' + rgb + ',0.25)' : '0 1px 2px rgba(15,23,42,0.04)',
+        boxShadow: isOver ? '0 0 16px rgba(' + rgb + ',0.25)' : BT.color.roomShadow,
         transition: 'all 0.14s', cursor: draggingRoom ? 'grabbing' : 'default',
         display: 'flex', flexDirection: 'column', position: 'relative',
         opacity: draggingRoom ? 0.5 : 1,

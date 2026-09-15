@@ -2,19 +2,11 @@
 
 import { useMemo } from 'react';
 import { Site, Assignment, StaffMember, MDDesignation, ShiftHours, DraggedPerson, Hospital } from '@/types';
+import { NETWORK } from './boardTheme';
 
 /* ── Spec constants ───────────────────────────────────────────────────────── */
 
-const TEAM_COLORS = [
-  '#1D9E75', // teal
-  '#BA7517', // amber
-  '#D85A30', // coral
-  '#D4537E', // pink
-  '#534AB7', // purple
-  '#185FA5', // blue
-  '#3B6D11', // green
-  '#A32D2D', // red
-];
+const TEAM_COLORS = NETWORK.team;
 
 const MD_W = 100, MD_H = 38;
 const CRNA_W = 120, CRNA_H = 30;
@@ -28,13 +20,13 @@ const PAD = 24;
 const STROKE = 1.5;
 const STROKE_OPACITY = 0.65;
 
-const MD_BG = '#EEEDFE', MD_FG = '#3C3489', MD_BD = '#CECBF6', MD_STATUS = '#534AB7';
-const CRNA_BG = '#E6F1FB', CRNA_FG = '#0C447C', CRNA_BD = '#B5D4F4';
-const ROOM_BG = '#F1EFE8', ROOM_FG = '#2C2C2A', ROOM_SUR = '#5F5E5A';
-const EMPTY_ROOM_BD = '#888780';
-const SITE_LABEL = '#6B6B65';
+const MD_BG = NETWORK.md.bg, MD_FG = NETWORK.md.fg, MD_BD = NETWORK.md.border, MD_STATUS = NETWORK.md.status;
+const CRNA_BG = NETWORK.crna.bg, CRNA_FG = NETWORK.crna.fg, CRNA_BD = NETWORK.crna.border;
+const ROOM_BG = NETWORK.room.bg, ROOM_FG = NETWORK.room.fg, ROOM_SUR = NETWORK.room.surgeon;
+const EMPTY_ROOM_BD = NETWORK.room.emptyBorder;
+const SITE_LABEL = NETWORK.label;
 
-const FELLOW_BG = '#E5F8F4', FELLOW_FG = '#0F6F65', FELLOW_BD = '#B5E5DC';
+const FELLOW_BG = NETWORK.fellow.bg, FELLOW_FG = NETWORK.fellow.fg, FELLOW_BD = NETWORK.fellow.border;
 
 /* ── Props (subset of LayoutV2Props that we actually use) ─────────────────── */
 

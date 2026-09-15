@@ -29,6 +29,11 @@ interface Props {
   today:              string;
 }
 
+// Seed DATA, not theme: these colours are written into the `sites` rows when a
+// facility is reset to baseline, and from then on the board reads site.color
+// from the DB. They are deliberately NOT boardTheme values and must not be
+// "corrected" to DARK_SITE_PALETTE — src/lib/gridCalculator/seeds/paoli.ts
+// mirrors them and paoliSeed.test.ts asserts they match.
 const HOSPITAL_BASELINES: Record<string, { name: string; color: string; icon: string; rooms: string[] }[]> = {
   'Paoli Hospital': [
     { name: 'Main OR', color: '#0ea5e9', icon: '🏥', rooms: Array.from({ length: 15 }, (_, i) => `OR ${i + 1}`) },
@@ -884,9 +889,9 @@ function FacilityPillV1({ label, active, onClick }: { label: string; active: boo
     <button onClick={onClick} style={{
       padding: '2px 8px', borderRadius: 999, fontSize: 9, fontWeight: 700,
       fontFamily: 'var(--font-mono), ui-monospace, monospace',
-      background: active ? '#E1F5EE' : 'transparent',
-      color: active ? '#085041' : 'var(--text-muted)',
-      border: '0.5px solid ' + (active ? '#A8DBC9' : 'var(--border)'),
+      background: active ? BT.color.facilityPillOn.bg : 'transparent',
+      color: active ? BT.color.facilityPillOn.text : 'var(--text-muted)',
+      border: '0.5px solid ' + (active ? BT.color.facilityPillOn.border : 'var(--border)'),
       cursor: 'pointer', transition: 'all 0.12s',
     }}>{label}</button>
   );
@@ -958,6 +963,10 @@ function AddSiteTile({ onClick }: { onClick: () => void }) {
   );
 }
 
+// Site colours arrive as `#rrggbb` from the DB and get tinted at various
+// alphas, which needs the channels separately. The default and the fallback
+// string are the same colour twice over — a site row with no colour, and a
+// colour that will not parse — so they stay literal and stay in step.
 export function hexToRgb(hex = '#0ea5e9') {
   const r = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
   return r ? parseInt(r[1], 16) + ',' + parseInt(r[2], 16) + ',' + parseInt(r[3], 16) : '14,165,233';
