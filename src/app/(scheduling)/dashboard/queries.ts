@@ -130,6 +130,7 @@ export interface MixProviderRef {
 
 export interface MixRow {
   fte_value: number | string | null;
+  max_weekly_hours: number | string | null;
   call_taker: boolean | null;
   partial_call_taker: boolean | null;
   is_day_doc: boolean | null;
@@ -177,7 +178,13 @@ export function summarizeMix(rows: readonly MixRow[]): ProviderMix {
     // AAs work the CRNA slate (slotCandidates admits both for a 'crna' slot),
     // so they are counted with them rather than vanishing from every figure.
     if (isCrna) { mix.crnaFte += fte; mix.crnaCount++; }
-    if (r.is_day_doc) mix.dayDocs.push({ id, name });
+    if (r.is_day_doc) {
+      const h = Number(r.max_weekly_hours);
+      mix.dayDocs.push({
+        id, name,
+        weeklyHours: Number.isFinite(h) && h > 0 ? h : null,
+      });
+    }
 
     if (perDiem) {
       mix.perDiem++;
@@ -317,7 +324,18 @@ export interface Panel<T> {
 
 export type AttentionPanelEntry = AttentionEntry & { schedule_name: string; status: string };
 
-export interface DayDoc { id: string; name: string }
+export interface DayDoc {
+  id: string;
+  name: string;
+  /**
+   * provider_employment_profiles.max_weekly_hours — the "Weekly Hours" field
+   * on the profile. NOT derivable from FTE: Stella Vu is 0.60 FTE at 30 hours
+   * and Chamchad is 0.75 FTE at the same 30, so any FTE × 40 shortcut would
+   * give two different answers for the same contract. Null when nobody has
+   * recorded it, which is most people.
+   */
+  weeklyHours: number | null;
+}
 
 /** One person in the staffing card. */
 export interface StaffChip {
@@ -327,6 +345,8 @@ export interface StaffChip {
   fte: number | null;
   /** True for a call taker OR a partial call taker — both read "call". */
   call: boolean;
+  /** Contracted hours a week. Day docs only; null when unrecorded. */
+  weeklyHours?: number | null;
 }
 
 /** The staffing figures the dashboards head with. */
@@ -565,7 +585,7 @@ export async function loadDashboardData(
   let mixQ = sb
     .from('provider_employment_profiles')
     .select(
-      'fte_value, call_taker, partial_call_taker, is_day_doc, employment_status, '
+      'fte_value, max_weekly_hours, call_taker, partial_call_taker, is_day_doc, employment_status, '
       + 'providers!inner(id, provider_type, status, organization_id, first_name, last_name, short_display_name)',
       { count: 'exact' })
     .eq('providers.status', 'active');

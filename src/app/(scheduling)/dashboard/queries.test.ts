@@ -690,6 +690,7 @@ describe('loadDashboardData — site scoping', () => {
 describe('summarizeMix', () => {
   const row = (over: Partial<MixRow> = {}): MixRow => ({
     fte_value: 1,
+    max_weekly_hours: null,
     call_taker: false,
     partial_call_taker: false,
     is_day_doc: false,
@@ -806,6 +807,7 @@ describe('summarizeMix', () => {
 describe('summarizeMix — the staffing chips', () => {
   const row = (over: Partial<MixRow> = {}): MixRow => ({
     fte_value: 1,
+    max_weekly_hours: null,
     call_taker: false,
     partial_call_taker: false,
     is_day_doc: false,
@@ -888,5 +890,46 @@ describe('summarizeMix — the staffing chips', () => {
       row({ providers: { id: 'a', provider_type: 'aa', short_display_name: 'AA' } }),
     ]);
     expect(mix.crnas.map(p => p.name)).toEqual(['AA']);
+  });
+});
+
+describe('summarizeMix — day doc weekly hours', () => {
+  const row = (over: Partial<MixRow> = {}): MixRow => ({
+    fte_value: 1,
+    max_weekly_hours: null,
+    call_taker: false,
+    partial_call_taker: false,
+    is_day_doc: true,
+    employment_status: 'part_time',
+    providers: { id: 'x', provider_type: 'physician', short_display_name: 'X' },
+    ...over,
+  } as MixRow);
+
+  it('carries the recorded weekly hours', () => {
+    const mix = summarizeMix([row({ max_weekly_hours: 30 })]);
+    expect(mix.dayDocs[0].weeklyHours).toBe(30);
+  });
+
+  it('does not invent hours from FTE', () => {
+    // Stella Vu is 0.60 FTE at 30 hours and Chamchad 0.75 FTE at the same 30,
+    // so any FTE × 40 shortcut gives two answers for one contract.
+    const mix = summarizeMix([
+      row({ fte_value: 0.6, max_weekly_hours: 30, providers: { id: 'a', provider_type: 'physician', short_display_name: 'Vu' } }),
+      row({ fte_value: 0.75, max_weekly_hours: 30, providers: { id: 'b', provider_type: 'physician', short_display_name: 'Chamchad' } }),
+    ]);
+    expect(mix.dayDocs.map(d => d.weeklyHours)).toEqual([30, 30]);
+  });
+
+  it('reports null when nobody recorded hours', () => {
+    expect(summarizeMix([row()])[('dayDocs')][0].weeklyHours).toBeNull();
+  });
+
+  it('treats 0 or a nonsense value as unrecorded rather than "0 hr/wk"', () => {
+    expect(summarizeMix([row({ max_weekly_hours: 0 })]).dayDocs[0].weeklyHours).toBeNull();
+    expect(summarizeMix([row({ max_weekly_hours: 'abc' })]).dayDocs[0].weeklyHours).toBeNull();
+  });
+
+  it('coerces the numeric-as-string PostgREST can return', () => {
+    expect(summarizeMix([row({ max_weekly_hours: '30' })]).dayDocs[0].weeklyHours).toBe(30);
   });
 });

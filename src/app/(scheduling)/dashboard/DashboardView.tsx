@@ -247,6 +247,11 @@ function StaffChips({ people }: { people: StaffChip[] }) {
               {formatFte(p.fte)}
             </span>
           )}
+          {p.weeklyHours != null && (
+            <span style={{ color: 'var(--text-muted)', fontVariantNumeric: 'tabular-nums' }}>
+              {p.weeklyHours} hr/wk
+            </span>
+          )}
           {p.call && (
             <span style={{
               fontWeight: 800, letterSpacing: 0.4, textTransform: 'uppercase',
@@ -340,7 +345,7 @@ function StaffingCard({ panel, site }: { panel: Panel<ProviderMix>; site: boolea
       <StaffSection
         value={String(m.dayDocs.length)}
         label="Day docs"
-        people={m.dayDocs.map(d => ({ ...d, fte: null, call: false }))}
+        people={m.dayDocs.map(d => ({ ...d, fte: null, call: false, weeklyHours: d.weeklyHours }))}
       />
     </Card>
   );
