@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import Link from 'next/link';
 import { PageHeader, Card, Badge, Button, Table, EmptyState, Banner, Modal, scheduleStatusTone, scheduleStatusLabel, SCHEDULE_STATUSES } from '@/components/ui';
+import { SiteScheduleBoard } from './SiteScheduleBoard';
 import { defaultScheduleName, SCHEDULE_NAME_MAX } from '@/lib/scheduleName';
 import { scheduleStamps } from '@/lib/scheduleStamps';
 import AssistantPanel from './[id]/AssistantPanel';
@@ -65,6 +66,10 @@ export default function SchedulesPage() {
   const [showCreate, setShowCreate] = useState(false);
   // Deep link from /block-prep: open the create modal with the site pre-chosen.
   const [presetSiteId, setPresetSiteId] = useState('');
+  // The board's "+ New" carries both site and group into the create modal, so
+  // the column you clicked is the schedule you get.
+  const [presetGroup, setPresetGroup] = useState('both');
+  const [allSchedules, setAllSchedules] = useState<Schedule[]>([]);
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     if (params.get('create') === '1') {
@@ -111,6 +116,17 @@ export default function SchedulesPage() {
     setSchedules(await res.json());
   }, [orgId, siteFilter, typeFilter, groupFilter, statusFilter]);
 
+  // The board is deliberately NOT filtered. Its whole point is the
+  // physician/CRNA split per site, and running the table's group filter
+  // through it would empty the very columns it exists to show. Filters belong
+  // to the table below; the board always shows the real state.
+  const loadAllSchedules = useCallback(async () => {
+    if (!orgId) return;
+    const res = await fetch('/api/scheduling/schedules?org_id=' + orgId);
+    const rows = await res.json();
+    setAllSchedules(Array.isArray(rows) ? rows : []);
+  }, [orgId]);
+
   const loadSites = useCallback(async () => {
     if (!orgId) return;
     const res = await fetch('/api/scheduling/sites?org_id=' + orgId);
@@ -118,18 +134,21 @@ export default function SchedulesPage() {
   }, [orgId]);
 
   useEffect(() => { loadSchedules(); }, [loadSchedules]);
+  useEffect(() => { loadAllSchedules(); }, [loadAllSchedules]);
   useEffect(() => { loadSites(); }, [loadSites]);
 
   const handleDelete = async (id: string, name: string) => {
     if (!confirm(`Permanently delete "${name}"? This cannot be undone — all versions, slots, and assignments will be removed.`)) return;
     await fetch(`/api/scheduling/schedules/${id}`, { method: 'DELETE' });
     loadSchedules();
+    loadAllSchedules();
   };
 
   const handleArchive = async (id: string, name: string) => {
     if (!confirm(`Archive "${name}"? It will be hidden from the active list but kept in the database.`)) return;
     await fetch(`/api/scheduling/schedules/${id}?archive=true`, { method: 'DELETE' });
     loadSchedules();
+    loadAllSchedules();
   };
 
   const formatDate = (d: string) => {
@@ -176,6 +195,26 @@ export default function SchedulesPage() {
           </>
         }
       />
+
+      {/* Every site in its own box, split physician / CRNA. The filterable
+          table below keeps the row-level actions (archive, delete) and the
+          status/type filters the board deliberately does not carry. */}
+      <SiteScheduleBoard
+        sites={sites}
+        schedules={allSchedules}
+        onCreate={(siteId, group) => {
+          setPresetSiteId(siteId);
+          setPresetGroup(group);
+          setShowCreate(true);
+        }}
+      />
+
+      <div style={{
+        fontSize: 'var(--fs-xs)', textTransform: 'uppercase', letterSpacing: 1,
+        color: 'var(--text-dim)', fontWeight: 700, marginBottom: 'var(--space-2)',
+      }}>
+        All schedules
+      </div>
 
       {/* Filters */}
       <div style={{ display: 'flex', gap: 10, marginBottom: 20, flexWrap: 'wrap' }}>
@@ -274,7 +313,16 @@ export default function SchedulesPage() {
 
       {/* initialSiteId carries the /block-prep deep link's site through, so
           Create Schedule arrives with the site already chosen. */}
-      {showCreate && <CreateScheduleModal orgId={orgId} sites={sites} initialSiteId={presetSiteId} onClose={() => setShowCreate(false)} onCreated={() => { setShowCreate(false); loadSchedules(); }} />}
+      {showCreate && (
+        <CreateScheduleModal
+          orgId={orgId}
+          sites={sites}
+          initialSiteId={presetSiteId}
+          initialGroup={presetGroup}
+          onClose={() => { setShowCreate(false); setPresetGroup('both'); }}
+          onCreated={() => { setShowCreate(false); setPresetGroup('both'); loadSchedules(); loadAllSchedules(); }}
+        />
+      )}
       {showAssistantPicker && (
         <AssistantSchedulePicker
           schedules={schedules}
@@ -357,9 +405,9 @@ function AssistantSchedulePicker({ schedules, onClose, onPick }: {
 }
 
 // ── Create Schedule Modal ────────────────────────────────────────────────────
-function CreateScheduleModal({ orgId, sites, initialSiteId = '', onClose, onCreated }: { orgId: string; sites: Site[]; initialSiteId?: string; onClose: () => void; onCreated: () => void }) {
+function CreateScheduleModal({ orgId, sites, initialSiteId = '', initialGroup = 'both', onClose, onCreated }: { orgId: string; sites: Site[]; initialSiteId?: string; initialGroup?: string; onClose: () => void; onCreated: () => void }) {
   const [siteId, setSiteId] = useState(initialSiteId);
-  const [providerGroup, setProviderGroup] = useState('both');
+  const [providerGroup, setProviderGroup] = useState(initialGroup);
   const [dateStart, setDateStart] = useState('');
   const [dateEnd, setDateEnd] = useState('');
   // Optional custom name (Gabriel 2026-07-22) — blank keeps the generated
