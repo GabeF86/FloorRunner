@@ -8,19 +8,50 @@ import {
   BreakType,
   addDays, formatDateLabel, HOSPITALS, Hospital,
 } from '@/types';
+import nextDynamic from 'next/dynamic';
 import { computeAlertLevels, computeSupervisionLoads } from '@/lib/boardLogic';
 import { BT } from './boardTheme';
 import { useBoardRealtime } from './useBoardRealtime';
-import BoardAssistantPanel from './BoardAssistantPanel';
 import Sidebar from './Sidebar';
 import SiteCard from './SiteCard';
 import StatsBar from './StatsBar';
 import FloatBar from './FloatBar';
 import OutListPanel from './OutListPanel';
 import RelievedBox from './RelievedBox';
-import PrintView from './PrintView';
-import NetworkView from './NetworkView';
-import { AddSiteModal, AddStaffModal, AddRoomModal } from './Modals';
+
+/* ── Gated overlays, loaded on demand ────────────────────────────────────────
+ * Same arrangement as /schedules/[id]. Every component below renders only
+ * behind a flag — a view mode the user switched to, a dialog they opened, a
+ * print they triggered — so none of it is needed to paint the board, which is
+ * the thing being opened on a tablet on hospital wifi at 7am. Statically
+ * imported they sat in the route's first load on every visit.
+ *
+ * `useBoardRealtime` is NOT here and must not be: the live subscription is a
+ * hook on this component, opened on mount, and nothing about it is gated.
+ *
+ * The assistant PANEL is safe to defer — it holds no subscription. Its chat is
+ * `useSSEChat`, an HTTP stream started when the user sends a message, and it
+ * already mounts only when `showAssistant` flips true. Deferring changes when
+ * its code arrives, not when anything subscribes.
+ *
+ * PrintView is safe for a different reason: it does not print on mount. It
+ * paints a preview overlay whose 🖨️ button calls `window.print()` on click, so
+ * a chunk arriving a beat late cannot fire, or miss, the print dialog.
+ *
+ * `nextDynamic` rather than `dynamic`: this module has no `export const
+ * dynamic` to collide with, but the alias is what the rest of the app uses.
+ * `ssr: false` throughout — all of it is click-gated overlay UI.
+ * ───────────────────────────────────────────────────────────────────────── */
+
+const NetworkView = nextDynamic(() => import('./NetworkView'), { ssr: false });
+const PrintView = nextDynamic(() => import('./PrintView'), { ssr: false });
+const BoardAssistantPanel = nextDynamic(() => import('./BoardAssistantPanel'), { ssr: false });
+const AddSiteModal = nextDynamic(
+  () => import('./Modals').then(m => m.AddSiteModal), { ssr: false });
+const AddStaffModal = nextDynamic(
+  () => import('./Modals').then(m => m.AddStaffModal), { ssr: false });
+const AddRoomModal = nextDynamic(
+  () => import('./Modals').then(m => m.AddRoomModal), { ssr: false });
 
 interface Props {
   initialSites:       Site[];
