@@ -5,6 +5,7 @@
 // validation, and stamps reverted_at. The revert itself snapshots first, so
 // undo-of-undo is just reverting the revert's own action row.
 import { chunk, WRITE_CHUNK, batchValidateVersion } from '@/lib/rulesEngine/batchValidate';
+import { readAllRows } from '@/lib/pagedRead';
 import { bulkWriteWithRowFallback } from '@/lib/rulesEngine/commit';
 import { loadSiteValidationContext } from '@/lib/rulesEngine/loadContext';
 import { addDays, AVAIL_WINDOW_DAYS } from '@/lib/rulesEngine/shared';
@@ -177,10 +178,21 @@ export async function takeSnapshot(
   // filter, so the fake-client path in tests stays trivial).
   const assignments: SnapshotAssignmentRow[] = [];
   if (versionId) {
-    const { data: slots, error: slotErr } = await sb
-      .from('schedule_slots').select('id').eq('schedule_version_id', versionId);
-    if (slotErr) throw new Error(`schedule_slots snapshot read failed: ${slotErr.message}`);
-    const slotIds = ((slots ?? []) as Array<{ id: string }>).map(s => s.id);
+    // PAGED. A snapshot is an UNDO POINT: slots missed here are assignments
+    // that a later revert cannot restore, so the person undoing gets a
+    // partial rollback and no indication of it. An un-ranged select silently
+    // caps at 1000 rows.
+    const slotRead = await readAllRows<{ id: string }>(
+      (from, to) => sb
+        .from('schedule_slots')
+        .select('id', { count: 'exact' })
+        .eq('schedule_version_id', versionId)
+        .order('id')
+        .range(from, to),
+      'schedule_slots snapshot read failed',
+    );
+    if (slotRead.error) throw new Error(slotRead.error);
+    const slotIds = slotRead.rows.map(s => s.id);
     for (const ids of chunk(slotIds, READ_CHUNK)) {
       const { data, error } = await sb
         .from('assignments')

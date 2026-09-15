@@ -73,12 +73,28 @@ export function scoreSolution(plan: SolutionPlan, ctx: GenerationContext): Solut
   // literal — custom call codes (e.g. 'NC') count exactly like C1.
   const blockCallCount = new Map<string, number>();
   const callDates = new Map<string, string[]>();
+  const noteCall = (provider_id: string, slot_date: string) => {
+    blockCallCount.set(provider_id, (blockCallCount.get(provider_id) || 0) + 1);
+    const list = callDates.get(provider_id) || [];
+    list.push(slot_date);
+    callDates.set(provider_id, list);
+  };
   for (const a of plan.assignments) {
     if (a.shift_type_category !== 'call') continue;
-    blockCallCount.set(a.provider_id, (blockCallCount.get(a.provider_id) || 0) + 1);
-    const list = callDates.get(a.provider_id) || [];
-    list.push(a.slot_date);
-    callDates.set(a.provider_id, list);
+    noteCall(a.provider_id, a.slot_date);
+  }
+  // SEEDS COUNT TOO. Historical totals only reach back to before the block
+  // starts, so a call already committed INSIDE this block was invisible here —
+  // and that is the normal case in the staged flow (fill the weekends, commit,
+  // then Continue over the rest, ALGORITHM.md §4.5). On the second pass every
+  // committed weekend read as zero, so fairness saw a pool that had taken no
+  // call and burnout could not see a new call landing a day after a committed
+  // one. plan+seeds is the rule providerCaps.tallyCallsByPidCode,
+  // obligation.planWithinObligations and workDayReport already use; this makes
+  // the optimizer's objective agree with the caps it is optimizing against.
+  for (const seed of ctx.seedAssignments) {
+    if (seed.shift_type_category !== 'call') continue;
+    noteCall(seed.provider_id, seed.slot_date);
   }
 
   // Fairness: stdev over the pool of lifetime ratio = (historical + block) / fte.

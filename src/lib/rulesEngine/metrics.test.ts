@@ -178,3 +178,44 @@ describe('scoreSolution — pattern-aware burnout exemption', () => {
     expect(m.burnout).toBe(1);
   });
 });
+
+describe('scoreSolution — committed seeds count toward fairness and burnout', () => {
+  const seed = (over: Record<string, unknown> = {}) => ({
+    slot_date: '2026-01-10', provider_id: 'pA', shift_type_code: 'C1',
+    shift_type_category: 'call', derived_day_type: 'saturday', ...over,
+  });
+
+  it('counts a seeded call in the block, not just planned ones', () => {
+    // The staged flow (fill weekends, commit, Continue) means the second pass
+    // sees its own earlier work as SEEDS. They used to be invisible here, so
+    // fairness saw a pool that had taken no call at all.
+    const plan = { assignments: [], unfilled: [] } as unknown as SolutionPlan;
+    const withSeed = scoreSolution(plan, ctx([prov('pA'), prov('pB')], new Map(), {
+      seedAssignments: [seed()] as never,
+    }));
+    const without = scoreSolution(plan, ctx([prov('pA'), prov('pB')]));
+    // pA carries a call and pB does not — an imbalance the metric must see.
+    expect(withSeed.fairnessStdev).toBeGreaterThan(without.fairnessStdev);
+  });
+
+  it('sees burnout between a seeded call and a newly planned one', () => {
+    // A call the day after a committed one is exactly the pair the optimizer
+    // should be penalised for and previously could not see.
+    const plan = {
+      assignments: [callA({ slot_date: '2026-01-11', derived_day_type: 'sunday' })],
+      unfilled: [],
+    } as unknown as SolutionPlan;
+    const m = scoreSolution(plan, ctx([prov('pA')], new Map(), {
+      seedAssignments: [seed()] as never,
+    }));
+    expect(m.burnout).toBeGreaterThan(0);
+  });
+
+  it('ignores seeded NON-call assignments', () => {
+    const plan = { assignments: [], unfilled: [] } as unknown as SolutionPlan;
+    const m = scoreSolution(plan, ctx([prov('pA')], new Map(), {
+      seedAssignments: [seed({ shift_type_code: '7-3', shift_type_category: 'regular' })] as never,
+    }));
+    expect(m.burnout).toBe(0);
+  });
+});

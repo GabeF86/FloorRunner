@@ -734,6 +734,34 @@ export async function loadGenerationContext(
     parentLookupQ ?? Promise.resolve(null),
     holidaysQ ?? Promise.resolve(new Set<string>()),
   ]);
+  // FAIL THE LOAD IF ANY OF THESE FAILED. Each of these three reads used to
+  // have its error dropped on the floor, and each fails the same way — as
+  // MISSING DATA that reads exactly like a true empty:
+  //   availability → availByPid is empty → every provider looks fully
+  //     available, so PTO and no-call requests silently stop blocking
+  //     (clinical invariant 2 violated by omission);
+  //   providers    → no candidates, so generation produces an empty schedule
+  //     and reports success;
+  //   credentials  → every eligibility decision is made against absent
+  //     credentialing rather than against the real thing.
+  // None of those can be distinguished downstream from the legitimate case,
+  // which is precisely why the error has to stop the load here.
+  for (const [label, res] of [
+    ['providers', providersRes],
+    ['site credentials', credsRes],
+    ['availability', availRes],
+  ] as Array<[string, unknown]>) {
+    const err = (res as { error?: { message?: string } } | null)?.error;
+    if (err) {
+      return {
+        ctx: null,
+        error: `Failed to load ${label}: ${err.message ?? 'query failed'}`,
+        dbQueries,
+        totalSlots: rawSlots.length,
+      };
+    }
+  }
+
   const providerRows = (providersRes as { data: unknown }).data;
 
   const providers: CandidateProvider[] = (
@@ -907,7 +935,7 @@ export async function loadGenerationContext(
   // published-only filter — never version-only exclusion (would self-conflict
   // clones). No includeVersionId: the current version IS the parent schedule,
   // already excluded, and its own rows are seeded separately.
-  const { data: crossSite } = await fetchCommittedAssignments(
+  const { data: crossSite, error: crossSiteErr } = await fetchCommittedAssignments(
     sb,
     'provider_id, schedule_slots!inner(slot_date, site_id, schedule_versions!inner(schedule_id, version_status))',
     {
@@ -919,6 +947,21 @@ export async function loadGenerationContext(
         : { excludeSiteId: siteId }),
     },
   );
+
+  // A FAILED conflict read is not "no conflicts". The error used to be
+  // destructured away, which left crossSiteByDate empty — and an empty
+  // conflict map is exactly what a genuinely conflict-free block looks like.
+  // The engine would then place providers on top of bookings that already
+  // exist in another site's published schedule, which is invariant 3 violated
+  // by omission. Nothing downstream can recover it, so it stops the load.
+  if (crossSiteErr) {
+    return {
+      ctx: null,
+      error: `Failed to load cross-site conflicts: ${(crossSiteErr as { message?: string }).message ?? 'query failed'}`,
+      dbQueries,
+      totalSlots: rawSlots.length,
+    };
+  }
 
   // crossSiteByDate: pid -> Set<date> — provider is assigned elsewhere (another
   // site, or another schedule at this same site) on these dates. Field name

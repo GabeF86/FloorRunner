@@ -1305,3 +1305,38 @@ describe('bucket denominator: holiday-dated call slots count in their weekday bu
     expect(ctx.bucketTotals.get('holiday|C1')).toBeUndefined();
   });
 });
+
+// ── A failed preload must STOP the load, never read as empty ────────────────
+
+describe('loadGenerationContext — a failed preload aborts rather than looking empty', () => {
+  it('fails the load when the availability read errors (invariant 2)', async () => {
+    // This is the one that matters most. availByPid built from a failed read
+    // is EMPTY, and an empty availability map is indistinguishable from
+    // "nobody has any PTO" — so every provider would look fully available and
+    // approved PTO would silently stop blocking. The error used to be dropped.
+    const { res } = await run({ provider_availability: { data: null, error: { message: 'conn reset' } } });
+    expect(res.ctx).toBeNull();
+    expect(res.error).toMatch(/availability/i);
+    expect(res.error).toMatch(/conn reset/);
+  });
+
+  it('fails the load when the providers read errors', async () => {
+    const { res } = await run({ providers: { data: null, error: { message: 'timeout' } } });
+    expect(res.ctx).toBeNull();
+    expect(res.error).toMatch(/providers/i);
+  });
+
+  it('fails the load when the site-credentials read errors', async () => {
+    const { res } = await run({ provider_site_credentials: { data: null, error: { message: 'boom' } } });
+    expect(res.ctx).toBeNull();
+    expect(res.error).toMatch(/credentials/i);
+  });
+
+  it('still builds a context when those reads are genuinely empty', async () => {
+    // The distinction the guard has to preserve: empty is a real answer,
+    // failure is not. An empty availability table must NOT abort.
+    const { res } = await run({ provider_availability: { data: [], error: null } });
+    expect(res.error).toBeUndefined();
+    expect(res.ctx).not.toBeNull();
+  });
+});

@@ -139,7 +139,10 @@ describe('fetchCommittedAssignments', () => {
       providerId: 'p1', start: '2026-01-01', end: '2026-01-31', includeVersionId: 'vDraft',
     });
     expect(data).toBeNull();
-    expect(error?.message).toBe('db down');
+    // The message is LABELLED with which read failed. Both variants can fail
+    // and a bare 'db down' does not say which, so the label is the useful part
+    // when a caller surfaces this to a chief mid-generation.
+    expect(error?.message).toBe('committed assignments: db down');
     expect(callsFor(calls, 'assignments', 'from')).toHaveLength(1); // bailed before the 2nd
   });
 
@@ -157,7 +160,7 @@ describe('fetchCommittedAssignments', () => {
       providerId: 'p1', start: '2026-01-01', end: '2026-01-31', includeVersionId: 'vDraft',
     });
     expect(data).toBeNull();
-    expect(error?.message).toBe('boom');
+    expect(error?.message).toBe('current-version assignments: boom');
   });
 
   it('providerIds → .in, providerId → .eq; date window applied via gte/lte', async () => {

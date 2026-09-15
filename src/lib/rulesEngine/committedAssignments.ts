@@ -28,6 +28,8 @@
 // `includeVersionId` (the merge dedupes on it).
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
+import { readAllRows } from '@/lib/pagedRead';
+
 type SupabaseClient = any;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type QueryBuilder = any;
@@ -145,7 +147,9 @@ function mergeById<T extends { id?: unknown }>(a: T[], b: T[]): T[] {
  * Returns `{ data, error }` (never throws) so each caller keeps its existing
  * error posture: some bail/return-null on error (fail-closed validation
  * reads), others ignore it (best-effort generation scans). On error `data` is
- * `null` and the FIRST failing sub-query's error is surfaced. When
+ * `null` and the FIRST failing sub-query's error is surfaced, LABELLED with
+ * which read failed ('committed assignments: …' / 'current-version
+ * assignments: …') since either variant can be the one that broke. When
  * `includeVersionId` is unset only the published variant runs (single query).
  */
 export async function fetchCommittedAssignments(
@@ -153,13 +157,29 @@ export async function fetchCommittedAssignments(
   select: string,
   opts: CommittedScopeOptions,
 ): Promise<{ data: Array<Record<string, unknown>> | null; error: QueryError }> {
-  const published = await applyPublishedScope(sb.from('assignments').select(select), opts);
-  if (published.error) return { data: null, error: published.error };
-  const publishedRows = (published.data ?? []) as Array<Record<string, unknown>>;
+  // PAGED. This is the invariant-3 read: a truncated conflict set does not
+  // fail, it just returns FEWER conflicts — and fewer conflicts is
+  // indistinguishable from a cleaner schedule, so the engine would place a
+  // provider on top of a booking that already exists in another site's
+  // published version. Both variants page; a short read becomes an error, so
+  // each caller's existing posture (fail-closed for validation reads) applies
+  // unchanged.
+  const published = await readAllRows<Record<string, unknown>>(
+    (from, to) => applyPublishedScope(
+      sb.from('assignments').select(select, { count: 'exact' }), opts,
+    ).order('id').range(from, to),
+    'committed assignments',
+  );
+  if (published.error) return { data: null, error: { message: published.error } };
+  const publishedRows = published.rows;
   if (opts.includeVersionId == null) return { data: publishedRows, error: null };
 
-  const current = await applyCurrentVersionScope(sb.from('assignments').select(select), opts);
-  if (current.error) return { data: null, error: current.error };
-  const currentRows = (current.data ?? []) as Array<Record<string, unknown>>;
-  return { data: mergeById(publishedRows, currentRows), error: null };
+  const current = await readAllRows<Record<string, unknown>>(
+    (from, to) => applyCurrentVersionScope(
+      sb.from('assignments').select(select, { count: 'exact' }), opts,
+    ).order('id').range(from, to),
+    'current-version assignments',
+  );
+  if (current.error) return { data: null, error: { message: current.error } };
+  return { data: mergeById(publishedRows, current.rows), error: null };
 }
