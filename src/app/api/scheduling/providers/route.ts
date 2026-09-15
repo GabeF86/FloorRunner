@@ -62,6 +62,25 @@ export async function GET(req: NextRequest) {
     query = query.in('id', ids);
   }
 
+  // Filter by HOME site. It lives on provider_employment_profiles, which is
+  // fetched below rather than joined, so this resolves ids first — the same
+  // shape the credentialing filter above uses.
+  //
+  // Home site and credentialing are different questions and both are offered:
+  // a provider is credentialed at several sites but homed at one, so "who
+  // belongs to Paoli" and "who may work at Paoli" give different answers.
+  const homeSiteId = searchParams.get('home_site_id');
+  if (homeSiteId) {
+    const { data: homeRows, error: homeErr } = await sb
+      .from('provider_employment_profiles')
+      .select('provider_id')
+      .eq('home_site_id', homeSiteId);
+    if (homeErr) return NextResponse.json({ error: homeErr.message }, { status: 500 });
+    const ids = (homeRows || []).map((r: { provider_id: string }) => r.provider_id);
+    if (ids.length === 0) return NextResponse.json([]);
+    query = query.in('id', ids);
+  }
+
   const { data: providers, error } = await query;
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
   if (!providers || providers.length === 0) return NextResponse.json([]);

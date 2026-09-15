@@ -68,6 +68,7 @@ export default function ProvidersPage() {
   const [search, setSearch] = useState('');
   const [typeFilter, setTypeFilter] = useState('');
   const [statusFilter, setStatusFilter] = useState('active');
+  const [homeSiteFilter, setHomeSiteFilter] = useState('');
   const [credentialedSiteFilter, setCredentialedSiteFilter] = useState('');
   const [roleFilter, setRoleFilter] = useState('');
   const [showAdd, setShowAdd] = useState(false);
@@ -90,10 +91,11 @@ export default function ProvidersPage() {
     if (statusFilter) params.set('status', statusFilter);
     if (typeFilter) params.set('provider_type', typeFilter);
     if (search) params.set('search', search);
+    if (homeSiteFilter) params.set('home_site_id', homeSiteFilter);
     if (credentialedSiteFilter) params.set('credentialed_site_id', credentialedSiteFilter);
     const res = await fetch('/api/scheduling/providers?' + params);
     setProviders(await res.json());
-  }, [orgId, statusFilter, typeFilter, search, credentialedSiteFilter]);
+  }, [orgId, statusFilter, typeFilter, search, homeSiteFilter, credentialedSiteFilter]);
 
   const loadSites = useCallback(async () => {
     if (!orgId) return;
@@ -187,6 +189,16 @@ export default function ProvidersPage() {
           <option value="active">Active</option>
           <option value="inactive">Inactive</option>
           <option value="on_leave">On Leave</option>
+        </select>
+        <select
+          value={homeSiteFilter}
+          onChange={(e) => setHomeSiteFilter(e.target.value)}
+          style={selectStyle}
+        >
+          <option value="">Home site — Any</option>
+          {sites.map(s => (
+            <option key={s.id} value={s.id}>Home: {s.short_name || s.name}</option>
+          ))}
         </select>
         <select
           value={credentialedSiteFilter}
