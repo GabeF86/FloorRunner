@@ -119,6 +119,7 @@ const railBtnStyle: React.CSSProperties = {
   color: 'var(--text-muted)', cursor: 'pointer', fontSize: 15, lineHeight: 1,
   display: 'flex', alignItems: 'center', justifyContent: 'center',
 };
+const RAIL_BTN_CLASS = 'fr-focus fr-btn fr-btn-secondary';
 
 export default function AppShell({ fullBleed, children }: { fullBleed?: boolean; children: React.ReactNode }) {
   const pathname = usePathname();
@@ -137,7 +138,8 @@ export default function AppShell({ fullBleed, children }: { fullBleed?: boolean;
       <nav style={{
         width: collapsed ? RAIL_W : FULL_W, flexShrink: 0, background: 'var(--bg-sidebar)',
         borderRight: '1px solid var(--border)', display: 'flex', flexDirection: 'column',
-        padding: 'var(--space-4) 0', overflowX: 'hidden', transition: 'width 0.16s ease',
+        padding: 'var(--space-4) 0', overflowX: 'hidden',
+        transition: 'width var(--dur-slow) var(--ease-out)',
       }}>
         {/* Logo / collapse control */}
         <div style={{
@@ -147,14 +149,24 @@ export default function AppShell({ fullBleed, children }: { fullBleed?: boolean;
           justifyContent: collapsed ? 'center' : 'space-between', gap: 'var(--space-2)',
         }}>
           {collapsed ? (
-            <button onClick={toggleCollapsed} title="Expand sidebar" className="fr-focus" style={railBtnStyle}>≡</button>
+            <button onClick={toggleCollapsed} title="Expand sidebar" className={RAIL_BTN_CLASS} style={railBtnStyle}>≡</button>
           ) : (
             <>
               <div style={{ minWidth: 0 }}>
-                <div style={{ fontSize: 18, fontWeight: 800, color: 'var(--blue)', letterSpacing: -0.5 }}>FloorRunner</div>
-                <div style={{ fontSize: 10, color: 'var(--text-dim)', letterSpacing: 1, textTransform: 'uppercase', marginTop: 2 }}>Anesthesia Platform</div>
+                <div style={{
+                  fontSize: 18, fontWeight: 800, color: 'var(--text-strong)',
+                  letterSpacing: -0.6, lineHeight: 1.1,
+                }}>
+                  Floor<span style={{ color: 'var(--blue)' }}>Runner</span>
+                </div>
+                <div style={{
+                  fontSize: 9, color: 'var(--text-faint)', letterSpacing: 1.4,
+                  textTransform: 'uppercase', marginTop: 3, fontWeight: 600,
+                }}>
+                  Anesthesia Platform
+                </div>
               </div>
-              <button onClick={toggleCollapsed} title="Collapse sidebar" className="fr-focus" style={railBtnStyle}>≡</button>
+              <button onClick={toggleCollapsed} title="Collapse sidebar" className={RAIL_BTN_CLASS} style={railBtnStyle}>≡</button>
             </>
           )}
         </div>
@@ -194,7 +206,17 @@ export default function AppShell({ fullBleed, children }: { fullBleed?: boolean;
                   color: isActive ? 'var(--blue)' : 'var(--text-muted)',
                   background: isActive ? 'color-mix(in srgb, var(--blue) 10%, transparent)' : 'transparent',
                   border: '1px solid ' + (isActive ? 'color-mix(in srgb, var(--blue) 25%, transparent)' : 'transparent'),
-                  transition: 'all 0.15s',
+                  // A 2px accent bar on the active item. The tinted background
+                  // alone reads as a hover state rather than a location — the
+                  // marker is what makes "where am I" answerable at a glance,
+                  // and it is the one thing the collapsed rail still shows.
+                  boxShadow: isActive
+                    ? 'inset 2px 0 0 var(--blue)'
+                    : undefined,
+                  transition:
+                    'background var(--dur-fast) var(--ease-out),'
+                    + ' color var(--dur-fast) var(--ease-out),'
+                    + ' border-color var(--dur-fast) var(--ease-out)',
                 });
 
                 if (item.href === '/schedules') {
