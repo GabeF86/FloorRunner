@@ -45,7 +45,7 @@ function ctx(over: Partial<EvaluationContext> = {}): EvaluationContext {
     slot: slot(), shiftType: SHIFT_TYPES[0], providerId: 'p1',
     providerGroup: 'physician', credentials: null, fte_value: 1, poolFlags: null,
     neighborAssignments: [], availability: [], sameDayAssignments: [],
-    crossSiteAssignments: [], scheduleVersionId: 'v1', rules: [],
+    crossSiteAssignments: [], scheduleVersionId: 'v1',
     shiftTypesByCode: new Map(SHIFT_TYPES.map(s => [s.code, s])),
     shiftTypesById: new Map(SHIFT_TYPES.map(s => [s.id, s])),
     ...over,
@@ -220,7 +220,6 @@ describe('batchValidateVersion — provider limits soft flags', () => {
   const siteCtx: SiteValidationContext = {
     shiftTypesById: new Map([['st-C1', st_('C1')]]),
     shiftTypesByCode: new Map([['C1', st_('C1')]]),
-    rules: [],
   };
   const batchSlot = (id: string, date: string, aid: string) => ({
     id, site_id: 's1', slot_date: date, shift_type_id: 'st-C1',

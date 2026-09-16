@@ -4,9 +4,8 @@
 // day-chain links (classic: C2 → D1 next day, D3 prior day), we auto-fill the
 // linked slots for the same provider; deleting the trigger clears those
 // auto-fills again. Structure comes from scheduling.call_patterns
-// (CallPatternDoc) — rule_definitions are validation-only and are deliberately
-// NOT consulted here (they were pre-scheduling-v2, which let manual edits and
-// generation disagree about the chain shape).
+// (CallPatternDoc) — it is the ONE place the chain shape lives, so manual
+// edits and generation cannot disagree about it.
 //
 // Sanctioned I/O module (like genContext/commit). Query budget per invocation:
 // one trigger-slot fetch + the provider-wide assignments-window read (two

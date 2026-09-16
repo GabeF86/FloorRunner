@@ -33,11 +33,6 @@ interface ConfigBefore {
     definition: CallPatternDoc;
   } | null;
   shift_types: Array<Record<string, unknown>>;
-  // Rows of every rule_definition in the site's active rule sets — restored
-  // on revert so upsert_rule_definition changes are undoable too (and so
-  // post-revert batch validation runs under the ORIGINAL rules, not the
-  // mutated ones). Optional: pre-existing snapshots lack it (no-op restore).
-  rule_definitions?: Array<Record<string, unknown>>;
   // ── Intake extension (assistant-intake). Full rows, captured on every NEW
   // snapshot (possibly empty arrays) so the delete-new-availability pass has a
   // defined baseline. Pre-intake stored actions lack these keys entirely →
@@ -156,19 +151,6 @@ export async function takeSnapshot(
     .from('shift_types').select('*').eq('site_id', siteId);
   if (stErr) throw new Error(`shift_types snapshot read failed: ${stErr.message}`);
 
-  // Validation rules for the site's active rule sets — small table, full rows.
-  const { data: ruleSets, error: rsErr } = await sb
-    .from('rule_sets').select('id').eq('site_id', siteId).eq('status', 'active');
-  if (rsErr) throw new Error(`rule_sets snapshot read failed: ${rsErr.message}`);
-  const ruleSetIds = ((ruleSets ?? []) as Array<{ id: string }>).map(r => r.id);
-  let ruleDefinitions: Array<Record<string, unknown>> = [];
-  if (ruleSetIds.length > 0) {
-    const { data, error } = await sb
-      .from('rule_definitions').select('*').in('rule_set_id', ruleSetIds);
-    if (error) throw new Error(`rule_definitions snapshot read failed: ${error.message}`);
-    ruleDefinitions = (data ?? []) as Array<Record<string, unknown>>;
-  }
-
   // ── Intake extension: availability (org, windowed), profiles (ORG-WIDE —
   // engines read employment profiles regardless of home site, and
   // update_provider_profile may patch any org provider, so a home-site-only
@@ -231,7 +213,6 @@ export async function takeSnapshot(
         }
       : null,
     shift_types: (shiftTypes ?? []) as Array<Record<string, unknown>>,
-    rule_definitions: ruleDefinitions,
     provider_availability: availabilityRows,
     provider_employment_profiles: profiles,
     provider_site_credentials: (credentials ?? []) as Array<Record<string, unknown>>,
@@ -270,8 +251,8 @@ export interface RevertResult {
 /** How much of the snapshot to put back.
  *
  *  'all' (default) — the ASSISTANT's semantics, unchanged: call pattern, shift
- *  types, rule definitions, availability, employment profiles, credentials AND
- *  assignments. Right there, because an assistant turn can change any of them.
+ *  types, availability, employment profiles, credentials AND assignments.
+ *  Right there, because an assistant turn can change any of them.
  *
  *  'assignments' — assignments only (Gabriel 2026-07-30: "I just want the
  *  ability to revert back after doing an autofill ... anything that was already
@@ -349,16 +330,6 @@ export async function revertAction(
       onConflict: 'id', label: 'assistant revert shift_types',
     });
     for (const e of w.rowErrors) errors.push(`shift_type restore failed: ${e.message}`);
-  }
-
-  // ── 3. Restore rule_definitions (upsert by id, same pattern as shift_types;
-  // absent on pre-existing snapshots → no-op) ────────────────────────────────
-  const rdRows = config?.rule_definitions ?? [];
-  for (const rows of chunk(rdRows, WRITE_CHUNK)) {
-    const w = await bulkWriteWithRowFallback(sb, 'rule_definitions', rows, {
-      onConflict: 'id', label: 'assistant revert rule_definitions',
-    });
-    for (const e of w.rowErrors) errors.push(`rule_definition restore failed: ${e.message}`);
   }
 
   // ── 3b–3d. Restore intake state BEFORE assignments — availability feeds the

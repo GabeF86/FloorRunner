@@ -5,7 +5,6 @@ import { describe, it, expect } from 'vitest';
 import { evaluators } from './evaluators';
 import type {
   EvaluationContext,
-  RuleDefinition,
   RuleViolation,
   ShiftTypeRow,
   SlotRow,
@@ -46,16 +45,6 @@ function cred(over: Partial<ProviderSiteCredentials> = {}): ProviderSiteCredenti
   };
 }
 
-function rule(over: Partial<RuleDefinition>): RuleDefinition {
-  return {
-    id: 'r1', rule_set_id: 'rs1', rule_name: 'test rule',
-    rule_category: 'sequence', hard_constraint: true, priority_rank: 1,
-    applies_to_provider_group: 'both', applies_to_shift_types: null,
-    applies_to_day_types: null, condition: {}, action: {},
-    explanation_text: null, is_active: true, ...over,
-  };
-}
-
 function avail(over: Partial<AvailabilityRow> = {}): AvailabilityRow {
   return {
     id: 'av1', provider_id: 'p1', availability_type: 'pto',
@@ -78,7 +67,7 @@ function ctx(over: Partial<EvaluationContext> = {}): EvaluationContext {
     slot: slot(), shiftType: SHIFT_TYPES[0], providerId: 'p1',
     providerGroup: 'physician', credentials: cred(), fte_value: 1, poolFlags: null,
     neighborAssignments: [], availability: [], sameDayAssignments: [],
-    crossSiteAssignments: [], scheduleVersionId: 'v1', rules: [],
+    crossSiteAssignments: [], scheduleVersionId: 'v1',
     shiftTypesByCode: new Map(SHIFT_TYPES.map(s => [s.code, s])),
     shiftTypesById: new Map(SHIFT_TYPES.map(s => [s.id, s])),
     ...over,
@@ -228,183 +217,6 @@ describe('weekendAdjacentPto evaluator', () => {
   });
 });
 
-// ── sequence ─────────────────────────────────────────────────────────────────
-
-describe('sequence evaluator', () => {
-  const seqRule = (over: Partial<RuleDefinition> = {}) => rule({
-    rule_category: 'sequence',
-    condition: { trigger_shift_code: 'C2', relationship: 'post_call' },
-    action: { linked_shift_code: 'D1' },
-    ...over,
-  });
-  const c2Ctx = (over: Partial<EvaluationContext> = {}) => ctx({
-    slot: slot({ shift_type_id: 'st-C2' }),
-    shiftType: SHIFT_TYPES[1], // C2
-    ...over,
-  });
-
-  it('trigger with linked shift missing next day → soft violation', () => {
-    const v = byCategory(c2Ctx({ rules: [seqRule()] }), 'sequence');
-    expect(v).toHaveLength(1);
-    expect(v[0].severity).toBe('soft');
-    expect(v[0].message).toContain('2026-01-08');
-  });
-
-  it('trigger with conflicting shift next day → hard violation', () => {
-    const v = byCategory(c2Ctx({
-      rules: [seqRule()],
-      neighborAssignments: [neighbor('2026-01-08', 'C1')],
-    }), 'sequence');
-    expect(v).toHaveLength(1);
-    expect(v[0].severity).toBe('hard');
-    expect(v[0].message).toContain('C1');
-  });
-
-  it('trigger followed by the linked shift → clean', () => {
-    const v = byCategory(c2Ctx({
-      rules: [seqRule()],
-      neighborAssignments: [neighbor('2026-01-08', 'D1')],
-    }), 'sequence');
-    expect(v).toHaveLength(0);
-  });
-
-  it('honors applies_to_day_types: weekday-scoped rule does not fire on a Saturday trigger', () => {
-    const v = byCategory(c2Ctx({
-      rules: [seqRule({ applies_to_day_types: ['weekday'] })],
-      slot: slot({ shift_type_id: 'st-C2', slot_date: '2026-01-10', derived_day_type: 'saturday' }),
-    }), 'sequence');
-    expect(v).toHaveLength(0);
-  });
-
-  it('honors applies_to_day_types: weekday-scoped rule still fires on a weekday trigger', () => {
-    const v = byCategory(c2Ctx({
-      rules: [seqRule({ applies_to_day_types: ['weekday'] })],
-    }), 'sequence');
-    expect(v).toHaveLength(1);
-  });
-
-  it('honors applies_to_shift_types: rule scoped to another shift code does not fire', () => {
-    const v = byCategory(c2Ctx({
-      rules: [seqRule({ applies_to_shift_types: ['C3'] })],
-    }), 'sequence');
-    expect(v).toHaveLength(0);
-  });
-
-  it('case B: non-linked shift after a trigger day → violation', () => {
-    // Provider had C2 on 01-07; today (01-08) they are on C1, not D1.
-    const v = byCategory(ctx({
-      slot: slot({ slot_date: '2026-01-08' }),
-      rules: [seqRule()],
-      neighborAssignments: [neighbor('2026-01-07', 'C2')],
-    }), 'sequence');
-    expect(v).toHaveLength(1);
-    expect(v[0].message).toContain('should be D1');
-  });
-
-  it('case B honors applies_to_day_types of the trigger day', () => {
-    // Trigger day (01-07, weekday) is out of scope for a saturday-only rule.
-    const v = byCategory(ctx({
-      slot: slot({ slot_date: '2026-01-08' }),
-      rules: [seqRule({ applies_to_day_types: ['saturday'] })],
-      neighborAssignments: [neighbor('2026-01-07', 'C2')],
-    }), 'sequence');
-    expect(v).toHaveLength(0);
-  });
-});
-
-// ── rest ─────────────────────────────────────────────────────────────────────
-
-describe('rest evaluator', () => {
-  const restRule = (over: Partial<RuleDefinition> = {}) => rule({
-    rule_category: 'rest',
-    condition: { after_shift_code: 'C1', rest_type: 'day_off' },
-    action: {},
-    ...over,
-  });
-
-  it('case A: after-shift with next-day assignment → violation', () => {
-    const v = byCategory(ctx({
-      rules: [restRule()],
-      neighborAssignments: [neighbor('2026-01-08', 'D2')],
-    }), 'rest');
-    expect(v).toHaveLength(1);
-    expect(v[0].message).toContain('D2');
-  });
-
-  it('case A: exempt next shift passes', () => {
-    const v = byCategory(ctx({
-      rules: [restRule({ action: { exempt_next_shift_codes: ['D2'] } })],
-      neighborAssignments: [neighbor('2026-01-08', 'D2')],
-    }), 'rest');
-    expect(v).toHaveLength(0);
-  });
-
-  it('case B: assignment the day after the after-shift → violation', () => {
-    const v = byCategory(ctx({
-      slot: slot({ slot_date: '2026-01-08', shift_type_id: 'st-D2' }),
-      shiftType: SHIFT_TYPES[4], // D2
-      rules: [restRule()],
-      neighborAssignments: [neighbor('2026-01-07', 'C1')],
-    }), 'rest');
-    expect(v).toHaveLength(1);
-    expect(v[0].message).toContain('rest day');
-  });
-
-  it('case B honors the prior day-type scope', () => {
-    const v = byCategory(ctx({
-      slot: slot({ slot_date: '2026-01-08', shift_type_id: 'st-D2' }),
-      shiftType: SHIFT_TYPES[4],
-      rules: [restRule({ applies_to_day_types: ['friday'] })],
-      neighborAssignments: [neighbor('2026-01-07', 'C1')], // weekday trigger
-    }), 'rest');
-    expect(v).toHaveLength(0);
-  });
-});
-
-// ── frequency ────────────────────────────────────────────────────────────────
-
-describe('frequency evaluator', () => {
-  const freqRule = (period: string, max: number) => rule({
-    rule_category: 'frequency',
-    condition: { shift_category: 'all_call', period },
-    action: { max_count: max },
-  });
-
-  it('month period: counts assignments on both month edges', () => {
-    const v = byCategory(ctx({
-      rules: [freqRule('month', 2)],
-      neighborAssignments: [neighbor('2026-01-01', 'C2'), neighbor('2026-01-31', 'C2')],
-    }), 'frequency');
-    expect(v).toHaveLength(1); // 2 neighbors + current slot = 3 > 2
-    expect(v[0].details).toMatchObject({
-      count: 3, max: 2, period_start: '2026-01-01', period_end: '2026-01-31',
-    });
-  });
-
-  it('month period: assignments just outside the month do not count', () => {
-    const v = byCategory(ctx({
-      rules: [freqRule('month', 2)],
-      neighborAssignments: [neighbor('2025-12-31', 'C2'), neighbor('2026-02-01', 'C2'), neighbor('2026-01-15', 'C2')],
-    }), 'frequency');
-    expect(v).toHaveLength(0); // 1 in-month neighbor + current = 2, not > 2
-  });
-
-  it('week period: Monday counts, previous Sunday does not', () => {
-    // Slot 2026-01-07 (Wed) → week = Mon 01-05 .. Sun 01-11.
-    const inWeek = byCategory(ctx({
-      rules: [freqRule('week', 1)],
-      neighborAssignments: [neighbor('2026-01-05', 'C2')],
-    }), 'frequency');
-    expect(inWeek).toHaveLength(1); // 1 + current = 2 > 1
-
-    const outOfWeek = byCategory(ctx({
-      rules: [freqRule('week', 1)],
-      neighborAssignments: [neighbor('2026-01-04', 'C2')],
-    }), 'frequency');
-    expect(outOfWeek).toHaveLength(0);
-  });
-});
-
 // ── coverage ─────────────────────────────────────────────────────────────────
 
 describe('coverage evaluator', () => {
@@ -412,22 +224,6 @@ describe('coverage evaluator', () => {
     slot_id: o.slot_id ?? 'slot1', slot_date: '2026-01-07',
     shift_type_code: o.code ?? 'C1', shift_type_category: 'call',
     provider_id: o.provider_id ?? null, required_count: o.required ?? 1,
-  });
-
-  it('rule-driven min_providers fires on the under-covered shift', () => {
-    const v = byCategory(ctx({
-      rules: [rule({
-        rule_category: 'coverage',
-        condition: { shift_code: 'C1' },
-        action: { min_providers: 2 },
-      })],
-      sameDayAssignments: [
-        sameDay({ provider_id: 'p1' }),
-        sameDay({ slot_id: 'slot2', code: 'C2', provider_id: 'p2' }),
-      ],
-    }), 'coverage');
-    expect(v).toHaveLength(1);
-    expect(v[0].details).toMatchObject({ assigned: 1, required: 2 });
   });
 
   it('implicit check flags an under-filled slot (soft)', () => {
@@ -491,91 +287,6 @@ describe('coverage evaluator', () => {
     expect(v[0].rule_name).toBe('Slot under-covered');
   });
 
-  it('rule-driven coverage rule still fires on a REGULAR shift (explicit rules stay category-blind)', () => {
-    const v = byCategory(ctx({
-      shiftType: SHIFT_TYPES[3], // D1, regular
-      rules: [rule({
-        rule_category: 'coverage',
-        condition: { shift_code: 'D1' },
-        action: { min_providers: 1 },
-      })],
-      sameDayAssignments: [sameDay({ code: 'D1', provider_id: null })],
-    }), 'coverage');
-    expect(v).toHaveLength(1);
-    expect(v[0].details).toMatchObject({ assigned: 0, required: 1 });
-  });
-});
-
-// ── pairing ──────────────────────────────────────────────────────────────────
-
-describe('pairing evaluator', () => {
-  const pairRule = () => rule({
-    rule_category: 'pairing',
-    condition: { primary_shift_code: 'C1' },
-    action: { required_backup_code: 'C2' },
-  });
-  const sameDay = (code: string, provider_id: string | null) => ({
-    slot_id: `slot-${code}`, slot_date: '2026-01-07', shift_type_code: code,
-    shift_type_category: 'call', provider_id, required_count: 1,
-  });
-
-  it('primary without an assigned backup on the same day → violation', () => {
-    const v = byCategory(ctx({
-      rules: [pairRule()],
-      sameDayAssignments: [sameDay('C1', 'p1'), sameDay('C2', null)],
-    }), 'pairing');
-    expect(v).toHaveLength(1);
-    expect(v[0].message).toContain('C2');
-  });
-
-  it('primary with backup assigned → clean', () => {
-    const v = byCategory(ctx({
-      rules: [pairRule()],
-      sameDayAssignments: [sameDay('C1', 'p1'), sameDay('C2', 'p2')],
-    }), 'pairing');
-    expect(v).toHaveLength(0);
-  });
-});
-
-// ── fairness (per-FTE) ───────────────────────────────────────────────────────
-
-describe('fairness evaluator', () => {
-  const fairRule = () => rule({
-    rule_category: 'fairness',
-    condition: { burden_category: 'all_call' },
-    action: { distribution_method: 'equal' },
-  });
-  const fourCalls = (over: Partial<EvaluationContext> = {}) => ctx({
-    rules: [fairRule()],
-    // 3 in-month call neighbors + the current call slot = 4
-    neighborAssignments: [
-      neighbor('2026-01-10', 'C2'), neighbor('2026-01-15', 'C2'), neighbor('2026-01-20', 'C2'),
-    ],
-    ...over,
-  });
-
-  it('scales by FTE: 0.5-FTE provider with 4 calls flags (threshold ceil(6*0.5)=3)', () => {
-    const v = byCategory(fourCalls({ fte_value: 0.5 }), 'fairness');
-    expect(v).toHaveLength(1);
-    expect(v[0].severity).toBe('soft');
-    expect(v[0].details).toMatchObject({ count: 4, threshold: 3 });
-  });
-
-  it('1.0-FTE provider with 4 calls does not flag (threshold 6)', () => {
-    expect(byCategory(fourCalls({ fte_value: 1.0 }), 'fairness')).toHaveLength(0);
-  });
-
-  it('missing fte_value is treated as 1.0', () => {
-    expect(byCategory(fourCalls({ fte_value: null }), 'fairness')).toHaveLength(0);
-  });
-
-  it('1.0-FTE provider over the base threshold still flags', () => {
-    const neighbors = ['2026-01-02', '2026-01-05', '2026-01-10', '2026-01-15', '2026-01-20', '2026-01-25']
-      .map(d => neighbor(d, 'C2'));
-    const v = byCategory(fourCalls({ fte_value: 1.0, neighborAssignments: neighbors }), 'fairness');
-    expect(v).toHaveLength(1); // 6 + current = 7 > 6
-    expect(v[0].details).toMatchObject({ count: 7, threshold: 6 });
-  });
 });
 
 // ── openSlot ─────────────────────────────────────────────────────────────────
@@ -590,19 +301,6 @@ describe('openSlot evaluator', () => {
 
   it('assigned slot is clean', () => {
     expect(byCategory(ctx(), 'open_slot')).toHaveLength(0);
-  });
-
-  it('escalates via a rule deadline', () => {
-    const v = byCategory(ctx({
-      providerId: null, credentials: null, providerGroup: null,
-      rules: [rule({
-        rule_category: 'open_slot',
-        action: { days_before_slot: 100000 },
-        hard_constraint: true,
-      })],
-    }), 'open_slot');
-    expect(v).toHaveLength(1);
-    expect(v[0].severity).toBe('hard');
   });
 
   it('open CALL slot → soft violation still emitted', () => {
@@ -623,19 +321,6 @@ describe('openSlot evaluator', () => {
     expect(v).toHaveLength(0);
   });
 
-  it('deadline escalation is category-blind — fires for an open regular slot', () => {
-    const v = byCategory(ctx({
-      providerId: null, credentials: null, providerGroup: null,
-      shiftType: st('D1', 'regular'),
-      rules: [rule({
-        rule_category: 'open_slot',
-        action: { days_before_slot: 100000 },
-        hard_constraint: true,
-      })],
-    }), 'open_slot');
-    expect(v).toHaveLength(1);
-    expect(v[0].severity).toBe('hard');
-  });
 });
 
 // ── crossSite ────────────────────────────────────────────────────────────────
@@ -650,14 +335,6 @@ describe('crossSite evaluator', () => {
     expect(v).toHaveLength(1);
     expect(v[0].severity).toBe('hard');
     expect(v[0].details).toMatchObject({ sites: ['s1', 's2'] });
-  });
-
-  it('allow_multi_site rule suppresses the violation', () => {
-    const v = byCategory(ctx({
-      crossSiteAssignments: [xs('s1'), xs('s2')],
-      rules: [rule({ rule_category: 'cross_site', action: { allow_multi_site: true } })],
-    }), 'cross_site');
-    expect(v).toHaveLength(0);
   });
 
   it('single site is clean', () => {
@@ -677,31 +354,6 @@ describe('eligibility evaluator', () => {
     expect(byCategory(ctx({ credentials: null }), 'eligibility')).toHaveLength(0);
   });
 
-  it('has_skill requirement missing from skill_tags → violation', () => {
-    const v = byCategory(ctx({
-      rules: [rule({
-        rule_category: 'eligibility',
-        condition: { requirement_type: 'has_skill' },
-        action: { required_value: 'hearts' },
-        hard_constraint: false,
-      })],
-    }), 'eligibility');
-    expect(v).toHaveLength(1);
-    expect(v[0].severity).toBe('soft');
-  });
-
-  it('unknown requirement_type → warning-severity violation, never a silent skip', () => {
-    const v = byCategory(ctx({
-      rules: [rule({
-        rule_category: 'eligibility',
-        condition: { requirement_type: 'quantum_flux' },
-        action: {},
-      })],
-    }), 'eligibility');
-    expect(v).toHaveLength(1);
-    expect(v[0].severity).toBe('warning');
-    expect(v[0].message).toBe('Unknown rule vocabulary: quantum_flux');
-  });
 });
 
 // ── poolEligibility ──────────────────────────────────────────────────────────
@@ -846,5 +498,58 @@ describe('poolEligibility evaluator', () => {
     expect(v).toHaveLength(1);
     expect(v[0].severity).toBe('hard');
     expect(v[0].message).toContain('reserved for call takers');
+  });
+});
+
+// ── shiftSkills ──────────────────────────────────────────────────────────────
+//
+// Replaces the skills check that used to live inside the rule-definitions
+// loop. The difference that matters: it reads the SHIFT TYPE's own
+// requires_specific_skills column, so filling that column is now sufficient.
+// Before, a site could fill it in and get no enforcement, because the check
+// was driven by a separate rule's required_value and the column was inert.
+describe('shiftSkills evaluator', () => {
+  const neuro = { ...SHIFT_TYPES[0], code: 'C3', requires_specific_skills: ['neuro_call'] };
+
+  it('flags a provider who lacks a required skill', () => {
+    const v = byCategory(ctx({ shiftType: neuro, credentials: cred({ skill_tags: [] }) }), 'eligibility');
+    expect(v).toHaveLength(1);
+    expect(v[0].severity).toBe('hard');
+    expect(v[0].message).toContain('"neuro_call"');
+    expect(v[0].message).toContain('C3');
+  });
+
+  it('passes a provider who holds it', () => {
+    const v = byCategory(ctx({ shiftType: neuro, credentials: cred({ skill_tags: ['neuro_call'] }) }), 'eligibility');
+    expect(v).toHaveLength(0);
+  });
+
+  it('names only the MISSING skills when several are required', () => {
+    const both = { ...neuro, requires_specific_skills: ['neuro_call', 'peds'] };
+    const v = byCategory(ctx({ shiftType: both, credentials: cred({ skill_tags: ['neuro_call'] }) }), 'eligibility');
+    expect(v).toHaveLength(1);
+    expect(v[0].message).toContain('"peds"');
+    expect(v[0].message).not.toContain('neuro_call');
+  });
+
+  it('is SILENT when the shift requires nothing', () => {
+    // Every shift type in the live database has an empty list today, so this
+    // is the case that must stay quiet — a check introduced over live data
+    // that immediately flags everyone is a check people switch off.
+    const v = byCategory(ctx({ credentials: cred({ skill_tags: [] }) }), 'eligibility');
+    expect(v.filter(x => x.rule_name === 'Shift skill requirement')).toHaveLength(0);
+  });
+
+  it('stays silent when the provider has no credentials row at all', () => {
+    // "Not yet configured" rather than "denied" — the same opt-in stance the
+    // eligibility evaluator takes. Flagging here would light up every provider
+    // at a site that has not filled credentials in.
+    const v = byCategory(ctx({ shiftType: neuro, credentials: null }), 'eligibility');
+    expect(v.filter(x => x.rule_name === 'Shift skill requirement')).toHaveLength(0);
+  });
+
+  it('does not fire on an unassigned slot', () => {
+    const v = byCategory(ctx({ shiftType: neuro, providerId: null }), 'eligibility');
+    expect(v.filter(x => x.rule_name === 'Shift skill requirement')).toHaveLength(0);
   });
 });

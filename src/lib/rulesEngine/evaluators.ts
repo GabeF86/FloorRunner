@@ -6,90 +6,17 @@
 import type {
   EvaluationContext,
   Evaluator,
-  RuleDefinition,
   RuleViolation,
-  DayType,
 } from './types';
 import {
   BOOKEND_EXTENDING_TYPES,
   addDays,
-  daysBetween,
   isBlockingAvailability,
   isActiveNoCallRequest,
   isSellbackOverridden,
 } from './shared';
 import { WEIGHT_EPSILON, callBurdenWeight, parentCallCodeOf, formatCallWeight } from '@/lib/callBurden';
 import { scenarioProhibits } from './scenario';
-
-// ── Helpers ────────────────────────────────────────────────────────────────
-
-function severity(rule: RuleDefinition) {
-  return rule.hard_constraint ? 'hard' : 'soft';
-}
-
-function ruleAppliesToShift(rule: RuleDefinition, shiftCode: string): boolean {
-  const codes = rule.applies_to_shift_types;
-  if (!codes || codes.length === 0) return true;
-  return codes.includes(shiftCode);
-}
-
-function ruleAppliesToDayType(rule: RuleDefinition, dayType: DayType | null): boolean {
-  const types = rule.applies_to_day_types;
-  if (!types || types.length === 0) return true;
-  if (!dayType) return true;
-  return types.includes(dayType);
-}
-
-function ruleAppliesToProvider(
-  rule: RuleDefinition,
-  providerGroup: 'physician' | 'crna' | 'both' | null,
-): boolean {
-  if (rule.applies_to_provider_group === 'both') return true;
-  if (!providerGroup || providerGroup === 'both') return true;
-  return rule.applies_to_provider_group === providerGroup;
-}
-
-function ruleApplies(ctx: EvaluationContext, rule: RuleDefinition): boolean {
-  return (
-    ruleAppliesToShift(rule, ctx.shiftType.code) &&
-    ruleAppliesToDayType(rule, ctx.slot.derived_day_type) &&
-    ruleAppliesToProvider(rule, ctx.providerGroup)
-  );
-}
-
-function startOfMonth(iso: string): string {
-  return iso.slice(0, 7) + '-01';
-}
-
-function startOfWeek(iso: string): string {
-  // ISO week starting Monday
-  const d = new Date(iso + 'T00:00:00Z');
-  const day = d.getUTCDay(); // 0=Sun
-  const offset = day === 0 ? -6 : 1 - day;
-  d.setUTCDate(d.getUTCDate() + offset);
-  return d.toISOString().slice(0, 10);
-}
-
-// Map a UI-level "shift category" string (e.g. "weekday_call") to a predicate.
-function categoryMatcher(
-  category: string,
-): (shiftCategory: string, dayType: DayType | null) => boolean {
-  switch (category) {
-    case 'weekday_call':
-      return (cat, dt) => cat === 'call' && dt === 'weekday';
-    case 'friday_call':
-      return (cat, dt) => cat === 'call' && dt === 'friday';
-    case 'weekend_call':
-      return (cat, dt) => cat === 'call' && (dt === 'saturday' || dt === 'sunday');
-    case 'holiday_call':
-      return (cat, dt) => cat === 'call' && (dt === 'federal_holiday' || dt === 'major_holiday');
-    case 'all_call':
-      return cat => cat === 'call';
-    default:
-      // Fallback: match the shift_type.category enum directly
-      return cat => cat === category;
-  }
-}
 
 // ── Eligibility ────────────────────────────────────────────────────────────
 
@@ -172,57 +99,6 @@ const eligibility: Evaluator = ctx => {
         category: 'eligibility',
         severity: 'hard',
         message: 'Provider is not approved for holiday call.',
-      });
-    }
-  }
-
-  // Rule-driven eligibility checks
-  for (const rule of ctx.rules) {
-    if (rule.rule_category !== 'eligibility') continue;
-    const cond = rule.condition;
-    const action = rule.action;
-    const ruleShiftCode = (cond.shift_code as string) || '';
-    if (ruleShiftCode && ruleShiftCode !== ctx.shiftType.code) continue;
-    if (!ruleAppliesToProvider(rule, ctx.providerGroup)) continue;
-
-    const requirement = cond.requirement_type as string;
-    const required = (action.required_value as string) || '';
-
-    let ok = true;
-    let why = '';
-    switch (requirement) {
-      case 'has_skill':
-        ok = ctx.credentials.skill_tags.includes(required);
-        why = `Requires skill "${required}".`;
-        break;
-      case 'call_taker_only':
-        ok = ctx.credentials.can_take_call;
-        why = 'Restricted to providers approved for call.';
-        break;
-      case 'credential':
-        // Free-form text — placeholder until we model credentials properly
-        ok = ctx.credentials.skill_tags.includes(required);
-        why = `Requires credential "${required}".`;
-        break;
-      default:
-        // Never skip silently: an unrecognized requirement_type means the
-        // rule is NOT being enforced — surface that as an advisory flag.
-        violations.push({
-          rule_id: rule.id,
-          rule_name: rule.rule_name,
-          category: 'eligibility',
-          severity: 'warning',
-          message: `Unknown rule vocabulary: ${requirement}`,
-        });
-        continue;
-    }
-    if (!ok) {
-      violations.push({
-        rule_id: rule.id,
-        rule_name: rule.rule_name,
-        category: 'eligibility',
-        severity: severity(rule),
-        message: rule.explanation_text || why,
       });
     }
   }
@@ -327,217 +203,6 @@ const weekendAdjacentPto: Evaluator = ctx => {
   return [];
 };
 
-// ── Sequence ───────────────────────────────────────────────────────────────
-
-// A sequence rule says: when a provider has trigger_shift on day N, the
-// linked_shift should appear on day N+1 (relationship='post_call') or N-1
-// (relationship='pre_call'). On a manual assignment we flag two cases:
-//   1. The provider is being assigned to the trigger_shift but the linked
-//      slot on the next/prev day is taken by something else for them.
-//   2. The provider is being assigned to a non-linked shift on a day that
-//      directly follows their trigger_shift (i.e. they should be on linked).
-
-const sequence: Evaluator = ctx => {
-  if (!ctx.providerId) return [];
-  const violations: RuleViolation[] = [];
-
-  for (const rule of ctx.rules) {
-    if (rule.rule_category !== 'sequence') continue;
-    if (!ruleAppliesToProvider(rule, ctx.providerGroup)) continue;
-
-    const trigger = rule.condition.trigger_shift_code as string | undefined;
-    const linked = rule.action.linked_shift_code as string | undefined;
-    const relationship = (rule.condition.relationship as string) || 'post_call';
-    if (!trigger || !linked) continue;
-
-    const offset = relationship === 'pre_call' ? -1 : 1;
-
-    // Scope gates anchor on the TRIGGER assignment: applies_to_shift_types
-    // scopes which trigger codes the rule covers, applies_to_day_types scopes
-    // which day the trigger falls on (e.g. weekday-only post-call chains).
-    if (!ruleAppliesToShift(rule, trigger)) continue;
-
-    // Case A: this assignment is the trigger shift
-    if (ctx.shiftType.code === trigger && ruleAppliesToDayType(rule, ctx.slot.derived_day_type)) {
-      const wantDate = addDays(ctx.slot.slot_date, offset);
-      const conflict = ctx.neighborAssignments.find(
-        n => n.slot_date === wantDate && n.shift_type_code !== linked,
-      );
-      const hasLinked = ctx.neighborAssignments.some(
-        n => n.slot_date === wantDate && n.shift_type_code === linked,
-      );
-      if (conflict) {
-        violations.push({
-          rule_id: rule.id,
-          rule_name: rule.rule_name,
-          category: 'sequence',
-          severity: severity(rule),
-          message: `${trigger} on ${ctx.slot.slot_date} should be followed by ${linked} on ${wantDate}, but provider has ${conflict.shift_type_code} that day.`,
-        });
-      } else if (!hasLinked) {
-        violations.push({
-          rule_id: rule.id,
-          rule_name: rule.rule_name,
-          category: 'sequence',
-          severity: 'soft',
-          message: `${trigger} on ${ctx.slot.slot_date} expects ${linked} on ${wantDate} (currently unassigned for this provider).`,
-        });
-      }
-    }
-
-    // Case B: this assignment follows a trigger shift the day before
-    // (only matters if THIS shift isn't the linked one)
-    if (ctx.shiftType.code !== linked && ctx.shiftType.code !== trigger) {
-      const priorDate = addDays(ctx.slot.slot_date, -offset);
-      const priorTrigger = ctx.neighborAssignments.find(
-        n => n.slot_date === priorDate && n.shift_type_code === trigger,
-      );
-      if (priorTrigger && ruleAppliesToDayType(rule, priorTrigger.day_type)) {
-        violations.push({
-          rule_id: rule.id,
-          rule_name: rule.rule_name,
-          category: 'sequence',
-          severity: severity(rule),
-          message: `Provider had ${trigger} on ${priorDate}; this slot should be ${linked}, not ${ctx.shiftType.code}.`,
-        });
-      }
-    }
-  }
-
-  return violations;
-};
-
-// ── Rest ───────────────────────────────────────────────────────────────────
-
-// A rest rule says: after a shift with `after_shift_code`, the provider needs
-// either a full day off OR `min_hours` of rest before the next assignment.
-// We check both directions: if THIS slot is the "after" shift, check what's
-// scheduled the next day; if a prior day has the "after" shift, ensure THIS
-// slot doesn't violate the rest window.
-
-const REST_WINDOW_DAYS = 1; // simple v1: only check immediate next/prev day
-
-const rest: Evaluator = ctx => {
-  if (!ctx.providerId) return [];
-  const violations: RuleViolation[] = [];
-
-  for (const rule of ctx.rules) {
-    if (rule.rule_category !== 'rest') continue;
-    if (!ruleAppliesToProvider(rule, ctx.providerGroup)) continue;
-
-    const afterCode = rule.condition.after_shift_code as string | undefined;
-    const restType = (rule.condition.rest_type as string) || 'day_off';
-    if (!afterCode) continue;
-
-    // Optional exemptions: shifts allowed on the rest day despite the rule.
-    // E.g. C1 → next day off, EXCEPT C3 (neuro coverage scarcity).
-    const exemptCodes: string[] = Array.isArray(rule.action.exempt_next_shift_codes)
-      ? (rule.action.exempt_next_shift_codes as string[])
-      : [];
-
-    // Case A: this slot IS the after-shift — check the next day
-    if (ctx.shiftType.code === afterCode && ruleAppliesToDayType(rule, ctx.slot.derived_day_type)) {
-      const nextDate = addDays(ctx.slot.slot_date, REST_WINDOW_DAYS);
-      const next = ctx.neighborAssignments.find(n => n.slot_date === nextDate);
-      if (next && restType === 'day_off' && !exemptCodes.includes(next.shift_type_code)) {
-        violations.push({
-          rule_id: rule.id,
-          rule_name: rule.rule_name,
-          category: 'rest',
-          severity: severity(rule),
-          message: `${afterCode} on ${ctx.slot.slot_date} requires the next day off, but provider is scheduled for ${next.shift_type_code} on ${nextDate}.`,
-        });
-      }
-    }
-
-    // Case B: a prior day has the after-shift — this slot may break rest.
-    // Only fires if (a) the prior day-type is in rule scope and (b) this
-    // slot's shift_code isn't in the exempt list.
-    const priorDate = addDays(ctx.slot.slot_date, -REST_WINDOW_DAYS);
-    const prior = ctx.neighborAssignments.find(
-      n => n.slot_date === priorDate && n.shift_type_code === afterCode,
-    );
-    if (prior && restType === 'day_off' && ruleAppliesToDayType(rule, prior.day_type) &&
-        !exemptCodes.includes(ctx.shiftType.code)) {
-      violations.push({
-        rule_id: rule.id,
-        rule_name: rule.rule_name,
-        category: 'rest',
-        severity: severity(rule),
-        message: `Provider had ${afterCode} on ${priorDate}; ${ctx.slot.slot_date} should be a rest day.`,
-      });
-    }
-  }
-
-  return violations;
-};
-
-// ── Frequency ──────────────────────────────────────────────────────────────
-
-// Counts the provider's matching assignments inside the relevant period
-// (week or month) and compares against max_count / min_count from the action.
-// The slot under evaluation is included in the count IF it would match.
-
-const frequency: Evaluator = ctx => {
-  if (!ctx.providerId) return [];
-  const violations: RuleViolation[] = [];
-
-  for (const rule of ctx.rules) {
-    if (rule.rule_category !== 'frequency') continue;
-    if (!ruleApplies(ctx, rule)) continue;
-
-    const category = (rule.condition.shift_category as string) || '';
-    const period = (rule.condition.period as string) || 'month';
-    const matcher = categoryMatcher(category);
-
-    // Period bounds (inclusive)
-    let periodStart: string;
-    let periodEnd: string;
-    if (period === 'week') {
-      periodStart = startOfWeek(ctx.slot.slot_date);
-      const d = new Date(periodStart + 'T00:00:00Z');
-      d.setUTCDate(d.getUTCDate() + 6);
-      periodEnd = d.toISOString().slice(0, 10);
-    } else {
-      periodStart = startOfMonth(ctx.slot.slot_date);
-      const d = new Date(periodStart + 'T00:00:00Z');
-      d.setUTCMonth(d.getUTCMonth() + 1);
-      d.setUTCDate(0);
-      periodEnd = d.toISOString().slice(0, 10);
-    }
-
-    // Count matching neighbor assignments in the period
-    let count = 0;
-    for (const n of ctx.neighborAssignments) {
-      if (n.slot_date < periodStart || n.slot_date > periodEnd) continue;
-      if (matcher(n.shift_type_category, n.day_type)) count++;
-    }
-    // Include the current slot if it matches
-    if (matcher(ctx.shiftType.category, ctx.slot.derived_day_type)) {
-      count++;
-    }
-
-    const max = rule.action.max_count as number | undefined;
-    const min = rule.action.min_count as number | undefined;
-
-    if (typeof max === 'number' && count > max) {
-      violations.push({
-        rule_id: rule.id,
-        rule_name: rule.rule_name,
-        category: 'frequency',
-        severity: severity(rule),
-        message: `Provider would have ${count} ${category} shifts in this ${period} (max ${max}).`,
-        details: { count, max, period_start: periodStart, period_end: periodEnd },
-      });
-    }
-    // min is informational only on a single-cell evaluation — we can't
-    // know if the period is "complete" yet. Skip min checks for v1.
-    void min;
-  }
-
-  return violations;
-};
-
 // ── Coverage ───────────────────────────────────────────────────────────────
 
 // Checks that each shift type on the slot's date has enough assigned
@@ -549,50 +214,10 @@ const coverage: Evaluator = ctx => {
   const violations: RuleViolation[] = [];
   if (ctx.sameDayAssignments.length === 0) return violations;
 
-  // Group same-day assignments by shift type code
-  const byShiftCode = new Map<string, { assigned: number; required: number }>();
-  for (const a of ctx.sameDayAssignments) {
-    const existing = byShiftCode.get(a.shift_type_code);
-    if (!existing) {
-      byShiftCode.set(a.shift_type_code, { assigned: a.provider_id ? 1 : 0, required: a.required_count });
-    } else {
-      if (a.provider_id) existing.assigned++;
-      existing.required = Math.max(existing.required, a.required_count);
-    }
-  }
-
-  // Check rule-driven coverage requirements
-  for (const rule of ctx.rules) {
-    if (rule.rule_category !== 'coverage') continue;
-    if (!ruleApplies(ctx, rule)) continue;
-
-    const shiftCode = rule.condition.shift_code as string | undefined;
-    const minCount = rule.action.min_providers as number | undefined;
-    if (!shiftCode || typeof minCount !== 'number') continue;
-
-    // Only flag this on the cell that IS the under-covered shift
-    if (ctx.shiftType.code !== shiftCode) continue;
-
-    const entry = byShiftCode.get(shiftCode);
-    const assigned = entry?.assigned ?? 0;
-    if (assigned < minCount) {
-      violations.push({
-        rule_id: rule.id,
-        rule_name: rule.rule_name,
-        category: 'coverage',
-        severity: severity(rule),
-        message: `${shiftCode} needs ${minCount} provider${minCount > 1 ? 's' : ''} on ${ctx.slot.slot_date}, only ${assigned} assigned.`,
-        details: { assigned, required: minCount },
-      });
-    }
-  }
-
-  // Implicit coverage check: if this slot's required_count > assigned.
+  // Coverage check: if this slot's required_count > assigned.
   // CALL slots only — an under-staffed day (regular/float/admin) slot is
   // normal scheduler workflow, not a warning (Gabriel 2026-07-15; same
-  // rationale as openSlot's call-only default). Rule-driven coverage rules
-  // above remain category-blind: an explicit rule naming a day code is a
-  // deliberate coverage requirement.
+  // rationale as openSlot's call-only default).
   const mySlotAssignments = ctx.sameDayAssignments.filter(
     a => a.slot_id === ctx.slot.id,
   );
@@ -621,141 +246,18 @@ const coverage: Evaluator = ctx => {
   return violations;
 };
 
-// ── Pairing ────────────────────────────────────────────────────────────────
-
-// A pairing rule says: when primary_shift_code is assigned, there must also
-// be a required_backup_code assigned on the same day. Optionally same_day=true
-// means they must be on the exact same day (not just overlapping window).
-
-const pairing: Evaluator = ctx => {
-  const violations: RuleViolation[] = [];
-
-  for (const rule of ctx.rules) {
-    if (rule.rule_category !== 'pairing') continue;
-
-    const primaryCode = rule.condition.primary_shift_code as string | undefined;
-    const backupCode = rule.action.required_backup_code as string | undefined;
-    if (!primaryCode || !backupCode) continue;
-
-    // Only check when THIS assignment is the primary shift
-    if (ctx.shiftType.code !== primaryCode) continue;
-    if (!ruleAppliesToProvider(rule, ctx.providerGroup)) continue;
-
-    // Look for the backup shift on the same day
-    const hasBackup = ctx.sameDayAssignments.some(
-      a => a.shift_type_code === backupCode && a.provider_id,
-    );
-
-    if (!hasBackup) {
-      violations.push({
-        rule_id: rule.id,
-        rule_name: rule.rule_name,
-        category: 'pairing',
-        severity: severity(rule),
-        message: `${primaryCode} on ${ctx.slot.slot_date} requires a ${backupCode} assignment on the same day, but none is assigned.`,
-      });
-    }
-  }
-
-  return violations;
-};
-
-// ── Fairness ───────────────────────────────────────────────────────────────
-
-// Fairness rules track whether a provider's burden is trending significantly
-// above or below average. This is informational (soft by default) — it won't
-// block an assignment but flags inequity for the scheduler to review.
-// Requires the frequency counter logic (already have neighbor data ±31 days).
-
-const fairness: Evaluator = ctx => {
-  if (!ctx.providerId) return [];
-  const violations: RuleViolation[] = [];
-
-  for (const rule of ctx.rules) {
-    if (rule.rule_category !== 'fairness') continue;
-    if (!ruleApplies(ctx, rule)) continue;
-
-    const category = (rule.condition.burden_category as string) || '';
-    const method = (rule.action.distribution_method as string) || 'equal';
-    const matcher = categoryMatcher(category);
-
-    // Count this provider's matching assignments in the current month
-    const monthStart = startOfMonth(ctx.slot.slot_date);
-    const monthEnd = (() => {
-      const d = new Date(monthStart + 'T00:00:00Z');
-      d.setUTCMonth(d.getUTCMonth() + 1);
-      d.setUTCDate(0);
-      return d.toISOString().slice(0, 10);
-    })();
-
-    let count = 0;
-    for (const n of ctx.neighborAssignments) {
-      if (n.slot_date < monthStart || n.slot_date > monthEnd) continue;
-      if (matcher(n.shift_type_category, n.day_type)) count++;
-    }
-    // Include current
-    if (matcher(ctx.shiftType.category, ctx.slot.derived_day_type)) count++;
-
-    // We can't compute the group average from a single-cell evaluation, so
-    // we use a heuristic: if the provider is at or above 150% of a
-    // reasonable target, flag it. The target can come from the provider's
-    // profile (via frequency rules) or we default to 6/month — scaled by
-    // FTE so a part-timer's fair share is proportionally smaller
-    // (clinical invariant 5: call burden distributes per-FTE).
-    const fte = typeof ctx.fte_value === 'number' && ctx.fte_value > 0 ? ctx.fte_value : 1;
-    const base = method === 'equal' ? 6 : 8;
-    const maxReasonable = Math.ceil(base * fte);
-    if (count > maxReasonable) {
-      violations.push({
-        rule_id: rule.id,
-        rule_name: rule.rule_name,
-        category: 'fairness',
-        severity: 'soft',
-        message: `Provider has ${count} ${category} shifts this month — may exceed fair share.`,
-        details: { count, threshold: maxReasonable, month: monthStart },
-      });
-    }
-  }
-
-  return violations;
-};
-
 // ── Open Slot ──────────────────────────────────────────────────────────────
 
-// Flags slots that have no provider assigned. This is always-on (no rule
-// needed) — it's informational to help the scheduler see gaps at a glance.
-// If a rule specifies a deadline (days_before_slot), violations escalate
-// from soft to hard as the date approaches.
+// Flags slots that have no provider assigned. Always-on — it's informational,
+// to help the scheduler see gaps at a glance.
 
 const openSlot: Evaluator = ctx => {
   // If there IS a provider assigned, no violation
   if (ctx.providerId) return [];
   const violations: RuleViolation[] = [];
 
-  const today = new Date().toISOString().slice(0, 10);
-  const daysUntil = daysBetween(today, ctx.slot.slot_date);
-
-  // Check rule-driven deadlines
-  for (const rule of ctx.rules) {
-    if (rule.rule_category !== 'open_slot') continue;
-    if (!ruleApplies(ctx, rule)) continue;
-
-    const deadlineDays = rule.action.days_before_slot as number | undefined;
-    if (typeof deadlineDays === 'number' && daysUntil <= deadlineDays) {
-      violations.push({
-        rule_id: rule.id,
-        rule_name: rule.rule_name,
-        category: 'open_slot',
-        severity: severity(rule),
-        message: `Slot on ${ctx.slot.slot_date} is unassigned and within ${deadlineDays}-day deadline (${daysUntil} days away).`,
-      });
-      return violations; // One deadline violation is enough
-    }
-  }
-
-  // Default: soft warning for open CALL slots only. An open day (regular/
-  // float/admin) slot is normal scheduler workflow, not a warning — Gabriel
-  // 2026-07-14. Rule-driven deadlines above remain category-blind.
+  // Soft warning for open CALL slots only. An open day (regular/float/admin)
+  // slot is normal scheduler workflow, not a warning — Gabriel 2026-07-14.
   if (ctx.shiftType.category === 'call') {
     violations.push({
       rule_id: null,
@@ -788,6 +290,48 @@ const openSlot: Evaluator = ctx => {
 // code-name patterns, so a future call-derived code not named D* can't
 // silently escape. Call-category slots have their own pool gating at
 // generation; not this evaluator's job.
+
+/**
+ * The skills a SHIFT TYPE demands, against the skills the provider holds.
+ *
+ * shift_types.requires_specific_skills has been loaded into the validation
+ * context for a long time and read by nothing. The only skills check that ever
+ * existed lived inside the rule-definitions loop, driven by a rule's
+ * `required_value` rather than by the shift's own column — so a site that
+ * filled in `requires_specific_skills` and never wrote a matching rule got no
+ * enforcement and no warning. The column looked like a control and was inert.
+ *
+ * Always-on, and a property of the shift rather than of a configurable rule:
+ * "C3 needs someone neuro-eligible" is a fact about neuro call, not a policy a
+ * site might reasonably switch off.
+ *
+ * Silent by default. Every shift type currently has an empty list, so this
+ * fires for nobody until someone states a requirement — which is the right
+ * default for a check being introduced over live data.
+ */
+const shiftSkills: Evaluator = ctx => {
+  if (!ctx.providerId) return [];
+  const required = ctx.shiftType.requires_specific_skills ?? [];
+  if (required.length === 0) return [];
+
+  // No credentials row means "not yet configured" rather than "denied" — the
+  // same opt-in stance the eligibility evaluator takes. Flagging here would
+  // light up every provider at a site that has not filled credentials in.
+  if (!ctx.credentials) return [];
+
+  const held = ctx.credentials.skill_tags ?? [];
+  const missing = required.filter(r => !held.includes(r));
+  if (missing.length === 0) return [];
+
+  return [{
+    rule_id: null,
+    rule_name: 'Shift skill requirement',
+    category: 'eligibility',
+    severity: 'hard',
+    message: `${ctx.shiftType.code} requires ${missing.length === 1 ? 'the skill' : 'skills'} `
+      + `${missing.map(m => `"${m}"`).join(', ')}, which this provider is not marked as holding.`,
+  }];
+};
 
 const poolEligibility: Evaluator = ctx => {
   if (!ctx.providerId) return [];
@@ -906,7 +450,7 @@ const providerLimits: Evaluator = ctx => {
 // ── Cross-Site ─────────────────────────────────────────────────────────────
 
 // Detects when a provider is assigned at more than one site on the same day.
-// Always a hard violation unless a rule explicitly allows it.
+// Always a hard violation (clinical invariant 3).
 
 const crossSite: Evaluator = ctx => {
   if (!ctx.providerId) return [];
@@ -919,13 +463,6 @@ const crossSite: Evaluator = ctx => {
   }
 
   if (siteIds.length <= 1) return violations;
-
-  // Check if any cross-site rule explicitly allows multi-site on this day
-  for (const rule of ctx.rules) {
-    if (rule.rule_category !== 'cross_site') continue;
-    const allowMultiSite = rule.action.allow_multi_site as boolean | undefined;
-    if (allowMultiSite) return []; // Explicitly allowed
-  }
 
   // Build the site list for the message
   const otherSites = siteIds.filter(s => s !== ctx.slot.site_id);
@@ -977,12 +514,8 @@ export const evaluators: Evaluator[] = [
   timeOff,
   scenarioProhibition,
   weekendAdjacentPto,
-  sequence,
-  rest,
-  frequency,
+  shiftSkills,
   coverage,
-  pairing,
-  fairness,
   openSlot,
   poolEligibility,
   providerLimits,

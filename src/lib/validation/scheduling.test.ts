@@ -1,13 +1,11 @@
 // Zod request-body schemas for scheduling mutation routes (Task 13).
-// The POST-payload fixtures below are copied from the actual UI senders
-// (sites/[id]/page.tsx ShiftTypeModal, rules/[id]/page.tsx rule modal) —
-// if a schema change would reject one of these, the UI breaks.
+// The POST-payload fixture below is copied from the actual UI sender
+// (sites/[id]/page.tsx ShiftTypeModal) — if a schema change would reject it,
+// the UI breaks.
 import { describe, it, expect } from 'vitest';
 import {
   ShiftTypeUpsertSchema,
   ShiftTypePatchSchema,
-  RuleDefinitionUpsertSchema,
-  RuleDefinitionPatchSchema,
   formatZodIssues,
 } from './scheduling';
 
@@ -34,22 +32,6 @@ const UI_SHIFT_TYPE_BODY = {
   requires_backup_pairing: false,
   can_auto_assign: true,
   manual_only: false,
-};
-
-// Exact body shape the rules/[id] modal sends (empty applies_to_* become null).
-const UI_RULE_DEFINITION_BODY = {
-  rule_set_id: 'rs-1',
-  rule_name: 'Post-call day off',
-  rule_category: 'rest',
-  hard_constraint: true,
-  priority_rank: 10,
-  applies_to_provider_group: 'physician',
-  applies_to_shift_types: null,
-  applies_to_day_types: ['weekday', 'friday'],
-  condition: { after_shift: 'C1' },
-  action: { block_next_day: true },
-  explanation_text: null,
-  is_active: true,
 };
 
 describe('ShiftTypeUpsertSchema', () => {
@@ -116,53 +98,6 @@ describe('ShiftTypePatchSchema', () => {
 
   it('still rejects wrong enums', () => {
     expect(ShiftTypePatchSchema.safeParse({ generation_engine: 'magic' }).success).toBe(false);
-  });
-});
-
-describe('RuleDefinitionUpsertSchema', () => {
-  it('accepts the exact UI POST payload', () => {
-    const r = RuleDefinitionUpsertSchema.safeParse(UI_RULE_DEFINITION_BODY);
-    expect(r.success).toBe(true);
-  });
-
-  it('requires rule_set_id, rule_name and rule_category', () => {
-    for (const key of ['rule_set_id', 'rule_name', 'rule_category'] as const) {
-      const body: Record<string, unknown> = { ...UI_RULE_DEFINITION_BODY };
-      delete body[key];
-      const r = RuleDefinitionUpsertSchema.safeParse(body);
-      expect(r.success, `missing ${key} must fail`).toBe(false);
-    }
-  });
-
-  it('rejects unknown top-level keys', () => {
-    const r = RuleDefinitionUpsertSchema.safeParse({ ...UI_RULE_DEFINITION_BODY, sneaky: true });
-    expect(r.success).toBe(false);
-    if (!r.success) {
-      expect(r.error.issues[0].code).toBe('unrecognized_keys');
-      expect(r.error.issues[0].message).toContain('sneaky');
-    }
-  });
-
-  it('rejects an invalid rule_category', () => {
-    const r = RuleDefinitionUpsertSchema.safeParse({ ...UI_RULE_DEFINITION_BODY, rule_category: 'vibes' });
-    expect(r.success).toBe(false);
-    if (!r.success) {
-      expect(r.error.issues.map(i => i.path.join('.'))).toContain('rule_category');
-    }
-  });
-});
-
-describe('RuleDefinitionPatchSchema', () => {
-  it('accepts the is_active toggle the rules page sends', () => {
-    expect(RuleDefinitionPatchSchema.safeParse({ is_active: false }).success).toBe(true);
-  });
-
-  it('accepts the full UI body (modal PATCHes the whole form)', () => {
-    expect(RuleDefinitionPatchSchema.safeParse(UI_RULE_DEFINITION_BODY).success).toBe(true);
-  });
-
-  it('still rejects unknown keys', () => {
-    expect(RuleDefinitionPatchSchema.safeParse({ sneaky: true }).success).toBe(false);
   });
 });
 

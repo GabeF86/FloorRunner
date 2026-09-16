@@ -1,20 +1,16 @@
 // Zod request-body schemas for scheduling mutation routes (Task 13).
-// These mirror the writable columns of scheduling.shift_types and
-// scheduling.rule_definitions (supabase_scheduling_schema.sql + patches 2/3/18)
-// and gate POST/PATCH bodies BEFORE they reach Supabase: unknown columns and
-// bad enums become a 400 {error, issues} instead of an opaque DB error.
-// Keep in sync with the UI senders (sites/[id] ShiftTypeModal, rules/[id]
-// rule modal) — their exact payloads are pinned in scheduling.test.ts.
+// These mirror the writable columns of scheduling.shift_types
+// (supabase_scheduling_schema.sql + patches 2/3/18) and gate POST/PATCH bodies
+// BEFORE they reach Supabase: unknown columns and bad enums become a 400
+// {error, issues} instead of an opaque DB error. Keep in sync with the UI
+// sender (sites/[id] ShiftTypeModal) — its exact payload is pinned in
+// scheduling.test.ts.
 import { z } from 'zod';
 
 // Enums mirror the Postgres enum types / CHECK constraints.
 const ShiftCategory = z.enum(['call', 'regular', 'float', 'admin', 'unavailable', 'leave']);
 const ProviderGroup = z.enum(['physician', 'crna', 'both']);
 const GenerationEngine = z.enum(['call', 'day_pool', 'none']); // patch18 CHECK
-const RuleCategory = z.enum([
-  'coverage', 'sequence', 'eligibility', 'frequency', 'rest',
-  'pairing', 'fairness', 'open_slot', 'time_off', 'cross_site',
-]);
 
 // ── shift_types ──────────────────────────────────────────────────────────────
 
@@ -57,29 +53,6 @@ export const ShiftTypePatchSchema = ShiftTypeUpsertSchema.partial();
 
 export type ShiftTypeUpsert = z.infer<typeof ShiftTypeUpsertSchema>;
 export type ShiftTypePatch = z.infer<typeof ShiftTypePatchSchema>;
-
-// ── rule_definitions ─────────────────────────────────────────────────────────
-
-export const RuleDefinitionUpsertSchema = z.object({
-  rule_set_id: z.string().min(1),
-  rule_name: z.string().min(1),
-  rule_category: RuleCategory,
-  hard_constraint: z.boolean().optional(),
-  priority_rank: z.number().int().optional(),
-  applies_to_provider_group: ProviderGroup.nullable().optional(),
-  // UI sends null when nothing is selected — the DB default '[]' applies.
-  applies_to_shift_types: z.array(z.string()).nullable().optional(),
-  applies_to_day_types: z.array(z.string()).nullable().optional(),
-  condition: z.record(z.string(), z.unknown()).optional(),
-  action: z.record(z.string(), z.unknown()).optional(),
-  explanation_text: z.string().nullable().optional(),
-  is_active: z.boolean().optional(),
-}).strict();
-
-export const RuleDefinitionPatchSchema = RuleDefinitionUpsertSchema.partial();
-
-export type RuleDefinitionUpsert = z.infer<typeof RuleDefinitionUpsertSchema>;
-export type RuleDefinitionPatch = z.infer<typeof RuleDefinitionPatchSchema>;
 
 // ── 400 envelope ─────────────────────────────────────────────────────────────
 

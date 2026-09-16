@@ -1,5 +1,5 @@
 import { ListSkeleton } from '@/components/ui/ListSkeleton';
 
 export default function Loading() {
-  return <ListSkeleton title="Rules" filters={4} rows={4} />;
+  return <ListSkeleton title="Scheduling Logic" filters={1} rows={4} />;
 }

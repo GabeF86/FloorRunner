@@ -1,11 +1,19 @@
-// Types for the scheduling rules engine.
+// Types for the scheduling validation engine.
 //
-// An evaluator inspects a single (slot, provider) assignment and returns
-// any violations of active rules. Each evaluator handles one rule category.
+// An evaluator inspects a single (slot, provider) assignment and returns any
+// violations it finds. Each evaluator handles one category. Every evaluator is
+// always-on: the configurable rule_definitions/rule_sets feature was removed
+// (all definitions were inactive and nothing loaded them), so there is no
+// longer any per-site rule data threaded through this context.
 
 import type { ProviderLimits } from '@/lib/providerLimits';
 import type { ScenarioProvider } from './scenario';
 
+// The category stamped on a stored violation. 'sequence', 'rest', 'pairing'
+// and 'fairness' are LEGACY-ONLY: no evaluator produces them any more, but
+// assignments.validation_flags rows written before the rule feature was
+// removed still carry them, so they stay in the union that those rows parse
+// against.
 export type RuleCategory =
   | 'coverage'
   | 'sequence'
@@ -18,7 +26,7 @@ export type RuleCategory =
   | 'time_off'
   | 'cross_site'
   // Sentinel-only category for engine-generated flags (e.g. the
-  // 'validation unavailable' marker) — never a rule_definitions value.
+  // 'validation unavailable' marker).
   | 'system';
 
 export type ProviderGroup = 'physician' | 'crna' | 'both';
@@ -30,22 +38,6 @@ export type DayType =
   | 'sunday'
   | 'federal_holiday'
   | 'major_holiday';
-
-export interface RuleDefinition {
-  id: string;
-  rule_set_id: string;
-  rule_name: string;
-  rule_category: RuleCategory;
-  hard_constraint: boolean;
-  priority_rank: number;
-  applies_to_provider_group: ProviderGroup;
-  applies_to_shift_types: string[] | null;
-  applies_to_day_types: string[] | null;
-  condition: Record<string, unknown>;
-  action: Record<string, unknown>;
-  explanation_text: string | null;
-  is_active: boolean;
-}
 
 export interface ShiftTypeRow {
   id: string;
@@ -195,9 +187,6 @@ export interface EvaluationContext {
     providers: ReadonlyMap<string, ScenarioProvider>;
     neuroCode: string;
   } | null;
-
-  // Active rules for this site
-  rules: RuleDefinition[];
 
   // Lookup helpers built once per context
   shiftTypesByCode: Map<string, ShiftTypeRow>;

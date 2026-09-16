@@ -146,8 +146,8 @@ export async function POST(req: NextRequest) {
   const data = upsertRes.data as Record<string, unknown> | null;
 
   // Sequence auto-fill reads the site's ACTIVE CALL PATTERN (loaded once
-  // inside the module off the trigger slot's site — rule_definitions are
-  // validation-only). The auto-filled rows are left with validation_flags
+  // inside the module off the trigger slot's site). The auto-filled rows are
+  // left with validation_flags
   // null; revalidateNeighbors below evaluates them (same provider, within
   // ±7 days) and stores real flags.
   const fill = await applySequenceAutoFill(sb, body.schedule_slot_id, body.provider_id);

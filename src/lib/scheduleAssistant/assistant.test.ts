@@ -194,8 +194,6 @@ function baseTables(): Record<string, Row[]> {
         call_rank: 0, relief_rank: null, is_overlay: false, generation_engine: 'call',
         requires_post_call_rule: true, start_time: null, end_time: null },
     ],
-    rule_sets: [],
-    rule_definitions: [],
     providers: [
       { id: 'p1', last_name: 'Smith', short_display_name: 'Smith', provider_type: 'physician' },
       { id: 'p2', last_name: 'Jones', short_display_name: 'Jones', provider_type: 'physician' },
@@ -599,25 +597,6 @@ describe('snapshot round-trip', () => {
     // Original action stamped reverted.
     const original = sb.__tables.assistant_actions.find(r => r.id === actionId)!;
     expect(original.reverted_at).toBeTruthy();
-  });
-
-  it('restores mutated rule_definitions on revert', async () => {
-    const tables = baseTables();
-    tables.rule_sets = [{ id: 'rs1', site_id: 'site1', status: 'active' }];
-    tables.rule_definitions = [{
-      id: 'rd1', rule_set_id: 'rs1', rule_name: 'Rest after call',
-      rule_category: 'rest', hard_constraint: true, is_active: true,
-    }];
-    const sb = makeFakeSb(tables);
-
-    const actionId = await takeSnapshot(sb, 'sched1', 'ver1', 'rule snapshot', null);
-    await sb.from('rule_definitions').update({ hard_constraint: false, is_active: false }).eq('id', 'rd1');
-
-    const res = await revertAction(sb, actionId);
-    expect(res.ok).toBe(true);
-    const rd = sb.__tables.rule_definitions.find(r => r.id === 'rd1')!;
-    expect(rd.hard_constraint).toBe(true);
-    expect(rd.is_active).toBe(true);
   });
 
   it('re-opens version slots assigned after the snapshot but absent from assignments_before', async () => {

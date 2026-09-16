@@ -20,7 +20,6 @@ const C1 = st('C1');
 const siteCtx: SiteValidationContext = {
   shiftTypesById: new Map([[C1.id, C1]]),
   shiftTypesByCode: new Map([[C1.code, C1]]),
-  rules: [],
 };
 
 const SLOT = {
@@ -40,7 +39,7 @@ function baseCtx(over: Partial<EvaluationContext> = {}): EvaluationContext {
     },
     fte_value: 1, poolFlags: null, neighborAssignments: [], availability: [],
     sameDayAssignments: [], crossSiteAssignments: [], scheduleVersionId: 'v1',
-    rules: [], shiftTypesByCode: siteCtx.shiftTypesByCode, shiftTypesById: siteCtx.shiftTypesById,
+    shiftTypesByCode: siteCtx.shiftTypesByCode, shiftTypesById: siteCtx.shiftTypesById,
     ...over,
   };
 }
@@ -245,7 +244,6 @@ describe('commitValidation (write-site guard)', () => {
       data: [{ id: 'st-C1', site_id: 's1', code: 'C1', name: 'C1', category: 'call', requires_credential: null, requires_specific_skills: [] }],
       error: null,
     },
-    rule_sets: { data: [], error: null },
   };
 
   it('does NOT write validation_flags when an assignment cannot be evaluated', async () => {
@@ -301,11 +299,10 @@ describe('commitValidation (write-site guard)', () => {
     expect(payload[0]).toHaveProperty('validation_flags');
   });
 
-  it('declines to write when the site context itself failed to load (rule query error)', async () => {
+  it('declines to write when the site context itself failed to load (shift-type query error)', async () => {
     const { sb, calls } = makeFakeSupabase({
       tables: {
-        shift_types: SITE_TABLES.shift_types,
-        rule_sets: { data: null, error: { message: 'rule_sets down' } },
+        shift_types: { data: null, error: { message: 'shift_types down' } },
         schedule_slots: {
           data: [{
             ...SLOT,
@@ -323,7 +320,7 @@ describe('commitValidation (write-site guard)', () => {
     expect(callsFor(calls, 'assignments', 'upsert')).toHaveLength(0);
     expect(callsFor(calls, 'assignments', 'update')).toHaveLength(0);
     expect(res.errors.join(' ')).toContain('validation-unavailable');
-    expect(res.errors.join(' ')).toContain('rule_sets down');
+    expect(res.errors.join(' ')).toContain('shift_types down');
   });
 });
 
@@ -333,23 +330,12 @@ describe('loadSiteValidationContext failure sentinel', () => {
     error: null,
   };
 
-  it('sets loadError when rule_definitions fails (rules:[] must not read as "no rules")', async () => {
-    const { sb } = makeFakeSupabase({
-      tables: {
-        shift_types: OK_SHIFT_TYPES,
-        rule_sets: { data: [{ id: 'rs1' }], error: null },
-        rule_definitions: { data: null, error: { message: 'rule_definitions down' } },
-      },
-    });
-    const ctx = await loadSiteValidationContext(sb, 's1');
-    expect(ctx.loadError).toContain('rule_definitions down');
-  });
-
+  // Empty maps from a FAILED read must never read as "this site has no shift
+  // types" — the loadError is what keeps invariant 6 honest.
   it('sets loadError when shift_types fails', async () => {
     const { sb } = makeFakeSupabase({
       tables: {
         shift_types: { data: null, error: { message: 'shift_types down' } },
-        rule_sets: { data: [], error: null },
       },
     });
     const ctx = await loadSiteValidationContext(sb, 's1');
@@ -358,17 +344,16 @@ describe('loadSiteValidationContext failure sentinel', () => {
 
   it('clean load has no loadError', async () => {
     const { sb } = makeFakeSupabase({
-      tables: { shift_types: OK_SHIFT_TYPES, rule_sets: { data: [], error: null } },
+      tables: { shift_types: OK_SHIFT_TYPES },
     });
     const ctx = await loadSiteValidationContext(sb, 's1');
     expect(ctx.loadError).toBeUndefined();
   });
 
-  it('serial evaluateAssignment (no siteCtx) → evaluated:false when the rule query fails', async () => {
+  it('serial evaluateAssignment (no siteCtx) → evaluated:false when the site-context query fails', async () => {
     const { sb, calls } = makeFakeSupabase({
       tables: {
-        shift_types: OK_SHIFT_TYPES,
-        rule_sets: { data: null, error: { message: 'rule_sets down' } },
+        shift_types: { data: null, error: { message: 'shift_types down' } },
         schedule_slots: { data: SLOT, error: null },
         providers: { data: null, error: null },
         provider_site_credentials: { data: null, error: null },

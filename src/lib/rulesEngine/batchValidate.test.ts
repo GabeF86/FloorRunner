@@ -8,18 +8,19 @@ import { evaluateAssignment } from './evaluate';
 import type { SiteValidationContext } from './loadContext';
 import { makeFakeSupabase, fromCount, callsFor } from './__fixtures__/fakeSupabase';
 import type { Filter, TableCfg } from './__fixtures__/fakeSupabase';
-import type { RuleDefinition, ShiftTypeRow } from './types';
+import type { ShiftTypeRow } from './types';
 
 // ── canned dataset ───────────────────────────────────────────────────────────
-// Version v1 at site s1, 5 slots / 5 assignments. Active rule: rest after C1.
+// Version v1 at site s1, 5 slots / 5 assignments.
 //   sA 01-07 C1 → a1 (p1)   p1 pending PTO on 01-07 → time_off hard
-//                           + a4 next day → rest (case A) hard
 //   sB 01-07 C2 → a2 (p2)   p2 also assigned at site s2 same day → cross_site hard
 //   sC 01-08 C1 → a3 (open) → open_slot + under-covered soft
-//   sD 01-08 C2 → a4 (p1)   day after p1's C1 → rest (case B) hard
-//   sE 01-08 C2 → a5 (p2)   decoy: p2 has C1 on 01-07 at s2/v9 — if neighbor
-//                           scoping leaks across version/site, a5 would get a
-//                           false rest violation (parity + content assert it).
+//   sD 01-08 C2 → a4 (p1)   no flags — the clean control
+//   sE 01-08 C2 → a5 (p2)   decoy: p2 has a C2 on 01-07 at s2/v9. p2's stated
+//                           cap is exactly its two in-scope C2s, so if neighbor
+//                           scoping leaks across version/site the count hits 3
+//                           and a5 picks up a false provider-limit flag
+//                           (parity + content assert it stays clean).
 
 function st(code: string, category: ShiftTypeRow['category'] = 'call'): ShiftTypeRow {
   return {
@@ -29,19 +30,19 @@ function st(code: string, category: ShiftTypeRow['category'] = 'call'): ShiftTyp
 }
 const SHIFT_TYPES = [st('C1'), st('C2')];
 
-const REST_RULE: RuleDefinition = {
-  id: 'r-rest', rule_set_id: 'rs1', rule_name: 'Post-C1 day off',
-  rule_category: 'rest', hard_constraint: true, priority_rank: 1,
-  applies_to_provider_group: 'both', applies_to_shift_types: null,
-  applies_to_day_types: null,
-  condition: { after_shift_code: 'C1', rest_type: 'day_off' },
-  action: {}, explanation_text: null, is_active: true,
-};
-
 const siteCtx: SiteValidationContext = {
   shiftTypesById: new Map(SHIFT_TYPES.map(s => [s.id, s])),
   shiftTypesByCode: new Map(SHIFT_TYPES.map(s => [s.code, s])),
-  rules: [REST_RULE],
+};
+
+// Stated per-provider limits (patch34). p2's C2 cap is set to exactly the two
+// C2s it holds INSIDE v1/s1, which is what arms the neighbor-scoping decoy
+// below: the evaluator reads neighborAssignments, so a scoping leak shows up
+// as a count of 3 against a cap of 2. organization_id is deliberately null so
+// no holiday read is issued and the query budget below stays honest.
+const SCHEDULE_ROW = {
+  provider_limits: { p2: { calls: { C2: 2 } } },
+  date_start: '2026-01-01', date_end: '2026-01-31', organization_id: null,
 };
 
 function slot(id: string, date: string, code: string, assignment: { id: string; provider_id: string | null; assignment_status: string }, siteId = 's1') {
@@ -103,7 +104,7 @@ const ASSIGNED_ROWS = [
   joined('a2', 'p2', 'sB', '2026-01-07', 'C2'),                             // v1 draft
   joined('a4', 'p1', 'sD', '2026-01-08', 'C2'),                             // v1 draft
   joined('a5', 'p2', 'sE', '2026-01-08', 'C2'),                             // v1 draft
-  joined('ax', 'p2', 'sX', '2026-01-07', 'C1', 's2', 'v9', 'published'),    // committed decoy
+  joined('ax', 'p2', 'sX', '2026-01-07', 'C2', 's2', 'v9', 'published'),    // committed decoy
 ];
 
 // Honest mini-DB for the assignments table: applies the recorded eq/in/gte/lte
@@ -149,6 +150,8 @@ function batchTables(over: Record<string, TableCfg> = {}): Record<string, TableC
     provider_availability: { data: AVAILABILITY, error: null },
     provider_site_credentials: { data: CREDS, error: null },
     assignments: assignmentsTable,
+    schedule_versions: { data: { schedule_id: 'sched1' }, error: null },
+    schedules: { data: SCHEDULE_ROW, error: null },
     ...over,
   };
 }
@@ -176,20 +179,26 @@ function serialTables(): Record<string, TableCfg> {
       return { data: CREDS.find(c => c.provider_id === eqPid?.args[1]) ?? null, error: null };
     },
     assignments: assignmentsTable,
+    schedule_versions: { data: { schedule_id: 'sched1' }, error: null },
+    schedules: { data: SCHEDULE_ROW, error: null },
   };
 }
 
 describe('batchValidateVersion', () => {
-  it('issues at most 9 queries for the whole version', async () => {
+  it('issues at most 11 queries for the whole version', async () => {
     // slots + providers + availability + credentials + the committed-scope
     // assignments window (TWO reads: published + this version, draft isolation)
-    // + one bulk write + the provider-limits context (2026-07-22, patch34:
-    // schedule_versions parent lookup + schedules limits read; up to two more
-    // — holidays + netting availability — only when limits are actually
-    // stated, which this fixture does not).
+    // + one bulk write = 7, plus the two soft-flag contexts, which each walk
+    // schedule_versions → schedules: provider limits (patch34) and the
+    // scenario manifest (patch37) = 4 more. The fixture resolves a real parent
+    // schedule, which is the production case — a version with no parent row
+    // short-circuits each loader after its first read, which is what this
+    // budget used to measure and is not what the live path does. The holiday
+    // and PTO-netting reads stay out: organization_id is null and no daysOff
+    // limit is stated.
     const { sb, calls } = makeFakeSupabase({ tables: batchTables() });
     await batchValidateVersion(sb, 'v1', siteCtx);
-    expect(fromCount(calls)).toBeLessThanOrEqual(9);
+    expect(fromCount(calls)).toBeLessThanOrEqual(11);
   });
 
   it('per-assignment violations are identical to serial evaluateAssignment', async () => {
@@ -217,12 +226,10 @@ describe('batchValidateVersion', () => {
     }
 
     // Guard against trivially-empty parity: the canned data must actually
-    // produce the designed violations — including rule-driven ones that READ
-    // the neighbor window (rest), in both the fires and does-not-fire direction.
+    // produce the designed violations.
     expect(byAssignment.get('a1')!.violations).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ category: 'time_off', severity: 'hard' }),
-        expect.objectContaining({ category: 'rest', severity: 'hard' }), // case A: a4 next day
       ]),
     );
     expect(byAssignment.get('a2')!.violations).toEqual(
@@ -234,14 +241,32 @@ describe('batchValidateVersion', () => {
         expect.objectContaining({ category: 'coverage', severity: 'soft' }),
       ]),
     );
-    // a4: same-version prior-day C1 neighbor → rest case B fires.
-    expect(byAssignment.get('a4')!.violations).toEqual(
-      expect.arrayContaining([expect.objectContaining({ category: 'rest', severity: 'hard' })]),
-    );
-    // a5: p2's prior-day C1 exists ONLY at s2/v9 (decoy). Correct scoping
-    // excludes it → no rest violation. A scoping leak in either path would
-    // fail here or break the parity loop above.
+    // a4: p1 has no stated cap and nothing else applies → the clean control.
+    expect(byAssignment.get('a4')!.violations).toEqual([]);
+    // a5: p2's third C2 exists ONLY at s2/v9 (decoy). Correct scoping excludes
+    // it, so p2 sits AT its cap of 2 rather than over it. A scoping leak in
+    // either path would fail here or break the parity loop above. The
+    // positive control below proves the cap is live in this fixture, so this
+    // empty result is a real pass and not a silent no-op.
     expect(byAssignment.get('a5')!.violations).toEqual([]);
+  });
+
+  // Positive control for the decoy above: drop p2's cap by one and the same
+  // fixture DOES flag, through the same neighbor window. Without this, a
+  // provider-limits context that silently failed to load would make the
+  // scoping assertion pass for the wrong reason.
+  it('the neighbor-window cap is live — one lower and the same data flags', async () => {
+    const { sb } = makeFakeSupabase({ tables: batchTables({
+      schedules: { data: { ...SCHEDULE_ROW, provider_limits: { p2: { calls: { C2: 1 } } } }, error: null },
+    }) });
+    const batch = await batchValidateVersion(sb, 'v1', siteCtx);
+    const a5 = batch.results.find(r => r.assignmentId === 'a5')!;
+    expect(a5.evaluated).toBe(true);
+    expect(a5.violations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ rule_name: 'Provider limit (calls)', severity: 'soft' }),
+      ]),
+    );
   });
 
   // Draft isolation (invariant 3): the same-day other-site booking flags a2 as
@@ -394,7 +419,7 @@ describe('batchValidateVersion', () => {
   it('siteCtx that failed to load → declines to evaluate or write', async () => {
     const { sb, calls } = makeFakeSupabase({ tables: batchTables() });
     const res = await batchValidateVersion(sb, 'v1', {
-      ...siteCtx, loadError: 'rule_definitions load failed: boom',
+      ...siteCtx, loadError: 'shift_types load failed: boom',
     });
     expect(res.written).toBe(0);
     expect(callsFor(calls, 'assignments', 'upsert')).toHaveLength(0);

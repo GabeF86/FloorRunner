@@ -85,7 +85,7 @@ export async function batchValidateVersion(
   let dbQueries = 0;
 
   // A site context that failed to load is unusable — evaluating against empty
-  // shift-type maps / rules:[] would produce fake-clean flags.
+  // shift-type maps would produce fake-clean flags.
   if (siteCtx.loadError) {
     const msg = `batch validation: validation-unavailable — site context load failed: ${siteCtx.loadError}`;
     errors.push(msg);
@@ -158,7 +158,7 @@ export async function batchValidateVersion(
   const maxDate = dates[dates.length - 1];
   // A schedule version is single-site (see commitValidation invariant); the
   // guard below flags any slot that breaks it instead of validating it
-  // against the wrong site's credentials/rules.
+  // against the wrong site's credentials.
   const siteId = slots[0].site_id;
 
   // ── 2-5. Provider-scoped preloads (parallelized 2026-07-20, C2.4) ──────────
@@ -401,8 +401,7 @@ export async function batchValidateVersion(
       scheduleVersionId,
       providerLimitsCtx,
       scenarioCtx,
-      rules: siteCtx.rules,
-      shiftTypesByCode: siteCtx.shiftTypesByCode,
+        shiftTypesByCode: siteCtx.shiftTypesByCode,
       shiftTypesById: siteCtx.shiftTypesById,
     };
 

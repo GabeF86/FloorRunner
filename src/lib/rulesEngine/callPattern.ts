@@ -1,7 +1,7 @@
 // CallPatternDoc — the declarative call-structure vocabulary. This is the
 // single generation-time source for structural behavior (weekend/block chains,
 // post/pre-call fills and blocks, spans, placement passes, relief config).
-// Validation constraints stay in rule_definitions; structure lives here.
+// Validation is separate and always-on (evaluators.ts); structure lives here.
 // Spec: docs/superpowers/specs/2026-07-07-scheduling-v2-design.md §5.
 import { z } from 'zod';
 import { WEIGHT_EPSILON } from '@/lib/callBurden';

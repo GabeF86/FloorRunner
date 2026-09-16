@@ -212,7 +212,6 @@ describe('get_schedule_context — provider_limits summary', () => {
     sites: { data: { id: 'site-1', name: 'Main', short_name: 'M' }, error: null },
     shift_types: { data: [], error: null },
     call_patterns: { data: null, error: null },
-    rule_sets: { data: [], error: null },
     providers: { data: [], error: null },
     schedule_slots: { data: [], error: null, count: 0 },
     assignments: { data: [], error: null },

@@ -10,7 +10,6 @@ import { projectScenario } from './scenario';
 import { embedArray } from '@/lib/embed';
 import type {
   EvaluationContext,
-  RuleDefinition,
   ShiftTypeRow,
   SlotRow,
   ProviderSiteCredentials,
@@ -22,7 +21,7 @@ import type {
 // Used by BOTH the serial path (below) and batchValidate so the two cannot
 // drift — batch/serial parity depends on identical mapping semantics.
 
-// providers.provider_type → the coarse provider_group used by rule scoping.
+// providers.provider_type → the coarse provider_group carried on the context.
 export function providerGroupFromType(t: string): 'physician' | 'crna' | 'both' {
   return t === 'physician' ? 'physician' : t === 'crna' || t === 'aa' ? 'crna' : 'both';
 }
@@ -117,20 +116,19 @@ export function mapCrossSiteRow(
 }
 
 // Pre-loaded per-site validation context. When provided to loadContext, the
-// shift-type and rule-definition queries are skipped (N+1 fix for batch validation).
+// shift-type query is skipped (N+1 fix for batch validation).
 export interface SiteValidationContext {
   shiftTypesById: Map<string, ShiftTypeRow>;
   shiftTypesByCode: Map<string, ShiftTypeRow>;
-  rules: RuleDefinition[];
   // Set when any of the site-context queries failed. Consumers must treat the
-  // context as unusable (evaluated:false / no writes) — empty maps or rules:[]
-  // from a failed query must NEVER read as "no rules configured" (invariant 6).
+  // context as unusable (evaluated:false / no writes) — empty maps from a
+  // failed query must NEVER read as "nothing configured" (invariant 6).
   loadError?: string;
 }
 
-// Load the per-site shift-types + active rules ONCE, for reuse across a batch
-// of evaluateAssignment calls on the same site. A query failure returns a
-// context with `loadError` set — never silently-empty maps/rules.
+// Load the per-site shift-types ONCE, for reuse across a batch of
+// evaluateAssignment calls on the same site. A query failure returns a
+// context with `loadError` set — never silently-empty maps.
 export async function loadSiteValidationContext(
   sb: SupabaseClient,
   siteId: string,
@@ -138,7 +136,6 @@ export async function loadSiteValidationContext(
   const fail = (msg: string): SiteValidationContext => ({
     shiftTypesById: new Map(),
     shiftTypesByCode: new Map(),
-    rules: [],
     loadError: msg,
   });
 
@@ -170,23 +167,9 @@ export async function loadSiteValidationContext(
     call_burden_weight: (s.call_burden_weight as number | null) ?? null,
     parent_call_code: (s.parent_call_code as string | null) ?? null,
   }));
-  const { data: ruleSets, error: rsErr } = await sb
-    .from('rule_sets').select('id').eq('site_id', siteId).eq('status', 'active');
-  if (rsErr) return fail(`rule_sets load failed: ${rsErr.message}`);
-  const ruleSetIds = (ruleSets || []).map((r: { id: string }) => r.id);
-  let rules: RuleDefinition[] = [];
-  if (ruleSetIds.length > 0) {
-    const { data: ruleRows, error: rdErr } = await sb
-      .from('rule_definitions')
-      .select('id, rule_set_id, rule_name, rule_category, hard_constraint, priority_rank, applies_to_provider_group, applies_to_shift_types, applies_to_day_types, condition, action, explanation_text, is_active')
-      .in('rule_set_id', ruleSetIds).eq('is_active', true);
-    if (rdErr) return fail(`rule_definitions load failed: ${rdErr.message}`);
-    rules = (ruleRows || []) as RuleDefinition[];
-  }
   return {
     shiftTypesById: new Map(shiftTypeRows.map(s => [s.id, s])),
     shiftTypesByCode: new Map(shiftTypeRows.map(s => [s.code, s])),
-    rules,
   };
 }
 
@@ -378,8 +361,8 @@ export async function loadScenarioValidationCtx(
  * Load everything an evaluator might need to validate a single (slot, provider).
  * One round-trip per logical entity — we accept the chattiness for clarity.
  *
- * When `siteCtx` is provided, the shift-types and rule-definitions queries are
- * skipped and the preloaded maps/rules are used instead (N+1 fix for batch validation).
+ * When `siteCtx` is provided, the shift-types query is skipped and the
+ * preloaded maps are used instead (N+1 fix for batch validation).
  */
 export async function loadContext(
   sb: SupabaseClient,
@@ -403,7 +386,7 @@ export async function loadContext(
   // evaluation come back evaluated:false so no caller persists fake-clean flags.
   const siteVal = siteCtx ?? await loadSiteValidationContext(sb, slotRow.site_id);
   if (siteVal.loadError) return null;
-  const { shiftTypesById, shiftTypesByCode, rules } = siteVal;
+  const { shiftTypesById, shiftTypesByCode } = siteVal;
   const shiftType = shiftTypesById.get(slotRow.shift_type_id);
   if (!shiftType) return null;
 
@@ -564,7 +547,6 @@ export async function loadContext(
     scheduleVersionId,
     providerLimitsCtx,
     scenarioCtx,
-    rules,
     shiftTypesByCode,
     shiftTypesById,
   };

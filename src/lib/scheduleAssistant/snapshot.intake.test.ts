@@ -37,7 +37,6 @@ function seed() {
     ],
     call_patterns: [] as Array<Record<string, unknown>>,
     shift_types: [] as Array<Record<string, unknown>>,
-    rule_sets: [] as Array<Record<string, unknown>>,
     assistant_actions: [] as Array<Record<string, unknown>>,
   };
 }
