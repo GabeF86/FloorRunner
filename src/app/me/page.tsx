@@ -1,18 +1,22 @@
 'use client';
 
-// The provider landing page.
+// The clinician landing page — what a physician sees the moment they sign in.
 //
-// Deliberately minimal. The real dashboard — schedule snapshot and call
-// metrics — is its own piece of work, and most of its data layer already
-// exists (the burden route, annualTally, callCodeBreakdown, blockTargets). What
-// this page exists to do TODAY is stop invitation acceptance dead-ending on a
-// 404, which is exactly what it did for the first person who used it, and give
-// a signed-in person somewhere to confirm who they are and sign out.
+// It renders the SAME overview component back office sees on the provider
+// profile, from /api/scheduling/me/overview. That route takes no id: the
+// provider comes from the session, which is what stops one physician reading
+// another's record (see lib/auth/routeAccess).
+//
+// This page replaced a placeholder that said the real dashboard "is its own
+// piece of work". It is now that work: employment, call owed against call
+// taken, hours scheduled, credentialed sites and PTO.
 
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { Card, Banner, Spinner, Button } from '@/components/ui';
 import { SignOutButton } from '@/components/SignOutButton';
+import { ProviderOverviewView } from '@/components/ProviderOverview';
+import type { OverviewProvider, OverviewSite, ProviderOverview } from '@/lib/providerOverview';
 
 interface Me {
   userId: string | null;
@@ -21,8 +25,19 @@ interface Me {
   providerId: string | null;
 }
 
+interface OverviewPayload {
+  provider: OverviewProvider;
+  sites: OverviewSite[];
+  overview: ProviderOverview;
+  errors: string[];
+}
+
 export default function MePage() {
   const [me, setMe] = useState<Me | null>(null);
+  const [data, setData] = useState<OverviewPayload | null>(null);
+  // Three states, not two: still loading, loaded, and failed. A failure that
+  // renders as "loading for ever" is the one thing worse than an error.
+  const [overviewError, setOverviewError] = useState<string | null>(null);
 
   useEffect(() => {
     fetch('/api/auth/me')
@@ -31,20 +46,45 @@ export default function MePage() {
       .catch(() => setMe({ userId: null, email: null, role: 'anonymous', providerId: null }));
   }, []);
 
+  useEffect(() => {
+    if (!me?.providerId) return;
+    fetch('/api/scheduling/me/overview')
+      .then(async r => {
+        const body = await r.json();
+        if (!r.ok) throw new Error(body?.error || `Request failed (${r.status})`);
+        return body as OverviewPayload;
+      })
+      .then(setData)
+      .catch(e => setOverviewError(e instanceof Error ? e.message : 'Overview could not be loaded.'));
+  }, [me?.providerId]);
+
   return (
-    <div style={{
-      minHeight: '100vh', background: 'var(--bg-base)', padding: 'var(--space-6)',
-    }}>
-      <div style={{ maxWidth: 640, margin: '0 auto', display: 'grid', gap: 'var(--space-4)' }}>
+    <div style={{ minHeight: '100vh', background: 'var(--bg-base)', padding: 'var(--space-6)' }}>
+      <div style={{ maxWidth: 1100, margin: '0 auto', display: 'grid', gap: 'var(--space-4)' }}>
         <div style={{
-          fontSize: 'var(--fs-xl)', fontWeight: 800, color: 'var(--text-strong)',
-          letterSpacing: -0.4, marginBottom: 'var(--space-2)',
+          display: 'flex', alignItems: 'baseline', justifyContent: 'space-between',
+          gap: 'var(--space-4)', flexWrap: 'wrap',
         }}>
-          FloorRunner
+          <div style={{
+            fontSize: 'var(--fs-xl)', fontWeight: 800, color: 'var(--text-strong)',
+            letterSpacing: -0.4,
+          }}>
+            Floor<span style={{ color: 'var(--blue)' }}>Runner</span>
+          </div>
+          <div style={{ display: 'flex', gap: 'var(--space-2)', alignItems: 'center' }}>
+            {me?.role === 'admin' && (
+              <Link href="/dashboard"><Button variant="ghost" size="sm">Open the scheduler</Button></Link>
+            )}
+            {me?.userId && <SignOutButton standalone />}
+          </div>
         </div>
 
         {me === null && (
-          <Card><div style={{ display: 'flex', justifyContent: 'center', padding: 'var(--space-5)' }}><Spinner /></div></Card>
+          <Card>
+            <div style={{ display: 'flex', justifyContent: 'center', padding: 'var(--space-5)' }}>
+              <Spinner />
+            </div>
+          </Card>
         )}
 
         {me && !me.userId && (
@@ -56,50 +96,39 @@ export default function MePage() {
           </Card>
         )}
 
-        {me?.userId && (
-          <>
-            <Card title="You are signed in">
-              <div style={{ display: 'grid', gap: 'var(--space-2)', fontSize: 'var(--fs-md)' }}>
-                <Row label="Email" value={me.email ?? '—'} />
-                <Row label="Role" value={me.role === 'admin' ? 'Administrator' : 'Provider'} />
-                <Row
-                  label="Linked record"
-                  value={me.providerId ? 'Yes — your login is bound to your provider record' : 'Not linked'}
-                />
-              </div>
-              <div style={{ marginTop: 'var(--space-4)', display: 'flex', gap: 'var(--space-2)', flexWrap: 'wrap' }}>
-                {me.role === 'admin' && (
-                  <Link href="/"><Button variant="primary">Open the scheduler</Button></Link>
-                )}
-                <SignOutButton standalone />
-              </div>
-            </Card>
+        {/* An admin login that is not itself a physician has no overview of its
+            own. Said plainly rather than showing an empty one. */}
+        {me?.userId && !me.providerId && (
+          <Card title="No provider record linked">
+            <div style={{ fontSize: 'var(--fs-sm)', color: 'var(--text-muted)', lineHeight: 1.7 }}>
+              You are signed in as <strong>{me.email}</strong>, but this login is not bound to a
+              provider record — so there is no personal schedule to show. An administrator can
+              link it from the provider&rsquo;s profile.
+            </div>
+          </Card>
+        )}
 
-            <Card title="Coming next">
-              <div style={{ fontSize: 'var(--fs-sm)', color: 'var(--text-muted)', lineHeight: 1.7 }}>
-                Your call schedule, your call counts against what you owe, your PTO
-                and days-off balances, and the onboarding questionnaire will appear
-                here. Nothing is missing from your account — these screens are
-                simply not built yet.
-              </div>
-            </Card>
-          </>
+        {me?.providerId && overviewError && (
+          <Banner tone="error">{overviewError}</Banner>
+        )}
+
+        {me?.providerId && !data && !overviewError && (
+          <Card>
+            <div style={{ display: 'flex', justifyContent: 'center', padding: 'var(--space-5)' }}>
+              <Spinner />
+            </div>
+          </Card>
+        )}
+
+        {data && (
+          <ProviderOverviewView
+            provider={data.provider}
+            sites={data.sites}
+            data={data.overview}
+            errors={data.errors}
+          />
         )}
       </div>
-    </div>
-  );
-}
-
-function Row({ label, value }: { label: string; value: string }) {
-  return (
-    <div style={{ display: 'flex', gap: 'var(--space-3)', alignItems: 'baseline' }}>
-      <span style={{
-        fontSize: 'var(--fs-sm)', fontWeight: 600, color: 'var(--text-muted)',
-        minWidth: 120, flexShrink: 0,
-      }}>
-        {label}
-      </span>
-      <span style={{ color: 'var(--text)', minWidth: 0, wordBreak: 'break-word' }}>{value}</span>
     </div>
   );
 }

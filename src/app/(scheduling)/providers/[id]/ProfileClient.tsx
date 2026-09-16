@@ -39,8 +39,9 @@ const PreferencesTab = nextDynamic(() => import('./PreferencesTab').then(m => m.
 const CustomFieldsTab = nextDynamic(() => import('./CustomFieldsTab').then(m => m.CustomFieldsTab), { ssr: false });
 const CompensationTab = nextDynamic(() => import('./CompensationTab').then(m => m.CompensationTab), { ssr: false });
 const HistoryTab = nextDynamic(() => import('./HistoryTab').then(m => m.HistoryTab), { ssr: false });
+const OverviewTab = nextDynamic(() => import('./OverviewTab').then(m => m.OverviewTab), { ssr: false });
 
-type Tab = 'profile' | 'scheduling' | 'preferences' | 'sites' | 'availability' | 'custom' | 'compensation' | 'history';
+type Tab = 'overview' | 'profile' | 'scheduling' | 'preferences' | 'sites' | 'availability' | 'custom' | 'compensation' | 'history';
 
 // Hover / keyboard-focus prefetch for the deferred tabs. A pointer resting on a
 // tab in a tab strip is about as strong a "this is the next thing I open" signal
@@ -59,6 +60,7 @@ const TAB_LOADERS: Partial<Record<Tab, () => Promise<unknown>>> = {
   custom: () => import('./CustomFieldsTab'),
   compensation: () => import('./CompensationTab'),
   history: () => import('./HistoryTab'),
+  overview: () => import('./OverviewTab'),
 };
 
 // Same map the providers LIST page carries, so a provider's status reads the
@@ -144,10 +146,13 @@ export default function ProfileClient(
   // the current tab. The hash is the lightest-weight option — no router
   // changes, no history entries per tab switch, survives F5 / Cmd+Shift+R.
   const [tab, setTab] = useState<Tab>(() => {
-    if (typeof window === 'undefined') return 'profile';
+    // Overview is the default: it is the one tab that answers "how is this
+    // person doing" rather than "what is stored about them", and it is what
+    // the clinician themself sees at /me.
+    if (typeof window === 'undefined') return 'overview';
     const h = window.location.hash.replace(/^#/, '');
-    const valid: Tab[] = ['profile', 'scheduling', 'preferences', 'sites', 'availability', 'custom', 'compensation', 'history'];
-    return (valid as string[]).includes(h) ? (h as Tab) : 'profile';
+    const valid: Tab[] = ['overview', 'profile', 'scheduling', 'preferences', 'sites', 'availability', 'custom', 'compensation', 'history'];
+    return (valid as string[]).includes(h) ? (h as Tab) : 'overview';
   });
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -241,6 +246,7 @@ export default function ProfileClient(
   const tc = TYPE_COLORS[provider.provider_type] || TYPE_COLORS.other;
 
   const TABS: { key: Tab; label: string; info: string }[] = [
+    { key: 'overview', label: 'Overview', info: 'How this clinician is standing right now — employment, call owed against call taken, hours scheduled, credentialed sites and PTO. This is the same screen they see when they sign in.' },
     { key: 'profile', label: 'Profile', info: 'Basic provider information — name, contact details, NPI, employee ID, and admin notes.' },
     { key: 'scheduling', label: 'Employment & Scheduling', info: 'Employment status, FTE, call eligibility, specialty capabilities, and scheduling constraints. These settings determine what shifts this provider can be assigned to.' },
     { key: 'preferences', label: 'Preferences & Specialties', info: 'Preferred and undesired shift types or sites, fellowships, skills, and custom blocked dates. The scheduler uses these as soft preferences.' },
@@ -373,6 +379,7 @@ export default function ProfileClient(
       </div>
 
       {/* Tab content */}
+      {tab === 'overview' && <OverviewTab providerId={id} />}
       {tab === 'profile' && <ProfileTab provider={provider} saveState={saveState} onSave={save} />}
       {tab === 'scheduling' && <SchedulingTab profile={prof || EMPTY_PROFILE} sites={sites} saveState={saveState} onSave={save} />}
       {tab === 'preferences' && <PreferencesTab profile={prof || EMPTY_PROFILE} sites={sites} saveState={saveState} onSave={save} />}
