@@ -32,7 +32,12 @@ const NAV_SECTIONS: NavSection[] = [
   },
   {
     label: 'Operations',
-    items: [{ href: '/board', label: 'Floor Runner', icon: '⚡' }],
+    items: [
+      // Ahead of the board deliberately: the staffing picture is the thing
+      // back office opens first, and the board is what the runner opens.
+      { href: '/operations', label: 'Staffing Board', icon: '◨' },
+      { href: '/board', label: 'Floor Runner', icon: '⚡' },
+    ],
   },
   {
     // Block Prep, Rules and Requests moved here from Scheduling (Gabriel
