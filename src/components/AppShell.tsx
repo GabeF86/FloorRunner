@@ -36,6 +36,7 @@ const NAV_SECTIONS: NavSection[] = [
       // Ahead of the board deliberately: the staffing picture is the thing
       // back office opens first, and the board is what the runner opens.
       { href: '/operations', label: 'Staffing Board', icon: '◨' },
+      { href: '/operations/handbook', label: 'Group Handbook', icon: '§' },
       { href: '/board', label: 'Floor Runner', icon: '⚡' },
     ],
   },
