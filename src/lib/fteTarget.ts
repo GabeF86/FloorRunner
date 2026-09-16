@@ -577,6 +577,22 @@ export interface CallObligationCensus {
   // Callers MUST use this rather than re-rounding totalExpectedFor.
   obligationFor: (providerId: string) => number;
   actualCallsFor: (providerId: string) => number;
+  // THE OWED SIDE, PER CATEGORY (2026-09-15). The provider's stated count per
+  // `overParBucketKey(bucket, parentCode)` — the SAME map the no-netting
+  // over-par selection judges each category against, so a surface that prints
+  // owed beside taken cannot disagree with what the grid tags OVER.
+  //
+  // It also makes the SHORT side visible for the first time: extras only ever
+  // showed the categories a provider was past, and under no-netting being one
+  // Sunday C2 short while two M–Th C1 over is a completely different fact from
+  // being one call over on balance.
+  //
+  // Null when this provider is on the derived formula — no bands at the site,
+  // an FTE clearing none, a non-pool provider (owes zero calls), or a block
+  // with an unbucketable call slot. There is no stated per-category number in
+  // those cases, and dividing the netted total across categories would invent
+  // one.
+  statedBucketsFor: (providerId: string) => ReadonlyMap<string, number> | null;
   // PER-BUCKET target (2026-07-29): (this bucket's slot weight ÷ effective par)
   // × POOL fte — the same fteWeightedTarget as everything else, one rung down
   // from totalExpectedFor. Keyed by `overParBucketKey(dayTypeBucketOn(...),
@@ -731,6 +747,8 @@ export function computeCallObligationCensus(input: CallObligationCensusInput): C
     totalExpectedFor,
     obligationFor,
     actualCallsFor,
+    // Straight out of the map the over-par selection uses — never recomputed.
+    statedBucketsFor: pid => statedByPid.get(pid) ?? null,
     bucketTargetFor,
     // PER-CATEGORY when the site states bands: Σ over buckets of how far past
     // that bucket's stated count the provider is, with under-filled buckets

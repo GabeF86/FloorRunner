@@ -20,7 +20,8 @@
 
 import { gridTokens } from './gridTheme';
 import { Button } from '@/components/ui';
-import { fteWeightedTarget } from '@/lib/fteTarget';
+import { fteWeightedTarget, overParBucketKey } from '@/lib/fteTarget';
+import { callBurdenWeight } from '@/lib/callBurden';
 // Day-math for the Call Counts modal (bucket day counts, Days Off, Working
 // Days) — pure helpers assembling the single-homed workDays/plannerMath
 // contracts; the modal only aggregates and renders.
@@ -156,10 +157,14 @@ export function CallCountsModal(
   // and this table is printed to fill in by hand.
   const CHAIN_ROW_H = 11, CHAIN_LINE_TOP = 5, CHAIN_TICK_TOP = 1, CHAIN_TICK_H = 9;
   // Single-column headers trailing the (bucket, code) pairs, each rowSpan={2}:
-  // Obligation, Call Total, Over By, Obligatory Weekends, PTO Days, Days Off,
-  // Working Days. A band row is 1 label + columns.length ticks + a filler
-  // spanning the extras half and these, so it is exactly as wide as every other
-  // row (1 + 2 × columns.length + 7) and no colSpan can drift.
+  // Obligation, Call Total, Over By, [Short By], Obligatory Weekends, PTO Days,
+  // Days Off, Working Days. A band row is 1 label + columns.length ticks + a
+  // filler spanning the extras half and these, so it is exactly as wide as
+  // every other row and no colSpan can drift.
+  //
+  // Short By (2026-09-15) renders only where the site states per-category
+  // obligations, so this is the BASE count and every use adds `anyStated`
+  // itself — a row width of 1 + 2 × columns.length + 7 or 8.
   const TRAILING_HEADER_COLS = 7;
 
   const scheduleStart = grid.schedule.date_start;
@@ -358,6 +363,51 @@ export function CallCountsModal(
     for (const pid of providers.map(p => p.id)) t += getExtra(pid, bucket, code);
     return t;
   };
+  // ── THE OWED SIDE, PER CATEGORY (2026-09-15) ──────────────────────────────
+  // The extras columns have always shown the categories a provider is PAST.
+  // Nothing showed the categories they are SHORT — and under the no-netting
+  // rule those are two halves of one sentence: a provider can be two M–Th
+  // calls over and one Sunday C2 short at the same time, and only the first
+  // half was ever on screen. So each count cell now carries the stated owed
+  // count beneath what was taken.
+  //
+  // Straight off the shared census (fteTarget statedBucketsFor) — the SAME map
+  // the over-par cover judges each category against, so the owed number under
+  // a cell and the red tag beside it can never tell different stories. Null
+  // for a provider on the derived formula (no bands, a non-pool day doc): they
+  // have one total ceiling and no per-category number to print.
+  const owedFor = (pid: string, key: string): number | null =>
+    census.statedBucketsFor(pid)?.get(key) ?? null;
+  const anyStated = providers.some(p => census.statedBucketsFor(p.id) !== null);
+
+  // Taken per (bucket × parent code), rebuilt from the census's OWN records
+  // rather than from `counts` — the short total must be measured off the same
+  // walk of the slots as the owed side, and a call code outside the C1–C3
+  // display columns still counts toward a shortfall.
+  const takenByPidBucket = new Map<string, Map<string, number>>();
+  for (const r of census.callRecords) {
+    if (!r.bucket) continue;
+    const key = overParBucketKey(r.bucket, r.parent_code || r.shift_type_code);
+    let inner = takenByPidBucket.get(r.provider_id);
+    if (!inner) { inner = new Map(); takenByPidBucket.set(r.provider_id, inner); }
+    // callBurdenWeight, not `?? 1` — it is the house default AND the guard
+    // against a stored 0 or NaN, which would silently drop a call from the
+    // short math while the census counted it.
+    inner.set(key, (inner.get(key) || 0) + callBurdenWeight({ call_burden_weight: r.weight }));
+  }
+  // Σ over categories of how far SHORT of the stated count they are, with
+  // over-filled categories contributing nothing — the exact mirror of
+  // overageFor. This can exceed the shortfalls visible in the cells above it:
+  // a category the block states but never scheduled has no column to show.
+  const rowShortBy = (pid: string) => {
+    const stated = census.statedBucketsFor(pid);
+    if (!stated) return 0;
+    const taken = takenByPidBucket.get(pid);
+    let short = 0;
+    for (const [key, owed] of stated) short += Math.max(0, owed - (taken?.get(key) || 0));
+    return short;
+  };
+
   const fmtFte = (fte: number) => fte.toFixed(2).replace(/\.?0+$/, '');
   // Hide sub-noise expectations — anything under this rounds to 0.0 anyway.
   const EXPECTED_DISPLAY_MIN = 0.05;
@@ -550,7 +600,7 @@ export function CallCountsModal(
                   })}
                   {/* Filler across the Extra Calls half and the trailing
                       single-column headers — the band never spans those. */}
-                  <th colSpan={columns.length + TRAILING_HEADER_COLS} />
+                  <th colSpan={columns.length + TRAILING_HEADER_COLS + (anyStated ? 1 : 0)} />
                 </tr>
               );
             })}
@@ -607,6 +657,19 @@ export function CallCountsModal(
               }} title="How far past the obligation the provider actually is: Call Total − Obligation, in call units (a 12h split is 0.5, an 8h third 0.3333). THIS is the size of the overage. The tagged calls to the left are the smallest set of whole assignments that covers it, so their weight can be LARGER than this — 1.0 tagged against a 0.7 overage when no smaller combination fits. Blank at or under the obligation.">
                 Over By
               </th>
+              {/* The other half of the sentence (2026-09-15). Rendered only
+                  where the site STATES per-category obligations — on the
+                  derived formula there is one total ceiling and no category to
+                  fall short of, so the column would be a row of dashes. */}
+              {anyStated && (
+                <th rowSpan={2} style={{
+                  padding: '6px 10px', textAlign: 'center', fontWeight: 700,
+                  borderBottom: '1px solid var(--border)', borderLeft: '1px solid var(--border)',
+                  color: 'var(--warn)', cursor: 'help',
+                }} title="How many calls of the stated obligation the provider has NOT yet taken: summed over categories, how far below each stated count they are, with over-filled categories contributing nothing. Under the no-netting rule this is a separate fact from Over By, not its opposite — a provider can be two M–Th calls over AND one Sunday C2 short at the same time, and both numbers are real. It can also be LARGER than the shortfalls visible in the cells to the left: a category the site states but this block never scheduled has no column of its own. Blank when every stated category is filled.">
+                  Short By
+                </th>
+              )}
               <th rowSpan={2} style={{
                 padding: '6px 10px', textAlign: 'center', fontWeight: 700,
                 borderBottom: '1px solid var(--border)', borderLeft: '1px solid var(--border)',
@@ -695,14 +758,37 @@ export function CallCountsModal(
                 </td>
                 {columns.map((col, i) => {
                   const n = getCount(p.id, col.key);
+                  // Owed sits UNDER taken rather than beside it: at twelve-odd
+                  // category columns an inline "3 / 4" doubles the table's
+                  // width, and the pair reads as one figure stacked.
+                  const owed = owedFor(p.id, col.key);
+                  const short = owed != null && n < owed;
                   return (
-                    <td key={col.key} style={{
+                    <td key={col.key}
+                      title={owed == null ? undefined
+                        : short ? `${col.label}: took ${formatCallWeight(n)} of ${formatCallWeight(owed)} owed — ${formatCallWeight(owed - n)} SHORT in this category.`
+                        : n > owed ? `${col.label}: took ${formatCallWeight(n)} of ${formatCallWeight(owed)} owed — ${formatCallWeight(n - owed)} past this category, tagged as extra on the right. Being short somewhere else does not cancel it.`
+                        : `${col.label}: took ${formatCallWeight(n)} of ${formatCallWeight(owed)} owed — on target.`}
+                      style={{
                       padding: '6px 8px', textAlign: 'center', whiteSpace: 'nowrap',
-                      color: n === 0 ? 'var(--text-dim)' : 'var(--text)',
+                      // Amber only for SHORT. Over is already carried by the
+                      // red extras columns, and tinting it here too would put
+                      // one fact on screen twice in two colours.
+                      color: short ? 'var(--warn)' : n === 0 ? 'var(--text-dim)' : 'var(--text)',
                       borderLeft: isGroupStart(i) ? '1px solid var(--border)' : 'none',
                       fontWeight: n > 0 ? 600 : 400,
+                      lineHeight: 1.2,
+                      cursor: owed != null ? 'help' : undefined,
                     }}>
                       {n ? formatCallWeight(n) : '—'}
+                      {owed != null && (
+                        <>
+                          <br />
+                          <span style={{ fontSize: 9.5, fontWeight: 500, color: 'var(--text-dim)' }}>
+                            of {formatCallWeight(owed)}
+                          </span>
+                        </>
+                      )}
                     </td>
                   );
                 })}
@@ -742,6 +828,22 @@ export function CallCountsModal(
                     cursor: rowOverBy(p.id) > 0 ? 'help' : undefined,
                   }}
                 >{rowOverBy(p.id) > 0 ? formatCallWeight(rowOverBy(p.id)) : '—'}</td>
+                {anyStated && (() => {
+                  const s = rowShortBy(p.id);
+                  return (
+                    <td
+                      title={s > 0
+                        ? `Still owes ${formatCallWeight(s)} call${s === 1 ? '' : 's'} of the stated obligation. Hover the amber cells on the left for which categories.`
+                        : undefined}
+                      style={{
+                        padding: '6px 10px', textAlign: 'center', fontWeight: 700,
+                        borderLeft: '1px solid var(--border)',
+                        color: s > 0 ? 'var(--warn)' : 'var(--text-dim)',
+                        cursor: s > 0 ? 'help' : undefined,
+                      }}
+                    >{s > 0 ? formatCallWeight(s) : '—'}</td>
+                  );
+                })()}
                 <td
                   title={`Held ${formatCallWeight(weekendsForPid(p.id))} of ${formatCallWeight(requiredWeekendsForPid(p.id))} obligatory weekend duties (unrounded requirement ${expectedWeekendsForPid(p.id).toFixed(2)}, taken DOWN to the nearest half). Actual = primary-call weekend days held (a 12h half counts 0.5) + neuro weekend units held (a Sat+Sun pair 1, a single neuro day 0.5).`}
                   style={{
@@ -820,6 +922,16 @@ export function CallCountsModal(
                 const t = providers.reduce((s, p) => s + rowOverBy(p.id), 0);
                 return t > 0 ? formatCallWeight(t) : '—';
               })()}</td>
+              {anyStated && (
+                <td style={{
+                  padding: '8px 10px', textAlign: 'center',
+                  borderLeft: '1px solid var(--border)', borderTop: '2px solid var(--border)',
+                  color: 'var(--warn)',
+                }}>{(() => {
+                  const t = providers.reduce((s, p) => s + rowShortBy(p.id), 0);
+                  return t > 0 ? formatCallWeight(t) : '—';
+                })()}</td>
+              )}
               <td style={{
                 padding: '8px 10px', textAlign: 'center', whiteSpace: 'nowrap',
                 borderLeft: '1px solid var(--border)', borderTop: '2px solid var(--border)',
@@ -878,8 +990,13 @@ export function CallCountsModal(
                 {providers.reduce((s, p) => s + rowExpected(p.id), 0).toFixed(1)}
               </td>
               {/* Over By has no "expected" — an overage is by definition the
-                  part with no expectation behind it. */}
+                  part with no expectation behind it. Neither has Short By: a
+                  shortfall is measured against the STATED count, which is
+                  already the expectation. */}
               <td style={{ padding: '6px 10px', textAlign: 'center', borderLeft: '1px solid var(--border)' }}>—</td>
+              {anyStated && (
+                <td style={{ padding: '6px 10px', textAlign: 'center', borderLeft: '1px solid var(--border)' }}>—</td>
+              )}
               <td
                 title={`Sum of the fractional weekend obligations before rounding, out of ${formatCallWeight(weekendUnits)} weekend units in the block — a gap is the paid-pickup layer (pool ΣFTE below the par).`}
                 style={{ padding: '6px 10px', textAlign: 'center', borderLeft: '1px solid var(--border)', cursor: 'help' }}

@@ -201,3 +201,97 @@ describe('no bands = byte-identical to the derived census', () => {
       .toEqual([...withNull.overParAssignmentIds].sort());
   });
 });
+
+// ── THE OWED SIDE, EXPOSED (2026-09-15) ─────────────────────────────────────
+// The census has always KNOWN the per-category owed count — it is what the
+// no-netting cover judges each category against — but only ever published the
+// over half of the comparison. A reader could see two extra M–Th calls and had
+// no way to see the Sunday C2 that was missing, which is the other half of the
+// same sentence.
+describe('statedBucketsFor — owed per category', () => {
+  /** Taken per `bucket|parent code`, off the census's own records. */
+  const takenByBucket = (c: ReturnType<typeof census>, pid: string) => {
+    const out = new Map<string, number>();
+    for (const r of c.callRecords) {
+      if (r.provider_id !== pid || !r.bucket) continue;
+      const key = `${r.bucket}|${r.parent_code || r.shift_type_code}`;
+      out.set(key, (out.get(key) || 0) + (r.weight ?? 1));
+    }
+    return out;
+  };
+
+  const FARKAS = {
+    'weekday|C1': ['f', 'f', 'f', 'f', 'f'],
+    'weekday|C2': ['f', 'f', 'f', 'f', 'f'],
+    'friday|C1': ['f'], 'friday|C2': ['f'],
+    'saturday|C1': ['f'], 'saturday|C2': ['f'], 'saturday|C3': ['f'],
+    'sunday|C1': ['f'], 'sunday|C3': ['f'],
+  };
+
+  it('states the band verbatim, category by category', () => {
+    const owed = census(FARKAS, [profile('f', 1)]).statedBucketsFor('f');
+    expect(owed).not.toBeNull();
+    expect(owed!.get('weekday|C1')).toBe(4);
+    expect(owed!.get('weekday|C2')).toBe(4);
+    expect(owed!.get('sunday|C2')).toBe(1);
+  });
+
+  it('SHOWS THE SHORTFALL the extras column can never show', () => {
+    // The whole point. He is two calls over and one call short at the same
+    // time, and until now only the two were visible anywhere.
+    const c = census(FARKAS, [profile('f', 1)]);
+    const owed = c.statedBucketsFor('f')!;
+    const taken = takenByBucket(c, 'f');
+    const short = [...owed]
+      .filter(([k, n]) => n > (taken.get(k) || 0))
+      .map(([k, n]) => `${k}: owed ${n}, took ${taken.get(k) || 0}`);
+    expect(short).toEqual(['sunday|C2: owed 1, took 0']);
+  });
+
+  it('sums to the obligation the modal already prints', () => {
+    // If these two could drift, a row of owed numbers would not add up to the
+    // total at the end of its own row.
+    const c = census(FARKAS, [profile('f', 1)]);
+    let total = 0;
+    for (const n of c.statedBucketsFor('f')!.values()) total += n;
+    expect(total).toBe(c.obligationFor('f'));
+  });
+
+  it('is the SAME map the over-par cover judges against', () => {
+    // Σ max(0, taken − owed) over categories must equal the published overage,
+    // or the table would explain a number it disagrees with.
+    const c = census(FARKAS, [profile('f', 1)]);
+    const owed = c.statedBucketsFor('f')!;
+    const taken = takenByBucket(c, 'f');
+    let over = 0;
+    for (const [k, n] of taken) over += Math.max(0, n - (owed.get(k) ?? 0));
+    expect(over).toBeCloseTo(c.overageFor('f'), 6);
+  });
+
+  it('spreads a neuro WEEKEND unit onto the days the block actually stands', () => {
+    const owed = census({}, [profile('n', 1)]).statedBucketsFor('n')!;
+    expect(owed.get('saturday|C3')).toBe(1);
+    expect(owed.get('sunday|C3')).toBe(1);
+  });
+
+  it('keeps the exact stated total for a half-FTE — never re-rounded', () => {
+    const owed = census({}, [profile('h', 0.5)]).statedBucketsFor('h')!;
+    expect(owed.get('saturday|C1')).toBe(1.5);
+  });
+
+  it('is null for a day doc, who owes no category anything', () => {
+    const dayDoc: CensusProfile = {
+      provider_id: 'd', home_site_id: SITE, call_taker: false,
+      partial_call_taker: false, fte_value: 1,
+    };
+    expect(census({ 'saturday|C1': ['d'] }, [dayDoc]).statedBucketsFor('d')).toBeNull();
+  });
+
+  it('is null under the derived formula, rather than inventing a split', () => {
+    expect(census(FARKAS, [profile('f', 1)], false).statedBucketsFor('f')).toBeNull();
+  });
+
+  it('is null for a provider nobody has a row for', () => {
+    expect(census({}, [profile('f', 1)]).statedBucketsFor('nobody')).toBeNull();
+  });
+});
