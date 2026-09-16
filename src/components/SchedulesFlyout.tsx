@@ -1,17 +1,19 @@
 'use client';
 
-// The Schedules nav item, with the site list revealed on hover.
+// The Schedules nav row and the panel of locations it opens.
 //
-// ── HOVER IS NOT THE ONLY TRIGGER, DELIBERATELY ────────────────────────────
-// Gabriel asked for hover, and hover is what it does with a mouse. But a
-// hover-only menu is unreachable by keyboard and unusable on a touch screen,
-// where there is no hover state at all — and this app is used on an iPad at
-// the OR desk. So the same panel opens on focus-within and on a click of the
-// chevron, and closes on Escape. The mouse behaviour is unchanged by any of
-// that.
+// ── CLICK, NOT HOVER (Gabriel 2026-09-16) ──────────────────────────────────
+// It used to open on hover. It no longer does: the row is a BUTTON and the
+// panel opens only when you click it. A hover menu on the primary nav opens
+// itself while you are on the way somewhere else, and it is unreachable on the
+// iPad at the OR desk, where there is no hover state at all.
 //
-// The parent item stays a real link: clicking "Schedules" goes to the list
-// page as it always did. Only the chevron toggles.
+// The consequence of making the row a button is that it can no longer navigate
+// — so the schedules list page moved INTO the panel, as its first entry. Every
+// destination that used to be reachable from this row still is; it now takes
+// one deliberate click rather than an accidental one.
+//
+// Escape closes it, a click outside closes it, and navigating closes it.
 
 import { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
@@ -20,37 +22,19 @@ import { useOrgAndSites } from '@/components/useOrgAndSites';
 
 interface Props {
   collapsed: boolean;
-  itemStyle: (active: boolean) => React.CSSProperties;
 }
 
 const HREF = '/schedules';
 
-export function SchedulesFlyout({ collapsed, itemStyle }: Props) {
+export function SchedulesFlyout({ collapsed }: Props) {
   const pathname = usePathname();
   const { sites, error, sitesLoaded } = useOrgAndSites();
   const [open, setOpen] = useState(false);
   const wrap = useRef<HTMLDivElement>(null);
-  const closeTimer = useRef<number | null>(null);
 
   const active = pathname === HREF || pathname.startsWith(HREF + '/')
     || pathname.startsWith('/dashboard/');
 
-  // A small close delay: without it, the few pixels between the nav item and
-  // the panel count as a mouse-out and the panel vanishes mid-reach.
-  const openNow = () => {
-    if (closeTimer.current) { window.clearTimeout(closeTimer.current); closeTimer.current = null; }
-    setOpen(true);
-  };
-  const closeSoon = () => {
-    if (closeTimer.current) window.clearTimeout(closeTimer.current);
-    closeTimer.current = window.setTimeout(() => setOpen(false), 180);
-  };
-
-  useEffect(() => () => {
-    if (closeTimer.current) window.clearTimeout(closeTimer.current);
-  }, []);
-
-  // Close when focus or the pointer leaves the whole group, and on Escape.
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false); };
@@ -70,46 +54,25 @@ export function SchedulesFlyout({ collapsed, itemStyle }: Props) {
   useEffect(() => { setOpen(false); }, [pathname]);
 
   return (
-    <div
-      ref={wrap}
-      style={{ position: 'relative' }}
-      onMouseEnter={openNow}
-      onMouseLeave={closeSoon}
-      onFocus={openNow}
-      onBlur={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node)) closeSoon(); }}
-    >
-      <div style={{ display: 'flex', alignItems: 'center' }}>
-        <Link
-          href={HREF}
-          className="fr-focus"
-          title={collapsed ? 'Schedules' : undefined}
-          style={{ ...itemStyle(active), flex: 1, minWidth: 0 }}
-        >
-          <span style={{ fontSize: 16, width: 20, textAlign: 'center' }}>▦</span>
-          {!collapsed && 'Schedules'}
-        </Link>
-        {!collapsed && (
-          <button
-            type="button"
-            aria-expanded={open}
-            aria-label={open ? 'Hide sites' : 'Show sites'}
-            onClick={() => setOpen(o => !o)}
-            className="fr-focus"
-            style={{
-              background: 'none', border: 'none', cursor: 'pointer', padding: '4px 6px',
-              color: active ? 'var(--blue)' : 'var(--text-dim)', fontSize: 11, lineHeight: 1,
-              transform: open ? 'rotate(90deg)' : 'none', transition: 'transform .15s',
-            }}
-          >
-            ▸
-          </button>
-        )}
-      </div>
+    <div ref={wrap} style={{ position: 'relative' }}>
+      <button
+        type="button"
+        aria-expanded={open}
+        aria-haspopup="menu"
+        onClick={() => setOpen(o => !o)}
+        className="fr-nav-item fr-focus"
+        data-active={active}
+        data-collapsed={collapsed}
+        title={collapsed ? 'Schedules' : undefined}
+      >
+        {collapsed ? 'SCHD' : 'Schedules'}
+        {!collapsed && <span aria-hidden="true" className="fr-nav-caret">▸</span>}
+      </button>
 
       {open && (
         <div
           role="menu"
-          aria-label="Site dashboards"
+          aria-label="Schedules and site dashboards"
           style={{
             position: 'absolute',
             left: collapsed ? 'calc(100% + 6px)' : 'var(--space-2)',
@@ -124,9 +87,17 @@ export function SchedulesFlyout({ collapsed, itemStyle }: Props) {
             boxShadow: 'var(--shadow-popover)',
           }}
         >
+          {/* The row is no longer a link, so the list page lives here. First,
+              because it is what "Schedules" meant before. */}
+          <Link href={HREF} role="menuitem" className="fr-nav-sub fr-focus"
+                data-active={pathname === HREF}>
+            All schedules
+          </Link>
+
           <div style={{
             fontSize: 'var(--fs-xs)', textTransform: 'uppercase', letterSpacing: 1,
-            color: 'var(--text-dim)', fontWeight: 700, padding: '2px var(--space-2) 6px',
+            color: 'var(--text-dim)', fontWeight: 700,
+            padding: '10px var(--space-2) 6px',
           }}>
             Site dashboards
           </div>
@@ -142,19 +113,13 @@ export function SchedulesFlyout({ collapsed, itemStyle }: Props) {
           ) : (
             sites.map(s => {
               const href = `/dashboard/${s.id}`;
-              const on = pathname === href;
               return (
                 <Link
                   key={s.id}
                   href={href}
                   role="menuitem"
-                  className="fr-focus"
-                  style={{
-                    display: 'block', padding: '7px var(--space-2)', borderRadius: 'var(--radius-sm)',
-                    fontSize: 13, fontWeight: 600, textDecoration: 'none',
-                    color: on ? 'var(--blue)' : 'var(--text-muted)',
-                    background: on ? 'color-mix(in srgb, var(--blue) 10%, transparent)' : 'transparent',
-                  }}
+                  className="fr-nav-sub fr-focus"
+                  data-active={pathname === href}
                 >
                   {s.short_name ? `${s.short_name} — ${s.name}` : s.name}
                 </Link>
@@ -163,15 +128,8 @@ export function SchedulesFlyout({ collapsed, itemStyle }: Props) {
           )}
 
           <div style={{ borderTop: '1px solid var(--border-faint)', marginTop: 6, paddingTop: 6 }}>
-            <Link
-              href="/dashboard"
-              role="menuitem"
-              className="fr-focus"
-              style={{
-                display: 'block', padding: '7px var(--space-2)', borderRadius: 'var(--radius-sm)',
-                fontSize: 13, fontWeight: 600, textDecoration: 'none', color: 'var(--text-muted)',
-              }}
-            >
+            <Link href="/dashboard" role="menuitem" className="fr-nav-sub fr-focus"
+                  data-active={pathname === '/dashboard'}>
               All sites (UAS)
             </Link>
           </div>

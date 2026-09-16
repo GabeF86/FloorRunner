@@ -7,27 +7,34 @@ import { Button } from '@/components/ui';
 import { SignOutButton } from '@/components/SignOutButton';
 import { SchedulesFlyout } from '@/components/SchedulesFlyout';
 
-interface NavItem { href: string; label: string; icon: string }
+interface NavItem {
+  href: string;
+  label: string;
+  /** Shown in the collapsed rail in place of the label. A short mono
+   *  abbreviation of the word itself — readable without a legend, unlike the
+   *  glyphs it replaced (2026-09-16). */
+  abbr: string;
+}
 interface NavSection { label: string; items: NavItem[] }
 
 const NAV_SECTIONS: NavSection[] = [
   {
     label: 'Overview',
-    items: [{ href: '/dashboard', label: 'Dashboard', icon: '◎' }],
+    items: [{ href: '/dashboard', label: 'Dashboard', abbr: 'DASH' }],
   },
   {
     label: 'Scheduling',
     items: [
-      { href: '/schedules', label: 'Schedules', icon: '▦' },
-      { href: '/providers', label: 'Providers', icon: '◆' },
-      { href: '/sites',     label: 'Sites',     icon: '⬡' },
+      { href: '/schedules', label: 'Schedules', abbr: 'SCHD' },
+      { href: '/providers', label: 'Providers', abbr: 'PROV' },
+      { href: '/sites',     label: 'Sites',     abbr: 'SITE' },
     ],
   },
   {
     label: 'Staffing',
     items: [
-      { href: '/staffing-calculator', label: 'Staffing Calculator', icon: '∑' },
-      { href: '/grid-calculator',     label: 'Grid Calculator',     icon: '⊞' },
+      { href: '/staffing-calculator', label: 'Staffing Calculator', abbr: 'STAF' },
+      { href: '/grid-calculator',     label: 'Grid Calculator',     abbr: 'GRID' },
     ],
   },
   {
@@ -35,9 +42,9 @@ const NAV_SECTIONS: NavSection[] = [
     items: [
       // Ahead of the board deliberately: the staffing picture is the thing
       // back office opens first, and the board is what the runner opens.
-      { href: '/operations', label: 'Staffing Board', icon: '◨' },
-      { href: '/operations/handbook', label: 'Group Handbook', icon: '§' },
-      { href: '/board', label: 'Floor Runner', icon: '⚡' },
+      { href: '/operations', label: 'Staffing Board', abbr: 'BOARD' },
+      { href: '/operations/handbook', label: 'Group Handbook', abbr: 'HAND' },
+      { href: '/board', label: 'Floor Runner', abbr: 'RUN' },
     ],
   },
   {
@@ -47,14 +54,14 @@ const NAV_SECTIONS: NavSection[] = [
     // three nouns you actually work in day to day.
     label: 'Settings',
     items: [
-      { href: '/settings',   label: 'Settings',   icon: '⚙' },
-      { href: '/block-prep', label: 'Block Prep', icon: '◫' },
+      { href: '/settings',   label: 'Settings',   abbr: 'SET' },
+      { href: '/block-prep', label: 'Block Prep', abbr: 'PREP' },
       // Renamed from "Rules" 2026-09-15. The page now leads with the live
       // generation contract — what the engine actually obeys — and the
       // validation rule sets sit below it. Calling it Rules pointed at the one
       // thing on the page the engine never reads.
-      { href: '/rules',      label: 'Scheduling Logic', icon: '⚖' },
-      { href: '/requests',   label: 'Requests',   icon: '✉' },
+      { href: '/rules',      label: 'Scheduling Logic', abbr: 'LOGIC' },
+      { href: '/requests',   label: 'Requests',   abbr: 'REQ' },
     ],
   },
 ];
@@ -200,45 +207,22 @@ export default function AppShell({ fullBleed, children }: { fullBleed?: boolean;
               )}
               {section.items.map((item) => {
                 const active = pathname === item.href || pathname.startsWith(item.href + '/');
-                // One item's styling, shared with SchedulesFlyout so the
-                // flyout's parent row is indistinguishable from its siblings.
-                const linkStyle = (isActive: boolean): React.CSSProperties => ({
-                  display: 'flex', alignItems: 'center',
-                  justifyContent: collapsed ? 'center' : 'flex-start',
-                  gap: collapsed ? 0 : 10,
-                  padding: collapsed ? '9px 0' : '8px var(--space-3)',
-                  width: collapsed ? 40 : undefined,
-                  marginBottom: 2,
-                  marginLeft: collapsed ? 'auto' : undefined,
-                  marginRight: collapsed ? 'auto' : undefined,
-                  borderRadius: 'var(--radius-sm)',
-                  textDecoration: 'none', fontSize: 13, fontWeight: 600,
-                  color: isActive ? 'var(--blue)' : 'var(--text-muted)',
-                  background: isActive ? 'color-mix(in srgb, var(--blue) 10%, transparent)' : 'transparent',
-                  border: '1px solid ' + (isActive ? 'color-mix(in srgb, var(--blue) 25%, transparent)' : 'transparent'),
-                  // A 2px accent bar on the active item. The tinted background
-                  // alone reads as a hover state rather than a location — the
-                  // marker is what makes "where am I" answerable at a glance,
-                  // and it is the one thing the collapsed rail still shows.
-                  boxShadow: isActive
-                    ? 'inset 2px 0 0 var(--blue)'
-                    : undefined,
-                  transition:
-                    'background var(--dur-fast) var(--ease-out),'
-                    + ' color var(--dur-fast) var(--ease-out),'
-                    + ' border-color var(--dur-fast) var(--ease-out)',
-                });
 
+                // Styling lives entirely in the .fr-nav-item class (globals.css).
+                // Nothing is passed inline, deliberately: an inline background
+                // outranks the class's :hover rule, so the hover highlight
+                // would silently never appear.
                 if (item.href === '/schedules') {
-                  return <SchedulesFlyout key={item.href} collapsed={collapsed} itemStyle={linkStyle} />;
+                  return <SchedulesFlyout key={item.href} collapsed={collapsed} />;
                 }
 
                 return (
-                  <Link key={item.href} href={item.href} className="fr-focus"
-                    title={collapsed ? item.label : undefined}
-                    style={linkStyle(active)}>
-                    <span style={{ fontSize: 16, width: 20, textAlign: 'center' }}>{item.icon}</span>
-                    {!collapsed && item.label}
+                  <Link key={item.href} href={item.href}
+                    className="fr-nav-item fr-focus"
+                    data-active={active}
+                    data-collapsed={collapsed}
+                    title={collapsed ? item.label : undefined}>
+                    {collapsed ? item.abbr : item.label}
                   </Link>
                 );
               })}
