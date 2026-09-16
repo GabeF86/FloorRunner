@@ -127,8 +127,14 @@ export interface ShiftTypeInfo {
 export interface ProviderInfo {
   id: string;
   last_name?: string;
-  short_display_name: string;
-  initials: string;
+  // NULLABLE IN THE DATABASE, and 22 active physicians currently have no
+  // value. It was typed `string` until 2026-09-15, when importing the group's
+  // master schedule gave those physicians their first assignments and the
+  // grid's `short_display_name.localeCompare(...)` sorts started throwing —
+  // a client-side crash on the whole page. Route every read through
+  // `providerLabel` / `byProviderLabel` below rather than dereferencing it.
+  short_display_name: string | null;
+  initials: string | null;
   provider_type: string;
 }
 
@@ -181,10 +187,37 @@ export interface Provider {
   id: string;
   first_name: string;
   last_name: string;
-  short_display_name: string;
-  initials: string;
+  /** Nullable — see ProviderInfo.short_display_name. */
+  short_display_name: string | null;
+  initials: string | null;
   provider_type: string;
   status: string;
+}
+
+/**
+ * What to call a provider on the grid.
+ *
+ * The schedule code where there is one, then the surname, then the initials —
+ * never an empty cell and never a crash. A physician with no code at all is a
+ * roster gap worth seeing, so it shows their surname rather than a blank.
+ */
+export function providerLabel(
+  p: { short_display_name?: string | null; last_name?: string | null; initials?: string | null },
+): string {
+  return p.short_display_name?.trim()
+    || p.last_name?.trim()
+    || p.initials?.trim()
+    || '—';
+}
+
+/** Alphabetical by whatever the grid actually shows. Null-safe by construction:
+ *  the six sorts that used to call `.localeCompare` on a nullable field are the
+ *  reason this exists. */
+export function byProviderLabel(
+  a: { short_display_name?: string | null; last_name?: string | null; initials?: string | null },
+  b: { short_display_name?: string | null; last_name?: string | null; initials?: string | null },
+): number {
+  return providerLabel(a).localeCompare(providerLabel(b));
 }
 
 export interface Holiday {

@@ -17,8 +17,7 @@ import {
   DAYS_SHORT, toDateStr, formatMMDD, formatDateRange, getDayOfWeek,
   allDatesInRange, callCensusFromGrid, getWeekStart, colorWithAlpha,
   type Schedule, type ShiftTypeInfo, type ValidationFlag, type AssignmentInfo,
-  type Slot, type Provider, type Holiday, type GridData,
-} from './gridShared';
+  type Slot, type Provider, type Holiday, type GridData, providerLabel, byProviderLabel } from './gridShared';
 import AssistantPanel from './AssistantPanel';
 import { PageHeader, Badge, Button, Banner, scheduleStatusTone } from '@/components/ui';
 import { SCHEDULE_NAME_MAX } from '@/lib/scheduleName';
@@ -523,7 +522,7 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
         }
       }
     }
-    for (const list of Object.values(ptoByDate)) list.sort((a, b) => a.short_display_name.localeCompare(b.short_display_name));
+    for (const list of Object.values(ptoByDate)) list.sort(byProviderLabel);
 
     // Post-call detection: a provider who had a call-category shift yesterday
     // is post-call today. The auto-gen explicitly blocks them from other
@@ -571,7 +570,7 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
         }
       }
     }
-    for (const list of Object.values(postCallByDate)) list.sort((a, b) => a.short_display_name.localeCompare(b.short_display_name));
+    for (const list of Object.values(postCallByDate)) list.sort(byProviderLabel);
 
     // Categorize each home-site provider per day:
     //   - PTO entry that day      → ptoByDate (already set above)
@@ -607,14 +606,14 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
         if (offSet.has(pid) || !callTakerIds.has(pid)) off.push(provider);
         else available.push(provider);
       }
-      available.sort((a, b) => a.short_display_name.localeCompare(b.short_display_name));
-      off.sort((a, b) => a.short_display_name.localeCompare(b.short_display_name));
+      available.sort(byProviderLabel);
+      off.sort(byProviderLabel);
       availableByDate[date] = available;
       offByDate[date] = off;
     }
 
     for (const list of Object.values(icuByDate)) {
-      list.sort((a, b) => a.short_display_name.localeCompare(b.short_display_name));
+      list.sort(byProviderLabel);
     }
     const maxIcu = Math.max(0, ...Object.values(icuByDate).map(v => v.length));
     const maxAvailable = Math.max(0, ...Object.values(availableByDate).map(v => v.length));
@@ -694,7 +693,9 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
   // Who the focus selector offers — buildProviderFocusList owns the rule and
   // its tests (the empty-fresh-schedule case regressed once already).
   const focusableProviders = useMemo(() => (grid ? buildProviderFocusList({
-    providers: grid.providers,
+    providers: grid.providers.map(p => ({
+        ...p, short_display_name: providerLabel(p), initials: p.initials ?? '',
+      })),
     profiles: grid.profiles,
     slots: grid.slots,
     siteId: grid.schedule.site_id,
@@ -788,7 +789,7 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
         const provider = providerById.get(a.provider_id);
         const lastName = provider?.last_name || a.providers.last_name || '';
         const initials = provider?.initials || a.providers.initials || '';
-        const shortName = a.providers.short_display_name;
+        const shortName = providerLabel(a.providers);
         const type = a.providers.provider_type;
         if (!workingByDate[date]) workingByDate[date] = [];
         workingByDate[date].push({
@@ -1448,7 +1449,11 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
   const candidateIndex = useMemo(() => {
     if (!grid) return null;
     return buildCandidateIndex({
-      providers: grid.providers,
+      // Labelled at the boundary: these consumers type the name as required,
+      // and 22 physicians have none stored.
+      providers: grid.providers.map(p => ({
+        ...p, short_display_name: providerLabel(p), initials: p.initials ?? '',
+      })),
       profiles: grid.profiles || [],
       availability: grid.availability || [],
       slots: grid.slots,

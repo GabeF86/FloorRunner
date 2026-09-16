@@ -60,8 +60,7 @@ import { WEIGHT_EPSILON, formatCallWeight } from '@/lib/callBurden';
 import { computeCoverageForecast, formatCalls } from '@/lib/coverageForecast';
 import {
   callCensusFromGrid,
-  type GridData, type Provider, type AvailabilityEntry,
-} from './gridShared';
+  type GridData, type Provider, type AvailabilityEntry, providerLabel, byProviderLabel } from './gridShared';
 
 export function CallCountsModal(
   { grid, onClose, onFocusProvider }:
@@ -181,7 +180,7 @@ export function CallCountsModal(
   const providers = Array.from(allProviderIds)
     .map(id => providerById[id])
     .filter(Boolean)
-    .sort((a, b) => a.short_display_name.localeCompare(b.short_display_name));
+    .sort(byProviderLabel);
 
   const getCount = (pid: string, key: string) => counts[pid]?.[key] || 0;
 

@@ -42,7 +42,7 @@ import {
 } from '@/lib/blockTargetsPanel';
 import { BlockTargetsTab } from './BlockTargetsTab';
 import { Button } from '@/components/ui';
-import { type Provider, type EmploymentProfile } from './gridShared';
+import { type Provider, type EmploymentProfile, providerLabel, byProviderLabel } from './gridShared';
 
 /* ── Pool Selector Modal ─────────────────────────────────────────────────────
  * Lets the user hand-pick which providers are eligible for auto-generation
@@ -303,7 +303,7 @@ export function PoolSelectorModal({
     .sort((a, b) => a.last_name.localeCompare(b.last_name))
     .map(p => ({
       providerId: p.id,
-      displayName: p.last_name || p.short_display_name,
+      displayName: providerLabel(p),
       // genContext's coercion (`fte_value || 1`), NOT the page's display `?? 1`:
       // this number is written as the manifest's scenarioFte, which OVERRIDES
       // fte_value for the generation. Coercing differently here would let a 0
