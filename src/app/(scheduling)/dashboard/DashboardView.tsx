@@ -14,7 +14,7 @@
 import Link from 'next/link';
 import type { ReactNode } from 'react';
 import { sbSchedulingServer } from '@/lib/supabaseScheduling';
-import { PageHeader, Card, Badge, Table, EmptyState, Banner, Button, scheduleStatusTone } from '@/components/ui';
+import { PageHeader, Card, Badge, Table, EmptyState, Banner, Button, SectionLabel, scheduleStatusTone } from '@/components/ui';
 import type { DashboardData, Panel, ProviderMix, ScheduleRow, StaffChip } from './queries';
 import { formatShare, obligationColumns, type SiteCallObligation } from '@/lib/siteCallObligation';
 import PhysicianPlannerCard from './PhysicianPlannerCard';
@@ -46,24 +46,19 @@ function StatCard({
 }) {
   return (
     <Card>
-      <div
-        style={{
-          fontSize: 'var(--fs-xs)',
-          fontWeight: 500,
-          fontFamily: 'var(--font-mono), ui-monospace, monospace',
-          textTransform: 'uppercase',
-          letterSpacing: 0.6,
-          color: 'var(--text-muted)',
-          marginBottom: 'var(--space-2)',
-        }}
-      >
-        {label}
-      </div>
+      <SectionLabel rule={false}>{label}</SectionLabel>
       {panel.error ? (
         <Banner tone="error">{panel.error}</Banner>
       ) : (
         <>
-          <div style={{ fontSize: 28, fontWeight: 800, lineHeight: 1.1, color: 'var(--text-strong)' }}>
+          {/* Mono and tabular, per the deck: a row of stat cards is read
+              across, and proportional digits make that row ripple. */}
+          <div style={{
+            fontFamily: 'var(--font-mono), ui-monospace, monospace',
+            fontVariantNumeric: 'tabular-nums',
+            fontSize: 30, fontWeight: 600, lineHeight: 1.1,
+            letterSpacing: -0.5, color: 'var(--text-strong)',
+          }}>
             {panel.data ?? 0}
           </div>
           {(panel.data ?? 0) === 0 && (
@@ -82,24 +77,17 @@ function SchedulesStatCard({ panel }: { panel: DashboardData['schedules'] }) {
   const total = Object.values(byStatus).reduce((a, b) => a + b, 0);
   return (
     <Card>
-      <div
-        style={{
-          fontSize: 'var(--fs-xs)',
-          fontWeight: 500,
-          fontFamily: 'var(--font-mono), ui-monospace, monospace',
-          textTransform: 'uppercase',
-          letterSpacing: 0.6,
-          color: 'var(--text-muted)',
-          marginBottom: 'var(--space-2)',
-        }}
-      >
-        Schedules
-      </div>
+      <SectionLabel rule={false}>Schedules</SectionLabel>
       {panel.error ? (
         <Banner tone="error">{panel.error}</Banner>
       ) : (
         <>
-          <div style={{ fontSize: 28, fontWeight: 800, lineHeight: 1.1, color: 'var(--text-strong)' }}>{total}</div>
+          <div style={{
+            fontFamily: 'var(--font-mono), ui-monospace, monospace',
+            fontVariantNumeric: 'tabular-nums',
+            fontSize: 30, fontWeight: 600, lineHeight: 1.1,
+            letterSpacing: -0.5, color: 'var(--text-strong)',
+          }}>{total}</div>
           {total === 0 ? (
             <Link href="/schedules" style={{ textDecoration: 'none' }}>
               <div style={ZERO_HINT_STYLE}>Create your first schedule to start generating call coverage.</div>
@@ -335,7 +323,12 @@ function StaffSection({
         }}>
           ▸
         </span>
-        <span style={{ fontSize: 'var(--fs-lg)', fontWeight: 800, color: 'var(--text-strong)', letterSpacing: -0.3 }}>
+        <span style={{
+          fontFamily: 'var(--font-mono), ui-monospace, monospace',
+          fontVariantNumeric: 'tabular-nums',
+          fontSize: 'var(--fs-lg)', fontWeight: 600,
+          color: 'var(--text-strong)', letterSpacing: -0.3,
+        }}>
           {value}
         </span>
         <span style={{ fontSize: 'var(--fs-sm)', fontWeight: 600, color: 'var(--text-muted)' }}>
@@ -538,8 +531,9 @@ export function ObligationCard({ panel }: { panel: Panel<SiteCallObligation> }) 
                   key={g.key}
                   style={{
                     textAlign: 'right', padding: '0 0 6px var(--space-4)',
+                    fontFamily: 'var(--font-mono), ui-monospace, monospace',
                     fontSize: 'var(--fs-xs)', textTransform: 'uppercase', letterSpacing: 0.6,
-                    fontWeight: 700,
+                    fontWeight: 600,
                     // A total is a different KIND of column, not a louder one.
                     color: g.isSum ? 'var(--danger)' : 'var(--text-dim)',
                     borderBottom: `1px solid ${g.isSum ? 'var(--danger)' : 'var(--border)'}`,

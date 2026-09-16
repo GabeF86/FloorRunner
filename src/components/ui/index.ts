@@ -9,3 +9,5 @@ export { PageHeader, type PageHeaderProps } from './PageHeader';
 export { Banner, type BannerProps, type BannerTone } from './Banner';
 export { Spinner, type SpinnerProps } from './Spinner';
 export { scheduleStatusTone, scheduleStatusLabel, SCHEDULE_STATUSES } from './statusTones';
+export { SectionLabel, SourceTag, type SourceSystem } from './SectionLabel';
+export { StatBlock } from './StatBlock';
