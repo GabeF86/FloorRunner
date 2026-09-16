@@ -553,3 +553,86 @@ describe('shiftSkills evaluator', () => {
     expect(v.filter(x => x.rule_name === 'Shift skill requirement')).toHaveLength(0);
   });
 });
+
+// ── backupPairing ────────────────────────────────────────────────────────────
+//
+// Replaces the old "C1 Requires C2 Backup" rule, which named its partner
+// explicitly and therefore only ever worked at the one site that wrote it. The
+// partner is derived from call_rank here, so "first call needs second call
+// behind it" holds anywhere without restating which code that is.
+describe('backupPairing evaluator', () => {
+  const C1 = { ...st('C1'), call_rank: 0, requires_backup_pairing: true };
+  const C2 = { ...st('C2'), call_rank: 1 };
+  const C3 = { ...st('C3'), call_rank: 2 };
+  const byCode = new Map<string, ShiftTypeRow>([['C1', C1], ['C2', C2], ['C3', C3]]);
+
+  const sameDay = (over: Array<{ code: string; provider: string | null }>) =>
+    over.map((o, i) => ({
+      slot_id: `s${i}`, slot_date: '2026-01-07', shift_type_code: o.code,
+      shift_type_category: 'call', provider_id: o.provider, required_count: 1,
+    }));
+
+  const at = (over: Partial<EvaluationContext> = {}) =>
+    byCategory(ctx({ shiftType: C1, shiftTypesByCode: byCode, ...over }), 'pairing');
+
+  it('flags a filled C1 whose C2 slot is open', () => {
+    // The live case: the published Paoli schedule has 9 days like this.
+    const v = at({ sameDayAssignments: sameDay([{ code: 'C1', provider: 'p1' }, { code: 'C2', provider: null }]) });
+    expect(v).toHaveLength(1);
+    expect(v[0].severity).toBe('hard');
+    expect(v[0].message).toContain('no C2 beside it');
+  });
+
+  it('passes when the C2 is filled', () => {
+    expect(at({ sameDayAssignments: sameDay([{ code: 'C1', provider: 'p1' }, { code: 'C2', provider: 'p2' }]) }))
+      .toHaveLength(0);
+  });
+
+  it('derives the partner from RANK, not from the code name', () => {
+    // A site whose second call is called something else must still be covered.
+    const alt = { ...st('BACKUP'), call_rank: 1 };
+    const v = byCategory(ctx({
+      shiftType: C1,
+      shiftTypesByCode: new Map<string, ShiftTypeRow>([['C1', C1], ['BACKUP', alt]]),
+      sameDayAssignments: sameDay([{ code: 'BACKUP', provider: null }]),
+    }), 'pairing');
+    expect(v).toHaveLength(1);
+    expect(v[0].message).toContain('no BACKUP beside it');
+  });
+
+  it('picks the NEXT rank down, not the lowest-ranked call', () => {
+    // With C2 filled, an empty C3 must not be read as the missing backup.
+    expect(at({ sameDayAssignments: sameDay([
+      { code: 'C2', provider: 'p2' }, { code: 'C3', provider: null },
+    ]) })).toHaveLength(0);
+  });
+
+  it('is SILENT when no backup slot exists that day', () => {
+    // A missing SLOT is a template question, and coverage/openSlot already
+    // speak to it. Saying it twice in different words trains people to skim.
+    expect(at({ sameDayAssignments: sameDay([{ code: 'C1', provider: 'p1' }]) })).toHaveLength(0);
+  });
+
+  it('does not fire for a shift that needs no backup', () => {
+    // C2 at Paoli — it IS the backup, and flagging it would have produced a
+    // false alarm on every single C2 day.
+    expect(byCategory(ctx({
+      shiftType: C2, shiftTypesByCode: byCode,
+      sameDayAssignments: sameDay([{ code: 'C3', provider: null }]),
+    }), 'pairing')).toHaveLength(0);
+  });
+
+  it('does not fire on an unassigned slot', () => {
+    expect(at({ providerId: null, sameDayAssignments: sameDay([{ code: 'C2', provider: null }]) }))
+      .toHaveLength(0);
+  });
+
+  it('stays quiet when call_rank is absent (pre-patch18 load)', () => {
+    const noRank = { ...st('C1'), requires_backup_pairing: true };
+    expect(byCategory(ctx({
+      shiftType: noRank,
+      shiftTypesByCode: new Map<string, ShiftTypeRow>([['C1', noRank], ['C2', C2]]),
+      sameDayAssignments: sameDay([{ code: 'C2', provider: null }]),
+    }), 'pairing')).toHaveLength(0);
+  });
+});

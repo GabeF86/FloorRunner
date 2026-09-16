@@ -333,6 +333,58 @@ const shiftSkills: Evaluator = ctx => {
   }];
 };
 
+/**
+ * A call that must have the next call down filled beside it.
+ *
+ * shift_types.requires_backup_pairing, like requires_specific_skills, was a
+ * column that looked like a control and did nothing — set on C1 at Paoli and
+ * read by no code at all. The old rule that checked this named its partner
+ * explicitly (`required_backup_code: 'C2'`), which is why it only ever worked
+ * at one site.
+ *
+ * The partner is DERIVED from call_rank instead: the next-ranked call at the
+ * same site. "First call needs second call behind it" is then true at every
+ * site without anyone restating which code that is, and it survives a site
+ * that names its calls differently.
+ *
+ * Two deliberate silences, both about not crying wolf:
+ *   - If no slot for the backup code exists that day, nothing is flagged. A
+ *     missing SLOT is a template question, and coverage/openSlot already speak
+ *     to it; saying it twice in different words trains people to skim.
+ *   - It fires once per day, on the slot that needs the backup, not on every
+ *     assignment that happens to share the date.
+ */
+const backupPairing: Evaluator = ctx => {
+  const st = ctx.shiftType;
+  if (!ctx.providerId) return [];          // an empty slot needs no backup
+  if (!st.requires_backup_pairing) return [];
+  if (typeof st.call_rank !== 'number') return [];
+
+  // The next call down: lowest rank strictly greater than this one.
+  let backup: { code: string; rank: number } | null = null;
+  for (const t of ctx.shiftTypesByCode.values()) {
+    if (t.category !== 'call') continue;
+    if (t.parent_call_code) continue;       // split segments ride with a parent
+    if (typeof t.call_rank !== 'number') continue;
+    if (t.call_rank <= st.call_rank) continue;
+    if (!backup || t.call_rank < backup.rank) backup = { code: t.code, rank: t.call_rank };
+  }
+  if (!backup) return [];                   // nothing ranks below — no backup exists
+
+  const slots = ctx.sameDayAssignments.filter(a => a.shift_type_code === backup!.code);
+  if (slots.length === 0) return [];        // no slot to fill; see note above
+  if (slots.some(a => a.provider_id)) return [];
+
+  return [{
+    rule_id: null,
+    rule_name: 'Backup call unfilled',
+    category: 'pairing',
+    severity: 'hard',
+    message: `${st.code} on ${ctx.slot.slot_date} has no ${backup.code} beside it — `
+      + `${st.code} requires the next call to be covered.`,
+  }];
+};
+
 const poolEligibility: Evaluator = ctx => {
   if (!ctx.providerId) return [];
   const st = ctx.shiftType;
@@ -515,6 +567,7 @@ export const evaluators: Evaluator[] = [
   scenarioProhibition,
   weekendAdjacentPto,
   shiftSkills,
+  backupPairing,
   coverage,
   openSlot,
   poolEligibility,

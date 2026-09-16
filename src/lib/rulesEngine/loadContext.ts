@@ -144,7 +144,7 @@ export async function loadSiteValidationContext(
   // is exact — silent degradation (the providerLimits posture).
   let stRes = await sb
     .from('shift_types')
-    .select('id, site_id, code, name, category, requires_credential, requires_specific_skills, generation_engine, call_burden_weight, parent_call_code')
+    .select('id, site_id, code, name, category, requires_credential, requires_specific_skills, generation_engine, call_burden_weight, parent_call_code, call_rank, requires_backup_pairing')
     .eq('site_id', siteId);
   if (stRes.error && /column/i.test((stRes.error as { message?: string }).message || '')) {
     stRes = await sb
@@ -166,6 +166,12 @@ export async function loadSiteValidationContext(
     generation_engine: (s.generation_engine as string | null) ?? null,
     call_burden_weight: (s.call_burden_weight as number | null) ?? null,
     parent_call_code: (s.parent_call_code as string | null) ?? null,
+    // Absent on the narrow fallback select below (pre-patch18 databases), and
+    // the backup evaluator treats absent as "no requirement" rather than
+    // guessing — the same silent-degradation posture the other optional
+    // columns take here.
+    call_rank: (s.call_rank as number | null) ?? null,
+    requires_backup_pairing: (s.requires_backup_pairing as boolean | null) ?? null,
   }));
   return {
     shiftTypesById: new Map(shiftTypeRows.map(s => [s.id, s])),

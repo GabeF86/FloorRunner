@@ -47,6 +47,13 @@ export interface ShiftTypeRow {
   category: 'call' | 'regular' | 'float' | 'admin' | 'unavailable' | 'leave';
   requires_credential: string | null;
   requires_specific_skills: string[];
+  /**
+   * Ordering within a day's call: 0 is first call, 1 second, and so on. The
+   * backup check reads it to find "the next call down" without naming codes.
+   */
+  call_rank?: number | null;
+  /** True when this call must have the next-ranked call filled beside it. */
+  requires_backup_pairing?: boolean | null;
   // Which generation engine owns this shift type: 'call' (chains/relief D-codes),
   // 'day_pool' (7-3/7-5 day-doc slots), 'none', or null when unknown/pre-patch18.
   // Read-only for validation — the poolEligibility evaluator keys on it.
