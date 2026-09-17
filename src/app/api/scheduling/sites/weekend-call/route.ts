@@ -99,21 +99,35 @@ export async function PUT(req: Request) {
   const siteId = typeof body.site_id === 'string' ? body.site_id : '';
   if (!siteId) return NextResponse.json({ error: 'site_id is required.' }, { status: 400 });
 
-  const md = readCount(body.md);
-  const crna = readCount(body.crna);
+  // Partial, for the same reason the day grid's route is: two boxes saved a
+  // few milliseconds apart must not overwrite each other.
+  const has = (k: string) => Object.prototype.hasOwnProperty.call(body, k);
+  if (!has('md') && !has('crna')) {
+    return NextResponse.json({ error: 'Provide md, crna, or both.' }, { status: 400 });
+  }
+  const md = has('md') ? readCount(body.md) : undefined;
+  const crna = has('crna') ? readCount(body.crna) : undefined;
   if (md === 'invalid' || crna === 'invalid') {
     return NextResponse.json(
       { error: 'Counts must be whole numbers of 0 or more, or empty for "not configured".' },
       { status: 400 });
   }
 
-  // Both cleared means the site has no standing complement, which is a real
-  // state (an ASC that runs no weekend call) — stored as null, so weekends
-  // there fall back to N/A rather than to a zero that would read as covered.
-  const value = md === null && crna === null ? null : { md, crna };
+  const sbRead = sbSchedulingServer();
+  const { data: current, error: readError } = await sbRead.from('sites')
+    .select('weekend_staffing').eq('id', siteId).single();
+  if (readError) return NextResponse.json({ error: readError.message }, { status: 500 });
+  const existing = parseWeekendCall(current?.weekend_staffing) ?? { md: null, crna: null };
 
-  const sb = sbSchedulingServer();
-  const { data, error } = await sb.from('sites')
+  const nextMd = md === undefined ? existing.md : md;
+  const nextCrna = crna === undefined ? existing.crna : crna;
+
+  // Both cleared means the site has no standing complement, which is a real
+  // state (a centre that runs no weekend call) — stored as null, so its
+  // weekends fall back to N/A rather than to a zero that reads as covered.
+  const value = nextMd === null && nextCrna === null ? null : { md: nextMd, crna: nextCrna };
+
+  const { data, error } = await sbRead.from('sites')
     .update({ weekend_staffing: value }).eq('id', siteId)
     .select('id, short_name, weekend_staffing').single();
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });

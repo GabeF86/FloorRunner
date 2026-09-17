@@ -22,7 +22,10 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Card, Banner, SectionLabel } from '@/components/ui';
-import { demandKey, parseDemandInput, type DemandRow, type WeekendCall } from '@/lib/staffingDemand';
+import {
+  demandKey, parseDemandInput, parseWeekendCall,
+  type DemandRow, type WeekendCall,
+} from '@/lib/staffingDemand';
 import type { CoverageRow } from '@/lib/operationsBoard';
 
 const mono = {
@@ -99,28 +102,31 @@ export function DemandEntry(
       return;
     }
 
-    const existing = manual.get(key);
-    const next = {
-      md_needed: field === 'md' ? parsed : (existing?.md_needed ?? null),
-      crna_needed: field === 'crna' ? parsed : (existing?.crna_needed ?? null),
-    };
-
+    // ONLY the field that changed. Sending both meant tabbing from MD to CRNA
+    // fired two saves milliseconds apart, and the second carried a copy of MD
+    // read before the first had landed — so a freshly typed number went back
+    // as null. The route is partial; anything not sent is left alone.
     setState(s => ({ ...s, [key]: 'saving' }));
     try {
       const res = await fetch('/api/scheduling/staffing-demand', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ site_id: siteId, demand_date: date, ...next }),
+        body: JSON.stringify({
+          site_id: siteId,
+          demand_date: date,
+          [field === 'md' ? 'md_needed' : 'crna_needed']: parsed,
+        }),
       });
       const body = await res.json();
       if (!res.ok) throw new Error(body?.error || `Save failed (${res.status})`);
 
+      // Merge the SERVER's row, not a locally reconstructed one. It is the
+      // only copy that reflects both fields after a concurrent save.
       setRows(prev => {
         const others = (prev ?? []).filter(
-          r => !(r.site_id === siteId && r.demand_date === date && (r.source ?? 'manual') === 'manual'));
-        return body.cleared
-          ? others
-          : [...others, { site_id: siteId, demand_date: date, source: 'manual', ...next }];
+          r => !(r.site_id === siteId && r.demand_date === date
+            && (r.source ?? 'manual') === 'manual'));
+        return body.cleared ? others : [...others, body.row as DemandRow];
       });
       setState(s => ({ ...s, [key]: 'saved' }));
       setMessage(m => ({ ...m, [key]: '' }));
@@ -129,7 +135,7 @@ export function DemandEntry(
       setState(s => ({ ...s, [key]: 'error' }));
       setMessage(m => ({ ...m, [key]: e instanceof Error ? e.message : 'Save failed.' }));
     }
-  }, [manual, onSaved]);
+  }, [onSaved]);
 
   if (loadError) return <Banner tone="error">{loadError}</Banner>;
 
@@ -340,21 +346,22 @@ function WeekendCallSection({ onSaved }: { onSaved?: () => void }) {
   const save = useCallback(async (site: WeekendSite, field: 'md' | 'crna', raw: string) => {
     const parsed = parseDemandInput(raw);
     if (parsed === 'invalid') { setError('Whole numbers only.'); return; }
-    const next: WeekendCall = {
-      md: field === 'md' ? parsed : (site.configured?.md ?? null),
-      crna: field === 'crna' ? parsed : (site.configured?.crna ?? null),
-    };
     setBusy(site.id);
     try {
       const res = await fetch('/api/scheduling/sites/weekend-call', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ site_id: site.id, ...next }),
+        // Only the changed field — same race as the day grid, same fix.
+        body: JSON.stringify({
+          site_id: site.id,
+          [field === 'md' ? 'md' : 'crna']: parsed,
+        }),
       });
       const body = await res.json();
       if (!res.ok) throw new Error(body?.error || `Save failed (${res.status})`);
+      const saved = parseWeekendCall(body.site?.weekend_staffing);
       setSites(prev => (prev ?? []).map(s => (s.id === site.id
-        ? { ...s, configured: next.md === null && next.crna === null ? null : next }
+        ? { ...s, configured: saved }
         : s)));
       setError(null);
       onSaved?.();

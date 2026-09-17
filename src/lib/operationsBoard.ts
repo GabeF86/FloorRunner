@@ -172,6 +172,44 @@ export function siteOpenDays(raw: unknown): boolean[] {
   return open;
 }
 
+/**
+ * Is this shift part of the day's FLOOR COVERAGE?
+ *
+ * The overnight call doctor is on the schedule but is not in a room: Paoli's
+ * C1 runs 15:00 → 07:00, so counting them among Friday's available staff
+ * overstates the floor by one and hides a genuine gap. The schedule grid has
+ * excluded weekday first call from its headline count since it was built; the
+ * staffing board was not, which is why Paoli's Friday read 9 when 8 people
+ * were actually there during the day.
+ *
+ * Stated as a TIME rather than as `code === 'C1'`, which is what the grid
+ * does. The code test only works at a site whose first call happens to be
+ * called C1; the time test works at every site, and it also catches the
+ * evening and night split segments (C1E8 at 15:00, C1N12 at 19:00) that the
+ * code test misses entirely.
+ *
+ * WEEKENDS COUNT EVERYTHING. There is no day roster on a Saturday — the call
+ * team IS the coverage, and Paoli's weekend requirement of three is exactly
+ * C1, C2 and C3. Excluding C1 there would report every weekend as a body
+ * short.
+ *
+ * A shift with no start time counts, deliberately: several imported types
+ * state none, and dropping them would silently under-report a whole site.
+ */
+export function countsAsFloorCoverage(
+  shift: { start_time?: string | null; category?: string | null } | null,
+  isWeekend: boolean,
+): boolean {
+  if (!shift) return false;
+  if (isWeekend) return true;
+  if (!shift.start_time) return true;
+  const hour = Number(shift.start_time.slice(0, 2));
+  if (!Number.isFinite(hour)) return true;
+  // The OR day ends at 15:00 here — 7-3 finishes then. Anything starting at or
+  // after it arrives as the floor empties.
+  return hour < 15;
+}
+
 // ── 1. Available vs needed, by site and day ────────────────────────────────
 
 export type CellStatus =
@@ -260,6 +298,10 @@ export function coverageWeek(input: {
   const bySiteDate = new Map<string, Map<string, { physician: number; crna: number }>>();
   for (const slot of input.slots) {
     if (!slot.shift_types) continue;
+    // The overnight call doctor is on the schedule but not on the floor —
+    // see countsAsFloorCoverage.
+    const dow = dayOfWeekUTC(slot.slot_date);
+    if (!countsAsFloorCoverage(slot.shift_types, dow === 0 || dow === 6)) continue;
     for (const a of slot.assignments || []) {
       if (!a?.provider_id) continue;
       let byDate = bySiteDate.get(slot.site_id);

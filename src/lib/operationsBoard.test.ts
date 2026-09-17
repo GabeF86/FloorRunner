@@ -788,3 +788,67 @@ describe('why nobody can be moved — the reason has to be specific', () => {
     expect(p.unmatched[0].reason).toBe('nobody spare today is credentialed there');
   });
 });
+
+describe('the overnight call doctor is not daytime floor coverage', () => {
+  // Paoli's Friday read MD 9 when 8 people were actually in rooms: the C1
+  // doctor starts at 15:00. The schedule grid has excluded weekday first call
+  // from its headline count since it was built; the board was not.
+  const sites = [site('s1', 'Paoli')];
+  const FRI = '2026-09-18';
+  const SATURDAY = '2026-09-19';
+
+  const cover = (slots: OpsSlotRow[], dates: string[]) => coverageWeek({
+    sites, providers: [md, md2], slots, dates, demand: new Map(),
+  });
+
+  it('excludes a 15:00 call start on a WEEKDAY', () => {
+    const rows = cover([
+      slot('s1', FRI, 'C1', { category: 'call', rank: 0, held: ['p1'], start: '15:00', end: '07:00' }),
+      slot('s1', FRI, '7-5', { held: ['p2'], start: '07:00', end: '17:00' }),
+    ], [FRI]);
+    expect(rows[0].cells[0].groups.find(g => g.group === 'physician')?.available).toBe(1);
+  });
+
+  it('INCLUDES it at the weekend, where the call team IS the coverage', () => {
+    // Paoli's stated weekend requirement is 3 — C1, C2 and C3. Excluding C1
+    // there would report every weekend a body short.
+    const rows = cover([
+      slot('s1', SATURDAY, 'C1', { category: 'call', rank: 0, held: ['p1'], start: '15:00', end: '07:00' }),
+      slot('s1', SATURDAY, 'C2', { category: 'call', rank: 1, held: ['p2'], start: '07:00', end: '19:00' }),
+    ], [SATURDAY]);
+    expect(rows[0].cells[0].groups.find(g => g.group === 'physician')?.available).toBe(2);
+  });
+
+  it('counts a 07:00 call start — second call IS on the floor', () => {
+    const rows = cover([
+      slot('s1', FRI, 'C2', { category: 'call', rank: 1, held: ['p1'], start: '07:00', end: '19:00' }),
+    ], [FRI]);
+    expect(rows[0].cells[0].groups.find(g => g.group === 'physician')?.available).toBe(1);
+  });
+
+  it('excludes the evening and night SPLIT segments too', () => {
+    // The code test the grid uses (`code === 'C1'`) misses C1E8 and C1N12
+    // entirely. A time test catches them.
+    const rows = cover([
+      slot('s1', FRI, 'C1E8', { category: 'call', held: ['p1'], start: '15:00', end: '23:00' }),
+      slot('s1', FRI, 'C1N12', { category: 'call', held: ['p2'], start: '19:00', end: '07:00' }),
+    ], [FRI]);
+    expect(rows[0].cells[0].groups.every(g => g.available === 0)).toBe(true);
+  });
+
+  it('counts a shift that states NO times rather than dropping it', () => {
+    // Several imported types state none. Dropping them would silently
+    // under-report a whole site.
+    const rows = cover([
+      slot('s1', FRI, 'DAY', { held: ['p1'], start: undefined, end: undefined }),
+    ], [FRI]);
+    expect(rows[0].cells[0].groups.find(g => g.group === 'physician')?.available).toBe(1);
+  });
+
+  it('counts a late-morning start', () => {
+    const rows = cover([
+      slot('s1', FRI, '11-19', { held: ['p1'], start: '11:00', end: '19:00' }),
+    ], [FRI]);
+    expect(rows[0].cells[0].groups.find(g => g.group === 'physician')?.available).toBe(1);
+  });
+});
