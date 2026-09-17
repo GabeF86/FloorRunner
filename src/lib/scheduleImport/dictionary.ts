@@ -199,17 +199,31 @@ const BMH: DictionaryEntry[] = [
 const LANKENAU: DictionaryEntry[] = [
   { code: 'pLank1st', kind: 'call', site: 'LMC', shiftCode: 'C1', certainty: 'sure',
     note: '→pLankP1st 39/40. Onto the existing LMC C1 (15:00–07:00, post-call)' },
-  { code: 'pLank2nd', kind: 'call', site: 'LMC', shiftCode: 'CC1', certainty: 'assumed',
-    assumption: 'Its pool is exactly the six who also take the weekend Cardiac Back-Up '
-      + '(AHMB HERC INTG MCGI PENE SCOK), which reads as the cardiac-credentialed '
-      + 'subgroup — so it is pointed at the existing "Cardiac 1st Call" rather than at '
-      + 'plain C2, whose stored requires_post_call_rule=false contradicts the sheet '
-      + '(pLank2nd→pLankP2nd 41/43).' },
+  // CORRECTED 2026-09-17 (Gabriel): this is C2, the weekend beeper call. The
+  // import sent it to CC1 because its taker pool is exactly the six who also
+  // hold the weekend cardiac backup — a wrong inference from a right
+  // observation. The pool really is that narrow; it just does not make the
+  // tier "cardiac first call". The sheet's post-call evidence stands and C2's
+  // stored requires_post_call_rule=false was corrected to true.
+  { code: 'pLank2nd', kind: 'call', site: 'LMC', shiftCode: 'C2', certainty: 'sure',
+    note: '→pLankP2nd 41/43. Lankenau\'s 2nd call, the beeper' },
   { code: 'pLank3rd', kind: 'call', site: 'LMC', shiftCode: 'C3', certainty: 'sure',
     note: '→pLankP3rd 32/33. No existing LMC code; created.' },
-  { code: 'pLank4th', kind: 'call', site: 'LMC', shiftCode: 'C4', certainty: 'sure',
-    note: 'Sat 6 / Sun 4 only, never a weekday, never followed by a post-call day. '
-      + 'Weekend 1st-call partner: Saturday 1st becomes Sunday 4th and vice versa' },
+  // UNRESOLVED 2026-09-17. Gabriel: "LMC doesn't have a C4 on the weekends" —
+  // the weekend is C1, C2, CC2 and C3. But the sheet writes pLank4th on ten
+  // weekend days, and every single holder is C1 the day before (10/10) and 7 of
+  // 10 are C1 the day after. That reads as a HANDOFF LABEL on the partner of a
+  // multi-day first-call stretch rather than a fifth position — in which case
+  // it should create no assignment at all, because the person's C1 on the
+  // adjacent days already records the call.
+  //
+  // Left mapping to C4 until that is confirmed. Dropping ten assignments on my
+  // reading of an adjacency is not a thing to do quietly.
+  { code: 'pLank4th', kind: 'call', site: 'LMC', shiftCode: 'C4', certainty: 'assumed',
+    assumption: 'Gabriel says there is no C4 at Lankenau. Every pLank4th holder is '
+      + 'C1 the day before, so this is probably a handoff label on the first-call '
+      + 'partner rather than a position — but confirm before deleting ten '
+      + 'assignments.' },
   { code: 'pLankCardBUp', kind: 'call', site: 'LMC', shiftCode: 'CC2', certainty: 'sure',
     note: 'Sat 8 / Sun 8 only, same six-physician pool, no post-call — the existing '
       + 'LMC "Cardiac Backup Call" exactly' },
