@@ -25,6 +25,7 @@ import { useMemo, useState } from 'react';
 import Link from 'next/link';
 import { Card, Banner, PageHeader, SectionLabel, StatBlock, Badge } from '@/components/ui';
 import { GROUP_LABEL, type CellStatus, type CoverageCell } from '@/lib/operationsBoard';
+import { DemandEntry } from './DemandEntry';
 import type { OperationsData } from './queries';
 
 // ── Cell treatment ─────────────────────────────────────────────────────────
@@ -35,15 +36,18 @@ const CELL: Record<CellStatus, { bg: string; ink: string; rule: string }> = {
   gap:         { bg: 'var(--danger-bg)', ink: 'var(--danger)',    rule: 'var(--danger)' },
   // The two "no number" states share an ink so they read as one idea — absence
   // — and neither can be mistaken for coverage.
+  // The two "no grade" states share an ink so they read as one idea —
+  // absence — and neither can be mistaken for coverage.
   closed:      { bg: 'transparent',      ink: 'var(--text-faint)', rule: 'transparent' },
-  unscheduled: { bg: 'transparent',      ink: 'var(--text-faint)', rule: 'transparent' },
+  unstated:    { bg: 'transparent',      ink: 'var(--text-faint)', rule: 'transparent' },
 };
 
 const LEGEND: Array<{ status: CellStatus; label: string }> = [
   { status: 'covered', label: 'covered' },
   { status: 'short', label: 'one short' },
   { status: 'gap', label: 'gap' },
-  { status: 'closed', label: 'closed / no schedule' },
+  { status: 'unstated', label: 'N/A — no count entered' },
+  { status: 'closed', label: 'closed' },
 ];
 
 const DOW = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -71,25 +75,45 @@ const mono = {
 
 function CoverageCellView({ cell }: { cell: CoverageCell }) {
   const t = CELL[cell.status];
-  if (cell.status === 'closed' || cell.status === 'unscheduled') {
+
+  if (cell.status === 'closed') {
     return (
       <td style={{
         padding: '7px 10px', textAlign: 'center', ...mono,
         fontSize: 'var(--fs-xs)', color: t.ink, letterSpacing: 0.5,
         borderBottom: '1px solid var(--border-faint)',
-      }}
-        title={cell.status === 'closed'
-          ? 'This site does not run on this day.'
-          : 'No published schedule covers this day yet — this is a blank, not a zero.'}
-      >
-        {cell.status === 'closed' ? 'CLOSED' : '—'}
+      }} title="This site does not run on this day.">
+        CLOSED
       </td>
     );
   }
+
+  // Nobody has counted this day. The people already on it are still shown in
+  // the tooltip — they are a real fact — but the cell cannot be graded, and
+  // printing 0/0 in green over an uncounted day is exactly the failure the
+  // demand table exists to prevent.
+  if (cell.status === 'unstated') {
+    const staffed = cell.groups
+      .filter(g => g.available > 0)
+      .map(g => `${g.available} ${GROUP_LABEL[g.group]}`).join(', ');
+    return (
+      <td style={{
+        padding: '7px 10px', textAlign: 'center', ...mono,
+        fontSize: 'var(--fs-xs)', color: t.ink, letterSpacing: 0.5,
+        borderBottom: '1px solid var(--border-faint)', cursor: 'help',
+      }} title={`No staffing need entered for this day.${staffed ? ` ${staffed} currently scheduled.` : ''}`}>
+        N/A
+      </td>
+    );
+  }
+
   return (
     <td
-      title={cell.groups.map(g => `${GROUP_LABEL[g.group]} ${g.filled} of ${g.required}`).join(' · ')
-        + (cell.shortBy > 0 ? ` — ${cell.shortBy} short` : ' — covered')}
+      title={cell.groups.map(g => g.needed === null
+        ? `${GROUP_LABEL[g.group]} ${g.available} scheduled, need not stated`
+        : `${GROUP_LABEL[g.group]} ${g.available} of ${g.needed} needed`).join(' · ')
+        + (cell.shortBy > 0 ? ` — ${cell.shortBy} short` : ' — covered')
+        + (cell.demandSource ? ` (${cell.demandSource} count)` : '')}
       style={{
         padding: '7px 10px', background: t.bg, ...mono,
         fontSize: 'var(--fs-xs)', lineHeight: 1.5,
@@ -98,30 +122,22 @@ function CoverageCellView({ cell }: { cell: CoverageCell }) {
         cursor: 'help',
       }}
     >
-      {cell.groups.map(g => (
-        <div key={g.group} style={{ display: 'flex', gap: 6, justifyContent: 'center' }}>
-          {/* An either-group row is unfilled BY DEFINITION — it only exists
-              while nobody is standing it — so "0/2" spends a ratio saying
-              nothing. It reads as the count of open rooms it is. */}
-          {g.group === 'either' ? (
-            <span style={{ color: t.ink, fontWeight: 700 }}>
-              {g.required - g.filled} open
+      {cell.groups.map(g => {
+        const short = g.needed !== null && g.available < g.needed;
+        return (
+          <div key={g.group} style={{ display: 'flex', gap: 6, justifyContent: 'center' }}>
+            <span style={{ color: 'var(--text-dim)', fontSize: 10, alignSelf: 'center' }}>
+              {GROUP_LABEL[g.group]}
             </span>
-          ) : (
-            <>
-              <span style={{ color: 'var(--text-dim)', fontSize: 10, alignSelf: 'center' }}>
-                {GROUP_LABEL[g.group]}
-              </span>
-              <span style={{
-                color: g.filled < g.required ? t.ink : 'var(--text)',
-                fontWeight: g.filled < g.required ? 700 : 500,
-              }}>
-                {g.filled}/{g.required}
-              </span>
-            </>
-          )}
-        </div>
-      ))}
+            <span style={{
+              color: short ? t.ink : 'var(--text)',
+              fontWeight: short ? 700 : 500,
+            }}>
+              {g.available}/{g.needed === null ? '—' : g.needed}
+            </span>
+          </div>
+        );
+      })}
     </td>
   );
 }
@@ -146,6 +162,8 @@ export function OperationsView({ data, fatal }: { data: OperationsData | null; f
   // ANYWHERE. Filtering client-side over rows already loaded, so choosing a
   // site is instant and costs no round trip.
   const [siteFilter, setSiteFilter] = useState<string | null>(null);
+  const [tab, setTab] = useState<'coverage' | 'demand'>('coverage');
+  const [savedSinceLoad, setSavedSinceLoad] = useState(false);
 
   const benchRows = useMemo(
     () => (siteFilter
@@ -219,8 +237,40 @@ export function OperationsView({ data, fatal }: { data: OperationsData | null; f
         </Banner>
       )}
 
+      {/* Coverage reads the demand; the entry tab writes it. Same grid, same
+          sites, same week — so the numbers are typed in exactly where they
+          will be read. */}
       <div style={{
-        display: 'grid', gap: 'var(--space-4)', alignItems: 'start',
+        display: 'flex', gap: 'var(--space-2)', marginBottom: 'var(--space-3)',
+        borderBottom: '1px solid var(--border)', paddingBottom: 'var(--space-2)',
+      }}>
+        <BoardTab active={tab === 'coverage'} onClick={() => setTab('coverage')}>
+          Coverage
+        </BoardTab>
+        <BoardTab active={tab === 'demand'} onClick={() => setTab('demand')}>
+          Manual entry for needed staff
+        </BoardTab>
+      </div>
+
+      {tab === 'demand' && (
+        <DemandEntry
+          sites={data.coverage}
+          dates={data.dates}
+          // The coverage tab is server-rendered, so a saved count only shows up
+          // there on the next load. Saying so beats silently disagreeing.
+          onSaved={() => setSavedSinceLoad(true)}
+        />
+      )}
+
+      {tab === 'demand' && savedSinceLoad && (
+        <Banner tone="info">
+          Counts saved. Reload the page to see them on the coverage tab.
+        </Banner>
+      )}
+
+      <div style={{
+        display: tab === 'coverage' ? 'grid' : 'none',
+        gap: 'var(--space-4)', alignItems: 'start',
         gridTemplateColumns: 'minmax(0, 2.1fr) minmax(300px, 1fr)',
       }} className="ops-split">
         {/* ── 1. Available vs needed ─────────────────────────────────────── */}
@@ -316,9 +366,11 @@ export function OperationsView({ data, fatal }: { data: OperationsData | null; f
             fontSize: 'var(--fs-xs)', color: 'var(--text-dim)', lineHeight: 1.6,
             borderTop: '1px solid var(--border-faint)',
           }}>
-            <strong style={{ color: 'var(--text-muted)' }}>Needed</strong> is the positions the
-            published schedule says exist — never a template&rsquo;s guess at what a day usually
-            takes. A day nobody has scheduled reads as a dash, not as zero needed.
+            <strong style={{ color: 'var(--text-muted)' }}>Needed</strong> is the staffing a day
+            actually requires, counted from the OR schedule — not a count of the positions the
+            schedule already contains, which could only ever say the schedule matches itself.
+            {' '}<strong style={{ color: 'var(--text-muted)' }}>Available</strong> is the people
+            on the published schedule that day. A day nobody has counted reads N/A, never 0.
             {' '}<strong style={{ color: 'var(--text-muted)' }}>Click a site</strong> to show the
             per diems credentialed there.
           </p>
@@ -434,7 +486,7 @@ export function OperationsView({ data, fatal }: { data: OperationsData | null; f
       </div>
 
       {/* ── 3. On the floor ──────────────────────────────────────────────── */}
-      <div style={{ marginTop: 'var(--space-5)' }}>
+      <div style={{ marginTop: 'var(--space-5)', display: tab === 'coverage' ? undefined : 'none' }}>
         <h2 style={{
           margin: '0 0 var(--space-1)', fontSize: 'var(--fs-lg)', fontWeight: 600,
         }}>
@@ -588,6 +640,31 @@ function FilterChip(
         opacity: active ? 0.85 : 0.65,
         fontVariantNumeric: 'tabular-nums',
       }}>{count}</span>
+    </button>
+  );
+}
+
+/** A board tab. Underlined when active, quiet when not — the same contract the
+ *  provider profile's tabs use, so the two do not read as different controls. */
+function BoardTab(
+  { active, onClick, children }: { active: boolean; onClick: () => void; children: React.ReactNode },
+) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-pressed={active}
+      className={active ? 'fr-focus' : 'fr-focus fr-btn fr-btn-ghost'}
+      style={{
+        padding: '6px 10px', borderRadius: 'var(--radius-sm)', cursor: 'pointer',
+        fontSize: 'var(--fs-sm)', fontWeight: 600,
+        background: active ? 'color-mix(in srgb, var(--blue) 12%, transparent)' : 'transparent',
+        color: active ? 'var(--blue)' : 'var(--text-muted)',
+        border: '1px solid ' + (active
+          ? 'color-mix(in srgb, var(--blue) 30%, transparent)' : 'transparent'),
+      }}
+    >
+      {children}
     </button>
   );
 }

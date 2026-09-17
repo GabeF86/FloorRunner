@@ -30,6 +30,7 @@
  * ─────────────────────────────────────────────────────────────────────────── */
 
 import { isDateBlocked, dayOfWeekUTC, addDays } from './rulesEngine/shared';
+import { demandKey, type ResolvedDemand } from './staffingDemand';
 
 // ── Row shapes ─────────────────────────────────────────────────────────────
 // Deliberately loose (`?: | null`) and free of DB types: every field here is
@@ -109,15 +110,14 @@ export interface OpsProfileRow {
   home_site_id?: string | null;
 }
 
-/** Who a slot counts toward. `either` is an unfilled both-groups slot: it is a
- *  real open position but it belongs to neither column until somebody stands
- *  it, and folding it into MD would invent a physician shortage. */
-export type CoverageGroup = 'physician' | 'crna' | 'either';
+/** The two staffing groups demand is stated in. There is no 'either' any more:
+ *  once NEEDED is an explicit MD and CRNA count, an unfilled slot has nothing
+ *  to contribute — availability is people, and an empty room is not a person. */
+export type CoverageGroup = 'physician' | 'crna';
 
 export const GROUP_LABEL: Record<CoverageGroup, string> = {
   physician: 'MD',
   crna: 'CRNA',
-  either: 'OPEN',
 };
 
 // ── Site open days ─────────────────────────────────────────────────────────
@@ -174,21 +174,28 @@ export function siteOpenDays(raw: unknown): boolean[] {
 
 // ── 1. Available vs needed, by site and day ────────────────────────────────
 
-export type CellStatus = 'covered' | 'short' | 'gap' | 'closed' | 'unscheduled';
+export type CellStatus = 'covered' | 'short' | 'gap' | 'closed' | 'unstated';
 
 export interface CoverageGroupCount {
   group: CoverageGroup;
-  filled: number;
-  required: number;
+  /** People actually on the schedule that day, by their own provider type. */
+  available: number;
+  /** From the demand table. NULL = nobody has stated what this day needs, and
+   *  the cell reads N/A. Never defaulted to zero: a zero would paint an
+   *  uncounted day green. */
+  needed: number | null;
 }
 
 export interface CoverageCell {
   date: string;
   status: CellStatus;
-  /** Only groups with something to say — never a 0/0 filler row. */
   groups: CoverageGroupCount[];
-  /** Σ over groups of max(0, required − filled). 0 on a covered cell. */
+  /** Σ over groups of max(0, needed − available), counting only groups whose
+   *  need has actually been stated. */
   shortBy: number;
+  /** Which row the needed figures came from, so the board can show whether a
+   *  scheduler counted it or the calculator did. Null when unstated. */
+  demandSource: ResolvedDemand['source'] | null;
 }
 
 export interface CoverageRow {
@@ -221,41 +228,30 @@ export function coverageWeek(input: {
   slots: ReadonlyArray<OpsSlotRow>;
   providers: ReadonlyArray<OpsProviderRow>;
   dates: ReadonlyArray<string>;
+  /** Resolved demand by `demandKey(siteId, date)` — see staffingDemand. An
+   *  absent entry is "not stated", which renders N/A. */
+  demand: ReadonlyMap<string, ResolvedDemand>;
 }): CoverageRow[] {
   const typeOf = new Map<string, string>();
   for (const p of input.providers) typeOf.set(p.id, p.provider_type || '');
 
-  // site -> date -> group -> counts
-  const bySiteDate = new Map<string, Map<string, Map<CoverageGroup, CoverageGroupCount>>>();
+  // AVAILABLE is people, counted by the provider type of whoever is standing
+  // the slot — not by what the shift type permits. A 'both' room filled by a
+  // CRNA is a CRNA on the floor, whatever the type allows; and an EMPTY room
+  // contributes nothing at all, because the question is how many bodies are
+  // there, not how many chairs.
+  const bySiteDate = new Map<string, Map<string, { physician: number; crna: number }>>();
   for (const slot of input.slots) {
     if (!slot.shift_types) continue;
-    const required = Math.max(0, slot.required_count ?? 1);
-    const held = (slot.assignments || []).filter(a => a?.provider_id);
-
-    // A both-groups slot belongs to whoever is actually standing it; unfilled,
-    // it belongs to neither (see CoverageGroup).
-    const declared = slot.shift_types.provider_group;
-    let group: CoverageGroup;
-    if (declared === 'physician' || declared === 'crna') {
-      group = declared;
-    } else if (held.length > 0) {
-      const t = typeOf.get(held[0].provider_id as string);
-      group = t === 'crna' ? 'crna' : 'physician';
-    } else {
-      group = 'either';
+    for (const a of slot.assignments || []) {
+      if (!a?.provider_id) continue;
+      let byDate = bySiteDate.get(slot.site_id);
+      if (!byDate) { byDate = new Map(); bySiteDate.set(slot.site_id, byDate); }
+      let counts = byDate.get(slot.slot_date);
+      if (!counts) { counts = { physician: 0, crna: 0 }; byDate.set(slot.slot_date, counts); }
+      if (typeOf.get(a.provider_id) === 'crna') counts.crna++; else counts.physician++;
     }
-
-    let byDate = bySiteDate.get(slot.site_id);
-    if (!byDate) { byDate = new Map(); bySiteDate.set(slot.site_id, byDate); }
-    let byGroup = byDate.get(slot.slot_date);
-    if (!byGroup) { byGroup = new Map(); byDate.set(slot.slot_date, byGroup); }
-    let counts = byGroup.get(group);
-    if (!counts) { counts = { group, filled: 0, required: 0 }; byGroup.set(group, counts); }
-    counts.required += required;
-    counts.filled += held.length;
   }
-
-  const ORDER: CoverageGroup[] = ['physician', 'crna', 'either'];
 
   return input.sites.map(site => {
     const open = siteOpenDays(site.operational_days);
@@ -263,24 +259,43 @@ export function coverageWeek(input: {
     let rowShort = 0;
 
     const cells = input.dates.map<CoverageCell>(date => {
-      const byGroup = byDate?.get(date);
-      if (!byGroup || byGroup.size === 0) {
-        // Closed beats unscheduled: a site that does not run on Sunday is not
-        // missing a Sunday schedule.
+      const staffed = byDate?.get(date) ?? { physician: 0, crna: 0 };
+      const need = input.demand.get(demandKey(site.id, date)) ?? null;
+
+      // Closed beats everything: a site that does not run on Sunday is neither
+      // short nor awaiting a count.
+      if (!open[dayOfWeekUTC(date)]) {
+        return { date, status: 'closed', groups: [], shortBy: 0, demandSource: null };
+      }
+
+      // Nobody has said what this day needs. The people on it are still
+      // reported — the tooltip and the entry grid both want them — but the
+      // cell cannot be graded, so it reads N/A rather than green.
+      if (!need || (need.md === null && need.crna === null)) {
         return {
           date,
-          status: open[dayOfWeekUTC(date)] ? 'unscheduled' : 'closed',
-          groups: [],
+          status: 'unstated',
+          groups: [
+            { group: 'physician', available: staffed.physician, needed: null },
+            { group: 'crna', available: staffed.crna, needed: null },
+          ],
           shortBy: 0,
+          demandSource: null,
         };
       }
-      const groups = ORDER
-        .map(g => byGroup.get(g))
-        .filter((c): c is CoverageGroupCount => !!c && (c.required > 0 || c.filled > 0));
+
+      const groups = ([
+        { group: 'physician', available: staffed.physician, needed: need.md },
+        { group: 'crna', available: staffed.crna, needed: need.crna },
+      ] as CoverageGroupCount[]).filter(g => g.needed !== null || g.available > 0);
+
       let shortBy = 0;
-      for (const g of groups) shortBy += Math.max(0, g.required - g.filled);
+      for (const g of groups) {
+        if (g.needed === null) continue;     // that half is simply not stated
+        shortBy += Math.max(0, g.needed - g.available);
+      }
       rowShort += shortBy;
-      return { date, status: statusForShortfall(shortBy), groups, shortBy };
+      return { date, status: statusForShortfall(shortBy), groups, shortBy, demandSource: need.source };
     });
 
     return {

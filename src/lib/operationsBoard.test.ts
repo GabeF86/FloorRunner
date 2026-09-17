@@ -92,78 +92,117 @@ describe('siteOpenDays — two shapes are live in this column', () => {
   });
 });
 
-describe('coverageWeek', () => {
+describe('coverageWeek — supply measured against DEMAND', () => {
   const sites = [site('s1', 'Paoli')];
+  const need = (md: number | null, crna: number | null, src: 'manual' | 'calculated' = 'manual') =>
+    new Map([[`s1|${MON}`, { md, crna, source: src, notes: null }]]);
 
-  it('counts filled against required and grades the shortfall', () => {
-    const rows = coverageWeek({
-      sites, providers: [md, md2], dates: [MON],
+  const week = (opts: {
+    slots?: OpsSlotRow[]; demand?: Map<string, any>; dates?: string[];
+    sites?: OpsSiteRow[]; providers?: OpsProviderRow[];
+  } = {}) => coverageWeek({
+    sites: opts.sites ?? sites,
+    providers: opts.providers ?? [md, md2, crna],
+    slots: opts.slots ?? [],
+    dates: opts.dates ?? [MON],
+    demand: opts.demand ?? new Map(),
+  });
+
+  it('counts AVAILABLE as people on the schedule, by their own provider type', () => {
+    // Not by what the shift type permits: a both-groups room filled by a CRNA
+    // is a CRNA on the floor.
+    const rows = week({
+      demand: need(2, 1),
       slots: [
-        slot('s1', MON, '7-3', { held: ['p1'] }),
-        slot('s1', MON, '7-5', { held: ['p2'] }),
-        slot('s1', MON, 'D4', {}),               // open
-      ],
-    });
-    expect(rows[0].cells[0]).toMatchObject({ status: 'short', shortBy: 1 });
-    expect(rows[0].cells[0].groups).toEqual([{ group: 'physician', filled: 2, required: 3 }]);
-    expect(rows[0].shortBy).toBe(1);
-  });
-
-  it('calls two or more short a GAP, not a shortage', () => {
-    const rows = coverageWeek({
-      sites, providers: [md], dates: [MON],
-      slots: [slot('s1', MON, 'D4', { required_count: 3, held: ['p1'] })],
-    });
-    expect(rows[0].cells[0]).toMatchObject({ status: 'gap', shortBy: 2 });
-  });
-
-  it('reads CLOSED off the site, not off the empty schedule', () => {
-    const rows = coverageWeek({
-      sites: [site('s1', 'Rothman', ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'])],
-      providers: [], slots: [], dates: [SAT, SUN],
-    });
-    expect(rows[0].cells.map(c => c.status)).toEqual(['closed', 'closed']);
-  });
-
-  it('says UNSCHEDULED — not 0/0 — for an open day nobody has built', () => {
-    // Six of the seven sites have no schedule at all. A zero here would read
-    // as "fully staffed, nobody needed"; the whole point is that it is blank.
-    const rows = coverageWeek({ sites, providers: [], slots: [], dates: [MON] });
-    expect(rows[0].cells[0]).toMatchObject({ status: 'unscheduled', shortBy: 0 });
-    expect(rows[0].cells[0].groups).toEqual([]);
-  });
-
-  it('attributes a BOTH-groups slot to whoever is actually standing it', () => {
-    const rows = coverageWeek({
-      sites, providers: [md, crna], dates: [MON],
-      slots: [
-        slot('s1', MON, '7-3', { group: 'both', held: ['p1'] }),
-        slot('s1', MON, '7-5', { group: 'both', held: ['c1'] }),
+        slot('s1', MON, 'C1', { held: ['p1'] }),
+        slot('s1', MON, '7-3', { group: 'both', held: ['c1'] }),
       ],
     });
     expect(rows[0].cells[0].groups).toEqual([
-      { group: 'physician', filled: 1, required: 1 },
-      { group: 'crna', filled: 1, required: 1 },
+      { group: 'physician', available: 1, needed: 2 },
+      { group: 'crna', available: 1, needed: 1 },
     ]);
+    expect(rows[0].cells[0]).toMatchObject({ status: 'short', shortBy: 1 });
   });
 
-  it('parks an UNFILLED both-groups slot in neither column', () => {
-    // Folding an open either-group room into MD would invent a physician
-    // shortage that nobody has established.
-    const rows = coverageWeek({
-      sites, providers: [md], dates: [MON],
-      slots: [slot('s1', MON, '7-3', { group: 'both' })],
-    });
-    expect(rows[0].cells[0].groups).toEqual([{ group: 'either', filled: 0, required: 1 }]);
-    expect(rows[0].cells[0].shortBy).toBe(1);
+  it('does NOT count an empty room as availability', () => {
+    // The old "needed" was the slot census, so an unfilled room counted on
+    // both sides and cancelled itself. Availability is bodies.
+    const rows = week({ demand: need(1, null), slots: [slot('s1', MON, 'C1')] });
+    expect(rows[0].cells[0].groups[0]).toMatchObject({ available: 0, needed: 1 });
+    expect(rows[0].cells[0].status).toBe('short');
   });
 
-  it('never emits a 0/0 filler row for a group the site does not schedule', () => {
-    const rows = coverageWeek({
-      sites, providers: [md], dates: [MON],
-      slots: [slot('s1', MON, 'C1', { category: 'call', rank: 0, held: ['p1'] })],
+  it('grades one short as SHORT and two as a GAP', () => {
+    const one = week({ demand: need(2, null), slots: [slot('s1', MON, 'C1', { held: ['p1'] })] });
+    expect(one[0].cells[0]).toMatchObject({ status: 'short', shortBy: 1 });
+    const two = week({ demand: need(3, null), slots: [slot('s1', MON, 'C1', { held: ['p1'] })] });
+    expect(two[0].cells[0]).toMatchObject({ status: 'gap', shortBy: 2 });
+  });
+
+  it('is COVERED when supply meets demand, and when it exceeds it', () => {
+    const rows = week({
+      demand: need(1, null),
+      slots: [slot('s1', MON, 'C1', { held: ['p1'] }), slot('s1', MON, 'D4', { held: ['p2'] })],
     });
-    expect(rows[0].cells[0].groups.map(g => g.group)).toEqual(['physician']);
+    expect(rows[0].cells[0]).toMatchObject({ status: 'covered', shortBy: 0 });
+  });
+
+  it('reads N/A — never 0 — when nobody has counted the day', () => {
+    // The whole point of the demand table. A zero here would paint an
+    // uncounted day green and report an unstaffed hospital as covered.
+    const rows = week({ slots: [slot('s1', MON, 'C1', { held: ['p1'] })] });
+    expect(rows[0].cells[0]).toMatchObject({ status: 'unstated', shortBy: 0, demandSource: null });
+    // The people on it are still reported — the tooltip wants them.
+    expect(rows[0].cells[0].groups.find(g => g.group === 'physician')).toMatchObject({
+      available: 1, needed: null,
+    });
+  });
+
+  it('treats a row stating NEITHER count as no count at all', () => {
+    const rows = week({ demand: need(null, null) });
+    expect(rows[0].cells[0].status).toBe('unstated');
+  });
+
+  it('grades only the half that was stated', () => {
+    // MD counted, CRNA not. The MD side is judged; the CRNA side is not, and
+    // must not drag the cell to green or to red.
+    const rows = week({
+      demand: need(2, null),
+      slots: [slot('s1', MON, 'C1', { held: ['p1'] }), slot('s1', MON, '7-3', { group: 'both', held: ['c1'] })],
+    });
+    const cell = rows[0].cells[0];
+    expect(cell.groups).toEqual([
+      { group: 'physician', available: 1, needed: 2 },
+      { group: 'crna', available: 1, needed: null },
+    ]);
+    expect(cell).toMatchObject({ status: 'short', shortBy: 1 });
+  });
+
+  it('reports which source the count came from', () => {
+    expect(week({ demand: need(1, 1) })[0].cells[0].demandSource).toBe('manual');
+    expect(week({ demand: need(1, 1, 'calculated') })[0].cells[0].demandSource).toBe('calculated');
+  });
+
+  it('CLOSED beats everything, including a count somebody entered', () => {
+    const rows = coverageWeek({
+      sites: [site('s1', 'Rothman', ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'])],
+      providers: [], slots: [], dates: [SAT, SUN],
+      demand: new Map([[`s1|${SAT}`, { md: 2, crna: 2, source: 'manual' as const, notes: null }]]),
+    });
+    expect(rows[0].cells.map(c => c.status)).toEqual(['closed', 'closed']);
+    expect(rows[0].shortBy).toBe(0);
+  });
+
+  it('sums the week into the row total', () => {
+    const rows = coverageWeek({
+      sites, providers: [md], slots: [], dates: [MON, TUE],
+      demand: new Map([
+        [`s1|${MON}`, { md: 2, crna: null, source: 'manual' as const, notes: null }],
+        [`s1|${TUE}`, { md: 3, crna: null, source: 'manual' as const, notes: null }],
+      ]),
+    });
+    expect(rows[0].shortBy).toBe(5);
   });
 });
 

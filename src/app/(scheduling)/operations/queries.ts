@@ -18,6 +18,7 @@ import { readAllRows } from '@/lib/pagedRead';
 import { embedArray } from '@/lib/embed';
 import { filterPublishedVersions } from '@/lib/rulesEngine/committedAssignments';
 import { addDays } from '@/lib/rulesEngine/shared';
+import { resolveDemand, type DemandRow } from '@/lib/staffingDemand';
 import {
   coverageWeek, perDiemBench, siteDayBoard, rosterSummary, weekDates,
   type CoverageRow, type BenchSummary, type SiteDayBoard, type RosterSummary,
@@ -76,7 +77,7 @@ export async function loadOperationsData(
   const to = addDays(dates[6], 1);
   const errors: string[] = [];
 
-  const [sitesRes, providersRes, profilesRes, credsRes, availRes, slotRes] = await Promise.all([
+  const [sitesRes, providersRes, profilesRes, credsRes, availRes, demandRes, slotRes] = await Promise.all([
     readAllRows<OpsSiteRow>((f, t) => sb.from('sites')
       .select('id, name, short_name, operational_days, display_order, is_active', { count: 'exact' })
       .eq('is_active', true)
@@ -104,6 +105,11 @@ export async function loadOperationsData(
       .lte('start_date', to).gte('end_date', from)
       .order('provider_id').order('start_date').range(f, t), 'availability'),
 
+    readAllRows<DemandRow>((f, t) => sb.from('staffing_demand')
+      .select('site_id, demand_date, md_needed, crna_needed, source, notes', { count: 'exact' })
+      .gte('demand_date', dates[0]).lte('demand_date', dates[6])
+      .order('demand_date').order('site_id').range(f, t), 'staffing demand'),
+
     readAllRows<Record<string, unknown>>((f, t) => filterPublishedVersions(
       sb.from('schedule_slots')
         .select(SLOT_SELECT, { count: 'exact' })
@@ -113,7 +119,7 @@ export async function loadOperationsData(
     ), 'schedule slots'),
   ]);
 
-  for (const r of [sitesRes, providersRes, profilesRes, credsRes, availRes, slotRes]) {
+  for (const r of [sitesRes, providersRes, profilesRes, credsRes, availRes, demandRes, slotRes]) {
     if (r.error) errors.push(r.error);
   }
 
@@ -132,7 +138,11 @@ export async function loadOperationsData(
   return {
     date,
     dates,
-    coverage: coverageWeek({ sites, slots, providers, dates }),
+    coverage: coverageWeek({
+      sites, slots, providers, dates,
+      // Manual beats calculated; an absent entry is "not stated", never zero.
+      demand: resolveDemand(demandRes.rows),
+    }),
     bench,
     boards: siteDayBoard({ date, sites, slots, providers }),
     summary: {
