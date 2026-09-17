@@ -317,7 +317,8 @@ export function requiredShiftTypes(): ShiftTypeSpec[] {
   const NAMES: Record<string, string> = {
     'BMH|C1': 'First Call', 'BMH|C2': 'Second Call', 'BMH|C3': 'Third / Neuro Call',
     'BMH|NEURO': 'Neuro Call (weekend)', 'BMH|DAY': 'BMH OR Day',
-    'LMC|C3': '3rd Call', 'LMC|C4': '4th Call (weekend)', 'LMC|DAY': 'Lankenau OR Day',
+    'LMC|C2': '2nd Call (beeper)', 'LMC|C3': '3rd Call',
+    'LMC|C4': '4th Call (weekend)', 'LMC|DAY': 'Lankenau OR Day',
     'LMC|ICU': 'ICU Week', 'LMC|OB': 'OB Anesthesia',
     'RH|C1': 'Riddle First Call', 'RH|C2': 'Riddle Late / Second Call',
     'RH|D1': 'Post-Late Day', 'RH|DAY': 'Riddle Day',
@@ -330,14 +331,17 @@ export function requiredShiftTypes(): ShiftTypeSpec[] {
     'BMH|C2': { rank: 1, post: true, hours: CALL_2 },
     'BMH|C3': { rank: 2, post: false, hours: CALL_2 },
     'BMH|NEURO': { rank: 2, post: false, hours: WEEKEND_24 },
-    // These three already exist at Lankenau; the hours mirror the stored rows
-    // so that a re-run against a fresh database would create them identically
-    // rather than inventing a default.
+    // Lankenau's real structure, stated by Gabriel 2026-09-17 — no longer
+    // inferred, so these are facts rather than house defaults:
+    //   C1, C2  weekdays 15:00-07:00, and the pair takes the post-call day off
+    //   C3      07:00-19:00 in house, then beeper to 07:00. NOT a day off —
+    //           first out the next day but still working it (early_out).
+    //   CC2     the weekend cardiac backup beeper
     'LMC|C1': { rank: 0, post: true, hours: CALL_1 },
-    'LMC|CC1': { rank: 1, post: true, hours: CALL_1 },
-    'LMC|CC2': { rank: 2, post: false, hours: WEEKEND_24 },
-    'LMC|C3': { rank: 2, post: true, hours: CALL_2 },
-    'LMC|C4': { rank: 3, post: false, hours: WEEKEND_24 },
+    'LMC|C2': { rank: 1, post: true, hours: CALL_1 },
+    'LMC|C3': { rank: 2, post: false, hours: { start: '07:00', end: '19:00' } },
+    'LMC|CC2': { rank: 3, post: false, hours: WEEKEND_24 },
+    'LMC|C4': { rank: 4, post: false, hours: WEEKEND_24 },
     'RH|C1': { rank: 0, post: true, hours: CALL_1 },
     'RH|C2': { rank: 1, post: false, hours: CALL_2 },
   };
