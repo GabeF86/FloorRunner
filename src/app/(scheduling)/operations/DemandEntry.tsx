@@ -5,6 +5,12 @@
  * MDs needed and CRNAs needed. A scheduler reads the OR schedule out of Epic,
  * counts the anaesthetising sites, and types the numbers in.
  *
+ * This is the ONLY place rooms enter the picture. FloorRunner's schedule holds
+ * people and their shift or call status and says nothing about which site
+ * anyone stands in — room assignment is made on the day, on the floor. So
+ * demand is counted from Epic and supply is counted in bodies, and the board
+ * joins the two.
+ *
  * ── A BLANK IS NOT A ZERO ──────────────────────────────────────────────────
  * Clearing a cell DELETES the manual row rather than storing 0. The board then
  * reads that day N/A. If it stored a zero the day would go green — an
@@ -147,8 +153,11 @@ export function DemandEntry(
           margin: '0 0 var(--space-3)', fontSize: 'var(--fs-xs)',
           color: 'var(--text-dim)', lineHeight: 1.65,
         }}>
-          Count the anaesthetising sites running that day on the OR schedule and enter how many
-          MDs and CRNAs it takes to cover them. Saves as you leave each box.
+          Count the anaesthetising sites running that day on the{' '}
+          <strong style={{ color: 'var(--text-muted)' }}>Epic OR schedule</strong> and enter how
+          many MDs and CRNAs it takes to cover them — this is the only place rooms enter the
+          picture. FloorRunner&rsquo;s own schedule records who is working and in what capacity,
+          never which site they stand in. Saves as you leave each box.
           {' '}<strong style={{ color: 'var(--text-muted)' }}>Leave a box empty</strong> and the
           day reads N/A on the board — never zero, because an uncounted day must not report as
           covered. A real <strong style={{ color: 'var(--text-muted)' }}>0</strong> means nobody

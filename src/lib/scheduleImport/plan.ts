@@ -81,8 +81,10 @@ export interface PlannedAssignment {
   sourceCode: string;
   starred: boolean;
   /** `call` positions are single-holder by nature; `day` codes routinely have
-   *  several holders on one date because they are several ROOMS. Reports that
-   *  do not distinguish the two flag eight rooms as a double-booking. */
+   *  several holders on one date because a day code is a STATUS, not a single
+   *  post — eight physicians can all be "working a day shift". Reports that do
+   *  not distinguish the two flag eight ordinary working days as a
+   *  double-booking. */
   kind: CodeKind;
 }
 
@@ -253,8 +255,8 @@ export function planImport(input: PlanInput): ImportPlan {
 /**
  * Two physicians holding the same CALL position on the same day.
  *
- * Call only, deliberately. A day code with eight holders is eight ROOMS and is
- * entirely normal; flagging it would bury the handful of real findings under
+ * Call only, deliberately. A day code with eight holders is eight people on a
+ * day shift and is entirely normal; flagging it would bury the handful of real findings under
  * 150 false ones. A call tier with two holders is either a mid-weekend handoff
  * or a genuine double-booking, and the sheet contains both — so this REPORTS
  * rather than deduplicating. Importing both is correct; the grid shows the

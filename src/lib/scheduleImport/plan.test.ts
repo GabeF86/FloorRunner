@@ -152,9 +152,10 @@ describe('conflict reports', () => {
     ]);
   });
 
-  it('does NOT flag several holders of a DAY code — those are rooms', () => {
-    // Eight physicians on the Lankenau day code are eight rooms. Flagging them
-    // buried four real findings under 150 false ones.
+  it('does NOT flag several holders of a DAY code — a day code is a status', () => {
+    // Eight physicians on the Lankenau day code are eight people working a day
+    // shift, not eight claims on one post. Flagging them buried four real
+    // findings under 150 false ones.
     const plan = run(sheetOf('Home- Physician BMH,,,,', 'ANTK,dayBMH,,,', 'DAYR,dayBMH,,,'));
     expect(duplicatePositions(plan)).toEqual([]);
   });

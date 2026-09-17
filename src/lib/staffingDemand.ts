@@ -4,11 +4,13 @@
  * Demand, not supply. The staffing board's "needed" column used to be the slot
  * census — it counted the positions the published schedule already contained,
  * which can only ever say "the schedule matches the schedule". A block built
- * two rooms light read as fully covered, because the missing rooms were never
- * slots to begin with.
+ * two positions light read as fully covered, because the missing positions
+ * were never slots to begin with.
  *
- * Demand comes from the OR schedule: how many anaesthetising sites are
- * actually running. Today a scheduler reads that out of Epic and counts it in
+ * Demand comes from the OR schedule in Epic: how many anaesthetising sites are
+ * actually running. That is the ONLY half of this picture that knows about
+ * rooms — FloorRunner's own schedule holds people and their shift or call
+ * status, never a room assignment, which is made on the day on the floor. Today a scheduler reads that out of Epic and counts it in
  * by hand. Later the staffing calculator will derive it. Both land in the same
  * table under different `source` values, and this module decides which one
  * wins.

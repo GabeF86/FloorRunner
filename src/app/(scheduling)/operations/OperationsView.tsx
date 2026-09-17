@@ -566,7 +566,10 @@ export function OperationsView({ data, fatal }: { data: OperationsData | null; f
 
                   {b.inRooms.length > 0 && (
                     <div style={{ marginTop: b.onCall.length > 0 ? 'var(--space-3)' : 0 }}>
-                      <SectionLabel source="none" rule={false}>In rooms</SectionLabel>
+                      {/* NOT "in rooms": the schedule records who is working
+                          and in what capacity, never which anaesthetising site
+                          they stand in. Room assignment happens on the day. */}
+                      <SectionLabel source="none" rule={false}>Working</SectionLabel>
                       {b.inRooms.map(p => (
                         <div key={p.providerId + p.code} style={{
                           display: 'flex', gap: 6, fontSize: 'var(--fs-xs)', marginBottom: 2,

@@ -12,7 +12,7 @@
  *
  * ── EVERY FIGURE IS SCHEDULED, NOT PAYROLL ─────────────────────────────────
  * There is no payroll integration. Hours here are the hours the SCHEDULE puts
- * a person in a room, summed from shift start and end times — which is a
+ * a person on the floor, summed from shift start and end times — which is a
  * different number from hours paid, and the panel says so. Labelling a
  * computed figure "Paycom" would make a physician check their pay against a
  * number that has never seen their pay.

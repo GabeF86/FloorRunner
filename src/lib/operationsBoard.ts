@@ -17,6 +17,19 @@
  * stands, and a plausible-looking zero is worse than an honest blank — it is
  * the failures-render-as-zeros trap that has bitten this codebase before.
  *
+ * ── THE SCHEDULE HOLDS PEOPLE AND STATUSES, NOT ROOMS ──────────────────────
+ * FloorRunner's schedule says WHO is working and in what capacity — first
+ * call, second call, a 7-3, post-call — and nothing about which anaesthetising
+ * site they stand in. Room assignment happens on the day, on the floor.
+ *
+ * So AVAILABLE is a headcount by capacity, never a count of rooms covered, and
+ * a slot with nobody in it is an unfilled POSITION rather than an empty room.
+ * The NEEDED side is the only half that knows about rooms, and it comes from
+ * outside: a scheduler reads the OR schedule in Epic, counts the anaesthetising
+ * sites running, and enters how many bodies that takes. Demand knows rooms;
+ * supply knows people; this module joins the two and must not pretend either
+ * side knows the other's business.
+ *
  * ── AVAILABILITY IS THE ENGINE'S, NOT A SECOND OPINION ─────────────────────
  * "Free today" means the same four checks the generator runs before it assigns
  * anyone: credentialed at that site, not blocked by PTO/availability, not
@@ -112,7 +125,8 @@ export interface OpsProfileRow {
 
 /** The two staffing groups demand is stated in. There is no 'either' any more:
  *  once NEEDED is an explicit MD and CRNA count, an unfilled slot has nothing
- *  to contribute — availability is people, and an empty room is not a person. */
+ *  to contribute — availability is people, and an unfilled position is not a
+ *  person. */
 export type CoverageGroup = 'physician' | 'crna';
 
 export const GROUP_LABEL: Record<CoverageGroup, string> = {
@@ -175,7 +189,8 @@ export function siteOpenDays(raw: unknown): boolean[] {
 /**
  * Is this shift part of the day's FLOOR COVERAGE?
  *
- * The overnight call doctor is on the schedule but is not in a room: Paoli's
+ * The overnight call doctor is on the schedule but is not on the floor during
+ * the day: Paoli's
  * C1 runs 15:00 → 07:00, so counting them among Friday's available staff
  * overstates the floor by one and hides a genuine gap. The schedule grid has
  * excluded weekday first call from its headline count since it was built; the
@@ -257,7 +272,8 @@ export interface CoverageRow {
 }
 
 /** One short is "short"; two or more is a "gap". The split exists because a
- *  single open room is a phone call and two is a staffing problem, and back
+ *  single unfilled position is a phone call and two is a staffing problem, and
+ *  back
  *  office triages them differently. */
 /** Shortfall outranks surplus: a cell that is two MDs short and one CRNA spare
  *  is a problem, not an opportunity, and must not read as one. */
@@ -291,10 +307,10 @@ export function coverageWeek(input: {
   for (const p of input.providers) typeOf.set(p.id, p.provider_type || '');
 
   // AVAILABLE is people, counted by the provider type of whoever is standing
-  // the slot — not by what the shift type permits. A 'both' room filled by a
-  // CRNA is a CRNA on the floor, whatever the type allows; and an EMPTY room
-  // contributes nothing at all, because the question is how many bodies are
-  // there, not how many chairs.
+  // the slot — not by what the shift type permits. A 'both' shift worked by a
+  // CRNA is a CRNA on the floor, whatever the type allows; and an UNFILLED
+  // position contributes nothing at all, because the question is how many
+  // bodies are there.
   const bySiteDate = new Map<string, Map<string, { physician: number; crna: number }>>();
   for (const slot of input.slots) {
     if (!slot.shift_types) continue;
@@ -409,14 +425,14 @@ export interface BenchRow {
 
 export interface BenchSummary {
   /** The callable bench: per diems with at least one live site credential.
-   *  Somebody credentialed nowhere cannot be phoned for a room today, and
+   *  Somebody credentialed nowhere cannot be phoned in today, and
    *  listing them by name buries the handful who can — see `uncredentialed`. */
   rows: BenchRow[];
   /** Every per diem on the roster, credentialed or not. */
   onRoster: number;
   /** On the roster but credentialed at no site — a count, not a list. It is a
    *  credentialing backlog, which is a different job on a different timescale
-   *  from filling a room this morning. */
+   *  from filling a shift this morning. */
   uncredentialed: number;
   sitesCovered: number;
   freeToday: number;
@@ -770,9 +786,9 @@ export function weekDates(date: string): string[] {
  *    a site they are not credentialed for, and neither should a suggestion —
  *    offering an impossible move wastes the one minute this panel exists to
  *    save.
- * 2. ON CALL. A call assignment is not a room that can be covered elsewhere;
- *    moving first call is a different and much larger decision. Only regular
- *    day work is offered.
+ * 2. ON CALL. Call is a commitment to a hospital for the night, not day work
+ *    that can be done somewhere else; moving first call is a different and much
+ *    larger decision. Only regular day work is offered.
  * 3. WRONG GROUP. A CRNA cannot fill a physician's gap. Candidates are matched
  *    to the group the destination is actually short in.
  */
