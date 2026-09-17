@@ -18,7 +18,9 @@ import { readAllRows } from '@/lib/pagedRead';
 import { embedArray } from '@/lib/embed';
 import { filterPublishedVersions } from '@/lib/rulesEngine/committedAssignments';
 import { addDays } from '@/lib/rulesEngine/shared';
-import { resolveDemand, type DemandRow } from '@/lib/staffingDemand';
+import {
+  resolveDemand, parseWeekendCall, type DemandRow, type WeekendCall,
+} from '@/lib/staffingDemand';
 import {
   coverageWeek, perDiemBench, siteDayBoard, rosterSummary, weekDates,
   type CoverageRow, type BenchSummary, type SiteDayBoard, type RosterSummary,
@@ -79,7 +81,8 @@ export async function loadOperationsData(
 
   const [sitesRes, providersRes, profilesRes, credsRes, availRes, demandRes, slotRes] = await Promise.all([
     readAllRows<OpsSiteRow>((f, t) => sb.from('sites')
-      .select('id, name, short_name, operational_days, display_order, is_active', { count: 'exact' })
+      .select('id, name, short_name, operational_days, weekend_staffing,'
+        + ' display_order, is_active', { count: 'exact' })
       .eq('is_active', true)
       .order('display_order').order('name').range(f, t), 'sites'),
 
@@ -125,6 +128,15 @@ export async function loadOperationsData(
 
   const sites = sitesRes.rows;
   const providers = providersRes.rows;
+
+  // Weekend call is structural — the positions that must be covered every
+  // Saturday and Sunday whatever the OR is doing — so it is configured once
+  // per site rather than typed in week after week.
+  const weekendCall = new Map<string, WeekendCall>();
+  for (const s of sites as Array<OpsSiteRow & { weekend_staffing?: unknown }>) {
+    const wc = parseWeekendCall(s.weekend_staffing);
+    if (wc) weekendCall.set(s.id, wc);
+  }
   const slots = slotRes.rows.map(normaliseSlot);
 
   const bench = perDiemBench({
@@ -140,8 +152,10 @@ export async function loadOperationsData(
     dates,
     coverage: coverageWeek({
       sites, slots, providers, dates,
-      // Manual beats calculated; an absent entry is "not stated", never zero.
+      // Manual beats calculated beats the standing weekend complement; an
+      // absent entry is "not stated", never zero.
       demand: resolveDemand(demandRes.rows),
+      weekendCall,
     }),
     bench,
     boards: siteDayBoard({ date, sites, slots, providers }),

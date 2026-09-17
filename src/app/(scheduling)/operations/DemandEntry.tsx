@@ -22,7 +22,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Card, Banner, SectionLabel } from '@/components/ui';
-import { demandKey, parseDemandInput, type DemandRow } from '@/lib/staffingDemand';
+import { demandKey, parseDemandInput, type DemandRow, type WeekendCall } from '@/lib/staffingDemand';
 import type { CoverageRow } from '@/lib/operationsBoard';
 
 const mono = {
@@ -144,6 +144,12 @@ export function DemandEntry(
           covered. A real <strong style={{ color: 'var(--text-muted)' }}>0</strong> means nobody
           is needed, and is stored as that.
         </p>
+      </div>
+
+      <WeekendCallSection onSaved={onSaved} />
+
+      <div style={{ padding: '0 var(--space-4)' }}>
+        <SectionLabel source="none" rule={false}>By day</SectionLabel>
       </div>
 
       <div style={{ overflowX: 'auto' }}>
@@ -286,5 +292,122 @@ function DemandInput(
         }}
       />
     </label>
+  );
+}
+
+/* ── The standing weekend complement ──────────────────────────────────────
+ * Weekend call is structural: the same positions have to be covered every
+ * Saturday and Sunday whatever the OR is doing. Typing it into fourteen cells
+ * a fortnight would be busywork, so it is configured once per site and applied
+ * to every weekend automatically — and still overridden by anything typed into
+ * a specific day below.
+ *
+ * The suggestion beside each box is the call positions actually standing on
+ * weekends in the published schedule. It is offered, never applied: Riddle
+ * shows two across the window because its second call ran on exactly one
+ * Saturday, so taking the derived number unquestioned would overstate it.
+ */
+interface WeekendSite {
+  id: string;
+  name: string;
+  short_name: string | null;
+  configured: WeekendCall | null;
+  suggestion: { md: number | null; crna: number | null; codes: string[] } | null;
+}
+
+function WeekendCallSection({ onSaved }: { onSaved?: () => void }) {
+  const [sites, setSites] = useState<WeekendSite[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+
+  useEffect(() => {
+    let live = true;
+    fetch('/api/scheduling/sites/weekend-call')
+      .then(async r => {
+        const body = await r.json();
+        if (!r.ok) throw new Error(body?.error || `Request failed (${r.status})`);
+        return body.sites as WeekendSite[];
+      })
+      .then(r => { if (live) setSites(r); })
+      .catch(e => { if (live) setError(e instanceof Error ? e.message : 'Could not load.'); });
+    return () => { live = false; };
+  }, []);
+
+  const save = useCallback(async (site: WeekendSite, field: 'md' | 'crna', raw: string) => {
+    const parsed = parseDemandInput(raw);
+    if (parsed === 'invalid') { setError('Whole numbers only.'); return; }
+    const next: WeekendCall = {
+      md: field === 'md' ? parsed : (site.configured?.md ?? null),
+      crna: field === 'crna' ? parsed : (site.configured?.crna ?? null),
+    };
+    setBusy(site.id);
+    try {
+      const res = await fetch('/api/scheduling/sites/weekend-call', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ site_id: site.id, ...next }),
+      });
+      const body = await res.json();
+      if (!res.ok) throw new Error(body?.error || `Save failed (${res.status})`);
+      setSites(prev => (prev ?? []).map(s => (s.id === site.id
+        ? { ...s, configured: next.md === null && next.crna === null ? null : next }
+        : s)));
+      setError(null);
+      onSaved?.();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Save failed.');
+    } finally { setBusy(null); }
+  }, [onSaved]);
+
+  return (
+    <div style={{ padding: '0 var(--space-4) var(--space-4)' }}>
+      <SectionLabel source="none" rule={false}>Weekend call complement</SectionLabel>
+      <p style={{
+        margin: '0 0 var(--space-2)', fontSize: 'var(--fs-xs)',
+        color: 'var(--text-dim)', lineHeight: 1.65,
+      }}>
+        Set once per site and it fills every Saturday and Sunday. Anything typed into a
+        specific day below still wins. The grey number is what the published schedule
+        actually stands on weekends — a suggestion to confirm, not a default.
+      </p>
+
+      {error && <Banner tone="error">{error}</Banner>}
+
+      <div style={{ display: 'flex', gap: 'var(--space-3)', flexWrap: 'wrap' }}>
+        {(sites ?? []).map(site => (
+          <div key={site.id} style={{
+            display: 'flex', alignItems: 'center', gap: 'var(--space-2)',
+            padding: '6px 10px', borderRadius: 'var(--radius-sm)',
+            border: '1px solid var(--border)', opacity: busy === site.id ? 0.6 : 1,
+          }}>
+            <span style={{ ...mono, fontSize: 'var(--fs-xs)', fontWeight: 600, minWidth: 40 }}
+                  title={site.name}>
+              {site.short_name || site.name}
+            </span>
+            <DemandInput
+              label="MD"
+              value={site.configured?.md ?? null}
+              placeholder={site.suggestion?.md ?? null}
+              onCommit={v => save(site, 'md', v)}
+            />
+            <DemandInput
+              label="CRNA"
+              value={site.configured?.crna ?? null}
+              placeholder={site.suggestion?.crna ?? null}
+              onCommit={v => save(site, 'crna', v)}
+            />
+            {site.suggestion?.codes.length ? (
+              <span style={{ ...mono, fontSize: 9, color: 'var(--text-dim)' }}
+                    title={`Standing on weekends in the published schedule: ${site.suggestion.codes.join(', ')}`}>
+                {site.suggestion.codes.join(' ')}
+              </span>
+            ) : null}
+          </div>
+        ))}
+        {sites === null && !error && (
+          <span style={{ fontSize: 'var(--fs-sm)', color: 'var(--text-dim)' }}>Loading sites…</span>
+        )}
+      </div>
+    </div>
   );
 }

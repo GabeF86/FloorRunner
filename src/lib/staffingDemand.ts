@@ -24,7 +24,31 @@
  * is the precise failure this replaces.
  * ─────────────────────────────────────────────────────────────────────────── */
 
-export type DemandSource = 'manual' | 'calculated';
+export type DemandSource =
+  /** A scheduler counted the OR schedule. Outranks everything. */
+  | 'manual'
+  /** The staffing calculator derived it (not yet built). */
+  | 'calculated'
+  /** The site's standing weekend call complement — the positions that must be
+   *  covered every Saturday and Sunday whatever the OR is doing. Weekend call
+   *  is structural, so it should not need typing in week after week. */
+  | 'weekend_call';
+
+/** A site's standing weekend call complement, from `sites.weekend_staffing`. */
+export interface WeekendCall {
+  md: number | null;
+  crna: number | null;
+}
+
+/** Read `sites.weekend_staffing`, which is loose jsonb. Anything that is not a
+ *  usable count reads as null — "not configured" — rather than zero. */
+export function parseWeekendCall(raw: unknown): WeekendCall | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const rec = raw as Record<string, unknown>;
+  const md = normalise(rec.md as never);
+  const crna = normalise(rec.crna as never);
+  return md === null && crna === null ? null : { md, crna };
+}
 
 export interface DemandRow {
   site_id: string;
@@ -73,6 +97,35 @@ export function resolveDemand(rows: ReadonlyArray<DemandRow>): Map<string, Resol
     out.set(key, { md, crna, source, notes: r.notes ?? null });
   }
   return out;
+}
+
+/**
+ * The demand for one site-day, applying the whole precedence chain:
+ *
+ *     manual  >  calculated  >  weekend call complement  >  nothing
+ *
+ * The weekend default sits LAST because it is a standing rule rather than an
+ * observation: a scheduler who has counted this particular Saturday, or a
+ * calculator that has modelled it, both know something the standing complement
+ * does not. It applies on Saturdays and Sundays only.
+ */
+export function demandFor(input: {
+  siteId: string;
+  date: string;
+  resolved: ReadonlyMap<string, ResolvedDemand>;
+  weekendCall?: ReadonlyMap<string, WeekendCall>;
+  /** 0 = Sunday … 6 = Saturday, from the caller's own date maths. */
+  dayOfWeek: number;
+}): ResolvedDemand | null {
+  const stated = input.resolved.get(demandKey(input.siteId, input.date));
+  if (stated) return stated;
+
+  const isWeekend = input.dayOfWeek === 0 || input.dayOfWeek === 6;
+  if (!isWeekend) return null;
+
+  const wc = input.weekendCall?.get(input.siteId);
+  if (!wc || (wc.md === null && wc.crna === null)) return null;
+  return { md: wc.md, crna: wc.crna, source: 'weekend_call', notes: null };
 }
 
 function normalise(v: number | string | null | undefined): number | null {

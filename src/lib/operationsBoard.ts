@@ -30,7 +30,7 @@
  * ─────────────────────────────────────────────────────────────────────────── */
 
 import { isDateBlocked, dayOfWeekUTC, addDays } from './rulesEngine/shared';
-import { demandKey, type ResolvedDemand } from './staffingDemand';
+import { demandFor, type ResolvedDemand, type WeekendCall } from './staffingDemand';
 
 // ── Row shapes ─────────────────────────────────────────────────────────────
 // Deliberately loose (`?: | null`) and free of DB types: every field here is
@@ -231,6 +231,9 @@ export function coverageWeek(input: {
   /** Resolved demand by `demandKey(siteId, date)` — see staffingDemand. An
    *  absent entry is "not stated", which renders N/A. */
   demand: ReadonlyMap<string, ResolvedDemand>;
+  /** Each site's standing weekend call complement, applied on Sat/Sun when
+   *  nothing more specific has been stated. */
+  weekendCall?: ReadonlyMap<string, WeekendCall>;
 }): CoverageRow[] {
   const typeOf = new Map<string, string>();
   for (const p of input.providers) typeOf.set(p.id, p.provider_type || '');
@@ -260,13 +263,19 @@ export function coverageWeek(input: {
 
     const cells = input.dates.map<CoverageCell>(date => {
       const staffed = byDate?.get(date) ?? { physician: 0, crna: 0 };
-      const need = input.demand.get(demandKey(site.id, date)) ?? null;
+      const dow = dayOfWeekUTC(date);
 
       // Closed beats everything: a site that does not run on Sunday is neither
-      // short nor awaiting a count.
-      if (!open[dayOfWeekUTC(date)]) {
+      // short nor awaiting a count — and must not pick up a weekend default.
+      if (!open[dow]) {
         return { date, status: 'closed', groups: [], shortBy: 0, demandSource: null };
       }
+
+      // manual > calculated > the site's standing weekend call complement.
+      const need = demandFor({
+        siteId: site.id, date, dayOfWeek: dow,
+        resolved: input.demand, weekendCall: input.weekendCall,
+      });
 
       // Nobody has said what this day needs. The people on it are still
       // reported — the tooltip and the entry grid both want them — but the

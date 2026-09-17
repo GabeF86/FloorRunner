@@ -7,7 +7,9 @@
  * exactly what the slot-census version of "needed" used to do.
  */
 import { describe, it, expect } from 'vitest';
-import { resolveDemand, demandKey, parseDemandInput } from './staffingDemand';
+import {
+  resolveDemand, demandKey, parseDemandInput, demandFor, parseWeekendCall,
+} from './staffingDemand';
 
 const row = (
   site: string, date: string, md: number | null, crna: number | null,
@@ -106,5 +108,75 @@ describe('parseDemandInput', () => {
   });
   it('refuses an implausibly large count', () => {
     expect(parseDemandInput('1000')).toBe('invalid');
+  });
+});
+
+describe('demandFor — the weekend call complement', () => {
+  const SAT = '2026-09-19';   // dayOfWeek 6
+  const SUN = '2026-09-20';   // 0
+  const MON = '2026-09-21';   // 1
+  const weekend = new Map([['s1', { md: 3, crna: 2 }]]);
+
+  const ask = (date: string, dow: number, resolved = new Map()) =>
+    demandFor({ siteId: 's1', date, dayOfWeek: dow, resolved, weekendCall: weekend });
+
+  it('fills a Saturday from the standing complement', () => {
+    // Paoli: C1, C2, C3 plus in-house and backup CRNA. Structural, so it
+    // should not need typing in week after week.
+    expect(ask(SAT, 6)).toEqual({ md: 3, crna: 2, source: 'weekend_call', notes: null });
+  });
+
+  it('fills a Sunday too', () => {
+    expect(ask(SUN, 0)?.source).toBe('weekend_call');
+  });
+
+  it('does NOT touch a weekday', () => {
+    expect(ask(MON, 1)).toBeNull();
+  });
+
+  it('is OUTRANKED by a count typed for that specific day', () => {
+    // Somebody who looked at this particular Saturday knows something the
+    // standing rule does not.
+    const resolved = resolveDemand([row('s1', SAT, 5, 4, 'manual')]);
+    expect(ask(SAT, 6, resolved)).toMatchObject({ md: 5, crna: 4, source: 'manual' });
+  });
+
+  it('is outranked by a calculated count as well', () => {
+    const resolved = resolveDemand([row('s1', SAT, 4, 3, 'calculated')]);
+    expect(ask(SAT, 6, resolved)).toMatchObject({ md: 4, source: 'calculated' });
+  });
+
+  it('gives nothing for a site with no complement configured', () => {
+    expect(demandFor({
+      siteId: 's2', date: SAT, dayOfWeek: 6,
+      resolved: new Map(), weekendCall: weekend,
+    })).toBeNull();
+  });
+
+  it('gives nothing when no complement map is passed at all', () => {
+    expect(demandFor({ siteId: 's1', date: SAT, dayOfWeek: 6, resolved: new Map() })).toBeNull();
+  });
+
+  it('carries a half-configured complement through', () => {
+    const half = new Map([['s1', { md: 3, crna: null }]]);
+    expect(demandFor({ siteId: 's1', date: SAT, dayOfWeek: 6, resolved: new Map(), weekendCall: half }))
+      .toMatchObject({ md: 3, crna: null });
+  });
+});
+
+describe('parseWeekendCall', () => {
+  it('reads the stored shape', () => {
+    expect(parseWeekendCall({ md: 3, crna: 2 })).toEqual({ md: 3, crna: 2 });
+  });
+  it('reads counts that arrive as strings', () => {
+    expect(parseWeekendCall({ md: '3', crna: '2' })).toEqual({ md: 3, crna: 2 });
+  });
+  it('keeps a genuine zero', () => {
+    expect(parseWeekendCall({ md: 0, crna: 2 })).toEqual({ md: 0, crna: 2 });
+  });
+  it('treats an unconfigured site as null, not as zeros', () => {
+    for (const junk of [null, undefined, {}, { md: null, crna: null }, 'x', 3]) {
+      expect(parseWeekendCall(junk)).toBeNull();
+    }
   });
 });
