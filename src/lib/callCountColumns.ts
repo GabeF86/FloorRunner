@@ -27,13 +27,22 @@
 // information: the slots exist and nobody took them. Only the ABSENCE of the
 // slot removes the column.
 //
-// ── THE CODE UNIVERSE STAYS C1–C3 ──────────────────────────────────────────
-// Presence PRUNES this list, it never extends it. The modal's bucket columns
-// have always been C1/C2/C3 only (display grouping — a call code outside them,
-// a beeper/CB, counts in the obligation census and the Call Total but has no
-// column), and widening the universe here would change what the Expected row
-// and the column totals mean. That is obligation math, which this module does
-// not touch.
+// ── THE CODE UNIVERSE IS THE BLOCK'S OWN (2026-09-17) ──────────────────────
+// It used to be a hardcoded C1/C2/C3. That was right while Paoli was the only
+// configured site, and wrong the moment six more were imported: Lankenau
+// stands C1, C3, C4, CC1 and CC2, so a hardcoded universe hid 22 of its 37
+// weekend calls and all 35 of its weekday CC1s. Bryn Mawr's weekend NEURO
+// vanished the same way. A chart that silently omits most of a site's call is
+// worse than no chart — it invites someone to conclude the weekend is empty.
+//
+// So every parent call code present in the block gets a column. C1/C2/C3 keep
+// their position first, in that order, so a Paoli block renders exactly as it
+// did; anything else follows alphabetically.
+//
+// This does NOT change obligation math. The census has always counted every
+// call slot whatever its code — the columns were the only thing narrower than
+// the truth, which is precisely why the totals never added up to the Call
+// Total. They add up closer now.
 //
 // ── BUCKETS COME FROM THE ENGINE ───────────────────────────────────────────
 // dayTypeBucketOn (rulesEngine/shared.ts) is the single home of the DATE-aware
@@ -75,10 +84,19 @@ import { dayTypeBucketOn } from './rulesEngine/shared';
 import { callBurdenWeight, parentCallCodeOf } from './callBurden';
 import { BUCKET_DAY_TYPES, type BucketDayType } from './callCountDays';
 
-/** Candidate call codes for the bucket columns, in display order. Presence in
- * the block prunes this list; nothing extends it (see the header). */
+/** The codes that lead the display order, kept in this order. Any other call
+ *  code in the block follows them alphabetically — see the header. */
 export const CALL_COUNT_CODES = ['C1', 'C2', 'C3'] as const;
-export type CallCountCode = (typeof CALL_COUNT_CODES)[number];
+/** Any call code the block actually contains. */
+export type CallCountCode = string;
+
+/** Block codes in display order: the legacy three first, then the rest. */
+export function orderCallCodes(codes: Iterable<string>): string[] {
+  const set = new Set(codes);
+  const lead = (CALL_COUNT_CODES as readonly string[]).filter(c => set.has(c));
+  const rest = [...set].filter(c => !(CALL_COUNT_CODES as readonly string[]).includes(c)).sort();
+  return [...lead, ...rest];
+}
 
 /** Column header text per bucket — the modal's long-standing labels. */
 export const BUCKET_LABELS: Record<BucketDayType, string> = {
@@ -140,6 +158,11 @@ export interface CallCountSlotRow {
   derived_day_type: string;
   shift_types?: {
     code: string;
+    /** 'call' | 'regular' | … Needed since the code universe stopped being a
+     *  hardcoded C1/C2/C3: without it a day-shift code would earn a column.
+     *  Optional so a thinner caller still type-checks — see the fallback in
+     *  computeCallCountColumns. */
+    category?: string | null;
     /** shift_types.name — on the grid payload (all three narrow-retry rungs
      * select it). Only used to title the neuro group with the tier's real name
      * instead of the bare code; optional so a thinner caller still type-checks
@@ -178,7 +201,8 @@ function isBucketDayType(b: string): b is BucketDayType {
   return (BUCKET_DAY_TYPES as readonly string[]).includes(b);
 }
 
-const isCallCountCode = (c: string): c is CallCountCode =>
+/** One of the legacy three. Only used as the no-category fallback now. */
+const isCallCountCode = (c: string): boolean =>
   (CALL_COUNT_CODES as readonly string[]).includes(c);
 
 /** Header text for the lifted neuro group: the shift type's real NAME plus the
@@ -223,12 +247,20 @@ export function computeCallCountColumns(
   const blockTotals: Record<string, number> = {};
   const counts: Record<string, Record<string, number>> = {};
   const present = new Set<string>();
+  const allCodes = new Set<string>();
 
   for (const slot of slots) {
     const st = slot.shift_types;
     if (!st?.code) continue;
+    // Call only. When the caller supplies a category we trust it; when it does
+    // not, fall back to the legacy C1/C2/C3 test rather than letting every day
+    // shift in — a thinner caller should lose columns, never gain wrong ones.
+    if (st.category != null) {
+      if (st.category !== 'call') continue;
+    } else if (!isCallCountCode(parentCallCodeOf(st.code, st))) {
+      continue;
+    }
     const code = parentCallCodeOf(st.code, st);
-    if (!isCallCountCode(code)) continue;
     const bucket = dayTypeBucketOn(slot.derived_day_type, slot.slot_date);
     // A day type the engine does not fold into one of the four buckets has no
     // column (the shared obligation census still counts the slot).
@@ -236,6 +268,7 @@ export function computeCallCountColumns(
 
     const key = `${bucket}|${code}`;
     present.add(key);
+    allCodes.add(code);
     const weight = callBurdenWeight(st);
     blockTotals[key] = (blockTotals[key] || 0) + weight;
     for (const a of slot.assignments || []) {
@@ -246,18 +279,20 @@ export function computeCallCountColumns(
     }
   }
 
-  // The neuro tier is lifted only when the site STATES one and it is one of
-  // the columned codes: a stated code outside C1–C3 has no columns to lift, so
-  // the day groups stay exactly as they were (the same silent no-op as a site
-  // with no neuroWeekend at all).
+  // The neuro tier is lifted when the site STATES one and the block actually
+  // contains it. The test used to be "is it C1, C2 or C3", which silently
+  // refused to lift Bryn Mawr's tier because it is called NEURO — so its
+  // weekend neuro sat in the Saturday day group while Paoli's identical tier
+  // got its own. A stated code the block does not contain is still a no-op:
+  // there is nothing to lift.
   const stated = options.neuroCode ?? null;
   const neuro: CallCountCode | null =
-    stated && isCallCountCode(stated) ? stated : null;
+    stated && allCodes.has(stated) ? stated : null;
 
   const groups: CallCountGroup[] = [];
   const neuroColumns: CallCountColumn[] = [];
   for (const bucket of BUCKET_DAY_TYPES) {
-    const codes = CALL_COUNT_CODES.filter(code => present.has(`${bucket}|${code}`));
+    const codes = orderCallCodes(allCodes).filter(code => present.has(`${bucket}|${code}`));
     const dayLabel = BUCKET_LABELS[bucket];
     const dayCodes = codes.filter(code => code !== neuro);
     if (dayCodes.length > 0) {

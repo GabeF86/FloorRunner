@@ -589,3 +589,80 @@ describe('BUCKET_LABELS', () => {
     });
   });
 });
+
+// ── The code universe is the block's own (2026-09-17) ──────────────────────
+// It was a hardcoded C1/C2/C3, which was right while Paoli was the only
+// configured site and wrong the moment six more were imported. Lankenau stands
+// C1, C3, C4, CC1 and CC2: the hardcoded universe hid 22 of its 37 weekend
+// calls and all 35 of its weekday CC1s, so its chart read as though the site
+// barely worked weekends.
+describe('the code universe comes from the block', () => {
+  const call = (extras: Partial<Sh> = {}) => ({ category: 'call', ...extras });
+
+  it('gives a column to a call code outside the legacy three', () => {
+    const { columns } = computeCallCountColumns([
+      slot(SAT, 'saturday', 'CC2', ['p1'], call()),
+      slot(SAT, 'saturday', 'C4', ['p2'], call()),
+    ]);
+    expect(columns.map(c => c.key)).toEqual(['saturday|C4', 'saturday|CC2']);
+  });
+
+  it('keeps C1, C2, C3 leading, in that order, with the rest alphabetical', () => {
+    const { columns } = computeCallCountColumns([
+      slot(SAT, 'saturday', 'CC1', ['p1'], call()),
+      slot(SAT, 'saturday', 'C2', ['p1'], call()),
+      slot(SAT, 'saturday', 'C4', ['p1'], call()),
+      slot(SAT, 'saturday', 'C1', ['p1'], call()),
+    ]);
+    expect(columns.map(c => c.code)).toEqual(['C1', 'C2', 'C4', 'CC1']);
+  });
+
+  it('renders a PAOLI block exactly as it did before the widening', () => {
+    // The site whose codes are the legacy three must not move a pixel.
+    const { columns } = computeCallCountColumns([
+      slot(MON, 'weekday', 'C1', ['p1'], call()),
+      slot(MON, 'weekday', 'C2', ['p2'], call()),
+      slot(SAT, 'saturday', 'C1', ['p1'], call()),
+      slot(SAT, 'saturday', 'C3', ['p3'], call()),
+    ], PAOLI);
+    expect(columns.map(c => c.key)).toEqual([
+      'weekday|C1', 'weekday|C2', 'saturday|C1', 'saturday|C3',
+    ]);
+  });
+
+  it('still lifts the stated neuro code into its own group, whatever it is called', () => {
+    const { groups } = computeCallCountColumns([
+      slot(SAT, 'saturday', 'C1', ['p1'], call()),
+      slot(SAT, 'saturday', 'NEURO', ['p2'], call()),
+    ], { neuroCode: 'NEURO' });
+    expect(groups.map(g => g.key)).toEqual(['day:saturday', 'neuro']);
+  });
+
+  it('gives NO column to a day shift', () => {
+    // The universe widened to every CALL code, not to every code. A 7-3 with a
+    // column would be nonsense on a call chart.
+    const { columns } = computeCallCountColumns([
+      slot(MON, 'weekday', 'C1', ['p1'], call()),
+      slot(MON, 'weekday', '7-3', ['p2'], { category: 'regular' }),
+      slot(MON, 'weekday', 'D4', ['p3'], { category: 'regular' }),
+    ]);
+    expect(columns.map(c => c.code)).toEqual(['C1']);
+  });
+
+  it('falls back to the legacy three when the caller supplies no category', () => {
+    // A thinner caller should lose columns, never gain wrong ones.
+    const { columns } = computeCallCountColumns([
+      slot(MON, 'weekday', 'C1', ['p1']),
+      slot(MON, 'weekday', '7-3', ['p2']),
+    ]);
+    expect(columns.map(c => c.code)).toEqual(['C1']);
+  });
+
+  it('folds a split segment under its parent, not into a column of its own', () => {
+    const { columns } = computeCallCountColumns([
+      slot(MON, 'weekday', 'C1N12', ['p1'], call({ parent_call_code: 'C1' })),
+      slot(MON, 'weekday', 'C1D12', ['p2'], call({ parent_call_code: 'C1' })),
+    ]);
+    expect(columns.map(c => c.key)).toEqual(['weekday|C1']);
+  });
+});
