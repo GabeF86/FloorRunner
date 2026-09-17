@@ -11,6 +11,7 @@
 import { NextResponse } from 'next/server';
 import { sbSchedulingServer } from '@/lib/supabaseScheduling';
 import { parseWeekendCall } from '@/lib/staffingDemand';
+import { siteOpenDays } from '@/lib/operationsBoard';
 import { readAllRows } from '@/lib/pagedRead';
 import { embedArray } from '@/lib/embed';
 import { filterPublishedVersions } from '@/lib/rulesEngine/committedAssignments';
@@ -26,10 +27,19 @@ function readCount(v: unknown): number | null | 'invalid' {
 export async function GET() {
   const sb = sbSchedulingServer();
 
-  const { data: sites, error } = await sb.from('sites')
-    .select('id, name, short_name, weekend_staffing')
+  const { data: allSites, error } = await sb.from('sites')
+    .select('id, name, short_name, weekend_staffing, operational_days')
     .eq('is_active', true).order('display_order').order('name');
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+
+  // Only sites that RUN at a weekend get a complement. The surgery centres —
+  // Navy Yard, Orthopedic, Rothman, Riddle Surgery Center — are Monday to
+  // Friday and take no weekend call, so offering them a box invites somebody
+  // to fill in a requirement that does not exist.
+  const sites = (allSites ?? []).filter((s: Record<string, unknown>) => {
+    const open = siteOpenDays(s.operational_days);
+    return open[0] || open[6];
+  });
 
   // The SUGGESTION: distinct base call codes standing on a weekend day in the
   // published schedule. Split segments fold into their parent, so C1N12 and

@@ -265,9 +265,16 @@ export function coverageWeek(input: {
       const staffed = byDate?.get(date) ?? { physician: 0, crna: 0 };
       const dow = dayOfWeekUTC(date);
 
-      // Closed beats everything: a site that does not run on Sunday is neither
-      // short nor awaiting a count — and must not pick up a weekend default.
-      if (!open[dow]) {
+      // Closed: a site that does not run this weekday is neither short nor
+      // awaiting a count, and must not pick up a weekend default.
+      //
+      // BUT NOT IF SOMEBODY IS ACTUALLY THERE. operational_days is config and
+      // config goes stale — Riddle was stored Mon–Fri while taking call every
+      // weekend of the imported block, so an unconditional close hid nine real
+      // staffed days behind the word CLOSED. Real people on the floor outrank
+      // a column that says they cannot be.
+      const anyStaffed = staffed.physician > 0 || staffed.crna > 0;
+      if (!open[dow] && !anyStaffed) {
         return { date, status: 'closed', groups: [], shortBy: 0, demandSource: null };
       }
 

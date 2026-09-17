@@ -54,7 +54,11 @@ export function DemandEntry(
 
   useEffect(() => {
     let live = true;
-    fetch(`/api/scheduling/staffing-demand?from=${dates[0]}&to=${dates[dates.length - 1]}`)
+    // no-store, deliberately. Without it the browser serves the response it
+    // cached BEFORE the last save, so re-opening this tab showed the counts
+    // gone — they were in the database the whole time.
+    fetch(`/api/scheduling/staffing-demand?from=${dates[0]}&to=${dates[dates.length - 1]}`,
+      { cache: 'no-store' })
       .then(async r => {
         const body = await r.json();
         if (!r.ok) throw new Error(body?.error || `Request failed (${r.status})`);
@@ -322,7 +326,7 @@ function WeekendCallSection({ onSaved }: { onSaved?: () => void }) {
 
   useEffect(() => {
     let live = true;
-    fetch('/api/scheduling/sites/weekend-call')
+    fetch('/api/scheduling/sites/weekend-call', { cache: 'no-store' })
       .then(async r => {
         const body = await r.json();
         if (!r.ok) throw new Error(body?.error || `Request failed (${r.status})`);

@@ -21,7 +21,8 @@
 
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { Card, Banner, PageHeader, SectionLabel, StatBlock, Badge } from '@/components/ui';
 import { GROUP_LABEL, type CellStatus, type CoverageCell } from '@/lib/operationsBoard';
@@ -163,7 +164,13 @@ export function OperationsView({ data, fatal }: { data: OperationsData | null; f
   // site is instant and costs no round trip.
   const [siteFilter, setSiteFilter] = useState<string | null>(null);
   const [tab, setTab] = useState<'coverage' | 'demand'>('coverage');
-  const [savedSinceLoad, setSavedSinceLoad] = useState(false);
+  const router = useRouter();
+
+  // The coverage tab is server-rendered, so a saved count reached it only on a
+  // hard reload. router.refresh() re-runs the server component in place: the
+  // matrix picks the number up as soon as it is saved, and the entry grid
+  // keeps its own state while that happens.
+  const handleSaved = useCallback(() => { router.refresh(); }, [router]);
 
   const benchRows = useMemo(
     () => (siteFilter
@@ -252,21 +259,16 @@ export function OperationsView({ data, fatal }: { data: OperationsData | null; f
         </BoardTab>
       </div>
 
-      {tab === 'demand' && (
+      {/* HIDDEN, not unmounted. Unmounting threw away everything typed and
+          refetched on the way back, which read as the entries having been
+          erased. The grid keeps its state; only its visibility changes. */}
+      <div style={{ display: tab === 'demand' ? undefined : 'none' }}>
         <DemandEntry
           sites={data.coverage}
           dates={data.dates}
-          // The coverage tab is server-rendered, so a saved count only shows up
-          // there on the next load. Saying so beats silently disagreeing.
-          onSaved={() => setSavedSinceLoad(true)}
+          onSaved={handleSaved}
         />
-      )}
-
-      {tab === 'demand' && savedSinceLoad && (
-        <Banner tone="info">
-          Counts saved. Reload the page to see them on the coverage tab.
-        </Banner>
-      )}
+      </div>
 
       <div style={{
         display: tab === 'coverage' ? 'grid' : 'none',

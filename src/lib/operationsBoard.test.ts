@@ -508,3 +508,53 @@ describe('bench rows carry site IDS, not just names', () => {
     expect(b.uncredentialed).toBe(1);
   });
 });
+
+describe('CLOSED must never hide people who are actually there', () => {
+  // operational_days is config, and config goes stale. Riddle was stored
+  // Mon–Fri while taking call every weekend of the imported block; an
+  // unconditional close hid nine real staffed days behind the word CLOSED.
+  const monFri = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'];
+
+  it('closes a genuinely empty weekend at a Mon–Fri site', () => {
+    const rows = coverageWeek({
+      sites: [site('s1', 'Orthopedic', monFri)],
+      providers: [], slots: [], dates: [SAT], demand: new Map(),
+    });
+    expect(rows[0].cells[0].status).toBe('closed');
+  });
+
+  it('does NOT close a day somebody is scheduled on', () => {
+    const rows = coverageWeek({
+      sites: [site('s1', 'Riddle', monFri)],
+      providers: [md],
+      slots: [slot('s1', SAT, 'C1', { category: 'call', rank: 0, held: ['p1'] })],
+      dates: [SAT],
+      demand: new Map(),
+    });
+    expect(rows[0].cells[0].status).toBe('unstated');
+    expect(rows[0].cells[0].groups.find(g => g.group === 'physician')?.available).toBe(1);
+  });
+
+  it('grades a staffed "closed" day against its demand like any other', () => {
+    const rows = coverageWeek({
+      sites: [site('s1', 'Riddle', monFri)],
+      providers: [md],
+      slots: [slot('s1', SAT, 'C1', { category: 'call', rank: 0, held: ['p1'] })],
+      dates: [SAT],
+      demand: new Map([[`s1|${SAT}`, { md: 2, crna: null, source: 'manual' as const, notes: null }]]),
+    });
+    expect(rows[0].cells[0]).toMatchObject({ status: 'short', shortBy: 1 });
+  });
+
+  it('still refuses a weekend DEFAULT to a closed, empty site', () => {
+    // A Mon–Fri surgery centre must not acquire a weekend requirement from a
+    // standing complement it should never have been given.
+    const rows = coverageWeek({
+      sites: [site('s1', 'Orthopedic', monFri)],
+      providers: [], slots: [], dates: [SAT], demand: new Map(),
+      weekendCall: new Map([['s1', { md: 3, crna: 2 }]]),
+    });
+    expect(rows[0].cells[0].status).toBe('closed');
+    expect(rows[0].shortBy).toBe(0);
+  });
+});
