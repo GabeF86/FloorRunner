@@ -33,6 +33,10 @@ import type { OperationsData } from './queries';
 
 const CELL: Record<CellStatus, { bg: string; ink: string; rule: string }> = {
   covered:     { bg: 'var(--ok-bg)',     ink: 'var(--text)',      rule: 'transparent' },
+  // Blue, not a deeper green. Surplus is not "extra covered" — it is spare
+  // capacity, and on a board where staff move between sites daily it is the
+  // thing you scan for when somewhere else is short.
+  surplus:     { bg: 'var(--info-bg)',   ink: 'var(--info)',      rule: 'var(--info)' },
   short:       { bg: 'var(--warn-bg)',   ink: 'var(--warn)',      rule: 'var(--warn)' },
   gap:         { bg: 'var(--danger-bg)', ink: 'var(--danger)',    rule: 'var(--danger)' },
   // The two "no number" states share an ink so they read as one idea — absence
@@ -45,6 +49,7 @@ const CELL: Record<CellStatus, { bg: string; ink: string; rule: string }> = {
 
 const LEGEND: Array<{ status: CellStatus; label: string }> = [
   { status: 'covered', label: 'covered' },
+  { status: 'surplus', label: 'spare' },
   { status: 'short', label: 'one short' },
   { status: 'gap', label: 'gap' },
   { status: 'unstated', label: 'N/A — no count entered' },
@@ -113,7 +118,9 @@ function CoverageCellView({ cell }: { cell: CoverageCell }) {
       title={cell.groups.map(g => g.needed === null
         ? `${GROUP_LABEL[g.group]} ${g.available} scheduled, need not stated`
         : `${GROUP_LABEL[g.group]} ${g.available} of ${g.needed} needed`).join(' · ')
-        + (cell.shortBy > 0 ? ` — ${cell.shortBy} short` : ' — covered')
+        + (cell.shortBy > 0 ? ` — ${cell.shortBy} short`
+          : cell.surplusBy > 0 ? ` — ${cell.surplusBy} spare, movable elsewhere`
+          : ' — covered')
         + (cell.demandSource ? ` (${cell.demandSource} count)` : '')}
       style={{
         padding: '7px 10px', background: t.bg, ...mono,
@@ -125,17 +132,23 @@ function CoverageCellView({ cell }: { cell: CoverageCell }) {
     >
       {cell.groups.map(g => {
         const short = g.needed !== null && g.available < g.needed;
+        const spare = g.needed !== null && g.available > g.needed;
         return (
           <div key={g.group} style={{ display: 'flex', gap: 6, justifyContent: 'center' }}>
             <span style={{ color: 'var(--text-dim)', fontSize: 10, alignSelf: 'center' }}>
               {GROUP_LABEL[g.group]}
             </span>
             <span style={{
-              color: short ? t.ink : 'var(--text)',
-              fontWeight: short ? 700 : 500,
+              color: short || spare ? t.ink : 'var(--text)',
+              fontWeight: short || spare ? 700 : 500,
             }}>
               {g.available}/{g.needed === null ? '—' : g.needed}
             </span>
+            {spare && (
+              <span style={{ color: t.ink, fontSize: 9, alignSelf: 'center' }}>
+                +{g.available - (g.needed ?? 0)}
+              </span>
+            )}
           </div>
         );
       })}
@@ -362,6 +375,8 @@ export function OperationsView({ data, fatal }: { data: OperationsData | null; f
               </tbody>
             </table>
           </div>
+
+          <TransfersPanel data={data} />
 
           <p style={{
             margin: 0, padding: 'var(--space-3) var(--space-4)',
@@ -668,5 +683,93 @@ function BoardTab(
     >
       {children}
     </button>
+  );
+}
+
+/**
+ * Who could move today.
+ *
+ * Staff are shared daily here — sites need different numbers on different days,
+ * PTO lands unevenly — so a block routinely leaves one hospital a body spare
+ * while another is a body down. The move itself is made by hand on the
+ * schedule; this answers the question that comes first, which is who is
+ * actually movable.
+ *
+ * It stays quiet when there is nothing to say. A panel that renders "no
+ * transfers needed" every day is a panel people stop reading, and the days it
+ * matters are exactly the days it would be skimmed past.
+ */
+function TransfersPanel({ data }: { data: OperationsData }) {
+  const t = data.transfers;
+  if (t.short.length === 0) return null;
+
+  const byTarget = new Map<string, typeof t.candidates>();
+  for (const c of t.candidates) {
+    const list = byTarget.get(c.toSite) ?? [];
+    list.push(c);
+    byTarget.set(c.toSite, list);
+  }
+
+  return (
+    <div style={{
+      padding: 'var(--space-3) var(--space-4)',
+      borderTop: '1px solid var(--border-faint)',
+      background: 'var(--tint-surface-faint)',
+    }}>
+      <SectionLabel source="none" rule={false}>
+        Cover {longDate(data.date)} by moving somebody
+      </SectionLabel>
+
+      <div style={{
+        display: 'flex', gap: 'var(--space-4)', flexWrap: 'wrap',
+        marginBottom: t.candidates.length > 0 ? 'var(--space-2)' : 0,
+      }}>
+        <span style={{ ...mono, fontSize: 'var(--fs-xs)' }}>
+          <span style={{ color: 'var(--text-dim)' }}>SHORT </span>
+          {t.short.map(s => `${s.shortName} ${s.by}`).join(' · ')}
+        </span>
+        {t.surplus.length > 0 && (
+          <span style={{ ...mono, fontSize: 'var(--fs-xs)' }}>
+            <span style={{ color: 'var(--text-dim)' }}>SPARE </span>
+            <span style={{ color: 'var(--info)' }}>
+              {t.surplus.map(s => `${s.shortName} +${s.by}`).join(' · ')}
+            </span>
+          </span>
+        )}
+      </div>
+
+      {[...byTarget.entries()].map(([target, list]) => (
+        <div key={target} style={{ marginBottom: 6, fontSize: 'var(--fs-xs)', lineHeight: 1.7 }}>
+          <span style={{ ...mono, color: 'var(--warn)', fontWeight: 700 }}>→ {target}</span>
+          {' '}
+          {list.map(c => (
+            <span key={c.providerId + c.fromSiteId} style={{ marginRight: 10 }}>
+              <strong>{c.name}</strong>
+              <span style={{ ...mono, color: 'var(--text-dim)', fontSize: 10 }}>
+                {' '}{c.shiftCode} @ {c.fromSite}
+              </span>
+            </span>
+          ))}
+        </div>
+      ))}
+
+      {t.unmatched.map(u => (
+        <div key={u.siteId} style={{
+          fontSize: 'var(--fs-xs)', color: 'var(--text-dim)', lineHeight: 1.7,
+        }}>
+          <span style={{ ...mono, color: 'var(--warn)', fontWeight: 700 }}>→ {u.shortName}</span>
+          {' '}nobody to move — {u.reason}.
+        </div>
+      ))}
+
+      <p style={{
+        margin: 'var(--space-2) 0 0', fontSize: 10,
+        color: 'var(--text-dim)', lineHeight: 1.6,
+      }}>
+        Only day work is offered, and only to sites the person is credentialed at — moving
+        call is a different decision, and the engine will not place anyone where they are not
+        credentialed. Make the move itself on the schedule.
+      </p>
+    </div>
   );
 }

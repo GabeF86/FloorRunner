@@ -174,7 +174,13 @@ export function siteOpenDays(raw: unknown): boolean[] {
 
 // ── 1. Available vs needed, by site and day ────────────────────────────────
 
-export type CellStatus = 'covered' | 'short' | 'gap' | 'closed' | 'unstated';
+export type CellStatus =
+  | 'covered'    // supply meets demand exactly
+  | 'surplus'    // MORE than demand — the pool a transfer draws from
+  | 'short'      // one under
+  | 'gap'        // two or more under
+  | 'closed'
+  | 'unstated';
 
 export interface CoverageGroupCount {
   group: CoverageGroup;
@@ -193,6 +199,11 @@ export interface CoverageCell {
   /** Σ over groups of max(0, needed − available), counting only groups whose
    *  need has actually been stated. */
   shortBy: number;
+  /** Σ over groups of max(0, available − needed). Staff sharing is daily here,
+   *  so surplus is not a curiosity — it is the supply side of a transfer, and
+   *  a board that paints it plain green hides the half of the picture that
+   *  makes a move possible. */
+  surplusBy: number;
   /** Which row the needed figures came from, so the board can show whether a
    *  scheduler counted it or the calculator did. Null when unstated. */
   demandSource: ResolvedDemand['source'] | null;
@@ -210,9 +221,12 @@ export interface CoverageRow {
 /** One short is "short"; two or more is a "gap". The split exists because a
  *  single open room is a phone call and two is a staffing problem, and back
  *  office triages them differently. */
-function statusForShortfall(shortBy: number): CellStatus {
-  if (shortBy <= 0) return 'covered';
-  return shortBy === 1 ? 'short' : 'gap';
+/** Shortfall outranks surplus: a cell that is two MDs short and one CRNA spare
+ *  is a problem, not an opportunity, and must not read as one. */
+function statusFor(shortBy: number, surplusBy: number): CellStatus {
+  if (shortBy === 1) return 'short';
+  if (shortBy > 1) return 'gap';
+  return surplusBy > 0 ? 'surplus' : 'covered';
 }
 
 /**
@@ -275,7 +289,7 @@ export function coverageWeek(input: {
       // a column that says they cannot be.
       const anyStaffed = staffed.physician > 0 || staffed.crna > 0;
       if (!open[dow] && !anyStaffed) {
-        return { date, status: 'closed', groups: [], shortBy: 0, demandSource: null };
+        return { date, status: 'closed', groups: [], shortBy: 0, surplusBy: 0, demandSource: null };
       }
 
       // manual > calculated > the site's standing weekend call complement.
@@ -296,6 +310,7 @@ export function coverageWeek(input: {
             { group: 'crna', available: staffed.crna, needed: null },
           ],
           shortBy: 0,
+          surplusBy: 0,
           demandSource: null,
         };
       }
@@ -306,12 +321,18 @@ export function coverageWeek(input: {
       ] as CoverageGroupCount[]).filter(g => g.needed !== null || g.available > 0);
 
       let shortBy = 0;
+      let surplusBy = 0;
       for (const g of groups) {
         if (g.needed === null) continue;     // that half is simply not stated
         shortBy += Math.max(0, g.needed - g.available);
+        surplusBy += Math.max(0, g.available - g.needed);
       }
       rowShort += shortBy;
-      return { date, status: statusForShortfall(shortBy), groups, shortBy, demandSource: need.source };
+      return {
+        date, groups, shortBy, surplusBy,
+        status: statusFor(shortBy, surplusBy),
+        demandSource: need.source,
+      };
     });
 
     return {
@@ -689,4 +710,219 @@ export function weekDates(date: string): string[] {
   const dow = dayOfWeekUTC(date);          // 0 = Sunday
   const monday = addDays(date, dow === 0 ? -6 : 1 - dow);
   return Array.from({ length: 7 }, (_, i) => addDays(monday, i));
+}
+
+// ── 5. Transfers ───────────────────────────────────────────────────────────
+
+/**
+ * Who could move from a site with spare staff to a site that is short.
+ *
+ * Staff are shared daily here: sites need different numbers on different days,
+ * PTO lands unevenly, and a block routinely leaves one hospital with a body to
+ * spare while another is a body down. The move itself is made by hand on the
+ * schedule — this only answers the question that comes first, which is who is
+ * actually movable.
+ *
+ * ── THREE THINGS DISQUALIFY A CANDIDATE ────────────────────────────────────
+ * 1. NOT CREDENTIALED at the destination. The engine will not place anyone at
+ *    a site they are not credentialed for, and neither should a suggestion —
+ *    offering an impossible move wastes the one minute this panel exists to
+ *    save.
+ * 2. ON CALL. A call assignment is not a room that can be covered elsewhere;
+ *    moving first call is a different and much larger decision. Only regular
+ *    day work is offered.
+ * 3. WRONG GROUP. A CRNA cannot fill a physician's gap. Candidates are matched
+ *    to the group the destination is actually short in.
+ */
+export interface TransferCandidate {
+  providerId: string;
+  name: string;
+  providerType: string;
+  /** The shift they currently hold at the surplus site. */
+  shiftCode: string;
+  fromSiteId: string;
+  fromSite: string;
+  toSiteId: string;
+  toSite: string;
+  /** Which group's gap this move would close. */
+  group: CoverageGroup;
+}
+
+export interface TransferPicture {
+  date: string;
+  short: Array<{ siteId: string; shortName: string; siteName: string; by: number }>;
+  surplus: Array<{ siteId: string; shortName: string; siteName: string; by: number }>;
+  candidates: TransferCandidate[];
+  /** Sites short with nobody movable to them, and why there is nobody. */
+  unmatched: Array<{ siteId: string; shortName: string; reason: string }>;
+}
+
+export function transferPicture(input: {
+  date: string;
+  coverage: ReadonlyArray<CoverageRow>;
+  slots: ReadonlyArray<OpsSlotRow>;
+  providers: ReadonlyArray<OpsProviderRow>;
+  credentials: ReadonlyArray<OpsCredentialRow>;
+}): TransferPicture {
+  const { date } = input;
+
+  const cellOn = (row: CoverageRow) => row.cells.find(c => c.date === date);
+  const short = input.coverage
+    .map(r => ({ row: r, cell: cellOn(r) }))
+    .filter(x => x.cell && x.cell.shortBy > 0)
+    .map(x => ({
+      siteId: x.row.siteId, shortName: x.row.shortName,
+      siteName: x.row.siteName, by: x.cell!.shortBy,
+    }));
+  const surplus = input.coverage
+    .map(r => ({ row: r, cell: cellOn(r) }))
+    .filter(x => x.cell && x.cell.surplusBy > 0)
+    .map(x => ({
+      siteId: x.row.siteId, shortName: x.row.shortName,
+      siteName: x.row.siteName, by: x.cell!.surplusBy,
+    }));
+
+  // Nothing short: nothing to say, and the panel stays silent.
+  if (short.length === 0) {
+    return { date, short, surplus, candidates: [], unmatched: [] };
+  }
+  // Short but nothing spare anywhere. Still explain it — a shortage with no
+  // line under it reads as an unfinished thought, and "there is nobody" is a
+  // real answer that saves somebody going to look.
+  if (surplus.length === 0) {
+    return {
+      date, short, surplus, candidates: [],
+      unmatched: short.map(t => ({
+        siteId: t.siteId, shortName: t.shortName,
+        reason: 'nobody is spare anywhere today',
+      })),
+    };
+  }
+
+  // Which group each short site actually needs, so a CRNA is never offered
+  // against a physician gap.
+  const shortGroups = new Map<string, Set<CoverageGroup>>();
+  for (const row of input.coverage) {
+    const cell = cellOn(row);
+    if (!cell) continue;
+    const groups = new Set<CoverageGroup>();
+    for (const g of cell.groups) {
+      if (g.needed !== null && g.available < g.needed) groups.add(g.group);
+    }
+    if (groups.size > 0) shortGroups.set(row.siteId, groups);
+  }
+
+  const credOf = new Map<string, Set<string>>();
+  for (const c of input.credentials) {
+    if (!credentialLive(c, date)) continue;
+    const set = credOf.get(c.provider_id) ?? new Set<string>();
+    set.add(c.site_id);
+    credOf.set(c.provider_id, set);
+  }
+
+  const providerById = new Map(input.providers.map(p => [p.id, p]));
+  const surplusSiteIds = new Set(surplus.map(s => s.siteId));
+
+  // Which groups have a MOVABLE body at each surplus site — day work only.
+  // Without this the reason cannot tell "the spare staff are all MDs" from
+  // "the spare staff are all on call", and both are common.
+  const movableByGroup = new Map<string, Set<CoverageGroup>>();
+  for (const slot of input.slots) {
+    if (slot.slot_date !== date || !slot.shift_types) continue;
+    if (slot.shift_types.category === 'call') continue;
+    for (const a of slot.assignments || []) {
+      if (!a?.provider_id) continue;
+      const g: CoverageGroup =
+        providerTypeOf(input.providers, a.provider_id) === 'crna' ? 'crna' : 'physician';
+      const set = movableByGroup.get(slot.site_id) ?? new Set<CoverageGroup>();
+      set.add(g);
+      movableByGroup.set(slot.site_id, set);
+    }
+  }
+
+  const candidates: TransferCandidate[] = [];
+  const seen = new Set<string>();
+  for (const slot of input.slots) {
+    if (slot.slot_date !== date) continue;
+    if (!slot.shift_types) continue;
+    // Call is not transferable — see note 2 above.
+    if (slot.shift_types.category === 'call') continue;
+    if (!surplusSiteIds.has(slot.site_id)) continue;
+
+    for (const a of slot.assignments || []) {
+      if (!a?.provider_id) continue;
+      const provider = providerById.get(a.provider_id);
+      const group: CoverageGroup = provider?.provider_type === 'crna' ? 'crna' : 'physician';
+      const creds = credOf.get(a.provider_id) ?? new Set<string>();
+
+      for (const target of short) {
+        if (target.siteId === slot.site_id) continue;
+        if (!shortGroups.get(target.siteId)?.has(group)) continue;
+        if (!creds.has(target.siteId)) continue;
+        const key = `${a.provider_id}|${slot.site_id}|${target.siteId}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        candidates.push({
+          providerId: a.provider_id,
+          name: provider ? providerName(provider) : '—',
+          providerType: provider?.provider_type || '',
+          shiftCode: slot.shift_types.code,
+          fromSiteId: slot.site_id,
+          fromSite: input.coverage.find(c => c.siteId === slot.site_id)?.shortName ?? '—',
+          toSiteId: target.siteId,
+          toSite: target.shortName,
+          group,
+        });
+      }
+    }
+  }
+
+  candidates.sort((a, b) =>
+    a.toSite.localeCompare(b.toSite) || a.fromSite.localeCompare(b.fromSite)
+    || a.name.localeCompare(b.name));
+
+  // A short site with no candidate is worth saying out loud, and WHY matters:
+  // "nobody is credentialed there", "the spare staff are the wrong group" and
+  // "the only spare staff are already here" lead somewhere completely
+  // different. A vague reason sends somebody looking for a person who does not
+  // exist.
+  const unmatched = short
+    .filter(t => !candidates.some(c => c.toSiteId === t.siteId))
+    .map(t => {
+      const elsewhere = surplus.filter(s => s.siteId !== t.siteId);
+      const needs = shortGroups.get(t.siteId) ?? new Set<CoverageGroup>();
+      const needLabel = [...needs].map(g => GROUP_LABEL[g]).join(' and ');
+
+      let reason: string;
+      if (surplus.length === 0) {
+        reason = 'nobody is spare anywhere today';
+      } else if (elsewhere.length === 0) {
+        reason = `the only spare staff today are already at ${t.shortName}`;
+      } else if (!spareGroups(elsewhere, movableByGroup).some(g => needs.has(g))) {
+        reason = `the spare staff today are ${spareGroups(elsewhere, movableByGroup)
+          .map(g => GROUP_LABEL[g]).join(' and ') || 'on call'}`
+          + `, and ${t.shortName} is short of ${needLabel}`;
+      } else {
+        reason = 'nobody spare today is credentialed there';
+      }
+      return { siteId: t.siteId, shortName: t.shortName, reason };
+    });
+
+  return { date, short, surplus, candidates, unmatched };
+}
+
+function providerTypeOf(
+  providers: ReadonlyArray<OpsProviderRow>, id: string,
+): string {
+  return providers.find(p => p.id === id)?.provider_type || '';
+}
+
+/** The groups that actually have a movable body across a set of surplus sites. */
+function spareGroups(
+  sites: ReadonlyArray<{ siteId: string }>,
+  movable: ReadonlyMap<string, Set<CoverageGroup>>,
+): CoverageGroup[] {
+  const out = new Set<CoverageGroup>();
+  for (const s of sites) for (const g of movable.get(s.siteId) ?? []) out.add(g);
+  return [...out];
 }

@@ -22,8 +22,9 @@ import {
   resolveDemand, parseWeekendCall, type DemandRow, type WeekendCall,
 } from '@/lib/staffingDemand';
 import {
-  coverageWeek, perDiemBench, siteDayBoard, rosterSummary, weekDates,
+  coverageWeek, perDiemBench, siteDayBoard, rosterSummary, weekDates, transferPicture,
   type CoverageRow, type BenchSummary, type SiteDayBoard, type RosterSummary,
+  type TransferPicture,
   type OpsSlotRow, type OpsSiteRow, type OpsProviderRow,
   type OpsProfileRow, type OpsCredentialRow, type OpsAvailRow,
 } from '@/lib/operationsBoard';
@@ -39,6 +40,9 @@ export interface OperationsData {
   /** Monday-first week containing `date`. */
   dates: string[];
   coverage: CoverageRow[];
+  /** Who could move from a site with staff to spare to one that is short,
+   *  for `date`. Staff sharing here is daily. */
+  transfers: TransferPicture;
   bench: BenchSummary;
   boards: SiteDayBoard[];
   summary: RosterSummary;
@@ -147,15 +151,20 @@ export async function loadOperationsData(
     slots,
   });
 
-  return {
-    date,
-    dates,
-    coverage: coverageWeek({
+  const coverage = coverageWeek({
       sites, slots, providers, dates,
       // Manual beats calculated beats the standing weekend complement; an
       // absent entry is "not stated", never zero.
       demand: resolveDemand(demandRes.rows),
       weekendCall,
+  });
+
+  return {
+    date,
+    dates,
+    coverage,
+    transfers: transferPicture({
+      date, coverage, slots, providers, credentials: credsRes.rows,
     }),
     bench,
     boards: siteDayBoard({ date, sites, slots, providers }),

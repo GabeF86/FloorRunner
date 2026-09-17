@@ -8,8 +8,8 @@
 import { describe, it, expect } from 'vitest';
 import {
   siteOpenDays, coverageWeek, perDiemBench, siteDayBoard, rosterSummary,
-  shiftHours, weekDates, providerName,
-  type OpsSlotRow, type OpsSiteRow, type OpsProviderRow,
+  shiftHours, weekDates, providerName, transferPicture,
+  type OpsSlotRow, type OpsSiteRow, type OpsProviderRow, type OpsCredentialRow,
 } from './operationsBoard';
 
 const MON = '2026-09-14';
@@ -140,12 +140,20 @@ describe('coverageWeek — supply measured against DEMAND', () => {
     expect(two[0].cells[0]).toMatchObject({ status: 'gap', shortBy: 2 });
   });
 
-  it('is COVERED when supply meets demand, and when it exceeds it', () => {
+  it('is COVERED when supply meets demand exactly', () => {
+    const rows = week({
+      demand: need(1, null),
+      slots: [slot('s1', MON, 'C1', { held: ['p1'] })],
+    });
+    expect(rows[0].cells[0]).toMatchObject({ status: 'covered', shortBy: 0, surplusBy: 0 });
+  });
+
+  it('is SURPLUS when supply exceeds it — the pool a transfer draws from', () => {
     const rows = week({
       demand: need(1, null),
       slots: [slot('s1', MON, 'C1', { held: ['p1'] }), slot('s1', MON, 'D4', { held: ['p2'] })],
     });
-    expect(rows[0].cells[0]).toMatchObject({ status: 'covered', shortBy: 0 });
+    expect(rows[0].cells[0]).toMatchObject({ status: 'surplus', shortBy: 0, surplusBy: 1 });
   });
 
   it('reads N/A — never 0 — when nobody has counted the day', () => {
@@ -556,5 +564,227 @@ describe('CLOSED must never hide people who are actually there', () => {
     });
     expect(rows[0].cells[0].status).toBe('closed');
     expect(rows[0].shortBy).toBe(0);
+  });
+});
+
+describe('transfers — who can move from a spare site to a short one', () => {
+  const sites = [site('s1', 'Lankenau'), site('s2', 'Riddle')];
+  const dem = (over: [number, number], under: [number, number]) => new Map([
+    [`s1|${MON}`, { md: over[0], crna: over[1], source: 'manual' as const, notes: null }],
+    [`s2|${MON}`, { md: under[0], crna: under[1], source: 'manual' as const, notes: null }],
+  ]);
+
+  const picture = (opts: {
+    slots: OpsSlotRow[]; demand: Map<string, any>;
+    credentials?: OpsCredentialRow[]; providers?: OpsProviderRow[];
+  }) => {
+    const providers = opts.providers ?? [md, md2, crna];
+    const coverage = coverageWeek({
+      sites, providers, slots: opts.slots, dates: [MON], demand: opts.demand,
+    });
+    return transferPicture({
+      date: MON, coverage, slots: opts.slots, providers,
+      credentials: opts.credentials ?? [
+        { provider_id: 'p1', site_id: 's1' }, { provider_id: 'p1', site_id: 's2' },
+      ],
+    });
+  };
+
+  it('offers a spare physician who is credentialed at the short site', () => {
+    const p = picture({
+      demand: dem([1, 0], [1, 0]),
+      slots: [
+        slot('s1', MON, '7-3', { held: ['p1'] }),
+        slot('s1', MON, '7-5', { held: ['p2'] }),   // s1 has 2 against 1 needed
+      ],
+    });
+    expect(p.surplus.map(s => [s.shortName, s.by])).toEqual([['LAN', 1]]);
+    expect(p.short.map(s => [s.shortName, s.by])).toEqual([['RID', 1]]);
+    expect(p.candidates).toEqual([expect.objectContaining({
+      providerId: 'p1', fromSite: 'LAN', toSite: 'RID', group: 'physician',
+    })]);
+  });
+
+  it('REFUSES somebody not credentialed at the destination', () => {
+    // The engine will not place them there, so offering the move wastes the
+    // minute this panel exists to save.
+    const p = picture({
+      demand: dem([1, 0], [1, 0]),
+      slots: [slot('s1', MON, '7-3', { held: ['p1'] }), slot('s1', MON, '7-5', { held: ['p2'] })],
+      credentials: [{ provider_id: 'p1', site_id: 's1' }],
+    });
+    expect(p.candidates).toEqual([]);
+    expect(p.unmatched).toEqual([
+      { siteId: 's2', shortName: 'RID', reason: 'nobody spare today is credentialed there' },
+    ]);
+  });
+
+  it('REFUSES to move somebody off CALL', () => {
+    // Moving first call is a different and much larger decision than covering
+    // a room.
+    const p = picture({
+      demand: dem([1, 0], [1, 0]),
+      slots: [
+        slot('s1', MON, 'C1', { category: 'call', rank: 0, held: ['p1'] }),
+        slot('s1', MON, 'C2', { category: 'call', rank: 1, held: ['p2'] }),
+      ],
+    });
+    expect(p.candidates).toEqual([]);
+  });
+
+  it('never offers a CRNA against a physician gap', () => {
+    const p = picture({
+      demand: dem([0, 1], [1, 0]),
+      slots: [
+        slot('s1', MON, '7-3', { group: 'both', held: ['c1'] }),
+        slot('s1', MON, '7-5', { group: 'both', held: ['c1'] }),
+      ],
+      providers: [md, md2, crna],
+      credentials: [{ provider_id: 'c1', site_id: 's1' }, { provider_id: 'c1', site_id: 's2' }],
+    });
+    expect(p.candidates).toEqual([]);
+  });
+
+  it('matches a CRNA to a CRNA gap', () => {
+    const p = picture({
+      demand: dem([0, 1], [0, 1]),
+      slots: [
+        slot('s1', MON, '7-3', { group: 'both', held: ['c1'] }),
+        slot('s1', MON, '7-5', { group: 'both', held: ['p1'] }),
+      ],
+      credentials: [{ provider_id: 'c1', site_id: 's1' }, { provider_id: 'c1', site_id: 's2' }],
+    });
+    expect(p.candidates.map(c => c.providerId)).toEqual(['c1']);
+  });
+
+  it('says nothing at all when nowhere is short', () => {
+    const p = picture({
+      demand: dem([1, 0], [0, 0]),
+      slots: [slot('s1', MON, '7-3', { held: ['p1'] }), slot('s1', MON, '7-5', { held: ['p2'] })],
+    });
+    expect(p.candidates).toEqual([]);
+    expect(p.short).toEqual([]);
+  });
+
+  it('reports a short site with no surplus anywhere as unmatched', () => {
+    const p = picture({ demand: dem([0, 0], [2, 0]), slots: [] });
+    expect(p.surplus).toEqual([]);
+    expect(p.candidates).toEqual([]);
+  });
+
+  it('does not offer to move somebody to the site they are already at', () => {
+    const both = new Map([
+      [`s1|${MON}`, { md: 1, crna: null, source: 'manual' as const, notes: null }],
+    ]);
+    const coverage = coverageWeek({
+      sites: [site('s1', 'Lankenau')], providers: [md, md2],
+      slots: [slot('s1', MON, '7-3', { held: ['p1'] })], dates: [MON], demand: both,
+    });
+    const p = transferPicture({
+      date: MON, coverage, providers: [md, md2],
+      slots: [slot('s1', MON, '7-3', { held: ['p1'] })],
+      credentials: [{ provider_id: 'p1', site_id: 's1' }],
+    });
+    expect(p.candidates).toEqual([]);
+  });
+});
+
+describe('surplus is its own state', () => {
+  it('reads as SURPLUS, not plain covered, when supply exceeds demand', () => {
+    // A site with 10 against 7 needed is the pool a transfer draws from.
+    // Painting it the same green as an exact match hides that.
+    const rows = coverageWeek({
+      sites: [site('s1', 'Paoli')], providers: [md, md2],
+      slots: [slot('s1', MON, '7-3', { held: ['p1'] }), slot('s1', MON, '7-5', { held: ['p2'] })],
+      dates: [MON],
+      demand: new Map([[`s1|${MON}`, { md: 1, crna: null, source: 'manual' as const, notes: null }]]),
+    });
+    expect(rows[0].cells[0]).toMatchObject({ status: 'surplus', surplusBy: 1, shortBy: 0 });
+  });
+
+  it('SHORT outranks surplus in the same cell', () => {
+    // Two MDs down and a CRNA spare is a problem, not an opportunity.
+    const rows = coverageWeek({
+      sites: [site('s1', 'Paoli')], providers: [md, crna],
+      slots: [slot('s1', MON, '7-3', { group: 'both', held: ['c1'] })],
+      dates: [MON],
+      demand: new Map([[`s1|${MON}`, { md: 2, crna: 0, source: 'manual' as const, notes: null }]]),
+    });
+    expect(rows[0].cells[0]).toMatchObject({ status: 'gap', shortBy: 2, surplusBy: 1 });
+  });
+});
+
+describe('why nobody can be moved — the reason has to be specific', () => {
+  // "Nobody is credentialed there", "the spare staff are the wrong group" and
+  // "the only spare staff are already here" lead somewhere completely
+  // different. A vague reason sends somebody hunting a person who does not
+  // exist.
+  const sites = [site('s1', 'Lankenau'), site('s2', 'Riddle')];
+  const build = (opts: {
+    slots: OpsSlotRow[]; demand: Map<string, any>;
+    credentials?: OpsCredentialRow[]; providers?: OpsProviderRow[];
+  }) => {
+    const providers = opts.providers ?? [md, md2, crna];
+    const coverage = coverageWeek({
+      sites, providers, slots: opts.slots, dates: [MON], demand: opts.demand,
+    });
+    return transferPicture({
+      date: MON, coverage, slots: opts.slots, providers,
+      credentials: opts.credentials ?? [],
+    });
+  };
+
+  it('says so when nobody is spare anywhere', () => {
+    const p = build({
+      slots: [],
+      demand: new Map([[`s2|${MON}`, { md: 2, crna: null, source: 'manual' as const, notes: null }]]),
+    });
+    expect(p.unmatched[0].reason).toBe('nobody is spare anywhere today');
+  });
+
+  it('says so when the only spare staff are already at the short site', () => {
+    // A site short of CRNAs and spare on MDs is BOTH, and you cannot move
+    // somebody to where they already are.
+    const p = build({
+      providers: [md, md2, crna],
+      slots: [
+        slot('s1', MON, '7-3', { held: ['p1'] }),
+        slot('s1', MON, '7-5', { held: ['p2'] }),
+      ],
+      demand: new Map([[`s1|${MON}`, { md: 1, crna: 3, source: 'manual' as const, notes: null }]]),
+    });
+    expect(p.unmatched[0].reason).toBe('the only spare staff today are already at LAN');
+  });
+
+  it('says so when the spare staff are the wrong GROUP', () => {
+    const p = build({
+      providers: [md, crna],
+      slots: [
+        slot('s1', MON, '7-3', { group: 'both', held: ['c1'] }),
+        slot('s1', MON, '7-5', { group: 'both', held: ['c1'] }),
+      ],
+      credentials: [{ provider_id: 'c1', site_id: 's1' }, { provider_id: 'c1', site_id: 's2' }],
+      demand: new Map([
+        [`s1|${MON}`, { md: null, crna: 1, source: 'manual' as const, notes: null }],
+        [`s2|${MON}`, { md: 2, crna: null, source: 'manual' as const, notes: null }],
+      ]),
+    });
+    expect(p.unmatched[0].reason).toContain('CRNA');
+    expect(p.unmatched[0].reason).toContain('short of MD');
+  });
+
+  it('falls back to the credential reason when group and location both fit', () => {
+    const p = build({
+      slots: [
+        slot('s1', MON, '7-3', { held: ['p1'] }),
+        slot('s1', MON, '7-5', { held: ['p2'] }),
+      ],
+      credentials: [{ provider_id: 'p1', site_id: 's1' }],   // not at s2
+      demand: new Map([
+        [`s1|${MON}`, { md: 1, crna: null, source: 'manual' as const, notes: null }],
+        [`s2|${MON}`, { md: 2, crna: null, source: 'manual' as const, notes: null }],
+      ]),
+    });
+    expect(p.unmatched[0].reason).toBe('nobody spare today is credentialed there');
   });
 });
