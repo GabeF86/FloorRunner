@@ -433,3 +433,39 @@ describe('the schedule code beside the name', () => {
     expect(b.rows[0]).toMatchObject({ name: 'D. Choudhry', code: 'CHOD' });
   });
 });
+
+describe('bench rows carry site IDS, not just names', () => {
+  it('lists the ids the board filters on', () => {
+    // The board filters by credential so a scheduler can answer "site X is
+    // short, who can I call FOR IT". Filtering on the short NAME would break
+    // the day two sites shared one.
+    const sites = [
+      { id: 's1', name: 'Paoli', short_name: 'PH' },
+      { id: 's2', name: 'Riddle', short_name: 'RH' },
+      { id: 's3', name: 'Lankenau', short_name: 'LMC' },
+    ];
+    const b = perDiemBench({
+      date: '2026-09-15',
+      providers: [{ id: 'p1', last_name: 'Martinez', provider_type: 'physician' }],
+      profiles: [{ provider_id: 'p1', employment_status: 'per_diem' }],
+      credentials: [{ provider_id: 'p1', site_id: 's3' }, { provider_id: 'p1', site_id: 's1' }],
+      availability: [], slots: [], sites,
+    });
+    // Site order, not credential-row order — the chips read the same way down
+    // every row.
+    expect(b.rows[0].siteIds).toEqual(['s1', 's3']);
+    expect(b.rows[0].sites).toEqual(['PH', 'LMC']);
+  });
+
+  it('gives an uncredentialed per diem no ids to match — they filter out of every site', () => {
+    const b = perDiemBench({
+      date: '2026-09-15',
+      providers: [{ id: 'p1', last_name: 'Martinez', provider_type: 'physician' }],
+      profiles: [{ provider_id: 'p1', employment_status: 'per_diem' }],
+      credentials: [], availability: [], slots: [],
+      sites: [{ id: 's1', name: 'Paoli', short_name: 'PH' }],
+    });
+    expect(b.rows).toEqual([]);
+    expect(b.uncredentialed).toBe(1);
+  });
+});

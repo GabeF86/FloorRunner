@@ -21,6 +21,7 @@
 
 'use client';
 
+import { useMemo, useState } from 'react';
 import Link from 'next/link';
 import { Card, Banner, PageHeader, SectionLabel, StatBlock, Badge } from '@/components/ui';
 import { GROUP_LABEL, type CellStatus, type CoverageCell } from '@/lib/operationsBoard';
@@ -138,6 +139,34 @@ export function OperationsView({ data, fatal }: { data: OperationsData | null; f
   }
 
   const s = data.summary;
+
+  // ── The bench filter ────────────────────────────────────────────────────
+  // "A site needs help — who can I call for it?" is the question the bench is
+  // opened to answer, and until now it answered a different one: who is free
+  // ANYWHERE. Filtering client-side over rows already loaded, so choosing a
+  // site is instant and costs no round trip.
+  const [siteFilter, setSiteFilter] = useState<string | null>(null);
+
+  const benchRows = useMemo(
+    () => (siteFilter
+      ? data.bench.rows.filter(r => r.siteIds.includes(siteFilter))
+      : data.bench.rows),
+    [data.bench.rows, siteFilter]);
+
+  // Free-and-credentialed per site — the number that decides whether calling
+  // that site's bench is worth doing at all. Counted over EVERY bench row, not
+  // the filtered view, so the chips do not change as you click between them.
+  const freeBySite = useMemo(() => {
+    const out = new Map<string, number>();
+    for (const r of data.bench.rows) {
+      if (r.status !== 'available') continue;
+      for (const id of r.siteIds) out.set(id, (out.get(id) ?? 0) + 1);
+    }
+    return out;
+  }, [data.bench.rows]);
+
+  const filteredFree = benchRows.filter(r => r.status === 'available').length;
+  const filterSite = siteFilter ? data.coverage.find(c => c.siteId === siteFilter) : null;
   const strip: Array<[string, string]> = [
     ['roster', `${s.physicians} physicians · ${s.crnas} CRNAs · ${s.sites} sites`],
     ['mix', `${s.fullTime} full-time · ${s.partTime} part-time · ${s.perDiem} per diem`],
@@ -249,11 +278,26 @@ export function OperationsView({ data, fatal }: { data: OperationsData | null; f
               <tbody>
                 {data.coverage.map(row => (
                   <tr key={row.siteId} className="fr-row">
-                    <td style={{
-                      padding: '7px var(--space-4)',
-                      borderBottom: '1px solid var(--border-faint)', whiteSpace: 'nowrap',
-                    }}>
-                      <span style={{ ...mono, fontWeight: 600, fontSize: 'var(--fs-sm)' }}>
+                    {/* Clicking a site filters the bench to it. This is the
+                        whole workflow the page exists for: see that Riddle is
+                        short, click Riddle, get the per diems who can actually
+                        be placed at Riddle. */}
+                    <td
+                      onClick={() => setSiteFilter(siteFilter === row.siteId ? null : row.siteId)}
+                      title={`Show the per diems credentialed at ${row.siteName}`}
+                      style={{
+                        padding: '7px var(--space-4)', cursor: 'pointer',
+                        borderBottom: '1px solid var(--border-faint)', whiteSpace: 'nowrap',
+                        background: siteFilter === row.siteId
+                          ? 'color-mix(in srgb, var(--blue) 10%, transparent)' : undefined,
+                        boxShadow: siteFilter === row.siteId
+                          ? 'inset 2px 0 0 var(--blue)' : undefined,
+                      }}
+                    >
+                      <span style={{
+                        ...mono, fontWeight: 600, fontSize: 'var(--fs-sm)',
+                        color: siteFilter === row.siteId ? 'var(--blue)' : undefined,
+                      }}>
                         {row.shortName}
                       </span>
                       <span style={{
@@ -275,13 +319,48 @@ export function OperationsView({ data, fatal }: { data: OperationsData | null; f
             <strong style={{ color: 'var(--text-muted)' }}>Needed</strong> is the positions the
             published schedule says exist — never a template&rsquo;s guess at what a day usually
             takes. A day nobody has scheduled reads as a dash, not as zero needed.
+            {' '}<strong style={{ color: 'var(--text-muted)' }}>Click a site</strong> to show the
+            per diems credentialed there.
           </p>
         </Card>
 
         {/* ── 2. The bench ───────────────────────────────────────────────── */}
         <Card pad={false}>
           <div style={{ padding: 'var(--space-4) var(--space-4) 0' }}>
-            <SectionLabel>Bench — {longDate(data.date)}</SectionLabel>
+            <SectionLabel>
+              Bench — {longDate(data.date)}
+              {filterSite && <> · {filterSite.shortName}</>}
+            </SectionLabel>
+
+            {/* Filter by credential. The question this panel is opened to
+                answer is "site X is short, who can I call FOR IT" — and a
+                per diem who is free but not credentialed there is no use.
+                Counts are the free-and-credentialed number per site, so a
+                chip reading 0 says "do not bother" before you click it. */}
+            <div style={{
+              display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 'var(--space-3)',
+            }}>
+              <FilterChip
+                label="All sites"
+                count={data.bench.freeToday}
+                active={siteFilter === null}
+                onClick={() => setSiteFilter(null)}
+              />
+              {data.coverage.map(site => {
+                const free = freeBySite.get(site.siteId) ?? 0;
+                return (
+                  <FilterChip
+                    key={site.siteId}
+                    label={site.shortName}
+                    count={free}
+                    active={siteFilter === site.siteId}
+                    dim={free === 0}
+                    title={`${site.siteName} — ${free} per diem free and credentialed today`}
+                    onClick={() => setSiteFilter(siteFilter === site.siteId ? null : site.siteId)}
+                  />
+                );
+              })}
+            </div>
           </div>
 
           <div style={{
@@ -289,23 +368,28 @@ export function OperationsView({ data, fatal }: { data: OperationsData | null; f
             gap: 'var(--space-2)', padding: '0 var(--space-4) var(--space-3)',
           }}>
             <StatBlock value={data.bench.onRoster} caption="per diem on the roster" />
-            <StatBlock value={data.bench.sitesCovered} caption="sites they cover" />
             <StatBlock
-              value={data.bench.freeToday}
-              caption="free and credentialed"
-              tone={data.bench.freeToday === 0 ? 'danger' : 'ok'}
+              value={filterSite ? benchRows.length : data.bench.sitesCovered}
+              caption={filterSite ? `credentialed at ${filterSite.shortName}` : 'sites they cover'}
+            />
+            <StatBlock
+              value={filteredFree}
+              caption={filterSite ? `free at ${filterSite.shortName}` : 'free and credentialed'}
+              tone={filteredFree === 0 ? 'danger' : 'ok'}
             />
           </div>
 
           <div style={{ maxHeight: 340, overflowY: 'auto', borderTop: '1px solid var(--border-faint)' }}>
-            {data.bench.rows.length === 0 ? (
+            {benchRows.length === 0 ? (
               <p style={{
                 margin: 0, padding: 'var(--space-4)',
-                fontSize: 'var(--fs-sm)', color: 'var(--text-dim)',
+                fontSize: 'var(--fs-sm)', color: 'var(--text-dim)', lineHeight: 1.6,
               }}>
-                No per diem on the roster holds a live site credential today.
+                {filterSite
+                  ? `No per diem is credentialed at ${filterSite.siteName}. Nobody on the bench can be placed there until somebody is.`
+                  : 'No per diem on the roster holds a live site credential today.'}
               </p>
-            ) : data.bench.rows.map(r => (
+            ) : benchRows.map(r => (
               <div key={r.providerId} style={{
                 display: 'flex', alignItems: 'center', gap: 'var(--space-2)',
                 padding: '8px var(--space-4)',
@@ -463,5 +547,47 @@ export function OperationsView({ data, fatal }: { data: OperationsData | null; f
         }
       `}</style>
     </>
+  );
+}
+
+/**
+ * A filter chip with its count.
+ *
+ * The count is the point: a chip reading 0 tells the scheduler not to bother
+ * clicking it, which is the fastest possible answer to "can the bench help
+ * Riddle today". `dim` greys those out without hiding them — a site with
+ * nobody credentialed is information, and removing the chip would leave the
+ * reader wondering whether they had missed it.
+ */
+function FilterChip(
+  { label, count, active, dim, title, onClick }: {
+    label: string; count: number; active: boolean;
+    dim?: boolean; title?: string; onClick: () => void;
+  },
+) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title={title}
+      aria-pressed={active}
+      className="fr-focus"
+      style={{
+        display: 'inline-flex', alignItems: 'center', gap: 5,
+        padding: '3px 8px', borderRadius: 999, cursor: 'pointer',
+        fontFamily: 'var(--font-mono), ui-monospace, monospace',
+        fontSize: 10, fontWeight: 600, letterSpacing: 0.4,
+        background: active ? 'var(--blue)' : 'transparent',
+        color: active ? 'var(--on-accent)' : dim ? 'var(--text-faint)' : 'var(--text-muted)',
+        border: `1px solid ${active ? 'var(--blue)' : 'var(--border)'}`,
+        transition: 'background var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out)',
+      }}
+    >
+      {label}
+      <span style={{
+        opacity: active ? 0.85 : 0.65,
+        fontVariantNumeric: 'tabular-nums',
+      }}>{count}</span>
+    </button>
   );
 }

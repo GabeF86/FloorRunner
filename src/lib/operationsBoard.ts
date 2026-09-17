@@ -308,6 +308,9 @@ export interface BenchRow {
   detail: string;
   /** Short names of the sites they are credentialed at, in site order. */
   sites: string[];
+  /** The same sites as ids — what the board filters on. Names are for reading;
+   *  filtering on them would break the moment two sites shared a short name. */
+  siteIds: string[];
 }
 
 export interface BenchSummary {
@@ -441,6 +444,7 @@ export function perDiemBench(input: {
       status,
       detail,
       sites,
+      siteIds: input.sites.filter(s => creds.includes(s.id)).map(s => s.id),
     });
   }
 
