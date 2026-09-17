@@ -284,6 +284,130 @@ Real-time OR board with a voice-driven assistant. Separate visual system
 
 ---
 
+## 6.5 Design system — typography, colour and components
+
+The visual language was derived from a printed operations deck, and the single
+biggest thing that makes the app look like that deck is the **type split**.
+
+### Typography
+
+| | face | used for |
+|---|---|---|
+| **Sans** | DM Sans (400–800), `--font-sans` | headings, prose, button labels, body copy |
+| **Mono** | IBM Plex Mono (400/500/600), `--font-mono` | **every number, label, code, date and status** |
+
+Mono is not decoration here. Site codes, shift codes, call counts, FTE figures,
+dates, section labels and status pills are all mono; the sans is reserved for
+headings and sentences. Getting this split right is most of the difference
+between "an internal tool" and "an instrument".
+
+- **Tabular numerals are global.** `table, .fr-nums, input[type=number]` set
+  `font-variant-numeric: tabular-nums`. Numbers in this app are read in columns —
+  proportional digits make a column ripple, which is the single most consumer-app
+  tell a data-dense product can have.
+- **Section labels** are mono, uppercase, ~11px, letter-spacing 0.8, in
+  `--text-muted`, preceded by a small coloured dot. Captions under a figure are
+  **lower case** — tracked caps are reserved for section headers so a caption
+  never competes with the header above it.
+- Big figures are mono SemiBold with slight negative letter-spacing.
+
+### Colour
+
+Themes are **light-default**. `:root` holds the light values; dark is applied as
+`[data-theme='dark']` on `<html>` by a pre-paint script reading
+`localStorage.theme` (`'light' | 'dark'`), so neither default-light nor saved-dark
+flashes on load.
+
+Everything is a CSS custom property. The families:
+
+```
+Backgrounds   --bg-base --bg-surface --bg-deep --bg-sidebar --bg-popover
+Borders       --border --border-strong --border-faint --border-muted
+                --border-subtle --border-input
+Text ramp     --text --text-strong --text-bright --text-muted
+                --text-dim --text-faint --text-disabled
+Tints         --tint-surface --tint-surface-strong --tint-surface-faint
+Accents       --blue --indigo --partner-ring --on-accent
+Status        --ok --warn --danger --info, each with a soft -bg tint
+Shadows       --shadow-xs --shadow-card --shadow-raised
+                --shadow-popover --shadow-modal   (a 4-step elevation ramp)
+```
+
+**The dark ramp is derived from contrast, not mirrored from light.** Reusing the
+light palette's slate steps is what broke it once: slate-700 reads as secondary
+text on white but measures 1.67:1 on a dark surface — text you genuinely cannot
+see — and it left the ramp inverted, with `--text-dim` less legible than
+`--text-faint`. Each dark value now matches its light-mode contrast ratio.
+
+`src/lib/cssTokens.test.ts` guards this automatically: every token used without a
+fallback must be defined, the ramp must stay ordered `muted > dim > faint` in both
+themes, body-weight text must stay readable, disabled must not out-shout
+secondary, and a token must carry the same weight in both themes.
+
+**Colour has four legitimate homes** and no others: `globals.css` tokens,
+`boardTheme` (the Floor Runner board), `gridTheme` (the schedule grid), and the
+print stylesheet. Anything else should use a token.
+
+### Scales
+
+```
+Spacing   4 · 8 · 12 · 16 · 20 · 24 · 32 · 48px   (--space-1 … --space-8)
+Radius    6 / 10 / 14px                            (--radius-sm/md/lg)
+Type      11 / 12.5 / 14 / 17 / 22px               (--fs-xs … --fs-xl)
+Motion    90 / 140 / 240ms, ease-out cubic-bezier(0.22, 1, 0.36, 1)
+```
+
+One motion scale, three speeds. Before it existed the app used 0.12s, 0.15s, .18s
+and 0.3s with three different easings, so nothing moved at quite the same rate.
+`prefers-reduced-motion` is honoured with **one exception** — the spinner is
+slowed rather than stopped, because its rotation *is* the signal that work is in
+progress and a frozen spinner reads as a hung app.
+
+### Component kit — `src/components/ui`
+
+`Button` · `Card` · `Badge` · `Modal` · `Table` · `EmptyState` · `Skeleton` ·
+`PageHeader` · `Banner` · `Spinner` · `SectionLabel` + `SourceTag` · `StatBlock`
+
+`SectionLabel`'s dot colour encodes **data provenance** — blue for
+FloorRunner-computed, green for payroll, red for the EHR. A reader can tell at a
+glance whether a number was computed here or read from elsewhere. Reusing the dot
+as a generic bullet spends a signal that is doing real work.
+
+### Interaction classes — `globals.css`
+
+`.fr-focus` `.fr-btn*` `.fr-field` `.fr-row` `.fr-lift` `.fr-chip` `.fr-seg`
+`.fr-toggle` `.fr-skeleton` `.fr-caret` `.fr-nav-item` `.fr-nav-sub`
+`.fr-nav-caret`
+
+**Why these exist at all is the single most important styling rule in this
+codebase: an inline style always outranks a CSS class.** A hover state written
+inline while the property lives in a class silently does nothing — which is why
+several hand-rolled pickers across the app had no hover at all until they were
+moved to `.fr-seg`. If a component needs a `:hover`, `:focus-visible` or
+`[data-state]` variant, its base styling must live in CSS, and the component
+should pass `data-*` attributes rather than a style object.
+
+### Navigation
+
+The sidebar carries **no icons**. Each item has a **left spine** — a short
+hairline at the row's left edge that lifts to the accent colour on hover and goes
+taller and solid on the current page. It does the two jobs glyphs were doing (a
+fixed left anchor that pulls labels into one column, and answering "where am I")
+without asking anyone to decode a symbol. Collapsed, the rail shows a mono
+abbreviation (`DASH`, `SCHD`, `PROV`) rather than a glyph.
+
+The spine uses `currentColor`, not a border token — so it is `--text-muted` at
+rest and `--blue` on hover, correct in both themes by construction. A border token
+looked right until it was measured: 1.20:1 in dark mode, an invisible hairline.
+
+### Writing style in the UI
+
+Sentence case, not Title Case. Empty states say what belongs there rather than
+"No data". Errors name what failed and what it means. Numbers that cannot be
+computed render as `—` or `N/A`, never `0`.
+
+---
+
 ## 7. Authentication and access control
 
 - Supabase Auth. Enforcement went live September 2026; production requires login.
@@ -429,5 +553,7 @@ already organisation-scoped).
 4. **Respect the invariants in §5** — they are clinical, not stylistic.
 5. **Match the comment style.** Explain why a decision was made and what breaks
    otherwise.
-6. **Migrations:** additive changes go DB-first; destructive changes and
+6. **Use the design tokens and the UI kit (§6.5).** Mono for numbers and labels,
+   sans for prose; never a hard-coded colour; never a `:hover` written inline.
+7. **Migrations:** additive changes go DB-first; destructive changes and
    call-pattern documents go code-first.
