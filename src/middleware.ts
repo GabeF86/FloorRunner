@@ -147,11 +147,16 @@ export async function middleware(req: NextRequest) {
     );
   }
 
-  // A signed-in provider who wandered onto a chief page goes to their own
-  // dashboard rather than to a login form they have already satisfied —
+  // Someone already signed in who wandered onto a page above their tier goes
+  // somewhere they CAN use, not to a login form they have already satisfied —
   // bouncing them to /login would look like their password stopped working.
   if (role === 'provider') {
     return NextResponse.redirect(new URL('/me', req.url));
+  }
+  // Staff land on the staffing board: it is the page a coordinator opens first,
+  // and unlike /me it has something to show them (they have no provider record).
+  if (role === 'staff') {
+    return NextResponse.redirect(new URL('/operations', req.url));
   }
 
   const to = new URL('/login', req.url);

@@ -7,6 +7,7 @@
 import type { SessionRole } from './routeAccess';
 
 export const ADMIN_ROLE = 'admin';
+export const STAFF_ROLE = 'staff';
 export const PROVIDER_ROLE = 'provider';
 
 /**
@@ -25,7 +26,10 @@ export function resolveSessionRole(
 ): SessionRole {
   if (!userId) return 'anonymous';
   const names = (roleNames ?? []).filter((n): n is string => typeof n === 'string');
+  // Widest first: someone holding both staff and provider gets the wider of
+  // the two, and admin outranks everything.
   if (names.includes(ADMIN_ROLE)) return 'admin';
+  if (names.includes(STAFF_ROLE)) return 'staff';
   if (names.includes(PROVIDER_ROLE)) return 'provider';
   return 'anonymous';
 }
