@@ -10,6 +10,7 @@ import {
   siteOpenDays, coverageWeek, perDiemBench, siteDayBoard, rosterSummary,
   shiftHours, weekDates, providerName, transferPicture, monthsWorkedThisYear,
   type OpsSlotRow, type OpsSiteRow, type OpsProviderRow, type OpsCredentialRow,
+  type OpsProfileRow,
 } from './operationsBoard';
 
 const MON = '2026-09-14';
@@ -514,6 +515,127 @@ describe('bench rows carry site IDS, not just names', () => {
     });
     expect(b.rows).toEqual([]);
     expect(b.uncredentialed).toBe(1);
+  });
+});
+
+describe('discipline on the bench', () => {
+  const sites = [{ id: 's1', name: 'Paoli', short_name: 'PH' }];
+  const build = (providers: OpsProviderRow[], credentials = providers.map(
+    p => ({ provider_id: p.id, site_id: 's1' }))) => perDiemBench({
+    date: '2026-09-15',
+    providers,
+    profiles: providers.map(p => ({ provider_id: p.id, employment_status: 'per_diem' })),
+    credentials, availability: [], slots: [], sites,
+  });
+
+  it('splits CRNA from physician the same way the coverage matrix does', () => {
+    const b = build([
+      { id: 'a', last_name: 'Ng', provider_type: 'crna' },
+      { id: 'b', last_name: 'Ross', provider_type: 'physician' },
+    ]);
+    expect(b.rows.map(r => [r.name, r.group])).toEqual([['Ng', 'crna'], ['Ross', 'physician']]);
+  });
+
+  it('counts an unstated provider_type as a physician, never as a third group', () => {
+    // The coverage matrix already collapses everything non-CRNA into
+    // physician. A bench that invented a third bucket would show a discipline
+    // total that disagrees with the matrix directly above it.
+    const b = build([{ id: 'a', last_name: 'Ng' }]);
+    expect(b.rows[0].group).toBe('physician');
+  });
+
+  it('counts the roster by discipline INCLUDING the uncredentialed', () => {
+    // The live shape, and the whole reason byGroup exists: 104 per diem CRNAs
+    // are on the roster and none holds a credential, so the bench lists zero.
+    // "0 CRNAs free" and "0 CRNAs credentialed, ever" need different actions.
+    const b = build(
+      [{ id: 'a', last_name: 'Ng', provider_type: 'crna' },
+       { id: 'b', last_name: 'Ross', provider_type: 'physician' }],
+      [{ provider_id: 'b', site_id: 's1' }],   // only the physician is credentialed
+    );
+    expect(b.rows).toHaveLength(1);
+    expect(b.byGroup.crna).toEqual({ onRoster: 1, uncredentialed: 1, free: 0 });
+    expect(b.byGroup.physician).toEqual({ onRoster: 1, uncredentialed: 0, free: 1 });
+  });
+});
+
+describe('who can take call — the two-table conjunction', () => {
+  const sites = [
+    { id: 's1', name: 'Paoli', short_name: 'PH' },
+    { id: 's2', name: 'Lankenau', short_name: 'LMC' },
+  ];
+  const build = (
+    profile: Partial<OpsProfileRow>,
+    credentials: Array<{ site_id: string; can_take_call?: boolean | null }>,
+  ) => perDiemBench({
+    date: '2026-09-15',
+    providers: [{ id: 'p1', last_name: 'Ross', provider_type: 'physician' }],
+    profiles: [{ provider_id: 'p1', employment_status: 'per_diem', ...profile }],
+    credentials: credentials.map(c => ({ provider_id: 'p1', ...c })),
+    availability: [], slots: [], sites,
+  });
+
+  it('needs BOTH the role and the site clearance', () => {
+    expect(build({ call_taker: true }, [{ site_id: 's1', can_take_call: true }])
+      .rows[0].canTakeCall).toBe(true);
+  });
+
+  it('refuses somebody cleared at the site who does not take call as a role', () => {
+    // can_take_call defaults TRUE in the database, so reading it alone would
+    // mark almost the entire roster call-capable. It is a veto, not an
+    // invitation — genContext.ts is explicit that it does not pull anyone into
+    // the pool.
+    expect(build({ call_taker: false }, [{ site_id: 's1', can_take_call: true }])
+      .rows[0].canTakeCall).toBe(false);
+  });
+
+  it('refuses a call-taker whose credential at that site vetoes call', () => {
+    expect(build({ call_taker: true }, [{ site_id: 's1', can_take_call: false }])
+      .rows[0].canTakeCall).toBe(false);
+  });
+
+  it('accepts a PARTIAL call taker — they still take call', () => {
+    expect(build({ partial_call_taker: true }, [{ site_id: 's1', can_take_call: true }])
+      .rows[0].canTakeCall).toBe(true);
+  });
+
+  it('reports call clearance PER SITE, so the site filter can compose with it', () => {
+    // Cleared at Paoli, vetoed at Lankenau. A Lankenau call vacancy must not
+    // be offered this person even though they "can take call".
+    const b = build({ call_taker: true }, [
+      { site_id: 's1', can_take_call: true },
+      { site_id: 's2', can_take_call: false },
+    ]);
+    expect(b.rows[0].siteIds).toEqual(['s1', 's2']);
+    expect(b.rows[0].callSiteIds).toEqual(['s1']);
+    expect(b.rows[0].canTakeCall).toBe(true);
+  });
+
+  it('treats an ABSENT can_take_call as cleared, matching the column default', () => {
+    // The column is NOT NULL DEFAULT true. A row that predates the field, or a
+    // select that omitted it, must not read as a veto — that would silently
+    // empty the filter.
+    expect(build({ call_taker: true }, [{ site_id: 's1' }]).rows[0].canTakeCall).toBe(true);
+  });
+
+  it('counts the call-capable across the listed bench', () => {
+    const b = perDiemBench({
+      date: '2026-09-15',
+      providers: [
+        { id: 'p1', last_name: 'Ross', provider_type: 'physician' },
+        { id: 'p2', last_name: 'Ng', provider_type: 'physician' },
+      ],
+      profiles: [
+        { provider_id: 'p1', employment_status: 'per_diem', call_taker: true },
+        { provider_id: 'p2', employment_status: 'per_diem', call_taker: false },
+      ],
+      credentials: [
+        { provider_id: 'p1', site_id: 's1', can_take_call: true },
+        { provider_id: 'p2', site_id: 's1', can_take_call: true },
+      ],
+      availability: [], slots: [], sites,
+    });
+    expect(b.callCapable).toBe(1);
   });
 });
 

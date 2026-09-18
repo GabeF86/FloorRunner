@@ -98,14 +98,17 @@ export async function loadOperationsData(
       .eq('status', 'active')
       .order('last_name').order('id').range(f, t), 'providers'),
 
+    // call_taker / partial_call_taker are the ROLE half of call capability; the
+    // credential's can_take_call below is the per-site half. The bench needs
+    // both to agree with what the generator will permit — see engineAllowsCall.
     readAllRows<OpsProfileRow>((f, t) => sb.from('provider_employment_profiles')
-      .select('provider_id, employment_status, home_site_id, min_monthly_shifts',
-        { count: 'exact' })
+      .select('provider_id, employment_status, home_site_id, min_monthly_shifts,'
+        + ' call_taker, partial_call_taker', { count: 'exact' })
       .order('provider_id').range(f, t), 'employment profiles'),
 
     readAllRows<OpsCredentialRow>((f, t) => sb.from('provider_site_credentials')
       .select('provider_id, site_id, is_active, credentialed,'
-        + ' effective_start_date, effective_end_date', { count: 'exact' })
+        + ' effective_start_date, effective_end_date, can_take_call', { count: 'exact' })
       .order('provider_id').order('site_id').range(f, t), 'site credentials'),
 
     // Any row OVERLAPPING the window, not just one starting inside it — a

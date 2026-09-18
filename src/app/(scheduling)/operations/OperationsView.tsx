@@ -25,7 +25,9 @@ import { useCallback, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { Card, Banner, PageHeader, SectionLabel, StatBlock, Badge } from '@/components/ui';
-import { GROUP_LABEL, type CellStatus, type CoverageCell } from '@/lib/operationsBoard';
+import {
+  GROUP_LABEL, type CellStatus, type CoverageCell, type CoverageGroup,
+} from '@/lib/operationsBoard';
 import { DemandEntry } from './DemandEntry';
 import type { OperationsData } from './queries';
 
@@ -176,6 +178,10 @@ export function OperationsView({ data, fatal }: { data: OperationsData | null; f
   // ANYWHERE. Filtering client-side over rows already loaded, so choosing a
   // site is instant and costs no round trip.
   const [siteFilter, setSiteFilter] = useState<string | null>(null);
+  // Discipline and call capability are separate axes from site, and they
+  // intersect: "a CRNA who can take call at Riddle" is one question, not three.
+  const [groupFilter, setGroupFilter] = useState<CoverageGroup | null>(null);
+  const [callOnly, setCallOnly] = useState(false);
   const [tab, setTab] = useState<'coverage' | 'demand'>('coverage');
   const router = useRouter();
 
@@ -185,11 +191,18 @@ export function OperationsView({ data, fatal }: { data: OperationsData | null; f
   // keeps its own state while that happens.
   const handleSaved = useCallback(() => { router.refresh(); }, [router]);
 
-  const benchRows = useMemo(
-    () => (siteFilter
-      ? data.bench.rows.filter(r => r.siteIds.includes(siteFilter))
-      : data.bench.rows),
-    [data.bench.rows, siteFilter]);
+  const benchRows = useMemo(() => data.bench.rows.filter(r => {
+    if (siteFilter && !r.siteIds.includes(siteFilter)) return false;
+    if (groupFilter && r.group !== groupFilter) return false;
+    // With a site chosen, "can take call" must mean AT THAT SITE — call
+    // clearance is per-credential, and somebody cleared at Paoli is no help to
+    // a Lankenau call vacancy.
+    if (callOnly) {
+      if (siteFilter) return r.callSiteIds.includes(siteFilter);
+      return r.canTakeCall;
+    }
+    return true;
+  }), [data.bench.rows, siteFilter, groupFilter, callOnly]);
 
   // Free-and-credentialed per site — the number that decides whether calling
   // that site's bench is worth doing at all. Counted over EVERY bench row, not
@@ -203,8 +216,59 @@ export function OperationsView({ data, fatal }: { data: OperationsData | null; f
     return out;
   }, [data.bench.rows]);
 
+  // Counts for the discipline chips and the call toggle answer "what do I get
+  // if I click this, from where I am now" — so they respect the chosen site but
+  // not each other. Reacting to each other would make two chips change as you
+  // click a third, and nothing on the row would be stable enough to aim at.
+  const inSite = useMemo(
+    () => (siteFilter ? data.bench.rows.filter(r => r.siteIds.includes(siteFilter)) : data.bench.rows),
+    [data.bench.rows, siteFilter]);
+  const freeCount = (rows: typeof inSite) => rows.filter(r => r.status === 'available').length;
+  const groupFree = useMemo(() => ({
+    physician: freeCount(inSite.filter(r => r.group === 'physician')),
+    crna: freeCount(inSite.filter(r => r.group === 'crna')),
+  }), [inSite]);
+  const callFree = useMemo(() => freeCount(inSite.filter(
+    r => (siteFilter ? r.callSiteIds.includes(siteFilter) : r.canTakeCall))),
+  [inSite, siteFilter]);
+
   const filteredFree = benchRows.filter(r => r.status === 'available').length;
   const filterSite = siteFilter ? data.coverage.find(c => c.siteId === siteFilter) : null;
+
+  /**
+   * Why the list is empty, in the caller's terms.
+   *
+   * An empty bench has several unrelated causes and they lead to different
+   * next actions — credential somebody, clear somebody for call, or try another
+   * day. "No results" would collapse all of them into one shrug, and the
+   * credentialing case in particular is invisible from this panel: the bench
+   * only ever lists credentialed per diems, so a hundred uncredentialed CRNAs
+   * look exactly like no CRNAs at all.
+   */
+  const byGroup = data.bench.byGroup;
+  function emptyReason(): string {
+    const where = filterSite ? ` at ${filterSite.siteName}` : '';
+    if (groupFilter) {
+      const g = byGroup[groupFilter];
+      const noun = groupFilter === 'crna' ? 'CRNA' : 'physician';
+      if (g.onRoster === 0) return `No per diem ${noun} is on the roster.`;
+      if (g.onRoster === g.uncredentialed) {
+        return `All ${g.onRoster} per diem ${noun}${g.onRoster === 1 ? '' : 's'} on the roster hold `
+          + `no active site credential, so none can appear here. That is a credentialing backlog, `
+          + `not a staffing one.`;
+      }
+    }
+    if (callOnly) {
+      return `Nobody on the bench${where} is cleared to take call. That needs two things on the `
+        + `provider's profile: the call-taker role under Scheduling, and "Can Take Call" on their `
+        + `credential for the site under Sites.`;
+    }
+    if (filterSite) {
+      return `No per diem is credentialed at ${filterSite.siteName}. Nobody on the bench can be `
+        + `placed there until somebody is.`;
+    }
+    return 'No per diem on the roster holds a live site credential today.';
+  }
   const strip: Array<[string, string]> = [
     ['roster', `${s.physicians} physicians · ${s.crnas} CRNAs · ${s.sites} sites`],
     ['mix', `${s.fullTime} full-time · ${s.partTime} part-time · ${s.perDiem} per diem`],
@@ -430,6 +494,56 @@ export function OperationsView({ data, fatal }: { data: OperationsData | null; f
                 );
               })}
             </div>
+
+            {/* Discipline and call capability. A second row rather than more
+                chips on the first: these narrow WITHIN the chosen site, and
+                mixing them into one strip would read as more sites. */}
+            <div style={{
+              display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center',
+              marginBottom: 'var(--space-3)',
+            }}>
+              <FilterChip
+                label="Everyone"
+                count={freeCount(inSite)}
+                active={groupFilter === null}
+                onClick={() => setGroupFilter(null)}
+              />
+              <FilterChip
+                label="Physician"
+                count={groupFree.physician}
+                active={groupFilter === 'physician'}
+                dim={groupFree.physician === 0}
+                title={`${data.bench.byGroup.physician.onRoster} per diem physicians on the roster · `
+                  + `${data.bench.byGroup.physician.uncredentialed} uncredentialed`}
+                onClick={() => setGroupFilter(groupFilter === 'physician' ? null : 'physician')}
+              />
+              <FilterChip
+                label="CRNA"
+                count={groupFree.crna}
+                active={groupFilter === 'crna'}
+                dim={groupFree.crna === 0}
+                title={`${data.bench.byGroup.crna.onRoster} per diem CRNAs on the roster · `
+                  + `${data.bench.byGroup.crna.uncredentialed} uncredentialed`}
+                onClick={() => setGroupFilter(groupFilter === 'crna' ? null : 'crna')}
+              />
+
+              <span aria-hidden style={{
+                width: 1, alignSelf: 'stretch', margin: '0 2px',
+                background: 'var(--border)',
+              }} />
+
+              <FilterChip
+                label="Can take call"
+                count={callFree}
+                active={callOnly}
+                dim={callFree === 0}
+                title={'Cleared to take call' + (filterSite ? ` at ${filterSite.siteName}` : '')
+                  + ' — the call-taker role on their employment profile AND "Can Take Call" on'
+                  + ' their site credential. Both are required before the generator will place'
+                  + ' them on a call shift.'}
+                onClick={() => setCallOnly(v => !v)}
+              />
+            </div>
           </div>
 
           <div style={{
@@ -461,9 +575,7 @@ export function OperationsView({ data, fatal }: { data: OperationsData | null; f
                 margin: 0, padding: 'var(--space-4)',
                 fontSize: 'var(--fs-sm)', color: 'var(--text-dim)', lineHeight: 1.6,
               }}>
-                {filterSite
-                  ? `No per diem is credentialed at ${filterSite.siteName}. Nobody on the bench can be placed there until somebody is.`
-                  : 'No per diem on the roster holds a live site credential today.'}
+                {emptyReason()}
               </p>
             ) : benchRows.map(r => (
               <div key={r.providerId} style={{
@@ -481,6 +593,8 @@ export function OperationsView({ data, fatal }: { data: OperationsData | null; f
                     )}
                   </div>
                   <div style={{ ...mono, fontSize: 10, color: 'var(--text-dim)' }}>
+                    {r.group === 'crna' ? 'CRNA' : 'MD'}
+                    {' · '}
                     {r.detail}
                     {' · '}
                     <span
@@ -501,6 +615,12 @@ export function OperationsView({ data, fatal }: { data: OperationsData | null; f
                       the month. */}
                   {r.belowMinimum && (
                     <Badge tone="danger">under min</Badge>
+                  )}
+                  {/* Only shown when true. A "no call" badge on fourteen of
+                      sixteen rows would be reporting the DEFAULT, not a fact
+                      anybody entered — call_taker starts false for everyone. */}
+                  {r.canTakeCall && (
+                    <Badge tone="info">call</Badge>
                   )}
                   <Badge tone={
                     r.status === 'available' ? 'ok' : r.status === 'booked' ? 'neutral' : 'warn'

@@ -118,6 +118,10 @@ export interface OpsCredentialRow {
   credentialed?: boolean | null;
   effective_start_date?: string | null;
   effective_end_date?: string | null;
+  /** Cleared to take call AT THIS SITE. A per-site VETO, not an invitation:
+   *  the engine checks it (eligibility.ts, evaluators.ts, slotCandidates.ts)
+   *  but it does not pull anyone into the call pool — see `call_taker`. */
+  can_take_call?: boolean | null;
 }
 
 export interface OpsProfileRow {
@@ -128,6 +132,11 @@ export interface OpsProfileRow {
    *  which is NOT zero — most of the roster has no such obligation, and a zero
    *  would mean "required to work none". Nobody with a null is ever flagged. */
   min_monthly_shifts?: number | string | null;
+  /** Takes call as a matter of ROLE. This is the flag that puts somebody in the
+   *  call pool at all (genContext.ts), which is why it cannot be read off the
+   *  site credential alone. */
+  call_taker?: boolean | null;
+  partial_call_taker?: boolean | null;
 }
 
 /** The two staffing groups demand is stated in. There is no 'either' any more:
@@ -437,6 +446,41 @@ export interface BenchRow {
   /** The same sites as ids — what the board filters on. Names are for reading;
    *  filtering on them would break the moment two sites shared a short name. */
   siteIds: string[];
+  /** Which discipline they are counted as. Matches how the coverage matrix
+   *  splits the floor: CRNA, or physician for everything else. */
+  group: CoverageGroup;
+  /** The sites where the engine would actually let them hold a CALL shift —
+   *  a live credential there, `can_take_call` on it, AND the call-taker role.
+   *  A subset of `siteIds`, and empty whenever the role flag is off. */
+  callSiteIds: string[];
+  /** Can take call somewhere. `callSiteIds.length > 0`, named because that is
+   *  the question being asked, not the implementation of it. */
+  canTakeCall: boolean;
+}
+
+/**
+ * Would the engine let this provider hold a call shift at this site?
+ *
+ * The answer is a CONJUNCTION of two facts kept in two tables, and reading
+ * either one alone gives a confidently wrong answer:
+ *
+ *   employment profile  `call_taker` / `partial_call_taker` — the ROLE. This is
+ *                       what puts somebody in the call pool (genContext.ts).
+ *                       Defaults FALSE.
+ *   site credential     `can_take_call` — per-site CLEARANCE. A hard gate that
+ *                       can only veto; it never pulls anyone in (the comment at
+ *                       genContext.ts is explicit about this). Defaults TRUE.
+ *
+ * Because the defaults point in opposite directions, the single-field readings
+ * fail in opposite directions too: trusting the credential alone marks almost
+ * everybody call-capable, trusting the role alone marks almost nobody. Only the
+ * conjunction matches what the generator will actually permit, and the bench
+ * must agree with the generator — a name offered here and then refused by the
+ * engine is worse than no suggestion at all.
+ */
+function engineAllowsCall(profile: OpsProfileRow, cred: OpsCredentialRow): boolean {
+  if (!(profile.call_taker || profile.partial_call_taker)) return false;
+  return cred.can_take_call !== false;
 }
 
 /**
@@ -491,6 +535,17 @@ export interface BenchSummary {
   freeToday: number;
   /** How many on the bench are running under their contracted minimum. */
   belowMinimum: number;
+  /** Roster and credentialing split by discipline, counted over EVERY per diem
+   *  rather than the listed ones.
+   *
+   *  The bench lists only credentialed per diems, so a discipline can be a
+   *  hundred strong on the roster and absent from the list entirely. A filter
+   *  chip reading 0 then has two completely different meanings — "none of them
+   *  is free today" and "none of them has ever been credentialed" — and only
+   *  the second is actionable. These counts let the panel say which. */
+  byGroup: Record<CoverageGroup, { onRoster: number; uncredentialed: number; free: number }>;
+  /** Listed per diems the engine would let take call somewhere today. */
+  callCapable: number;
   /** The window the averages actually cover, so the panel can say so rather
    *  than implying a full year. */
   averageFrom: string;
@@ -546,10 +601,13 @@ export function perDiemBench(input: {
   for (const p of input.profiles) profileOf.set(p.provider_id, p);
 
   const credsOf = new Map<string, string[]>();
+  const credRowsOf = new Map<string, OpsCredentialRow[]>();
   for (const c of input.credentials) {
     if (!credentialLive(c, input.date)) continue;
     const list = credsOf.get(c.provider_id);
     if (list) list.push(c.site_id); else credsOf.set(c.provider_id, [c.site_id]);
+    const rows = credRowsOf.get(c.provider_id);
+    if (rows) rows.push(c); else credRowsOf.set(c.provider_id, [c]);
   }
 
   const availOf = new Map<string, OpsAvailRow[]>();
@@ -578,17 +636,33 @@ export function perDiemBench(input: {
   let free = 0;
   let onRoster = 0;
   let uncredentialed = 0;
+  const byGroup: Record<CoverageGroup, { onRoster: number; uncredentialed: number; free: number }> = {
+    physician: { onRoster: 0, uncredentialed: 0, free: 0 },
+    crna: { onRoster: 0, uncredentialed: 0, free: 0 },
+  };
 
   for (const p of input.providers) {
     const profile = profileOf.get(p.id);
     if (!profile || !bench.has(profile.employment_status || '')) continue;
     onRoster++;
+    // Same binary split the coverage matrix uses: CRNA, or physician for
+    // everything else. Two places counting disciplines by different rules would
+    // put a different total in each half of one screen.
+    const group: CoverageGroup = p.provider_type === 'crna' ? 'crna' : 'physician';
+    byGroup[group].onRoster++;
 
     const creds = credsOf.get(p.id) || [];
     for (const s of creds) siteSet.add(s);
     const sites = input.sites.filter(s => creds.includes(s.id)).map(s => s.short_name || s.name);
 
-    if (creds.length === 0) { uncredentialed++; continue; }
+    if (creds.length === 0) { uncredentialed++; byGroup[group].uncredentialed++; continue; }
+
+    // Call clearance, per site, so it composes with the site filter: asking for
+    // "call at Lankenau" must not be answered by somebody cleared for call at
+    // Paoli only.
+    const callSiteIds = (credRowsOf.get(p.id) || [])
+      .filter(c => engineAllowsCall(profile, c))
+      .map(c => c.site_id);
 
     let status: BenchStatus;
     let detail: string;
@@ -605,6 +679,7 @@ export function perDiemBench(input: {
       status = 'available';
       detail = sites.length === 1 ? `free · ${sites[0]}` : `free · ${sites.length} sites`;
       free++;
+      byGroup[group].free++;
     }
 
     // ── Are they working enough? ─────────────────────────────────────────
@@ -631,10 +706,13 @@ export function perDiemBench(input: {
       name,
       code: code && bare(code) !== bare(name) ? code : '',
       providerType: p.provider_type || '',
+      group,
       status,
       detail,
       sites,
       siteIds: input.sites.filter(s => creds.includes(s.id)).map(s => s.id),
+      callSiteIds,
+      canTakeCall: callSiteIds.length > 0,
       shiftsYtd,
       avgShiftsPerMonth: Math.round(avg * 10) / 10,
       minMonthlyShifts,
@@ -655,6 +733,8 @@ export function perDiemBench(input: {
   return {
     rows, onRoster, uncredentialed, sitesCovered: siteSet.size, freeToday: free,
     belowMinimum: rows.filter(r => r.belowMinimum).length,
+    byGroup,
+    callCapable: rows.filter(r => r.canTakeCall).length,
     averageFrom,
     averageMonths: Math.round(monthsWorkedThisYear(input.date, null, input.scheduleDataFrom) * 10) / 10,
   };
