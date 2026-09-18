@@ -129,6 +129,8 @@ export interface EmploymentFormState {
   partialCallTaker: boolean;
   homeSiteId: string;
   schedulingNotes: string;
+  /** Per-diem only. Blank means no minimum is stated — not zero. */
+  minMonthlyShifts: string;
   availableWeekdays: boolean[];
   preferredDayShiftTypes: string[];
   daysPerWeek: string;
@@ -154,6 +156,12 @@ export function employmentSavePayload(s: EmploymentFormState): Record<string, un
     work_days_fte: numOrNull(s.workDaysFte),
     pto_weeks: intOrNull(s.ptoWeeks),
     max_weekly_hours: intOrNull(s.weeklyHours),
+    // Only a per diem carries a monthly minimum. Cleared when the status
+    // changes, so somebody promoted off the bench does not keep an obligation
+    // that no longer applies to them.
+    min_monthly_shifts: s.employmentStatus === 'per_diem'
+      ? intOrNull(s.minMonthlyShifts)
+      : null,
     ...partnershipFlags(s.partnership),
     is_day_doc: s.isDayDoc,
     is_icu_doc: s.isIcuDoc,

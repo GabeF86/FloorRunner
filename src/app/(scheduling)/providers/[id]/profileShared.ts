@@ -54,6 +54,8 @@ export interface EmploymentProfile {
   // Column name unchanged; the field is labelled "Weekly Hours" in the UI
   // (Gabriel 2026-09-09).
   max_weekly_hours: number | null;
+  /** Per-diem contracted minimum. NULL = none stated, never flagged. */
+  min_monthly_shifts: number | null;
   call_taker: boolean;
   partial_call_taker: boolean;
   home_site_id: string | null;

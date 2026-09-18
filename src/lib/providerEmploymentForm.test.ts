@@ -16,6 +16,7 @@ function state(over: Partial<EmploymentFormState> = {}): EmploymentFormState {
     workDaysFte: '',
     ptoWeeks: '',
     weeklyHours: '',
+  minMonthlyShifts: '',
     partnership: null,
     isDayDoc: false,
     isIcuDoc: false,

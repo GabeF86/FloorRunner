@@ -98,6 +98,7 @@ const EMPTY_PROFILE: EmploymentProfile = {
   is_day_doc: false,
   is_icu_doc: false,
   pto_weeks: null,
+  min_monthly_shifts: null,
   max_weekly_hours: null,
   call_taker: false,
   partial_call_taker: false,

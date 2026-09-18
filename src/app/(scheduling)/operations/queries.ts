@@ -16,7 +16,9 @@
 
 import { readAllRows } from '@/lib/pagedRead';
 import { embedArray } from '@/lib/embed';
-import { filterPublishedVersions } from '@/lib/rulesEngine/committedAssignments';
+import {
+  filterPublishedVersions, fetchCommittedAssignments,
+} from '@/lib/rulesEngine/committedAssignments';
 import { addDays } from '@/lib/rulesEngine/shared';
 import {
   resolveDemand, parseWeekendCall, type DemandRow, type WeekendCall,
@@ -91,12 +93,14 @@ export async function loadOperationsData(
       .order('display_order').order('name').range(f, t), 'sites'),
 
     readAllRows<OpsProviderRow>((f, t) => sb.from('providers')
-      .select('id, provider_type, short_display_name, first_name, last_name', { count: 'exact' })
+      .select('id, provider_type, short_display_name, first_name, last_name, start_date',
+        { count: 'exact' })
       .eq('status', 'active')
       .order('last_name').order('id').range(f, t), 'providers'),
 
     readAllRows<OpsProfileRow>((f, t) => sb.from('provider_employment_profiles')
-      .select('provider_id, employment_status, home_site_id', { count: 'exact' })
+      .select('provider_id, employment_status, home_site_id, min_monthly_shifts',
+        { count: 'exact' })
       .order('provider_id').range(f, t), 'employment profiles'),
 
     readAllRows<OpsCredentialRow>((f, t) => sb.from('provider_site_credentials')
@@ -143,12 +147,50 @@ export async function loadOperationsData(
   }
   const slots = slotRes.rows.map(normaliseSlot);
 
+  // ── Shifts worked this year, per bench member ───────────────────────────
+  // Only the per diems, and only published schedules — a draft is not work
+  // somebody has done. Scoped to the bench rather than the whole roster
+  // because this feeds one panel and the roster is 300 people.
+  const benchIds = profilesRes.rows
+    .filter(p => p.employment_status === 'per_diem')
+    .map(p => p.provider_id);
+
+  // The window the average is measured over: the earliest published slot this
+  // year, not 1 January. The system holds September onwards, and dividing by
+  // the whole year would put the whole bench under any minimum — measuring the
+  // data gap and calling it their performance.
+  let scheduleDataFrom: string | null = null;
+  const { data: earliest, error: earliestError } = await filterPublishedVersions(
+    sb.from('schedule_slots')
+      .select('slot_date, schedule_versions!inner(version_status)')
+      .gte('slot_date', `${date.slice(0, 4)}-01-01`).lte('slot_date', date)
+      .order('slot_date').limit(1),
+    'schedule_versions',
+  );
+  if (earliestError) errors.push(`schedule window: ${earliestError.message}`);
+  else scheduleDataFrom = (earliest ?? [])[0]?.slot_date ?? null;
+
+  const shiftsYtd = new Map<string, number>();
+  if (benchIds.length > 0) {
+    const { data: ytd, error: ytdError } = await fetchCommittedAssignments(
+      sb, 'provider_id, schedule_slots!inner(slot_date, schedule_versions!inner(version_status))',
+      { providerIds: benchIds, start: `${date.slice(0, 4)}-01-01`, end: date });
+    if (ytdError) errors.push(`shifts worked: ${ytdError.message}`);
+    for (const row of ytd ?? []) {
+      const id = row.provider_id as string | null;
+      if (!id) continue;
+      shiftsYtd.set(id, (shiftsYtd.get(id) ?? 0) + 1);
+    }
+  }
+
   const bench = perDiemBench({
     date, providers, sites,
     profiles: profilesRes.rows,
     credentials: credsRes.rows,
     availability: availRes.rows,
     slots,
+    shiftsYtd,
+    scheduleDataFrom,
   });
 
   const coverage = coverageWeek({

@@ -446,6 +446,13 @@ export function OperationsView({ data, fatal }: { data: OperationsData | null; f
               caption={filterSite ? `free at ${filterSite.shortName}` : 'free and credentialed'}
               tone={filteredFree === 0 ? 'danger' : 'ok'}
             />
+            {data.bench.belowMinimum > 0 && (
+              <StatBlock
+                value={data.bench.belowMinimum}
+                caption="under their minimum"
+                tone="danger"
+              />
+            )}
           </div>
 
           <div style={{ maxHeight: 340, overflowY: 'auto', borderTop: '1px solid var(--border-faint)' }}>
@@ -475,16 +482,68 @@ export function OperationsView({ data, fatal }: { data: OperationsData | null; f
                   </div>
                   <div style={{ ...mono, fontSize: 10, color: 'var(--text-dim)' }}>
                     {r.detail}
+                    {' · '}
+                    <span
+                      style={{ color: r.belowMinimum ? 'var(--danger)' : 'var(--text-dim)' }}
+                      title={r.minMonthlyShifts === null
+                        ? `${r.shiftsYtd} shifts this year, ${r.avgShiftsPerMonth} a month. No monthly minimum is set for them.`
+                        : `${r.shiftsYtd} shifts this year, ${r.avgShiftsPerMonth} a month against a minimum of ${r.minMonthlyShifts}.`}
+                    >
+                      {r.avgShiftsPerMonth}/mo
+                      {r.minMonthlyShifts !== null && ` of ${r.minMonthlyShifts}`}
+                    </span>
                   </div>
                 </div>
-                <Badge tone={
-                  r.status === 'available' ? 'ok' : r.status === 'booked' ? 'neutral' : 'warn'
-                }>
-                  {r.status}
-                </Badge>
+                <div style={{ display: 'flex', gap: 4, alignItems: 'center', flexShrink: 0 }}>
+                  {/* Running short is a CONTRACT fact, not a today fact, so it
+                      sits beside the availability badge rather than replacing
+                      it: somebody can be free this morning and still behind on
+                      the month. */}
+                  {r.belowMinimum && (
+                    <Badge tone="danger">under min</Badge>
+                  )}
+                  <Badge tone={
+                    r.status === 'available' ? 'ok' : r.status === 'booked' ? 'neutral' : 'warn'
+                  }>
+                    {r.status}
+                  </Badge>
+                </div>
               </div>
             ))}
           </div>
+
+          {/* Under a month of schedule history, no minimum can be judged — and
+              saying nothing would leave somebody staring at "0/mo of 4" with no
+              flag and no reason. The suppression is deliberate; it should not
+              be invisible. */}
+          {data.bench.averageMonths < 1 && data.bench.rows.some(r => r.minMonthlyShifts !== null) && (
+            <p style={{
+              margin: 0, padding: 'var(--space-3) var(--space-4) 0',
+              fontSize: 'var(--fs-xs)', color: 'var(--text-dim)', lineHeight: 1.6,
+            }}>
+              Monthly minimums are set but <strong style={{ color: 'var(--text-muted)' }}>not
+              being judged yet</strong>: FloorRunner holds only {data.bench.averageMonths} of a
+              month of published schedule from {longDate(data.bench.averageFrom)}, which is too
+              short a run to call anybody short. The averages above are real; the flag waits for
+              a full month of history.
+            </p>
+          )}
+
+          {data.bench.belowMinimum > 0 && (
+            <p style={{
+              margin: 0, padding: 'var(--space-3) var(--space-4) 0',
+              fontSize: 'var(--fs-xs)', color: 'var(--text-dim)', lineHeight: 1.6,
+            }}>
+              <strong style={{ color: 'var(--danger)' }}>{data.bench.belowMinimum}</strong>
+              {' '}per diem {data.bench.belowMinimum === 1 ? 'is' : 'are'} averaging fewer
+              shifts a month than their profile requires. Averages cover
+              {' '}<strong style={{ color: 'var(--text-muted)' }}>
+                the {data.bench.averageMonths} months from {longDate(data.bench.averageFrom)}
+              </strong>{' '}— the period FloorRunner actually holds a published schedule for,
+              not the whole year. A recent joiner is measured only from their start date, and
+              nobody is flagged in their first month.
+            </p>
+          )}
 
           {data.bench.uncredentialed > 0 && (
             <p style={{

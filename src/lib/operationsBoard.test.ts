@@ -8,7 +8,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   siteOpenDays, coverageWeek, perDiemBench, siteDayBoard, rosterSummary,
-  shiftHours, weekDates, providerName, transferPicture,
+  shiftHours, weekDates, providerName, transferPicture, monthsWorkedThisYear,
   type OpsSlotRow, type OpsSiteRow, type OpsProviderRow, type OpsCredentialRow,
 } from './operationsBoard';
 
@@ -850,5 +850,186 @@ describe('the overnight call doctor is not daytime floor coverage', () => {
       slot('s1', FRI, '11-19', { held: ['p1'], start: '11:00', end: '19:00' }),
     ], [FRI]);
     expect(rows[0].cells[0].groups.find(g => g.group === 'physician')?.available).toBe(1);
+  });
+});
+
+describe('per-diem shift minimums', () => {
+  const sites = [site('s1', 'Paoli')];
+  const base = (opts: {
+    min?: number | null; shifts?: number; startDate?: string | null;
+  }) => perDiemBench({
+    date: '2026-09-18',            // ~8.6 months into the year
+    providers: [{
+      id: 'p1', last_name: 'Martinez', provider_type: 'physician',
+      start_date: opts.startDate ?? null,
+    }],
+    profiles: [{
+      provider_id: 'p1', employment_status: 'per_diem',
+      min_monthly_shifts: opts.min === undefined ? null : opts.min,
+    }],
+    credentials: [{ provider_id: 'p1', site_id: 's1' }],
+    availability: [], slots: [], sites,
+    shiftsYtd: new Map([['p1', opts.shifts ?? 0]]),
+  }).rows[0];
+
+  it('reports shifts worked and the monthly average', () => {
+    const r = base({ shifts: 26 });
+    expect(r.shiftsYtd).toBe(26);
+    expect(r.avgShiftsPerMonth).toBeCloseTo(3, 0);
+  });
+
+  it('FLAGS somebody under their stated minimum', () => {
+    const r = base({ min: 4, shifts: 17 });      // ~2/month against 4
+    expect(r.belowMinimum).toBe(true);
+    expect(r.minMonthlyShifts).toBe(4);
+  });
+
+  it('does not flag somebody meeting it', () => {
+    expect(base({ min: 2, shifts: 26 }).belowMinimum).toBe(false);
+  });
+
+  it('never flags somebody with NO minimum stated', () => {
+    // Most of the roster has no such obligation. A null is not a zero, and
+    // flagging everyone without one would make the flag meaningless.
+    expect(base({ min: null, shifts: 0 }).belowMinimum).toBe(false);
+    expect(base({ min: null, shifts: 0 }).minMonthlyShifts).toBeNull();
+  });
+
+  it('honours an explicit ZERO minimum, which is a real statement', () => {
+    const r = base({ min: 0, shifts: 0 });
+    expect(r.minMonthlyShifts).toBe(0);
+    expect(r.belowMinimum).toBe(false);
+  });
+
+  it('judges a MID-YEAR starter only on the months they have been here', () => {
+    // Started 1 September, worked 5 shifts in ~18 days against a minimum of 4.
+    // Dividing by the whole year would read as 0.6/month and flag them for an
+    // obligation they did not have in March.
+    const r = base({ min: 4, shifts: 5, startDate: '2026-09-01' });
+    expect(r.avgShiftsPerMonth).toBeGreaterThan(4);
+    expect(r.belowMinimum).toBe(false);
+  });
+
+  it('does not flag anybody in their FIRST month', () => {
+    // One slow fortnight is not a pattern, and a flag that fires on everybody
+    // new teaches people to ignore it.
+    const r = base({ min: 8, shifts: 0, startDate: '2026-09-10' });
+    expect(r.belowMinimum).toBe(false);
+  });
+
+  it('counts a provider with no YTD entry as zero rather than throwing', () => {
+    const r = perDiemBench({
+      date: '2026-09-18',
+      providers: [{ id: 'p1', last_name: 'Martinez', provider_type: 'physician' }],
+      profiles: [{ provider_id: 'p1', employment_status: 'per_diem', min_monthly_shifts: 2 }],
+      credentials: [{ provider_id: 'p1', site_id: 's1' }],
+      availability: [], slots: [], sites,
+    }).rows[0];
+    expect(r.shiftsYtd).toBe(0);
+    expect(r.belowMinimum).toBe(true);
+  });
+
+  it('reads a minimum that arrives as a string', () => {
+    expect(base({ min: '3' as never, shifts: 0 }).minMonthlyShifts).toBe(3);
+  });
+
+  it('counts how many on the bench are running short', () => {
+    const summary = perDiemBench({
+      date: '2026-09-18',
+      providers: [
+        { id: 'p1', last_name: 'A', provider_type: 'physician' },
+        { id: 'p2', last_name: 'B', provider_type: 'physician' },
+      ],
+      profiles: [
+        { provider_id: 'p1', employment_status: 'per_diem', min_monthly_shifts: 4 },
+        { provider_id: 'p2', employment_status: 'per_diem', min_monthly_shifts: 1 },
+      ],
+      credentials: [
+        { provider_id: 'p1', site_id: 's1' }, { provider_id: 'p2', site_id: 's1' },
+      ],
+      availability: [], slots: [], sites,
+      shiftsYtd: new Map([['p1', 0], ['p2', 40]]),
+    });
+    expect(summary.belowMinimum).toBe(1);
+  });
+});
+
+describe('monthsWorkedThisYear', () => {
+  it('measures from 1 January when there is no start date', () => {
+    expect(monthsWorkedThisYear('2026-09-18')).toBeCloseTo(261 / 30.44, 1);
+  });
+
+  it('measures from the start date when it is later', () => {
+    expect(monthsWorkedThisYear('2026-09-18', '2026-09-01')).toBeCloseTo(18 / 30.44, 2);
+  });
+
+  it('ignores a start date from a previous year', () => {
+    expect(monthsWorkedThisYear('2026-09-18', '2019-04-02'))
+      .toBeCloseTo(monthsWorkedThisYear('2026-09-18'), 3);
+  });
+
+  it('never returns zero, so nothing divides by it', () => {
+    expect(monthsWorkedThisYear('2026-09-18', '2026-09-18')).toBeGreaterThan(0);
+  });
+
+  it('returns zero for a start date in the future', () => {
+    expect(monthsWorkedThisYear('2026-09-18', '2026-12-01')).toBe(0);
+  });
+});
+
+describe('the average covers the schedule we HOLD, not the calendar year', () => {
+  // The bug this prevents, found on live data: FloorRunner holds September
+  // onwards. Everyone worked through the spring, but those months are not in
+  // the database. Dividing by the whole year put the entire bench at 0.2 a
+  // month — measuring the data gap and calling it their performance.
+  it('measures from the first published slot, not from 1 January', () => {
+    const full = monthsWorkedThisYear('2026-09-18');
+    const windowed = monthsWorkedThisYear('2026-09-18', null, '2026-09-01');
+    expect(full).toBeCloseTo(8.6, 1);
+    expect(windowed).toBeCloseTo(0.6, 1);
+  });
+
+  it('takes the LATEST of year start, hire date and data start', () => {
+    // A June hire, with data from September: September wins.
+    expect(monthsWorkedThisYear('2026-09-18', '2026-06-01', '2026-09-01'))
+      .toBeCloseTo(monthsWorkedThisYear('2026-09-18', null, '2026-09-01'), 3);
+    // A September hire, with data from January: the hire date wins.
+    expect(monthsWorkedThisYear('2026-09-18', '2026-09-10', '2026-01-01'))
+      .toBeCloseTo(9 / 30.44, 2);
+  });
+
+  it('does not flag a bench that looks idle only because of the data gap', () => {
+    // 9 shifts since 1 September is ~15 a month, not 1 a month. Against a
+    // minimum of 4 that is comfortably met; against the year it would flag.
+    const row = perDiemBench({
+      date: '2026-09-18',
+      providers: [{ id: 'p1', last_name: 'Lincoln', provider_type: 'physician' }],
+      profiles: [{ provider_id: 'p1', employment_status: 'per_diem', min_monthly_shifts: 4 }],
+      credentials: [{ provider_id: 'p1', site_id: 's1' }],
+      availability: [], slots: [],
+      sites: [site('s1', 'Paoli')],
+      shiftsYtd: new Map([['p1', 9]]),
+      scheduleDataFrom: '2026-09-01',
+    }).rows[0];
+    expect(row.avgShiftsPerMonth).toBeGreaterThan(4);
+    expect(row.belowMinimum).toBe(false);
+  });
+
+  it('reports the window so the panel need not imply a full year', () => {
+    const b = perDiemBench({
+      date: '2026-09-18',
+      providers: [], profiles: [], credentials: [], availability: [], slots: [],
+      sites: [], scheduleDataFrom: '2026-09-01',
+    });
+    expect(b.averageFrom).toBe('2026-09-01');
+    expect(b.averageMonths).toBeCloseTo(0.6, 1);
+  });
+
+  it('falls back to the year when no schedule window is known', () => {
+    const b = perDiemBench({
+      date: '2026-09-18',
+      providers: [], profiles: [], credentials: [], availability: [], slots: [], sites: [],
+    });
+    expect(b.averageFrom).toBe('2026-01-01');
   });
 });

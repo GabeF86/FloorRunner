@@ -62,6 +62,11 @@ export function SchedulingTab({ profile, sites, saveState, onSave }: { profile: 
     profile.pto_weeks == null ? '' : String(profile.pto_weeks));
   // Column is still max_weekly_hours; the label is "Weekly Hours".
   const [weeklyHours, setWeeklyHours] = useState(profile.max_weekly_hours == null ? '' : String(profile.max_weekly_hours));
+  // Per-diem contracted minimum. Blank = no minimum stated, which is NOT zero:
+  // most of the bench has no such obligation, and the staffing board flags
+  // nobody whose minimum is blank.
+  const [minMonthlyShifts, setMinMonthlyShifts] = useState(
+    profile.min_monthly_shifts == null ? '' : String(profile.min_monthly_shifts));
   // Partner / Partner Track / Employed Call Taker are mutually exclusive, so
   // this is ONE value rather than three booleans — no handler can leave two set.
   const [partnership, setPartnership] = useState<Partnership>(partnershipFromProfile(profile));
@@ -84,6 +89,8 @@ export function SchedulingTab({ profile, sites, saveState, onSave }: { profile: 
     setFte(String(profile.fte_value));
     setWorkDaysFte(profile.work_days_fte == null ? '' : String(profile.work_days_fte));
     setPtoWeeks(profile.pto_weeks == null ? '' : String(profile.pto_weeks));
+    setMinMonthlyShifts(
+      profile.min_monthly_shifts == null ? '' : String(profile.min_monthly_shifts));
     setWeeklyHours(profile.max_weekly_hours == null ? '' : String(profile.max_weekly_hours));
     setPartnership(partnershipFromProfile(profile));
     setIsDayDoc(profile.is_day_doc);
@@ -116,6 +123,7 @@ export function SchedulingTab({ profile, sites, saveState, onSave }: { profile: 
   };
   checkInt(ptoWeeks, 'ptoWeeks');
   checkInt(weeklyHours, 'weeklyHours');
+  checkInt(minMonthlyShifts, 'minMonthlyShifts');
 
   const canSave = Object.keys(errors).length === 0;
 
@@ -127,6 +135,7 @@ export function SchedulingTab({ profile, sites, saveState, onSave }: { profile: 
     workDaysFte,
     ptoWeeks,
     weeklyHours,
+    minMonthlyShifts,
     partnership,
     isDayDoc,
     isIcuDoc,
@@ -182,6 +191,18 @@ export function SchedulingTab({ profile, sites, saveState, onSave }: { profile: 
             hint={'Blank = not stated · 0 = genuinely no allotment'}
           />
           <Field label="Weekly Hours" value={weeklyHours} onChange={setWeeklyHours} error={errors.weeklyHours} />
+          {/* Per diems only. Shown for nobody else because nobody else has a
+              monthly shift obligation — and a field that is meaningless for
+              most of the roster trains people to skip past it. */}
+          {empStatus === 'per_diem' && (
+            <Field
+              label="Min Shifts / Month"
+              value={minMonthlyShifts}
+              onChange={setMinMonthlyShifts}
+              error={errors.minMonthlyShifts}
+              hint={'Blank = no minimum · the staffing board flags anyone running under it'}
+            />
+          )}
           <div style={{ gridColumn: '1 / -1', minWidth: 0 }}>
             <label style={fieldLabelStyle}>Home Hospital / Surgery Center</label>
             <select value={homeSite} onChange={e => setHomeSite(e.target.value)} className="fr-field" style={fieldInputStyle}>

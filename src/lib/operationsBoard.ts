@@ -73,6 +73,9 @@ export interface OpsSlotRow {
 export interface OpsProviderRow {
   id: string;
   provider_type?: string | null;
+  /** When they joined. A per diem who started in June must not be judged on a
+   *  January-to-date average — see monthsWorkedThisYear. */
+  start_date?: string | null;
   /** The SCHEDULE CODE (CHOD, GONJ, D.Gorelick) — this group's grid shorthand,
    *  not a name. Fine on a grid cell, useless on a list back office is reading
    *  to decide who to phone. */
@@ -121,6 +124,10 @@ export interface OpsProfileRow {
   provider_id: string;
   employment_status?: string | null;
   home_site_id?: string | null;
+  /** Per-diem contracted minimum shifts per month. NULL = no minimum stated,
+   *  which is NOT zero — most of the roster has no such obligation, and a zero
+   *  would mean "required to work none". Nobody with a null is ever flagged. */
+  min_monthly_shifts?: number | string | null;
 }
 
 /** The two staffing groups demand is stated in. There is no 'either' any more:
@@ -416,11 +423,57 @@ export interface BenchRow {
   status: BenchStatus;
   /** Plain English, e.g. "booked at Paoli" or "PTO". */
   detail: string;
+  /** Shifts worked this calendar year, from published schedules only. */
+  shiftsYtd: number;
+  /** Those shifts per month, over the months they have actually been here. */
+  avgShiftsPerMonth: number;
+  /** Their contracted minimum, or null when none is stated. */
+  minMonthlyShifts: number | null;
+  /** Running below the stated minimum. False whenever no minimum is stated,
+   *  and false in the first month, when the average is not yet meaningful. */
+  belowMinimum: boolean;
   /** Short names of the sites they are credentialed at, in site order. */
   sites: string[];
   /** The same sites as ids — what the board filters on. Names are for reading;
    *  filtering on them would break the moment two sites shared a short name. */
   siteIds: string[];
+}
+
+/**
+ * The months a provider's shift average should be measured over.
+ *
+ * The latest of three dates, to today:
+ *
+ *   1 January        the year under measurement
+ *   their start date a per diem who joined in June had five months during
+ *                    which nothing was expected of them, and dividing by nine
+ *                    would report them as failing an obligation they never had
+ *   dataFrom         the earliest date FloorRunner actually holds a published
+ *                    schedule for
+ *
+ * THE THIRD ONE IS THE ONE THAT MATTERS RIGHT NOW. The system holds September
+ * onwards; everyone worked through the spring, but those months are not in the
+ * database. Dividing by the whole year would put the entire bench at 0.2 a
+ * month and flag all sixteen of them — measuring our data gap and calling it
+ * their performance. The average must only ever cover the period we can see.
+ *
+ * Fractional and never zero for a valid window: somebody who started yesterday
+ * gets a small positive number rather than a division by zero.
+ */
+export function monthsWorkedThisYear(
+  today: string,
+  startDate?: string | null,
+  dataFrom?: string | null,
+): number {
+  const yearStart = `${today.slice(0, 4)}-01-01`;
+  let from = yearStart;
+  if (startDate && startDate > from) from = startDate;
+  if (dataFrom && dataFrom > from) from = dataFrom;
+  if (from > today) return 0;
+  const days = (Date.parse(`${today}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86_400_000 + 1;
+  // 30.44 = the average month. Calendar months would make January and February
+  // score differently for the same work.
+  return Math.max(days / 30.44, 1 / 30.44);
 }
 
 export interface BenchSummary {
@@ -436,6 +489,12 @@ export interface BenchSummary {
   uncredentialed: number;
   sitesCovered: number;
   freeToday: number;
+  /** How many on the bench are running under their contracted minimum. */
+  belowMinimum: number;
+  /** The window the averages actually cover, so the panel can say so rather
+   *  than implying a full year. */
+  averageFrom: string;
+  averageMonths: number;
 }
 
 /** Is this credential row usable on this date? */
@@ -470,6 +529,14 @@ export function perDiemBench(input: {
   sites: ReadonlyArray<OpsSiteRow>;
   /** Which employment statuses count as bench. Defaults to per diem only. */
   statuses?: ReadonlyArray<string>;
+  /** provider id → shifts worked this calendar year, published only. Absent
+   *  means zero; the caller counts them in one pass rather than this module
+   *  reaching for a year of slots it does not otherwise need. */
+  shiftsYtd?: ReadonlyMap<string, number>;
+  /** The earliest date in the year FloorRunner holds a published schedule for.
+   *  The average is measured from here, never from 1 January, so a data gap is
+   *  not reported as somebody working too little. */
+  scheduleDataFrom?: string | null;
 }): BenchSummary {
   const bench = new Set((input.statuses ?? ['per_diem']).map(s => s));
   const siteName = new Map<string, string>();
@@ -540,6 +607,19 @@ export function perDiemBench(input: {
       free++;
     }
 
+    // ── Are they working enough? ─────────────────────────────────────────
+    const shiftsYtd = input.shiftsYtd?.get(p.id) ?? 0;
+    const months = monthsWorkedThisYear(input.date, p.start_date, input.scheduleDataFrom);
+    const avg = months > 0 ? shiftsYtd / months : 0;
+    const rawMin = profile.min_monthly_shifts;
+    const min = rawMin === null || rawMin === undefined || rawMin === ''
+      ? null
+      : Number(rawMin);
+    const minMonthlyShifts = min !== null && Number.isFinite(min) ? min : null;
+    // Not flagged in the first month: one slow fortnight is not a pattern, and
+    // a flag that fires on everybody new teaches people to ignore it.
+    const belowMinimum = minMonthlyShifts !== null && months >= 1 && avg < minMonthlyShifts;
+
     const name = providerName(p);
     const code = p.short_display_name?.trim() || '';
     // Compared on letters alone: some codes ARE the name with the spacing
@@ -555,6 +635,10 @@ export function perDiemBench(input: {
       detail,
       sites,
       siteIds: input.sites.filter(s => creds.includes(s.id)).map(s => s.id),
+      shiftsYtd,
+      avgShiftsPerMonth: Math.round(avg * 10) / 10,
+      minMonthlyShifts,
+      belowMinimum,
     });
   }
 
@@ -564,7 +648,16 @@ export function perDiemBench(input: {
   const RANK: Record<BenchStatus, number> = { available: 0, booked: 1, off: 2 };
   rows.sort((a, b) => RANK[a.status] - RANK[b.status] || a.name.localeCompare(b.name));
 
-  return { rows, onRoster, uncredentialed, sitesCovered: siteSet.size, freeToday: free };
+  const yearStart = `${input.date.slice(0, 4)}-01-01`;
+  const averageFrom = input.scheduleDataFrom && input.scheduleDataFrom > yearStart
+    ? input.scheduleDataFrom : yearStart;
+
+  return {
+    rows, onRoster, uncredentialed, sitesCovered: siteSet.size, freeToday: free,
+    belowMinimum: rows.filter(r => r.belowMinimum).length,
+    averageFrom,
+    averageMonths: Math.round(monthsWorkedThisYear(input.date, null, input.scheduleDataFrom) * 10) / 10,
+  };
 }
 
 // ── 3. Who is on the floor ─────────────────────────────────────────────────

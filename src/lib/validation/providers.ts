@@ -116,6 +116,8 @@ export const PROFILE_COLUMNS = [
   'is_employed_call_taker',
   'is_day_doc', 'is_icu_doc',
   'pto_weeks', 'max_weekly_hours', 'max_monthly_calls',
+  // Per-diem contracted minimum (patch61). NULL = none stated, never flagged.
+  'min_monthly_shifts',
   'call_taker', 'partial_call_taker', 'holiday_call_eligible',
   'weekend_call_eligible', 'night_call_eligible', 'backup_call_eligible',
   'late_shift_eligible', 'can_supervise_crnas', 'can_work_solo',
