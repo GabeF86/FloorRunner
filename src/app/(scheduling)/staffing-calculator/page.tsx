@@ -12,12 +12,20 @@ import {
   Contingency,
   SiteCatalogEntry,
 } from '@/lib/staffingCalculator';
+import nextDynamic from 'next/dynamic';
 import { buildBreakAnalysis } from '@/lib/staffingCalculator/shared';
 import {
   availableStaff, availablePeople,
   type ScheduledAvailability, type AvailablePerson,
 } from '@/lib/staffingAvailability';
 import { Banner, Button, Card, EmptyState, Table } from '@/components/ui';
+
+// Deferred: a second full rendering of the assignment set, loaded only when
+// somebody actually prints. ssr:false because it is user-triggered and drives
+// the browser's own print pipeline.
+const PrintableAssignments = nextDynamic(
+  () => import('./PrintableAssignments').then(m => m.PrintableAssignments),
+  { ssr: false });
 
 /* ── Shared style tokens ─────────────────────────────────────────────────── */
 // All values resolve to the global var(--*) tokens so both themes render
@@ -170,6 +178,20 @@ function todayISO(): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
+/** Step a date by whole days, in UTC so a DST boundary cannot skip one. */
+function shiftDate(iso: string, days: number): string {
+  const [y, m, d] = iso.split('-').map(Number);
+  const t = new Date(Date.UTC(y, m - 1, d));
+  t.setUTCDate(t.getUTCDate() + days);
+  return t.toISOString().slice(0, 10);
+}
+
+const dayStepStyle: React.CSSProperties = {
+  padding: '2px 7px', borderRadius: 'var(--radius-sm)', cursor: 'pointer',
+  background: 'transparent', border: `1px solid var(--border)`,
+  color: 'var(--text-muted)', fontSize: 12, lineHeight: 1.2, fontWeight: 700,
+};
+
 function longDay(iso: string): string {
   const [y, m, d] = iso.split('-').map(Number);
   return new Date(Date.UTC(y, m - 1, d)).toLocaleDateString('en-US', {
@@ -262,6 +284,21 @@ export default function StaffingCalculatorPage() {
   // the algorithm. cfg / avail / facility / custom-site changes wipe local
   // edits and recompute fresh — that's the intended reset semantic.
   const [result, setResult] = useState<CalculatorOutput | null>(null);
+
+  // Printing is armed, then fired on the next frame — the sheet has to be in
+  // the DOM before window.print() reads it.
+  const [printing, setPrinting] = useState(false);
+  useEffect(() => {
+    if (!printing) return;
+    const raf = requestAnimationFrame(() => window.print());
+    const done = () => setPrinting(false);
+    window.addEventListener('afterprint', done);
+    return () => {
+      cancelAnimationFrame(raf);
+      window.removeEventListener('afterprint', done);
+    };
+  }, [printing]);
+
   // Who has already been placed on the diagram — the roster strikes them
   // through so the pool left to draw on is readable at a glance.
   const assignedIds = new Set(
@@ -330,7 +367,39 @@ export default function StaffingCalculatorPage() {
           </div>
         </div>
 
-        <div style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
+        <div style={{ marginLeft: 'auto', display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+          {/* The day everything on this page is about. It lives up here rather
+              than inside the staff panel because it governs the whole sheet —
+              the headcount, the names offered to every chip, and the printout —
+              not just the two steppers it used to sit beside. */}
+          <div style={{ display: 'inline-flex', alignItems: 'center', gap: 2 }}>
+            <button
+              className="sc-btn" type="button" title="Previous day"
+              aria-label="Previous day"
+              onClick={() => setAvailDate(shiftDate(availDate, -1))}
+              style={dayStepStyle}
+            >‹</button>
+            <input
+              type="date"
+              value={availDate}
+              onChange={(e) => e.target.value && setAvailDate(e.target.value)}
+              className="fr-field fr-focus"
+              aria-label="Date"
+              style={{ fontSize: 11, padding: '3px 6px', width: 140 }}
+            />
+            <button
+              className="sc-btn" type="button" title="Next day" aria-label="Next day"
+              onClick={() => setAvailDate(shiftDate(availDate, 1))}
+              style={dayStepStyle}
+            >›</button>
+            {availDate !== todayISO() && (
+              <Button variant="ghost" size="sm" onClick={() => setAvailDate(todayISO())}
+                title="Back to today" style={{ fontSize: 10, fontWeight: 600 }}>today</Button>
+            )}
+          </div>
+
+          <span aria-hidden style={{ width: 1, alignSelf: 'stretch', background: tok.border, margin: '2px 2px' }} />
+
           {CALCULATORS.map((c) => {
             const isActive = c.facilityId === facilityId;
             const placeholder = c.status === 'placeholder';
@@ -358,6 +427,10 @@ export default function StaffingCalculatorPage() {
               </button>
             );
           })}
+          <Button variant="ghost" size="sm" onClick={() => setPrinting(true)}
+            disabled={!result}
+            title="Print the day's assignments"
+            style={{ fontSize: 10, fontWeight: 600 }}>🖨 print</Button>
           <Button variant="ghost" size="sm" onClick={reset} title="Reset cfg + clear manual edits"
             style={{ fontSize: 10, fontWeight: 600 }}>↺ reset</Button>
         </div>
@@ -389,7 +462,7 @@ export default function StaffingCalculatorPage() {
           )}
           <AvailableStaffPanel
             avail={avail} setAvail={setAvail} disabled={isPlaceholder}
-            date={availDate} setDate={setAvailDate}
+            date={availDate}
             sched={sched}
             includeOvernight={includeOvernight} setIncludeOvernight={setIncludeOvernight}
             edited={edited}
@@ -423,6 +496,24 @@ export default function StaffingCalculatorPage() {
           )}
         </div>
       </div>
+
+      {/* Print sheet — in the DOM only while printing, and display:none even
+          then. Everyone on the day's schedule who did not end up on a chip is
+          carried too, so the sheet accounts for the whole day rather than only
+          the positions that got filled. */}
+      {printing && result && calc && (
+        <PrintableAssignments
+          facilityName={calc.facilityName}
+          date={availDate}
+          out={result}
+          siteCatalog={mergeSiteCatalog(calc.siteCatalog || [], facilityCustomSites)}
+          avail={avail}
+          includeOvernight={includeOvernight}
+          unplaced={schedulePeople
+            .filter((p) => !assignedIds.has(p.providerId))
+            .map((p) => ({ name: p.name, type: p.type, shiftCodes: p.shiftCodes }))}
+        />
+      )}
 
       {showAddSite && (
         <AddSiteModal
@@ -714,14 +805,14 @@ function SegBtn({ active, onClick, children }: { active: boolean; onClick: () =>
 }
 
 function AvailableStaffPanel({
-  avail, setAvail, disabled, date, setDate, sched,
+  avail, setAvail, disabled, date, sched,
   includeOvernight, setIncludeOvernight, edited, onRevert, assignedIds,
 }: {
   avail: AvailableStaff;
   setAvail: (a: AvailableStaff) => void;
   disabled?: boolean;
+  /** Only for the caption — the control itself lives in the page header. */
   date: string;
-  setDate: (d: string) => void;
   sched: AvailState;
   includeOvernight: boolean;
   setIncludeOvernight: (v: boolean) => void;
@@ -738,20 +829,6 @@ function AvailableStaffPanel({
   return (
     <Card style={{ opacity: disabled ? 0.5 : 1 }}>
       <SectionTitle>👥 Available staff</SectionTitle>
-
-      {/* The date the numbers belong to. Without it the panel was a pair of
-          figures with no day attached — which is how it came to sit on 12 and
-          14 for every site and every date. */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '4px 2px' }}>
-        <input
-          type="date"
-          value={date}
-          onChange={(e) => setDate(e.target.value)}
-          className="fr-field fr-focus"
-          style={{ flex: 1, fontSize: 11, padding: '3px 6px' }}
-          aria-label="Date to read the schedule for"
-        />
-      </div>
 
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '3px 2px', marginTop: 2 }}>
         <span style={{ fontSize: 12, color: tok.text, fontWeight: 500 }}>MDs available</span>
@@ -1304,16 +1381,25 @@ function StaffingDiagram({ result, setResult, siteCatalog, people }: {
     mds.some((m) => m.site === s.key) || crnas.some((c) => c.site === s.key),
   );
 
-  // Connector links for 'linked' mode: each (MD, lane) pair where the MD lives
-  // elsewhere but supervises ≥1 CRNA in this lane → a line from the home card
-  // to the secondary card. `version` forces the SVG overlay to re-measure when
-  // supervision/sites/lanes/selection change.
+  // Connector links for 'linked' mode: one line per cross-covered CRNA, drawn
+  // from the supervising MD's home card straight to that CRNA's chip in the
+  // lane it actually sits in.
+  //
+  // It used to be one line per (MD, lane), landing on a GHOST COPY of the MD
+  // card rendered inside the covered lane. That duplicate said nothing the line
+  // did not already say, and it made every cross-cover cost a second full card
+  // — the board read as busier than the staffing actually was. The line now
+  // terminates on the CRNA, which is the thing being covered.
+  //
+  // `version` forces the SVG overlay to re-measure when supervision, sites,
+  // lanes or selection change.
   const connectorLinks = crossMode === 'linked'
-    ? lanes.flatMap((site) =>
-        mds
-          .filter((m) => m.site !== site.key && crnas.some((c) => c.site === site.key && c.supervisedBy === m.id))
-          .map((m) => ({ mdId: m.id, laneKey: site.key })),
-      )
+    ? crnas
+        .filter((c) => {
+          const sup = c.supervisedBy && mds.find((m) => m.id === c.supervisedBy);
+          return !!sup && sup.site !== c.site;
+        })
+        .map((c) => ({ mdId: c.supervisedBy as string, crnaId: c.id }))
     : [];
   const connectorVersion = crossMode + '|' + (selectedCRNA ?? '') + '|'
     + assignments.map((a) => `${a.id}:${a.site}:${a.supervisedBy ?? ''}`).join(',')
@@ -1513,25 +1599,27 @@ function StaffingDiagram({ result, setResult, siteCatalog, people }: {
                     />
                   ))}
 
-                  {/* Linked mode: secondary (ghost) cards for MDs whose home
-                      lane is elsewhere but who cover a CRNA here — joined to the
-                      home card by the SVG connector line above. */}
-                  {crossMode === 'linked' && mds
-                    .filter((m) => m.site !== site.key && siteCRNAs.some((c) => c.supervisedBy === m.id))
-                    .map((m) => (
-                      <SecondaryMDCard
-                        key={'sec-' + m.id + '-' + site.key}
-                        md={m}
-                        crnas={siteCRNAs.filter((c) => c.supervisedBy === m.id)}
-                        homeSite={allLanes.find((s) => s.key === m.site) || { key: m.site, label: m.site, color: '#6B7280' }}
+                  {/* Linked mode: CRNAs here who are covered by an MD in
+                      another lane. Just the chips — the connector line above
+                      carries the relationship, so a ghost copy of the MD card
+                      would be saying it a second time. */}
+                  {crossMode === 'linked' && (() => {
+                    const covered = siteCRNAs.filter((c) => {
+                      const sup = c.supervisedBy && mds.find((m) => m.id === c.supervisedBy);
+                      return !!sup && sup.site !== site.key;
+                    });
+                    return covered.length > 0 ? (
+                      <CrossCoveredRow
+                        crnas={covered}
+                        mds={mds}
+                        siteCatalog={allLanes}
                         selectedCRNA={selectedCRNA}
-                        onMDClick={onMDClick}
                         onCRNAClick={onCRNAClick}
                         onDragStartCRNA={onDragStartCRNA}
                         onDelete={deleteAssignment}
-                        dataNode={'remote-' + m.id + '-' + site.key}
                       />
-                    ))}
+                    ) : null;
+                  })()}
 
                   {/* Free CRNAs (no supervisor) sitting at this site — happens
                       either in the Float pool or after deleting an MD whose
@@ -1894,75 +1982,77 @@ function MDBlock({ md, crnas, selectedCRNA, dropTarget, onMDClick, onCRNAClick, 
 // their home — shown next to the CRNA(s) they cover here, joined to the real
 // card by the connector line. Non-draggable (the home card is the real one);
 // clicking it still reassigns a selected CRNA, and its CRNA chips stay live.
-function SecondaryMDCard({ md, crnas, homeSite, selectedCRNA, onMDClick, onCRNAClick, onDragStartCRNA, onDelete, dataNode }: {
-  md: StaffAssignment;
+/**
+ * CRNAs sitting in this lane whose supervising MD is in another one.
+ *
+ * Chips only. The previous design put a dashed GHOST COPY of the MD card here,
+ * tagged XCOV with an arrow back to its home lane — which duplicated on screen
+ * exactly what the connector line already draws, and cost a full card per
+ * cross-cover. Gabriel's call (2026-09-20): extend the line to the CRNA and
+ * drop the second card.
+ *
+ * The supervising MD is still named, in the chip's tooltip and in one quiet
+ * lead-in label, so the relationship survives when several lines overlap or
+ * when the diagram is printed without hover.
+ */
+function CrossCoveredRow({ crnas, mds, siteCatalog, selectedCRNA, onCRNAClick, onDragStartCRNA, onDelete }: {
   crnas: StaffAssignment[];
-  homeSite: SiteCatalogEntry;
+  mds: StaffAssignment[];
+  siteCatalog: SiteCatalogEntry[];
   selectedCRNA: string | null;
-  onMDClick: (md: StaffAssignment, e?: React.MouseEvent) => void;
   onCRNAClick: (c: StaffAssignment) => void;
   onDragStartCRNA: (e: React.DragEvent, c: StaffAssignment) => void;
   onDelete: (id: string) => void;
-  dataNode: string;
 }) {
   const tone = tok.crossSite;
   return (
-    <div
-      onClick={(e) => onMDClick(md, e)}
-      title={`${md.role} — home lane: ${homeSite.label}`}
-      style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 0', cursor: selectedCRNA ? 'pointer' : 'default' }}
-    >
-      <div className="sc-node" data-ccnode={dataNode} style={{
-        display: 'flex', alignItems: 'center', gap: 7,
-        padding: '5px 9px', borderRadius: tok.radiusSm,
-        background: selectedCRNA ? 'var(--ok-bg)' : `color-mix(in srgb, ${tone} 8%, transparent)`,
-        border: `1.5px dashed ${selectedCRNA ? 'var(--ok)' : tone}`,
-        minWidth: 110, flexShrink: 0, position: 'relative',
-        transition: `background var(--dur-fast) var(--ease-out), border-color var(--dur-fast) var(--ease-out), box-shadow var(--dur-fast) var(--ease-out)`,
-      }}>
-        <div style={{
-          width: 22, height: 22, borderRadius: 5,
-          background: `color-mix(in srgb, ${tone} 12%, transparent)`, border: `1.5px solid ${tone}`,
-          display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
-        }}>
-          <span style={{ color: tone, fontSize: 8, fontWeight: 800, fontFamily: tok.mono }}>MD</span>
-        </div>
-        <div style={{ minWidth: 0 }}>
-          <div style={{ color: tok.text, fontSize: 11, fontWeight: 700, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-            {md.role}
-          </div>
-          <div style={{ display: 'flex', gap: 3, alignItems: 'center', marginTop: 1 }}>
-            <Badge color={tone} text="XCOV" />
-            <span style={{ color: tone, fontSize: 8.5, fontFamily: tok.mono, fontWeight: 800 }}>↑ {shortLabel(homeSite)}</span>
-          </div>
-        </div>
-      </div>
-      {crnas.length > 0 && <span style={{ color: tone, fontSize: 11, opacity: 0.6 }}>›</span>}
-      {crnas.length > 0 && (
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, minWidth: 0 }}>
-          {crnas.map((c) => (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 0', flexWrap: 'wrap' }}>
+      {/* A bare glyph, not a sentence. The line already says "covered from
+          elsewhere"; the per-chip tag below says from where. A third label
+          spelling it out again is the busyness this change removes. */}
+      <span
+        title="Supervised from another lane"
+        style={{ fontSize: 11, color: tone, flexShrink: 0, lineHeight: 1 }}
+      >⇄</span>
+      {crnas.map((c) => {
+        const sup = mds.find((m) => m.id === c.supervisedBy);
+        const home = sup ? siteCatalog.find((sc) => sc.key === sup.site) : null;
+        return (
+          <span key={c.id} style={{ display: 'inline-flex', alignItems: 'center', gap: 3 }}>
             <CRNAChip
-              key={c.id}
               crna={c}
               selected={selectedCRNA === c.id}
               onClick={() => onCRNAClick(c)}
               onDragStart={(e) => onDragStartCRNA(e, c)}
               onDelete={onDelete}
+              dataNode={'crna-' + c.id}
             />
-          ))}
-        </div>
-      )}
+            {sup && (
+              <span
+                title={`${c.role} is supervised by ${sup.role}${home ? ` in ${home.label}` : ''}`}
+                style={{ fontSize: 8.5, fontFamily: tok.mono, fontWeight: 800, color: tone, whiteSpace: 'nowrap' }}
+              >
+                {home ? shortLabel(home) : sup.site}
+              </span>
+            )}
+          </span>
+        );
+      })}
     </div>
   );
 }
 
-// SVG overlay that draws a connecting line between each supervising MD's home
-// card and its secondary card in a cross-covered lane. Measures live DOM
-// positions (re-measuring on `version` change + container resize) so the lines
-// track the cards. Bows left into the gutter so it doesn't cross other cards.
+// SVG overlay joining each supervising MD's card to the CRNA it covers in
+// another lane. Measures live DOM positions (re-measuring on `version` change
+// + container resize) so the lines track the chips. Bows left into the gutter
+// so it doesn't cross other cards.
+//
+// The far end used to be a ghost copy of the MD card; it is now the CRNA chip
+// itself, so the line lands on the thing being covered and the lane carries one
+// element instead of two.
 function CrossCoverConnectors({ containerRef, links, version }: {
   containerRef: React.RefObject<HTMLDivElement | null>;
-  links: { mdId: string; laneKey: string }[];
+  links: { mdId: string; crnaId: string }[];
   version: string;
 }) {
   const [segs, setSegs] = useState<{ id: string; d: string; x1: number; y1: number; x2: number; y2: number }[]>([]);
@@ -1974,7 +2064,7 @@ function CrossCoverConnectors({ containerRef, links, version }: {
       const next: { id: string; d: string; x1: number; y1: number; x2: number; y2: number }[] = [];
       links.forEach((lk, i) => {
         const home = el.querySelector(`[data-ccnode="home-${lk.mdId}"]`) as HTMLElement | null;
-        const rem = el.querySelector(`[data-ccnode="remote-${lk.mdId}-${lk.laneKey}"]`) as HTMLElement | null;
+        const rem = el.querySelector(`[data-ccnode="crna-${lk.crnaId}"]`) as HTMLElement | null;
         if (!home || !rem) return;
         const hr = home.getBoundingClientRect();
         const rr = rem.getBoundingClientRect();
@@ -1984,7 +2074,7 @@ function CrossCoverConnectors({ containerRef, links, version }: {
         const y2 = rr.top - cr.top + rr.height / 2;
         const k = 16 + i * 12; // bow depth into the gutter, staggered per link
         const d = `M ${x1} ${y1} C ${x1 - k} ${y1}, ${x2 - k} ${y2}, ${x2} ${y2}`;
-        next.push({ id: `${lk.mdId}-${lk.laneKey}`, d, x1, y1, x2, y2 });
+        next.push({ id: `${lk.mdId}-${lk.crnaId}`, d, x1, y1, x2, y2 });
       });
       setSegs(next);
     };
@@ -2027,7 +2117,7 @@ function Badge({ color, text, dark }: { color: string; text: string; dark?: bool
   );
 }
 
-function CRNAChip({ crna, selected, onClick, onDragStart, onDelete, crossSite }: {
+function CRNAChip({ crna, selected, onClick, onDragStart, onDelete, crossSite, dataNode }: {
   crna: StaffAssignment;
   selected: boolean;
   onClick: () => void;
@@ -2036,6 +2126,9 @@ function CRNAChip({ crna, selected, onClick, onDragStart, onDelete, crossSite }:
   // When set, the chip renders a small "@SiteName" badge using this lane's
   // accent color. Indicates the room is elsewhere — supervision crosses sites.
   crossSite?: SiteCatalogEntry | null;
+  // Anchor the cross-cover connector terminates on, when this CRNA is covered
+  // by an MD in another lane.
+  dataNode?: string;
 }) {
   const [hov, setHov] = useState(false);
   const addOn = crna.isAddOn;
@@ -2043,6 +2136,7 @@ function CRNAChip({ crna, selected, onClick, onDragStart, onDelete, crossSite }:
   return (
     <div
       className="sc-node"
+      data-ccnode={dataNode}
       draggable
       onDragStart={onDragStart}
       onClick={(e) => { e.stopPropagation(); onClick(); }}
