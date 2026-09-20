@@ -233,12 +233,23 @@ export function countsAsFloorCoverage(
 ): boolean {
   if (!shift) return false;
   if (isWeekend) return true;
-  if (!shift.start_time) return true;
-  const hour = Number(shift.start_time.slice(0, 2));
+  return startsOnTheFloor(shift.start_time);
+}
+
+/** The hour the OR day ends here — 7-3 finishes then, and anything starting at
+ *  or after it arrives as the floor empties. One constant because the coverage
+ *  matrix and the staffing calculator both split the day on it, and two copies
+ *  of 15 would eventually disagree. */
+export const FLOOR_DAY_ENDS_HOUR = 15;
+
+/** Does a shift starting at this time put somebody on the daytime floor?
+ *  An absent or unparseable start counts, deliberately: several imported types
+ *  state none, and dropping them would silently under-report a whole site. */
+export function startsOnTheFloor(startTime?: string | null): boolean {
+  if (!startTime) return true;
+  const hour = Number(startTime.slice(0, 2));
   if (!Number.isFinite(hour)) return true;
-  // The OR day ends at 15:00 here — 7-3 finishes then. Anything starting at or
-  // after it arrives as the floor empties.
-  return hour < 15;
+  return hour < FLOOR_DAY_ENDS_HOUR;
 }
 
 // ── 1. Available vs needed, by site and day ────────────────────────────────

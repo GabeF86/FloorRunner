@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { createContext, useContext, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import {
   CALCULATORS,
   getCalculator,
@@ -13,6 +13,10 @@ import {
   SiteCatalogEntry,
 } from '@/lib/staffingCalculator';
 import { buildBreakAnalysis } from '@/lib/staffingCalculator/shared';
+import {
+  availableStaff, availablePeople,
+  type ScheduledAvailability, type AvailablePerson,
+} from '@/lib/staffingAvailability';
 import { Banner, Button, Card, EmptyState, Table } from '@/components/ui';
 
 /* ── Shared style tokens ─────────────────────────────────────────────────── */
@@ -159,6 +163,50 @@ function mergeSiteCatalog(base: SiteCatalogEntry[], customSites: CustomSite[]): 
   return [...base.slice(0, floatIdx), ...customEntries, ...base.slice(floatIdx)];
 }
 
+/* ── Reading the schedule ────────────────────────────────────────────────── */
+
+function todayISO(): string {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+function longDay(iso: string): string {
+  const [y, m, d] = iso.split('-').map(Number);
+  return new Date(Date.UTC(y, m - 1, d)).toLocaleDateString('en-US', {
+    weekday: 'short', month: 'short', day: 'numeric', timeZone: 'UTC',
+  });
+}
+
+interface AvailState {
+  data: ScheduledAvailability | null;
+  loading: boolean;
+  /** A read that failed, as opposed to a day with nobody on it. The panel says
+   *  which — a calculator sized for zero staff because a fetch broke is the
+   *  same shape on screen as one sized for a genuinely empty day. */
+  error: string | null;
+}
+
+function useScheduledAvailability(facilityId: string, date: string): AvailState {
+  const [state, setState] = useState<AvailState>({ data: null, loading: true, error: null });
+  useEffect(() => {
+    let live = true;
+    setState(s => ({ ...s, loading: true, error: null }));
+    fetch(`/api/scheduling/staffing-availability?site=${encodeURIComponent(facilityId)}`
+      + `&date=${encodeURIComponent(date)}`)
+      .then(async r => {
+        const body = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(body?.error || `Request failed (${r.status})`);
+        return body as ScheduledAvailability;
+      })
+      .then(data => { if (live) setState({ data, loading: false, error: null }); })
+      .catch((e: Error) => {
+        if (live) setState({ data: null, loading: false, error: e.message });
+      });
+    return () => { live = false; };
+  }, [facilityId, date]);
+  return state;
+}
+
 /* ── Page ────────────────────────────────────────────────────────────────── */
 
 export default function StaffingCalculatorPage() {
@@ -179,7 +227,28 @@ export default function StaffingCalculatorPage() {
     }));
   };
 
-  const [avail, setAvail] = useState<AvailableStaff>({ mds: 12, crnas: 14 });
+  // ── Available staff, read off the published schedule ────────────────────
+  // It used to open on a hardcoded 12 and 14 — numbers that belonged to no
+  // site and no day. Now the schedule supplies them, and the steppers stay
+  // editable so a what-if is still one click away.
+  const [availDate, setAvailDate] = useState<string>(() => todayISO());
+  const [includeOvernight, setIncludeOvernight] = useState(false);
+  const sched = useScheduledAvailability(facilityId, availDate);
+  const [avail, setAvail] = useState<AvailableStaff>({ mds: 0, crnas: 0 });
+  // Manual edits win until the source changes. Keyed on the fetch identity, so
+  // choosing another site, date or toggle state re-reads the schedule, but
+  // nudging a stepper is not immediately undone by a re-render.
+  const availKey = `${facilityId}|${availDate}|${includeOvernight}|${sched.data ? 'y' : 'n'}`;
+  const appliedKey = useRef<string | null>(null);
+  useEffect(() => {
+    if (!sched.data || appliedKey.current === availKey) return;
+    appliedKey.current = availKey;
+    setAvail(availableStaff(sched.data, includeOvernight));
+  }, [sched.data, includeOvernight, availKey]);
+  const schedulePeople = sched.data ? availablePeople(sched.data, includeOvernight) : [];
+  const fromSchedule = sched.data ? availableStaff(sched.data, includeOvernight) : null;
+  const edited = !!fromSchedule
+    && (fromSchedule.mds !== avail.mds || fromSchedule.crnas !== avail.crnas);
 
   // Per-facility custom sites — local UI state, cleared by reset.
   const [customSites, setCustomSites] = useState<Record<string, CustomSite[]>>(
@@ -193,6 +262,10 @@ export default function StaffingCalculatorPage() {
   // the algorithm. cfg / avail / facility / custom-site changes wipe local
   // edits and recompute fresh — that's the intended reset semantic.
   const [result, setResult] = useState<CalculatorOutput | null>(null);
+  // Who has already been placed on the diagram — the roster strikes them
+  // through so the pool left to draw on is readable at a glance.
+  const assignedIds = new Set(
+    (result?.assignments ?? []).map((a) => a.providerId).filter((x): x is string => !!x));
   useEffect(() => {
     if (!calc || isPlaceholder) { setResult(null); return; }
     setResult(injectCustomSites(calc.calculate(cfg, avail), customSites[facilityId] ?? []));
@@ -314,7 +387,15 @@ export default function StaffingCalculatorPage() {
               onRemoveCustomSite={removeCustomSite}
             />
           )}
-          <AvailableStaffPanel avail={avail} setAvail={setAvail} disabled={isPlaceholder} />
+          <AvailableStaffPanel
+            avail={avail} setAvail={setAvail} disabled={isPlaceholder}
+            date={availDate} setDate={setAvailDate}
+            sched={sched}
+            includeOvernight={includeOvernight} setIncludeOvernight={setIncludeOvernight}
+            edited={edited}
+            onRevert={() => { if (fromSchedule) setAvail(fromSchedule); }}
+            assignedIds={assignedIds}
+          />
         </div>
 
         {/* Right: output */}
@@ -325,6 +406,7 @@ export default function StaffingCalculatorPage() {
               result={result}
               setResult={setResult}
               siteCatalog={mergeSiteCatalog(calc.siteCatalog || [], facilityCustomSites)}
+              people={schedulePeople}
             />
           )}
           {result && result.contingencies.length > 0 && <ContingencyCoverage contingencies={result.contingencies} assignments={result.assignments} />}
@@ -631,14 +713,46 @@ function SegBtn({ active, onClick, children }: { active: boolean; onClick: () =>
   );
 }
 
-function AvailableStaffPanel({ avail, setAvail, disabled }: {
+function AvailableStaffPanel({
+  avail, setAvail, disabled, date, setDate, sched,
+  includeOvernight, setIncludeOvernight, edited, onRevert, assignedIds,
+}: {
   avail: AvailableStaff;
   setAvail: (a: AvailableStaff) => void;
   disabled?: boolean;
+  date: string;
+  setDate: (d: string) => void;
+  sched: AvailState;
+  includeOvernight: boolean;
+  setIncludeOvernight: (v: boolean) => void;
+  edited: boolean;
+  onRevert: () => void;
+  /** Provider ids already dropped onto a chip, so the roster can show which
+   *  people are spoken for without re-deriving it from the diagram. */
+  assignedIds: ReadonlySet<string>;
 }) {
+  const a = sched.data;
+  const people = a ? availablePeople(a, includeOvernight) : [];
+  const overnightN = a ? a.overnightCall.mds + a.overnightCall.crnas : 0;
+
   return (
     <Card style={{ opacity: disabled ? 0.5 : 1 }}>
       <SectionTitle>👥 Available staff</SectionTitle>
+
+      {/* The date the numbers belong to. Without it the panel was a pair of
+          figures with no day attached — which is how it came to sit on 12 and
+          14 for every site and every date. */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '4px 2px' }}>
+        <input
+          type="date"
+          value={date}
+          onChange={(e) => setDate(e.target.value)}
+          className="fr-field fr-focus"
+          style={{ flex: 1, fontSize: 11, padding: '3px 6px' }}
+          aria-label="Date to read the schedule for"
+        />
+      </div>
+
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '3px 2px', marginTop: 2 }}>
         <span style={{ fontSize: 12, color: tok.text, fontWeight: 500 }}>MDs available</span>
         <Stepper value={avail.mds} onChange={(v) => setAvail({ ...avail, mds: v })} min={0} max={30} color={tok.md.fg} />
@@ -647,7 +761,277 @@ function AvailableStaffPanel({ avail, setAvail, disabled }: {
         <span style={{ fontSize: 12, color: tok.text, fontWeight: 500 }}>CRNAs available</span>
         <Stepper value={avail.crnas} onChange={(v) => setAvail({ ...avail, crnas: v })} min={0} max={30} color={tok.crna.fg} />
       </div>
+
+      {/* Where the numbers came from — and, when they no longer match, that
+          they have been overridden. A figure read off the schedule and a figure
+          typed by hand look identical, and only one of them is evidence. */}
+      <div style={{ marginTop: 6, fontSize: 10, color: tok.textDim, lineHeight: 1.55 }}>
+        {sched.loading && 'Reading the published schedule…'}
+        {sched.error && (
+          <span style={{ color: 'var(--danger)' }}>
+            Could not read the schedule ({sched.error}). The numbers above are
+            whatever was last set, not today&rsquo;s staff.
+          </span>
+        )}
+        {a && !sched.loading && !sched.error && (
+          <>
+            {a.scheduled
+              ? <>From the published schedule for <strong style={{ color: tok.textMuted }}>{longDay(date)}</strong>.</>
+              : <span style={{ color: 'var(--warn)' }}>
+                  No published schedule covers this site on {longDay(date)} — that is
+                  why these read zero, not because nobody is working.
+                </span>}
+            {edited && (
+              <>
+                {' '}<span style={{ color: 'var(--warn)' }}>Edited by hand.</span>{' '}
+                <button
+                  type="button" onClick={onRevert} className="fr-focus"
+                  style={{
+                    background: 'none', border: 'none', padding: 0, cursor: 'pointer',
+                    color: tok.accent, font: 'inherit', textDecoration: 'underline',
+                  }}
+                >reset to the schedule</button>
+              </>
+            )}
+          </>
+        )}
+      </div>
+
+      {/* The overnight call team. Off by default: Paoli's C1 and Lankenau's C1
+          and C2 run 15:00 → 07:00, so counting them among the day's staff
+          builds a grid around people who are not in the building. */}
+      {a && a.scheduled && (
+        <label style={{
+          display: 'flex', alignItems: 'flex-start', gap: 6, marginTop: 8,
+          cursor: overnightN > 0 ? 'pointer' : 'default', opacity: overnightN > 0 ? 1 : 0.55,
+        }}>
+          <input
+            type="checkbox"
+            checked={includeOvernight}
+            disabled={overnightN === 0}
+            onChange={(e) => setIncludeOvernight(e.target.checked)}
+            style={{ marginTop: 1, accentColor: tok.accent }}
+          />
+          <span style={{ fontSize: 11, color: tok.text, lineHeight: 1.45 }}>
+            Include overnight call team
+            <span style={{ display: 'block', fontSize: 10, color: tok.textDim }}>
+              {overnightN === 0
+                ? 'Nobody is on overnight call here today.'
+                : <>
+                    {overnightN} more ({a.overnightCall.mds} MD
+                    {a.overnightCall.crnas > 0 && <> · {a.overnightCall.crnas} CRNA</>})
+                    {a.overnightCodes.length > 0 && <> — {a.overnightCodes.join(', ')}</>},
+                    on from 15:00. Off the daytime floor.
+                  </>}
+            </span>
+          </span>
+        </label>
+      )}
+
+      {/* Starts late but is not call: neither on the day floor nor part of the
+          team the checkbox adds. Reported so it can never be silently folded
+          into either. */}
+      {a && (a.lateOther.mds + a.lateOther.crnas) > 0 && (
+        <p style={{ margin: '6px 0 0', fontSize: 10, color: tok.textDim, lineHeight: 1.5 }}>
+          A further {a.lateOther.mds + a.lateOther.crnas} start after 15:00 on a
+          non-call shift ({a.lateOtherCodes.join(', ')}). Counted in neither total —
+          they are not on the daytime floor and not part of the call team.
+        </p>
+      )}
+
+      {/* Who they actually are. The same shape the staffing board uses at the
+          bottom of its page, so the two read as one system. */}
+      {people.length > 0 && (
+        <div style={{ marginTop: 10, borderTop: tok.hairline, paddingTop: 8 }}>
+          <div style={{
+            fontSize: 10, fontWeight: 700, letterSpacing: 0.5, textTransform: 'uppercase',
+            color: tok.textDim, marginBottom: 5,
+          }}>
+            On the schedule ({people.length})
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 2, maxHeight: 260, overflowY: 'auto' }}>
+            {people.map((p) => (
+              <ProviderLine key={p.providerId} person={p} assigned={assignedIds.has(p.providerId)} />
+            ))}
+          </div>
+          <p style={{ margin: '7px 0 0', fontSize: 10, color: tok.textDim, lineHeight: 1.5 }}>
+            Click any chip in the diagram to put one of these people in it.
+          </p>
+        </div>
+      )}
     </Card>
+  );
+}
+
+/** Opening the person picker, published to the chips.
+ *
+ *  A context rather than a prop: the chips sit five components deep through
+ *  MDBlock, the float row and the remote-coverage row, and threading one
+ *  callback through all of them would touch every signature between here and
+ *  there for no gain. Null when no schedule is loaded, and the slot then does
+ *  not render at all — an affordance that opens an empty list is worse than no
+ *  affordance. */
+const PickPersonContext = createContext<((a: StaffAssignment) => void) | null>(null);
+
+/**
+ * The name slot on a chip.
+ *
+ * A separate click target rather than the chip body, deliberately: the chip
+ * body already means something in this diagram — clicking an MD block assigns
+ * the selected CRNA to it, clicking a CRNA chip selects it for reassignment.
+ * Overloading either would make dragging staff around and naming them the same
+ * gesture, and the wrong one would fire constantly.
+ */
+function NameSlot({ assignment, compact }: {
+  assignment: StaffAssignment;
+  compact?: boolean;
+}) {
+  const onOpen = useContext(PickPersonContext);
+  if (!onOpen) return null;
+  const named = !!assignment.providerName;
+  const accent = assignment.type === 'CRNA' ? tok.crna : tok.md;
+  return (
+    <button
+      type="button"
+      className="sc-btn fr-focus"
+      onClick={(e) => { e.stopPropagation(); onOpen(assignment); }}
+      title={named
+        ? `${assignment.providerName} — click to change or clear`
+        : `Put somebody from today's schedule in ${assignment.role}`}
+      style={{
+        display: 'inline-flex', alignItems: 'center', gap: 3, maxWidth: compact ? 92 : 128,
+        padding: compact ? '0 4px' : '1px 5px', borderRadius: 3, cursor: 'pointer',
+        fontSize: compact ? 9 : 10, fontWeight: named ? 700 : 600,
+        fontFamily: named ? undefined : tok.mono,
+        background: named ? accent.bg : 'transparent',
+        color: named ? accent.fg : tok.textDim,
+        border: `1px ${named ? 'solid' : 'dashed'} ${named ? accent.bd : tok.border}`,
+        whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+      }}
+    >
+      {named ? assignment.providerName : '+ name'}
+    </button>
+  );
+}
+
+/**
+ * Pick somebody for a chip.
+ *
+ * Only offers the matching discipline: an MD position needs an MD, and a list
+ * that let a CRNA be dropped into a supervising role would produce a grid that
+ * cannot legally run. Already-placed people stay in the list but are marked —
+ * moving somebody from one room to another is ordinary, and hiding them would
+ * make it look as though they had vanished from the day.
+ */
+function PersonPicker({ assignment, people, placed, onPick, onClose }: {
+  assignment: StaffAssignment;
+  people: AvailablePerson[];
+  placed: ReadonlyMap<string, string>;
+  onPick: (p: AvailablePerson | null) => void;
+  onClose: () => void;
+}) {
+  const matching = people.filter((p) => p.type === assignment.type);
+  return (
+    <div
+      onClick={onClose}
+      style={{
+        position: 'fixed', inset: 0, zIndex: 60, background: 'color-mix(in srgb, #000 42%, transparent)',
+        display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16,
+      }}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        role="dialog"
+        aria-label={`Assign somebody to ${assignment.role}`}
+        style={{
+          background: tok.card, border: tok.hairline, borderRadius: tok.radius,
+          boxShadow: tok.shadow, width: 320, maxHeight: '70vh', overflow: 'hidden',
+          display: 'flex', flexDirection: 'column',
+        }}
+      >
+        <div style={{ padding: '10px 12px', borderBottom: tok.hairline }}>
+          <div style={{ fontSize: 12, fontWeight: 700, color: tok.text }}>{assignment.role}</div>
+          <div style={{ fontSize: 10, color: tok.textDim, marginTop: 1 }}>
+            {matching.length > 0
+              ? `${matching.length} ${assignment.type} on today's schedule`
+              : `No ${assignment.type} is on this site's published schedule for the day.`}
+          </div>
+        </div>
+
+        <div style={{ overflowY: 'auto', padding: 6 }}>
+          {matching.map((p) => {
+            const here = placed.get(p.providerId);
+            const elsewhere = here && here !== assignment.id;
+            return (
+              <button
+                key={p.providerId}
+                type="button"
+                className="sc-btn fr-focus"
+                onClick={() => onPick(p)}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 6, width: '100%',
+                  padding: '5px 7px', borderRadius: tok.radiusSm, cursor: 'pointer',
+                  background: 'transparent', border: '1px solid transparent',
+                  textAlign: 'left', color: tok.text, fontSize: 11,
+                }}
+              >
+                <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                  {p.name}
+                </span>
+                {p.bucket === 'overnight_call' && (
+                  <span style={{ fontFamily: tok.mono, fontSize: 9, color: 'var(--danger)' }}>night</span>
+                )}
+                <span style={{ fontFamily: tok.mono, fontSize: 9, color: tok.textDim }}>
+                  {p.shiftCodes.join('+')}
+                </span>
+                {elsewhere && (
+                  <span style={{ fontFamily: tok.mono, fontSize: 9, color: tok.warning }}>placed</span>
+                )}
+              </button>
+            );
+          })}
+        </div>
+
+        <div style={{ display: 'flex', gap: 6, padding: 8, borderTop: tok.hairline }}>
+          {assignment.providerName && (
+            <Button variant="ghost" onClick={() => onPick(null)}>Clear</Button>
+          )}
+          <div style={{ marginLeft: 'auto' }}>
+            <Button variant="ghost" onClick={onClose}>Close</Button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** One scheduled person, matching the staffing board's row: name, then the
+ *  shift code they are on. Struck through once they are placed in the diagram
+ *  so the remaining pool is readable at a glance. */
+function ProviderLine({ person, assigned }: { person: AvailablePerson; assigned: boolean }) {
+  const accent = person.type === 'CRNA' ? tok.crna : tok.md;
+  return (
+    <div style={{
+      display: 'flex', alignItems: 'center', gap: 5, fontSize: 11,
+      opacity: assigned ? 0.45 : 1,
+    }}>
+      <span style={{
+        fontFamily: tok.mono, fontSize: 9, fontWeight: 700, padding: '0 4px',
+        borderRadius: 3, background: accent.bg, color: accent.fg,
+        border: `1px solid ${accent.bd}`, flexShrink: 0,
+      }}>{person.type}</span>
+      <span style={{
+        flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis',
+        whiteSpace: 'nowrap', color: tok.text,
+        textDecoration: assigned ? 'line-through' : undefined,
+      }}>{person.name}</span>
+      {person.bucket === 'overnight_call' && (
+        <span style={{ fontFamily: tok.mono, fontSize: 9, color: 'var(--danger)' }}>night</span>
+      )}
+      <span style={{ fontFamily: tok.mono, fontSize: 9, color: tok.textDim, flexShrink: 0 }}>
+        {person.shiftCodes.join('+')}
+      </span>
+    </div>
   );
 }
 
@@ -870,12 +1254,29 @@ function computeTotals(out: CalculatorOutput): CalculatorOutput {
   return { ...out, totalMDs, totalCRNAs, totalStaff: totalMDs + totalCRNAs };
 }
 
-function StaffingDiagram({ result, setResult, siteCatalog }: {
+function StaffingDiagram({ result, setResult, siteCatalog, people }: {
   result: CalculatorOutput;
   setResult: React.Dispatch<React.SetStateAction<CalculatorOutput | null>>;
   siteCatalog: SiteCatalogEntry[];
+  /** The day's scheduled staff, offered when a chip is clicked. Empty when
+   *  nothing is published for the date — the chips then say so rather than
+   *  opening an empty list. */
+  people: AvailablePerson[];
 }) {
   const [selectedCRNA, setSelectedCRNA] = useState<string | null>(null);
+  // Which chip is having a person put in it. One at a time — this is a
+  // pick-a-name popover, not a mode.
+  const [picking, setPicking] = useState<StaffAssignment | null>(null);
+
+  const assignPerson = (assignmentId: string, person: AvailablePerson | null) => {
+    setResult((prev) => prev && ({
+      ...prev,
+      assignments: prev.assignments.map((a) => (a.id === assignmentId
+        ? { ...a, providerId: person?.providerId ?? null, providerName: person?.name ?? null }
+        : a)),
+    }));
+    setPicking(null);
+  };
   const [dropTarget, setDropTarget] = useState<string | null>(null);
   // How cross-site supervision is shown: 'linked' = a secondary MD card in the
   // covered lane joined to the home card by a connecting line; 'compact' = the
@@ -976,8 +1377,23 @@ function StaffingDiagram({ result, setResult, siteCatalog }: {
   };
   const onDragLeave = () => setDropTarget(null);
 
+  // The pool offered to a chip. Withheld entirely when the day has nobody on
+  // it, so the "+ name" affordance never opens onto an empty list.
+  const placed = new Map<string, string>();
+  for (const a of assignments) if (a.providerId) placed.set(a.providerId, a.id);
+
   return (
+    <PickPersonContext.Provider value={people.length > 0 ? setPicking : null}>
     <Card>
+      {picking && (
+        <PersonPicker
+          assignment={picking}
+          people={people}
+          placed={placed}
+          onPick={(p) => assignPerson(picking.id, p)}
+          onClose={() => setPicking(null)}
+        />
+      )}
       <SectionTitle>
         <span>🏥 By site — supervision map</span>
         <div style={{ marginLeft: 'auto', display: 'inline-flex', alignItems: 'center', gap: 5 }}>
@@ -1188,9 +1604,11 @@ function StaffingDiagram({ result, setResult, siteCatalog }: {
         <LegendDot color={tok.warning} label="Add-On" shape="round" dashed />
         <span style={{ marginLeft: 'auto', color: tok.textMuted }}>
           💡 click CRNA → click MD · drag CRNA onto MD · drag MD to lane · <kbd style={kbdStyle}>shift</kbd>+drop = cross-site
+          {people.length > 0 && <> · click <strong>+ name</strong> to place somebody</>}
         </span>
       </div>
     </Card>
+    </PickPersonContext.Provider>
   );
 }
 
@@ -1416,6 +1834,9 @@ function MDBlock({ md, crnas, selectedCRNA, dropTarget, onMDClick, onCRNAClick, 
         <div style={{ minWidth: 0 }}>
           <div style={{ color: tok.text, fontSize: 11, fontWeight: 700, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
             {md.role}
+          </div>
+          <div style={{ marginTop: 2 }}>
+            <NameSlot assignment={md} />
           </div>
           <div style={{ display: 'flex', gap: 3, alignItems: 'center', marginTop: 1, flexWrap: 'wrap' }}>
             {isSolo && <Badge color={borderCol} text="SOLO" />}
@@ -1645,6 +2066,7 @@ function CRNAChip({ crna, selected, onClick, onDragStart, onDelete, crossSite }:
       }}>
         {crna.role}
       </span>
+      <NameSlot assignment={crna} compact />
       {crossSite && (
         <span style={{
           fontSize: 8, fontFamily: tok.mono, fontWeight: 800,

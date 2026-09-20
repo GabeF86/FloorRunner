@@ -19,6 +19,13 @@ export interface StaffAssignment {
   supervisedBy?: string | null;  // id of MD supervising this CRNA
   supervises?: string[];          // ids of CRNAs this MD supervises
   notes?: string;
+  // ── Who is actually standing this position ──────────────────────────────
+  // The calculator sizes a grid in ROLES ("OR Supv 1"); these name the person
+  // put in one from the day's scheduled staff. Optional, and set only on the
+  // page: the facility algorithms compute a shape and know nothing about the
+  // roster, and must stay that way — they are pure functions of cfg + counts.
+  providerId?: string | null;
+  providerName?: string | null;
 }
 
 export interface Contingency {

@@ -102,6 +102,10 @@ export const STAFF_PREFIXES: readonly string[] = [
 
   // Data entry and day-to-day operations.
   '/api/scheduling/staffing-demand',
+  // Reads the published schedule's headcount for the staffing calculator.
+  // /staffing-calculator is a staff page, so the route feeding it has to be
+  // reachable by staff too — otherwise the page renders and its numbers 403.
+  '/api/scheduling/staffing-availability',
   '/api/scheduling/availability',
   '/api/scheduling/providers',
   '/api/scheduling/sites',
