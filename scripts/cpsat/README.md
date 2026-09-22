@@ -98,3 +98,66 @@ in `skippedDerived` with honest reasons — `occupied` (the Friday C2 was taken
 before the Saturday anchor reached it) and `pto` (the Friday C1 holder is on
 leave the Sunday its +2 link lands on). Clinical invariant 4 holding: a
 severed link is reported, never silently dropped.
+
+## Ruin-and-recreate: built, measured, and it uncovered a bigger bug
+
+Built as a third optimizer move set (`ruinRecreate`, off by default). It tears
+a window of DATES — or one provider's whole burden plus every movable slot on
+their dates — out of the incumbent and lets `solve()` rebuild the hole.
+
+**It accepted zero improvements.** Chasing why led somewhere more important.
+
+### The optimizer was already doing nothing at all
+
+Instrumenting *every* move set's acceptance showed the same thing everywhere:
+
+| mode | trials | rejected on fill-monotonicity | rejected on the objective |
+|---|---|---|---|
+| fill-all | 528 | **528** | 0 |
+| obligatory | 1,698 | **1,698** | 0 |
+
+100% of trials refused by `keepsEveryIncumbentFill`. **Not one reached the
+objective comparison.** The eviction move, the fairness swap and
+ruin-and-recreate are all equally inert — "greedy + hill-climb" has been
+greedy alone on this block.
+
+### Why
+
+The gate judges **every category**, but the trial mechanism (`callOverrides`)
+only pins **call** assignments — derived day slots are re-derived from scratch
+on every trial. Measured directly: an **identity re-solve**, pinning the whole
+incumbent and changing nothing, still loses one `regular` fill.
+
+If an identity trial cannot pass, no trial can.
+
+### What scoping the gate is worth
+
+`fillMonotonicityScope: 'call'` narrows the gate to what the mechanism
+controls. Default stays `'all'`, so nothing changes unless asked.
+
+| arm | fill-all | obligatory |
+|---|---|---|
+| baseline | 2.894 | 1.749 |
+| fillScope = call | **2.209** | 1.749 (still 100% fill-rejected) |
+| CP-SAT, proved optimal | 0.416 | 0.341 |
+
+In fill-all the optimizer finally accepts moves and improves. In obligatory it
+is still blocked — with caps binding, moving a call to anyone at their ceiling
+leaves it unfillable, so even the call-scoped gate refuses everything.
+
+### Conclusion
+
+Three separate findings, in order of value:
+
+1. **The fill-monotonicity gate makes the optimizer inert.** That is a real
+   bug worth fixing on its own merits, independent of any solver question —
+   the engine has been paying for ~2,000 re-solves per generation and
+   accepting none of them.
+2. **Ruin-and-recreate does not rescue it.** Blocked by the same gate, and
+   still blocked in obligatory mode once the gate is scoped.
+3. **Neither closes the CP-SAT gap.** 2.209 against a proved 0.416 is still
+   5× off.
+
+The gate change is NOT applied here. It was added deliberately (PROOF defect
+1, 2026-07-16) to stop the optimizer trading a filled slot for a hole, and
+loosening it is a generation-behaviour decision, not a benchmark's to make.

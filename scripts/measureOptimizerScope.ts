@@ -60,6 +60,8 @@ interface Arm {
   maxResolves: number;
   /** null = leave the pattern's own movable set alone. */
   movableDayTypes: string[] | null;
+  ruin?: boolean;
+  fillScope?: 'all' | 'call';
 }
 
 const ARMS: Arm[] = [
@@ -67,6 +69,18 @@ const ARMS: Arm[] = [
   { label: 'budget 30s', wallClockMs: 30_000, maxResolves: 100_000, movableDayTypes: null },
   { label: 'weekends movable (2s)', wallClockMs: 2_000, maxResolves: 5_000, movableDayTypes: ALL_DAY_TYPES },
   { label: 'both (30s + weekends)', wallClockMs: 30_000, maxResolves: 100_000, movableDayTypes: ALL_DAY_TYPES },
+  // The move set, not the budget, was the binding constraint — so change the
+  // move set. Ruin-and-recreate tears out a window of dates or one provider's
+  // whole burden and lets solve() rebuild it, changing many slots at once.
+  { label: 'ruin+recreate (2s)', wallClockMs: 2_000, maxResolves: 5_000, movableDayTypes: null, ruin: true },
+  { label: 'ruin+recreate (10s)', wallClockMs: 10_000, maxResolves: 50_000, movableDayTypes: null, ruin: true },
+  { label: 'ruin+recreate (30s)', wallClockMs: 30_000, maxResolves: 100_000, movableDayTypes: null, ruin: true },
+  // The gate judges every category while the mechanism only pins calls, so an
+  // identity re-solve already loses a fill and nothing can ever be accepted.
+  // These scope the gate to what the mechanism controls.
+  { label: 'fillScope=call (2s)', wallClockMs: 2_000, maxResolves: 5_000, movableDayTypes: null, fillScope: 'call' },
+  { label: 'fillScope=call + ruin', wallClockMs: 10_000, maxResolves: 50_000, movableDayTypes: null, ruin: true, fillScope: 'call' },
+  { label: 'call + ruin + weekends', wallClockMs: 30_000, maxResolves: 100_000, movableDayTypes: ALL_DAY_TYPES, ruin: true, fillScope: 'call' },
 ];
 
 const stdevOf = (calls: Map<string, number>, fte: Map<string, number>): number => {
@@ -167,6 +181,8 @@ async function main() {
       const seed = solve(armCtx, { fillMode: mode });
       const { plan, stats } = optimize(armCtx, {
         fillMode: mode, wallClockMs: arm.wallClockMs, maxResolves: arm.maxResolves,
+        ruinRecreate: arm.ruin, ruinRounds: 60,
+        fillMonotonicityScope: arm.fillScope,
       });
       const ms = Date.now() - t0;
       // How much work did the optimizer actually get to do? If it is inert,
@@ -193,7 +209,12 @@ async function main() {
         + `${(broke === 0 ? 'none' : `${broke} BROKEN`).padStart(15)}${(ms + 'ms').padStart(9)}`
         + `   movable ${String(movableCount).padStart(3)}`
         + ` · resolves ${String(stats.resolves).padStart(5)}`
-        + ` · gated ${String(stats.gatedSkips).padStart(5)}`);
+        + ` · gated ${String(stats.gatedSkips).padStart(5)}`
+        + ` · moveRej(fill ${stats.moveReject?.fill} same ${stats.moveReject?.same} worse ${stats.moveReject?.worse})`
+        + (arm.ruin ? ` · ruin ok ${stats.ruinAccepted ?? 0}`
+          + ` rej(fill ${stats.ruinReject?.fill} cap ${stats.ruinReject?.caps}`
+          + ` obl ${stats.ruinReject?.oblig} same ${stats.ruinReject?.same}`
+          + ` worse ${stats.ruinReject?.worse})` : ''));
     }
     if (optimal[mode]) {
       console.log(`     ${'CP-SAT (proved optimal)'.padEnd(26)}`

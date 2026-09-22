@@ -37,6 +37,24 @@ export interface OptimizeOptions {
   // does: a trial solved over a different slot set than the seed would be
   // scored against an unlike plan.
   neuroScope?: 'only' | 'exclude';
+  // RUIN-AND-RECREATE (2026-09-22). Off by default: absent, optimize() is
+  // byte-identical to before and every golden pin holds.
+  //
+  // The two existing moves are a 2-slot eviction and a single swap, so the
+  // search cannot cross a valley — any rearrangement needing three or more
+  // simultaneous changes is unreachable, however long it runs. Measured: at a
+  // 30-second budget the optimizer made the SAME 528 re-solves it makes at 2
+  // seconds and found nothing, because it had already converged.
+  //
+  // This tears a chunk out of the incumbent and lets solve() rebuild it from
+  // scratch, which changes many slots at once by construction.
+  ruinRecreate?: boolean;
+  /** Rounds of ruin-and-recreate to attempt. Each round tries every strategy
+   *  at every size before giving up. */
+  ruinRounds?: number;
+  /** Which categories fill-monotonicity judges. 'all' (default) is the strict
+   *  original; 'call' scopes it to what callOverrides actually controls. */
+  fillMonotonicityScope?: 'all' | 'call';
   // Fill mode threaded into the seed solve AND every trial re-solve
   // (2026-07-24). autoGenerate never optimizes non-'all' plans (its gate is
   // pinned in autoGenerateFillMode.test.ts) — this exists so a DIRECT caller
@@ -56,6 +74,15 @@ export interface OptimizeStats {
   resolves: number;   // full solve()+score trials evaluated
   gatedSkips: number; // pre-gate rejections (a hoisted rejection skips many trials at once)
   wallMs: number;     // elapsed wall-clock of the optimize() call
+  /** Ruin-and-recreate rounds that produced a strict improvement. 0 when the
+   *  phase is off (the default), which is also how you tell "did not run"
+   *  from "ran and found nothing" — the latter still burns resolves. */
+  ruinAccepted?: number;
+  /** Why ruin trials were refused — the diagnostic that tells "no better plan"
+   *  apart from "the gate would not let one through". */
+  ruinReject?: { fill: number; caps: number; oblig: number; same: number; worse: number };
+  /** Same breakdown for the eviction and fairness-swap moves. */
+  moveReject?: { fill: number; caps: number; oblig: number; same: number; worse: number };
 }
 
 export interface OptimizeResult {
@@ -151,6 +178,23 @@ export function optimize(ctx: GenerationContext, opts: OptimizeOptions = {}): Op
   const dayScope = opts.dayScope;
   const candidateTier = opts.candidateTier;
   const neuroScope = opts.neuroScope;
+  let ruinAccepted = 0;
+  const ruinReject = { fill: 0, caps: 0, oblig: 0, same: 0, worse: 0 };
+  // The same tally for the eviction and swap moves. "0 accepted" says nothing
+  // about WHY, and the why turned out to be the whole story.
+  const moveReject = { fill: 0, caps: 0, oblig: 0, same: 0, worse: 0 };
+  const tally = (
+    t: { fill: number; caps: number; oblig: number; same: number; worse: number },
+    plan: SolutionPlan, metrics: SolutionMetrics, incumbent: SolutionMetrics,
+  ) => {
+    if (!keepsEveryIncumbentFill(plan)) t.fill++;
+    else if (!withinCallCaps(plan)) t.caps++;
+    else if (!withinObligations(plan)) t.oblig++;
+    else {
+      const c = compareMetrics(metrics, incumbent);
+      if (c === 0) t.same++; else if (c > 0) t.worse++;
+    }
+  };
   const doc = ctx.callPattern ?? CLASSIC_PATTERN;
   const providerIds = ctx.providers.map(p => p.id).sort();
   const providerById = ctx.providerById ?? new Map(ctx.providers.map(p => [p.id, p]));
@@ -165,6 +209,8 @@ export function optimize(ctx: GenerationContext, opts: OptimizeOptions = {}): Op
   let bestMetrics = scoreSolution(best, ctx);
   let bestAssign = extractCallAssignment(best);
   let bestFilled = filledSlotIds(best);
+  let bestCallFilled = new Set(best.assignments
+    .filter(a => a.provider_id && a.shift_type_category === 'call').map(a => a.slot_id));
   let resolvesUsed = 0;
   let gatedSkips = 0;
   const budgetExhausted = () =>
@@ -178,7 +224,26 @@ export function optimize(ctx: GenerationContext, opts: OptimizeOptions = {}): Op
   // slot ('Forced provider ineligible') without re-opening it to the pool.
   // With this gate, optimizer-introduced holes are structurally impossible;
   // the lexicographic objective still ranks the surviving trials.
+  // MEASUREMENT SEAM (2026-09-22). The gate judges EVERY category, but the
+  // trial mechanism only pins CALL assignments — derived day slots are
+  // re-derived from scratch on every trial. Measured on a live block: an
+  // IDENTITY re-solve (pin the whole incumbent, change nothing) loses one
+  // `regular` fill, so this gate cannot pass there however good the move is.
+  // The optimizer rejected 528 of 528 trials in fill-all and 1,698 of 1,698
+  // in obligatory, every single one on this test and none on caps,
+  // obligations or the objective.
+  //
+  // 'call' scopes the gate to what the mechanism controls. Default stays
+  // 'all' — the strict behaviour PROOF defect 1 asked for — so nothing
+  // changes unless a caller asks.
+  const fillScope = opts.fillMonotonicityScope ?? 'all';
   const keepsEveryIncumbentFill = (trial: SolutionPlan): boolean => {
+    if (fillScope === 'call') {
+      const trialCalls = new Set(trial.assignments
+        .filter(a => a.provider_id && a.shift_type_category === 'call').map(a => a.slot_id));
+      for (const id of bestCallFilled) if (!trialCalls.has(id)) return false;
+      return true;
+    }
     const trialFilled = filledSlotIds(trial);
     for (const id of bestFilled) if (!trialFilled.has(id)) return false;
     return true;
@@ -293,11 +358,14 @@ export function optimize(ctx: GenerationContext, opts: OptimizeOptions = {}): Op
             trial.set(sId, qid);   // Q takes P's vacated slot
             resolvesUsed++;
             const { plan, metrics } = evaluate(ctx, trial, fillMode, tieBreakSeed, callsOnly, dayScope, candidateTier, neuroScope);
+            tally(moveReject, plan, metrics, bestMetrics);
             if (keepsEveryIncumbentFill(plan) && withinCallCaps(plan)
               && withinObligations(plan)
               && compareMetrics(metrics, bestMetrics) < 0) {
               best = plan; bestMetrics = metrics; bestAssign = extractCallAssignment(plan);
               bestFilled = filledSlotIds(plan);
+              bestCallFilled = new Set(plan.assignments
+                .filter(a => a.provider_id && a.shift_type_category === 'call').map(a => a.slot_id));
               improved = true;
               break outer; // re-start scan from new best (monotone)
             }
@@ -325,11 +393,14 @@ export function optimize(ctx: GenerationContext, opts: OptimizeOptions = {}): Op
         trial.set(sId, pid);
         resolvesUsed++;
         const { plan, metrics } = evaluate(ctx, trial, fillMode, tieBreakSeed, callsOnly, dayScope, candidateTier, neuroScope);
+        tally(moveReject, plan, metrics, bestMetrics);
         if (keepsEveryIncumbentFill(plan) && withinCallCaps(plan)
           && withinObligations(plan)
           && compareMetrics(metrics, bestMetrics) < 0) {
           best = plan; bestMetrics = metrics; bestAssign = extractCallAssignment(plan);
           bestFilled = filledSlotIds(plan);
+          bestCallFilled = new Set(plan.assignments
+            .filter(a => a.provider_id && a.shift_type_category === 'call').map(a => a.slot_id));
           improved = true;
           break swap;
         }
@@ -338,8 +409,115 @@ export function optimize(ctx: GenerationContext, opts: OptimizeOptions = {}): Op
     if (!improved) break; // local optimum reached
   }
 
+  // ── Move set 3: RUIN AND RECREATE ──────────────────────────────────────
+  // Opt-in. The two moves above are converged by the time we get here — the
+  // loop only exits when neither finds an improvement — so this starts from a
+  // genuine local optimum and tries to cross out of it.
+  //
+  // Ruin: drop every movable call in a contiguous window, or every movable
+  // call one provider holds. Recreate: hand the REST back to solve() as
+  // overrides and let the greedy loop refill the hole from scratch. Because
+  // solve() re-derives the whole plan, one round can change many slots at
+  // once — which is exactly what the eviction/swap pair cannot do.
+  //
+  // WHY IT CANNOT BREAK ANYTHING THE OTHER MOVES CANNOT. It only ever removes
+  // ids from the override map, and only ids that movableCallSlotIds already
+  // vouched for — so chain anchors, chain links, pre-PTO placements and seeds
+  // are never touched. Acceptance runs the identical four gates: every
+  // incumbent fill kept, caps respected, obligations respected, and a strict
+  // improvement on the lexicographic objective.
+  if (opts.ruinRecreate) {
+    const rounds = opts.ruinRounds ?? 40;
+    // ITS OWN BUDGET. The first implementation shared the global one and, in
+    // obligatory mode, never executed a single trial — the eviction and swap
+    // phases had already spent it. A phase that silently does not run is
+    // indistinguishable from a phase that runs and finds nothing, and the
+    // first measurement could not tell those apart.
+    const ruinDeadline = Date.now() + Math.max(1_000, wallClockMs);
+    const ruinExhausted = () => Date.now() >= ruinDeadline;
+    const movableNow = () => movableCallSlotIds(best, doc);
+    // Deterministic pseudo-randomness. Math.random would make a plan
+    // irreproducible from the same DB state, which this engine does not do
+    // anywhere — the tie-break seed machinery exists for the same reason.
+    let rng = 0x9e3779b9;
+    const nextInt = (n: number): number => {
+      rng ^= rng << 13; rng ^= rng >>> 17; rng ^= rng << 5; rng >>>= 0;
+      return n <= 0 ? 0 : rng % n;
+    };
+
+    for (let round = 0; round < rounds && !ruinExhausted(); round++) {
+      const movableIds = movableNow();
+      if (movableIds.length === 0) break;
+      const dated = movableIds
+        .map(id => ({ id, date: slotById.get(id)?.slot_date ?? '' }))
+        .sort((a, b) => a.date.localeCompare(b.date) || a.id.localeCompare(b.id));
+
+      // Two ruin shapes, tried in turn. A WINDOW breaks up a run of dates that
+      // settled badly together; a PROVIDER frees the whole burden of someone
+      // the greedy over- or under-loaded, which is the shape of the fairness
+      // failures actually observed.
+      // RUIN BY DATE WINDOW, not by slot count. Pulling N slots out of a
+      // date-sorted list can leave half a day pinned and half free, and the
+      // recreate then has no room to move anyone — every trial dies on
+      // fill-monotonicity. Taking whole DATES gives the greedy a genuinely
+      // empty stretch to rebuild.
+      const allDates = [...new Set(dated.map(d => d.date))].sort();
+      const ruins: string[][] = [];
+      for (const span of [4, 8, 16, 28]) {
+        if (allDates.length <= span) continue;
+        const start = nextInt(Math.max(1, allDates.length - span));
+        const window = new Set(allDates.slice(start, start + span));
+        ruins.push(dated.filter(d => window.has(d.date)).map(d => d.id));
+      }
+      // A whole provider's burden, PLUS every movable slot on the dates they
+      // held — otherwise their slots come free while the only people who
+      // could take them stay pinned, and nothing can refill.
+      for (const pid of providerIds) {
+        const theirs = movableIds.filter(id => bestAssign.get(id) === pid);
+        if (theirs.length === 0) continue;
+        const theirDates = new Set(theirs.map(id => slotById.get(id)?.slot_date ?? ''));
+        ruins.push(dated.filter(d => theirDates.has(d.date)).map(d => d.id));
+      }
+
+      let improvedHere = false;
+      for (const ruin of ruins) {
+        if (ruinExhausted()) break;
+        const trial = new Map(bestAssign);
+        for (const id of ruin) trial.delete(id);
+        resolvesUsed++;
+        const { plan, metrics } = evaluate(
+          ctx, trial, fillMode, tieBreakSeed, callsOnly, dayScope, candidateTier, neuroScope);
+        // Diagnostic tally: which gate actually stops a ruin trial. Without
+        // it "0 accepted" cannot distinguish "no better plan exists" from
+        // "the acceptance test refuses to look at one".
+        if (!keepsEveryIncumbentFill(plan)) ruinReject.fill++;
+        else if (!withinCallCaps(plan)) ruinReject.caps++;
+        else if (!withinObligations(plan)) ruinReject.oblig++;
+        else if (compareMetrics(metrics, bestMetrics) === 0) ruinReject.same++;
+        else if (compareMetrics(metrics, bestMetrics) > 0) ruinReject.worse++;
+        if (keepsEveryIncumbentFill(plan) && withinCallCaps(plan)
+          && withinObligations(plan)
+          && compareMetrics(metrics, bestMetrics) < 0) {
+          best = plan; bestMetrics = metrics; bestAssign = extractCallAssignment(plan);
+          bestFilled = filledSlotIds(plan);
+          bestCallFilled = new Set(plan.assignments
+            .filter(a => a.provider_id && a.shift_type_category === 'call').map(a => a.slot_id));
+          ruinAccepted++;
+          improvedHere = true;
+          break; // restart the round from the new incumbent (monotone)
+        }
+      }
+      // Nothing in a full sweep of shapes helped; further rounds only re-roll
+      // the window offsets, so give the budget back rather than spinning.
+      if (!improvedHere && round > 4) break;
+    }
+  }
+
   return {
     plan: best,
-    stats: { resolves: resolvesUsed, gatedSkips, wallMs: Date.now() - t0 },
+    stats: {
+      resolves: resolvesUsed, gatedSkips, wallMs: Date.now() - t0,
+      ruinAccepted, ruinReject, moveReject,
+    },
   };
 }
