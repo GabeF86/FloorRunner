@@ -83,7 +83,9 @@ describe('grid column lists', () => {
     ]) {
       expect(GRID_ASSIGNMENT_COLUMNS).toContain(col);
     }
-    expect(GRID_ASSIGNMENT_COLUMNS).toContain('providers(id, last_name, short_display_name, initials, provider_type)');
+    // first_name is REQUIRED: the grid labels people "D. Choudhry" and
+    // without it every cell degrades to a bare surname.
+    expect(GRID_ASSIGNMENT_COLUMNS).toContain('providers(id, first_name, last_name, short_display_name, initials, provider_type)');
   });
 
   // patch42 (2026-07-28): the scheduler's hand-set billing mark. It must reach
@@ -142,7 +144,7 @@ const ASSIGNMENT_ROW = {
   id: 'a-1', schedule_slot_id: 'slot-1', provider_id: 'p1',
   assignment_status: 'assigned', is_open_call: false, manually_overridden: false,
   validation_flags: [{ severity: 'hard' }, { severity: 'warning' }],
-  providers: { id: 'p1', last_name: 'Smith', short_display_name: 'S. Smith', initials: 'SS', provider_type: 'physician' },
+  providers: { id: 'p1', first_name: 'Sam', last_name: 'Smith', short_display_name: 'SMIS', initials: 'SS', provider_type: 'physician' },
 };
 
 // `assignmentsEmbed` defaults to the array shape (dev fakes / pre-constraint

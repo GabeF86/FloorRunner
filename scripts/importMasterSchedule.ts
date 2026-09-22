@@ -87,6 +87,7 @@ async function main() {
   // match is one doctor's call night on another doctor's record.
   const byShort = new Map<string, string>();
   const byRule = new Map<string, string[]>();
+  const byRule4 = new Map<string, string[]>();
   for (const p of providers) {
     if (p.short_display_name) byShort.set(p.short_display_name, p.id);
     const last = (p.last_name || '').replace(/[^a-z]/gi, '');
@@ -95,6 +96,20 @@ async function main() {
       const code = (last.slice(0, 3) + first[0]).toUpperCase();
       const list = byRule.get(code);
       if (list) list.push(p.id); else byRule.set(code, [p.id]);
+    }
+    // FOUR letters of the surname + the initial. The group uses this form too
+    // — SCHUY (Schultz Y), PATEA (Patel A), SCOZT (Scozzafava T) — and without
+    // it each one needs a hand-written MANUAL entry.
+    //
+    // Kept in a SEPARATE map and consulted only when 3+1 found nothing, not
+    // merged into it. Merging would let a 4+1 candidate turn a code that
+    // currently resolves uniquely under 3+1 into an ambiguous one, and an
+    // ambiguous code is skipped — so a widened rule would LOSE matches it was
+    // added to win.
+    if (last.length >= 4 && first.length >= 1) {
+      const code4 = (last.slice(0, 4) + first[0]).toUpperCase();
+      const list = byRule4.get(code4);
+      if (list) list.push(p.id); else byRule4.set(code4, [p.id]);
     }
   }
   // The Paoli roster is stored under a different scheme ("G.Farkas"), so the
@@ -150,6 +165,10 @@ async function main() {
     const ruled = byRule.get(code);
     if (ruled?.length === 1) { providerIds.set(code, ruled[0]); continue; }
     if (ruled && ruled.length > 1) { ambiguous.push(code); continue; }
+    // Only reached when 3+1 matched NOBODY — see the note on byRule4.
+    const ruled4 = byRule4.get(code);
+    if (ruled4?.length === 1) { providerIds.set(code, ruled4[0]); continue; }
+    if (ruled4 && ruled4.length > 1) { ambiguous.push(code); continue; }
     const manual = MANUAL[code];
     if (manual) {
       const id = manualId(manual.surname, manual.first);

@@ -197,15 +197,35 @@ export interface Provider {
 /**
  * What to call a provider on the grid.
  *
- * The schedule code where there is one, then the surname, then the initials —
- * never an empty cell and never a crash. A physician with no code at all is a
- * roster gap worth seeing, so it shows their surname rather than a blank.
+ * FIRST INITIAL + SURNAME — "D. Choudhry", not "CHOD" (Gabriel 2026-09-22).
+ *
+ * This used to prefer `short_display_name`, so the grid was written in
+ * schedule codes even for the 200-odd people whose real names the system has
+ * had all along. The codes are a compression scheme for a paper spreadsheet
+ * (first 3-4 letters of the surname plus the first initial — CHOD, AHMB,
+ * SCHUY); they are how the source CSV identifies somebody, not how a reader
+ * should have to. "G. Farkas" is four characters longer and needs no key.
+ *
+ * The code survives as a FALLBACK, and that matters: twelve physicians were
+ * created from the master-schedule import under a code and have no name at
+ * all. For them the code is all there is, and showing it keeps them visible as
+ * the roster gap they are rather than collapsing them to a dash.
+ *
+ * Never an empty cell and never a crash — `short_display_name` is nullable and
+ * six grid sorts used to call .localeCompare on it directly.
  */
 export function providerLabel(
-  p: { short_display_name?: string | null; last_name?: string | null; initials?: string | null },
+  p: {
+    short_display_name?: string | null;
+    first_name?: string | null;
+    last_name?: string | null;
+    initials?: string | null;
+  },
 ): string {
+  const last = p.last_name?.trim();
+  const first = p.first_name?.trim();
+  if (last) return first ? `${first[0].toUpperCase()}. ${last}` : last;
   return p.short_display_name?.trim()
-    || p.last_name?.trim()
     || p.initials?.trim()
     || '—';
 }
@@ -213,10 +233,14 @@ export function providerLabel(
 /** Alphabetical by whatever the grid actually shows. Null-safe by construction:
  *  the six sorts that used to call `.localeCompare` on a nullable field are the
  *  reason this exists. */
-export function byProviderLabel(
-  a: { short_display_name?: string | null; last_name?: string | null; initials?: string | null },
-  b: { short_display_name?: string | null; last_name?: string | null; initials?: string | null },
-): number {
+type Labelled = {
+  short_display_name?: string | null;
+  first_name?: string | null;
+  last_name?: string | null;
+  initials?: string | null;
+};
+
+export function byProviderLabel(a: Labelled, b: Labelled): number {
   return providerLabel(a).localeCompare(providerLabel(b));
 }
 
