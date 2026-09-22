@@ -53,3 +53,48 @@ is **partly built already** it strands obligations: six of ten providers finish
 short (Kalawadia 9 of 15 owed) where the solver gets all ten to their number.
 
 Partly-built is the realistic case — generate, hand-edit, regenerate.
+
+## Can the existing optimizer close the gap? No — measured 2026-09-22
+
+`scripts/measureOptimizerScope.ts` raises the optimizer's budget and lets it
+move weekend slots, on the October block that fell 5.1× short.
+
+| arm | fill-all stdev | obligatory stdev |
+|---|---|---|
+| baseline (2s, weekday+friday) | 2.894 | 1.749 |
+| budget 30s | 2.894 | 1.749 |
+| weekends movable | 2.894 | 1.749 |
+| both | 2.894 | 1.749 |
+| **CP-SAT, proved optimal** | **0.416** | **0.341** |
+
+**Nothing moves.** The instrumentation says why:
+
+- **Fill-all: the optimizer is CONVERGED, not starved.** 528 re-solves at a
+  2-second budget and 528 at 30 seconds — it stops because no improving move
+  exists, not because it ran out of time.
+- **Obligatory: it IS budget-limited** — 1,647 re-solves at 2s, 10,372 at 30s
+  — and six times the work found nothing. Same local optimum.
+- **Weekends barely widen the set.** Movable slots go 73 → 76 (fill-all) and
+  45 → 48 (obligatory). Three more slots, because nearly every weekend slot is
+  a chain anchor or a chain link and both are excluded by design.
+
+The optimizer's move set is two moves: a 2-slot eviction to fill a gap, and a
+single fairness swap. Getting from 1.749 to 0.341 needs multi-slot
+rearrangements in which no single move improves — a local optimum a
+hill-climber cannot leave by construction. More time cannot help. More scope
+cannot help. The answer is a richer move set (ruin-and-recreate, 3-opt) or a
+solver.
+
+### Chains survived, and the guard is why
+
+Broken-chain count is IDENTICAL across all four arms: 1 in fill-all, 2 in
+obligatory. Widening the movable day types created none. The two-layer guard
+holds — links carry source `weekend-chain`/`d-chain` and are never movable;
+anchors are excluded by id from `chainAnchorSlotIds`.
+
+Those 1–2 are not optimizer damage. They exist in the GREEDY plan before the
+optimizer runs, with both ends placed by the main loop, and both are RECORDED
+in `skippedDerived` with honest reasons — `occupied` (the Friday C2 was taken
+before the Saturday anchor reached it) and `pto` (the Friday C1 holder is on
+leave the Sunday its +2 link lands on). Clinical invariant 4 holding: a
+severed link is reported, never silently dropped.
