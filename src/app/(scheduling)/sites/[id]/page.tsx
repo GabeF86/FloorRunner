@@ -68,6 +68,8 @@ interface SiteDetail {
   is_active: boolean;
   display_order: number | null;
   operational_days: Record<string, boolean> | null;
+  /** The denominator of every call obligation at this site. */
+  call_par_level: number | null;
   notes: string | null;
   shift_types: ShiftType[];
   shift_templates: ShiftTemplate[];
@@ -320,6 +322,11 @@ function GeneralTab({ site, onSave }: { site: SiteDetail; onSave: (u: Record<str
   const [address, setAddress] = useState(site.address || '');
   const [timezone, setTimezone] = useState(site.timezone || 'America/New_York');
   const [notes, setNotes] = useState(site.notes || '');
+  // Kept as a STRING so the field can be emptied while typing without
+  // snapping to 0 — a par of 0 would divide every obligation by zero.
+  const [par, setPar] = useState(
+    site.call_par_level === null || site.call_par_level === undefined
+      ? '' : String(site.call_par_level));
   const [opDays, setOpDays] = useState<Record<string, boolean>>(
     site.operational_days || { monday: true, tuesday: true, wednesday: true, thursday: true, friday: true, saturday: false, sunday: false }
   );
@@ -327,6 +334,11 @@ function GeneralTab({ site, onSave }: { site: SiteDetail; onSave: (u: Record<str
   const toggleDay = (day: string) => {
     setOpDays(prev => ({ ...prev, [day]: !prev[day] }));
   };
+
+  // Blank is legal (clears to the engine default); a number must be > 0.
+  const parNum = Number(par);
+  const parValid = par.trim() === ''
+    || (Number.isFinite(parNum) && parNum > 0 && parNum <= 99);
 
   const handleSave = () => {
     onSave({
@@ -337,6 +349,10 @@ function GeneralTab({ site, onSave }: { site: SiteDetail; onSave: (u: Record<str
       timezone,
       notes: notes.trim() || null,
       operational_days: opDays,
+      // Blank clears it, and the engine falls back to its own default (12).
+      // Anything unparseable is NOT sent — silently writing 0 or NaN here
+      // would divide every obligation at this site by zero.
+      ...(parValid ? { call_par_level: par.trim() === '' ? null : Number(par) } : {}),
     });
   };
 
@@ -382,6 +398,53 @@ function GeneralTab({ site, onSave }: { site: SiteDetail; onSave: (u: Record<str
         ))}
       </div>
 
+      {/* ── Call par ──────────────────────────────────────────────────────
+          The denominator of every call obligation at this site:
+
+              obligation = block's call slots ÷ par × provider FTE
+
+          So it is the single number that decides how much call one
+          full-timer owes, and it scales with the block automatically —
+          a longer block raises the obligation, a shorter one lowers it.
+
+          Par is NOT the head count and NOT the pool's FTE. Setting it
+          ABOVE the pool's summed FTE is the deliberate choice: obligations
+          then sum to less than the block holds, and the remainder is the
+          open-call pickup layer. Setting it below makes obligations exceed
+          the block, and somebody must come up short by arithmetic. */}
+      <SectionLabel>Call par level</SectionLabel>
+      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 'var(--space-3)', marginBottom: 'var(--space-5)' }}>
+        <input
+          className="fr-field fr-focus"
+          type="number"
+          min={1}
+          max={99}
+          step={0.1}
+          value={par}
+          onChange={e => setPar(e.target.value)}
+          placeholder="12"
+          aria-label="Call par level"
+          style={{
+            width: 110, padding: '10px 12px', borderRadius: 'var(--radius-sm)',
+            border: `1px solid ${parValid ? 'var(--border)' : 'var(--danger)'}`,
+            background: 'var(--bg-deep)', color: 'var(--text)',
+            fontSize: 'var(--fs-sm)',
+            fontFamily: 'var(--font-mono), ui-monospace, monospace',
+          }}
+        />
+        <p style={{
+          margin: 0, flex: 1, fontSize: 'var(--fs-xs)',
+          color: parValid ? 'var(--text-dim)' : 'var(--danger)', lineHeight: 1.6,
+        }}>
+          {parValid
+            ? <>Each provider owes <strong style={{ color: 'var(--text-muted)' }}>
+                the block&rsquo;s call slots ÷ par × their FTE</strong>. Raising par lowers
+                everyone&rsquo;s obligation and leaves more open call for pickup; lowering it
+                does the reverse. Blank uses the engine default of 12.</>
+            : 'Par must be a number above 0, or blank to use the default.'}
+        </p>
+      </div>
+
       <SectionLabel>Notes</SectionLabel>
       <textarea
         className="fr-field"
@@ -396,7 +459,7 @@ function GeneralTab({ site, onSave }: { site: SiteDetail; onSave: (u: Record<str
         }}
       />
 
-      <Button onClick={handleSave}>Save Changes</Button>
+      <Button onClick={handleSave} disabled={!parValid}>Save Changes</Button>
     </div>
   );
 }
