@@ -99,6 +99,28 @@ export function SchedulesFlyout({ collapsed }: Props) {
             All schedules
           </Link>
 
+          <div style={{
+            fontSize: 'var(--fs-xs)', textTransform: 'uppercase', letterSpacing: 1,
+            color: 'var(--text-dim)', fontWeight: 700,
+            padding: '10px var(--space-2) 6px',
+          }}>
+            Master
+          </div>
+
+          {/* Every site's published assignments in one document, one per
+              discipline. Open to everybody signed in: they are built from
+              published schedules only, which is exactly what a provider may
+              already see. */}
+          {([['physician', 'Physicians'], ['crna', 'CRNAs']] as const).map(([g, label]) => {
+            const href = `/schedules/master/${g}`;
+            return (
+              <Link key={g} href={href} role="menuitem" className="fr-nav-sub fr-focus"
+                    data-active={pathname === href}>
+                {label}
+              </Link>
+            );
+          })}
+
         </div>
       )}
     </div>
