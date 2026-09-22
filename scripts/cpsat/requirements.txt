@@ -1,0 +1,8 @@
+# CP-SAT benchmark only. NOT a production dependency — nothing in the Next.js
+# app imports this, and nothing here is deployed. Install into a local venv:
+#
+#   python3 -m pip install -r scripts/cpsat/requirements.txt
+#
+# Pinned loosely: this is a measuring instrument, and a newer solver finding a
+# better bound is a result, not a regression.
+ortools>=9.10
