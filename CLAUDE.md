@@ -30,7 +30,7 @@ Anesthesia department management: scheduling engine + staffing calculators + OR 
 - LLM modules use injected fake clients + fixtures; never call the network in tests.
 
 ## Migrations
-Root-level `supabase_scheduling_patchN_*.sql` files, applied to the live Supabase project manually/via MCP after review. RLS exists but the app uses the service-role key (auth deferred, internal-only).
+Root-level `supabase_scheduling_patchN_*.sql` files, applied to the live Supabase project manually/via MCP after review. **This overrides the vendored `supabase` agent skill**, which assumes the Supabase CLI and declarative schemas (`supabase migration new`, `supabase/migrations/`) — that is not this project's workflow and `supabase/` does not exist here. Take the skill's Postgres, RLS and security guidance; ignore its migration mechanics. Every schema change gets a numbered patch file with a header recording why, the apply status, and post-condition assertions. RLS exists but the app uses the service-role key (auth deferred, internal-only).
 patch18 was applied manually 2026-07-12 (see its header for the spot-check record). The live project is Supabase "Floor Runner", ref `qhwdbtixhzdsgwwtcfrm` (matches `.env.local`); the project-scoped `supabase-floorrunner` MCP server points at it and is the right channel for future patches — always verify the ref before applying. The `supabase` (atlas-staging) and `supabase-chiefos` (ChiefOS) MCP servers and the Railway "chiefos" project belong to OTHER apps — never run FloorRunner DDL or ops through them.
 
 ## Deployment

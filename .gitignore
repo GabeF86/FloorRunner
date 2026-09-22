@@ -19,3 +19,12 @@ artifacts/
 # Staff roster snapshots — real names, hire dates and FTEs.
 # This repo is PUBLIC; employee PII must never be committed.
 private/
+
+# Third-party agent skills vendored by `npx skills add`. skills-lock.json IS
+# committed — it pins each skill by content hash, so `npx skills add` restores
+# exactly these versions. The 184K of someone else's markdown is not: it is not
+# our source, it changes on their release schedule, and a PR diff full of
+# vendored docs hides the real change. .claude/skills holds symlinks into
+# .agents, so both have to go or a clone gets dangling links.
+.agents/
+.claude/skills/
