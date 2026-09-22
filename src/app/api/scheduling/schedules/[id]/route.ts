@@ -4,6 +4,10 @@ import { publishRevalidation, type PublishValidationSummary } from '@/lib/rulesE
 import { parseProviderLimits } from '@/lib/providerLimits';
 import { parseScheduleName } from '@/lib/scheduleName';
 import { validateManifest } from '@/lib/paoliBlock/manifest';
+import { currentScheduleActor } from '@/lib/auth/scheduleActor';
+import {
+  canDeleteSchedule, canRestoreSchedule, type ScheduleStatus,
+} from '@/lib/auth/schedulePermissions';
 
 // Never prerender — this route hits Supabase per request.
 export const dynamic = 'force-dynamic';
@@ -168,6 +172,21 @@ export async function PATCH(
 // DELETE /api/scheduling/schedules/:id
 //   default behavior: hard delete (cascades remove versions, slots, assignments)
 //   ?archive=true   : soft delete by setting status='archived'
+/**
+ * Delete a schedule — by HIDING it, never by removing rows.
+ *
+ * This used to be `sb.from('schedules').delete()`. Assignments, slots and
+ * versions all hang off `schedules`, so that took a published block of
+ * somebody's working life with it and there was no way back. It now stamps
+ * deleted_at (patch62); an admin can restore through PATCH ?restore=true.
+ *
+ * `?archive=true` is unchanged — archiving is a different act with a different
+ * meaning (the schedule happened, it is over) and it stays visible.
+ *
+ * Permission is checked HERE and not only in the UI: a button that is not
+ * rendered is not a control, and this route is reachable by anyone who can
+ * reach /api/scheduling/schedules at all.
+ */
 export async function DELETE(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -187,7 +206,67 @@ export async function DELETE(
     return NextResponse.json(data);
   }
 
-  const { error } = await sb.from('schedules').delete().eq('id', id);
+  // Read the subject BEFORE judging: the decision depends on its site and its
+  // status, and a schedule that is already deleted must not be deleted twice.
+  const { data: target, error: readErr } = await sb
+    .from('schedules').select('id, site_id, status, deleted_at').eq('id', id).maybeSingle();
+  if (readErr) return NextResponse.json({ error: readErr.message }, { status: 500 });
+  if (!target) return NextResponse.json({ error: 'No such schedule.' }, { status: 404 });
+
+  const actor = await currentScheduleActor(sb);
+  const allowed = canDeleteSchedule(actor, {
+    siteId: target.site_id,
+    status: target.status as ScheduleStatus,
+    deletedAt: target.deleted_at,
+  });
+  if (!allowed) {
+    return NextResponse.json(
+      { error: 'Only an admin or a schedule maker may delete a schedule.' },
+      { status: 403 },
+    );
+  }
+
+  const { error } = await sb.from('schedules')
+    .update({ deleted_at: new Date().toISOString(), deleted_by: actor.providerId })
+    .eq('id', id)
+    // Guard against a concurrent delete: only stamp a row that is still live,
+    // so two clicks cannot overwrite the first deleter with the second.
+    .is('deleted_at', null);
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-  return NextResponse.json({ ok: true, deleted: true });
+  return NextResponse.json({ ok: true, deleted: true, recoverable: true });
+}
+
+/**
+ * Restore a soft-deleted schedule. Admins only — "so that Admins can find and
+ * recover them if needed".
+ *
+ * Deliberately narrower than the right to delete: the person who can make
+ * something disappear should not automatically decide it comes back.
+ */
+export async function PUT(
+  req: NextRequest,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  const sb = sbSchedulingServer();
+  const { id } = await params;
+  if (new URL(req.url).searchParams.get('restore') !== 'true') {
+    return NextResponse.json({ error: 'Unsupported operation.' }, { status: 400 });
+  }
+
+  const actor = await currentScheduleActor(sb);
+  if (!canRestoreSchedule(actor)) {
+    return NextResponse.json(
+      { error: 'Only an admin may restore a deleted schedule.' }, { status: 403 },
+    );
+  }
+
+  const { data, error } = await sb.from('schedules')
+    .update({ deleted_at: null, deleted_by: null })
+    .eq('id', id).not('deleted_at', 'is', null)
+    .select('id, schedule_name').maybeSingle();
+  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+  if (!data) {
+    return NextResponse.json({ error: 'No deleted schedule with that id.' }, { status: 404 });
+  }
+  return NextResponse.json({ ok: true, restored: true, schedule: data });
 }

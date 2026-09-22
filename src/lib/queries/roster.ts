@@ -185,6 +185,13 @@ export interface ScheduleListFilters {
   status?: string | null;
   scheduleType?: string | null;
   providerGroup?: string | null;
+  /** The recycle view. Off by default so EVERY existing caller excludes
+   *  deleted rows without being changed — a soft delete that has to be
+   *  remembered at each call site is one that eventually is not. Permission to
+   *  use it is enforced separately (canSeeDeleted); this flag only asks. */
+  includeDeleted?: boolean;
+  /** Only the deleted ones — the recycle view proper. */
+  onlyDeleted?: boolean;
 }
 
 export function scheduleFiltersFrom(searchParams: URLSearchParams): ScheduleListFilters {
@@ -218,6 +225,12 @@ export async function listSchedules(
     .from('schedules')
     .select('*, sites(name, short_name)')
     .order('date_start', { ascending: false });
+
+  // Soft-deleted schedules are out of every list unless explicitly asked for.
+  // Applied HERE, in the shared query, so the server component and the API
+  // route that both render this list cannot drift from each other.
+  if (f.onlyDeleted) query = query.not('deleted_at', 'is', null);
+  else if (!f.includeDeleted) query = query.is('deleted_at', null);
 
   if (f.orgId) query = query.eq('organization_id', f.orgId);
   if (f.siteId) query = query.eq('site_id', f.siteId);

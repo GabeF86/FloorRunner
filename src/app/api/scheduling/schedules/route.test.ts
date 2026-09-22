@@ -11,6 +11,21 @@ vi.mock('@/lib/supabaseScheduling', () => ({
   sbSchedulingServer: () => holder.sb,
 }));
 
+// GET scopes its result to what the CALLER may see (patch62), so these tests
+// need a caller. An admin: the point here is the last_activity_at derivation,
+// not the permission rule, which has its own 42 cases in
+// lib/auth/schedulePermissions.test.ts.
+//
+// Worth knowing what the unmocked default would be: no session is an
+// ANONYMOUS session, and an anonymous caller correctly sees nothing — these
+// four tests failed with an empty list before this mock was added, which is
+// the scoping working rather than a regression.
+vi.mock('@/lib/auth/scheduleActor', () => ({
+  currentScheduleActor: async () => ({
+    role: 'admin', providerId: null, chiefOfSiteIds: [], scheduleMaker: false,
+  }),
+}));
+
 import { GET, POST } from './route';
 
 // ── Fixture helpers ──────────────────────────────────────────────────────────

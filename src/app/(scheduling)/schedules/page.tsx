@@ -11,6 +11,10 @@
 
 import { sbSchedulingServer } from '@/lib/supabaseScheduling';
 import { listSchedules, listSites, firstOrg } from '@/lib/queries/roster';
+import { currentScheduleActor } from '@/lib/auth/scheduleActor';
+import {
+  visibleSchedules, canSeeDeleted, canDeleteSchedule, type ScheduleStatus,
+} from '@/lib/auth/schedulePermissions';
 import SchedulesClient from './SchedulesClient';
 
 // Never prerender — this reads per-request, per-user data.
@@ -24,6 +28,9 @@ export default async function SchedulesPage() {
   let schedules: never[] = [];
   let sites: never[] = [];
   let loadError: string | null = null;
+  // Who is reading, so the list can be scoped and the delete control only
+  // offered where it would actually work.
+  const actor = await currentScheduleActor(sb);
 
   try {
     // firstOrg, not firstOrgId: the flattened form cannot tell "no
@@ -52,7 +59,18 @@ export default async function SchedulesPage() {
       ]);
       if (!s.ok) loadError = s.error;
       else {
-        schedules = s.rows as never[];
+        // A PROVIDER SEES PUBLISHED SCHEDULES ONLY. Scoped on the server, in
+        // the request that renders the page — not hidden in the client, where
+        // the rows would still have been shipped to the browser.
+        schedules = visibleSchedules(
+          actor,
+          s.rows.map(r => ({
+            ...r,
+            siteId: String(r.site_id ?? ''),
+            status: String(r.status ?? 'draft') as ScheduleStatus,
+            deletedAt: (r.deleted_at as string | null) ?? null,
+          })),
+        ) as never[];
         for (const w of s.warnings ?? []) console.warn(`[schedules] ${w}`);
       }
       // A failed SITES read costs the filter dropdown, not the list itself.
@@ -69,6 +87,14 @@ export default async function SchedulesPage() {
       initialSites={sites}
       orgId={orgId}
       loadError={loadError}
+      // Whether to render the delete control at all. The route checks the same
+      // rule again — this only avoids offering a button that would 403.
+      canDelete={schedules.some(r => canDeleteSchedule(actor, {
+        siteId: String((r as Record<string, unknown>).site_id ?? ''),
+        status: String((r as Record<string, unknown>).status ?? 'draft') as ScheduleStatus,
+        deletedAt: null,
+      }))}
+      canSeeDeleted={canSeeDeleted(actor)}
     />
   );
 }

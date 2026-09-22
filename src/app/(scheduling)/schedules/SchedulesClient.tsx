@@ -71,11 +71,23 @@ export interface SchedulesClientProps {
   initialSites: Site[];
   orgId: string;
   loadError: string | null;
+  /** Render the delete control at all. The route re-checks the same rule — this
+   *  only avoids offering a button that would come back 403. */
+  canDelete?: boolean;
+  /** Admins see the recycle view and can restore from it. */
+  canSeeDeleted?: boolean;
 }
 
 export default function SchedulesClient(
-  { initialSchedules, initialAllSchedules, initialSites, orgId, loadError }: SchedulesClientProps,
+  {
+    initialSchedules, initialAllSchedules, initialSites, orgId, loadError,
+    canDelete = false, canSeeDeleted = false,
+  }: SchedulesClientProps,
 ) {
+  // The recycle view: deleted schedules, admins only.
+  const [showDeleted, setShowDeleted] = useState(false);
+  const [deletedRows, setDeletedRows] = useState<Schedule[]>([]);
+  const [deletedError, setDeletedError] = useState<string | null>(null);
   const [schedules, setSchedules] = useState<Schedule[]>(initialSchedules);
   const [sites, setSites] = useState<Site[]>(initialSites);
   // Starts FALSE — the rows are already on screen, and a spinner over visible
@@ -168,9 +180,54 @@ export default function SchedulesClient(
     loadSites();
   }, [loadSites, sites.length]);
 
+  // The old copy said "cannot be undone — all versions, slots and assignments
+  // will be removed", and it was true: this called a hard DELETE. It is a soft
+  // delete now (patch62), so the warning has to say what actually happens —
+  // an over-dire prompt teaches people to distrust the next one.
   const handleDelete = async (id: string, name: string) => {
-    if (!confirm(`Permanently delete "${name}"? This cannot be undone — all versions, slots, and assignments will be removed.`)) return;
-    await fetch(`/api/scheduling/schedules/${id}`, { method: 'DELETE' });
+    if (!confirm(
+      `Delete "${name}"?\n\n`
+      + 'It will be hidden from every list and dashboard. Nothing is erased — '
+      + 'an administrator can restore it, with all its versions, slots and '
+      + 'assignments intact.\n\n'
+      + 'Note: while it is deleted it still counts for cross-site '
+      + 'double-booking checks, so nobody it has scheduled becomes free.',
+    )) return;
+    const r = await fetch(`/api/scheduling/schedules/${id}`, { method: 'DELETE' });
+    if (!r.ok) {
+      const body = await r.json().catch(() => ({}));
+      alert(body?.error || 'The schedule could not be deleted.');
+      return;
+    }
+    loadSchedules();
+    loadAllSchedules();
+    if (showDeleted) loadDeleted();
+  };
+
+  /** The recycle view. Admin-only at the route as well as here. */
+  const loadDeleted = useCallback(async () => {
+    setDeletedError(null);
+    try {
+      const r = await fetch(`/api/scheduling/schedules?org_id=${orgId}&deleted=true`);
+      if (!r.ok) throw new Error(`Request failed (${r.status})`);
+      setDeletedRows(await r.json());
+    } catch (e) {
+      // An empty recycle view and a failed read look identical, and only one
+      // of them means "nothing was deleted".
+      setDeletedError(e instanceof Error ? e.message : 'Deleted schedules could not be loaded.');
+      setDeletedRows([]);
+    }
+  }, [orgId]);
+
+  const handleRestore = async (id: string, name: string) => {
+    if (!confirm(`Restore "${name}" to the active list?`)) return;
+    const r = await fetch(`/api/scheduling/schedules/${id}?restore=true`, { method: 'PUT' });
+    if (!r.ok) {
+      const body = await r.json().catch(() => ({}));
+      alert(body?.error || 'The schedule could not be restored.');
+      return;
+    }
+    loadDeleted();
     loadSchedules();
     loadAllSchedules();
   };
@@ -328,7 +385,9 @@ export default function SchedulesClient(
                 {s.status !== 'archived' && (
                   <Button variant="ghost" size="sm" onClick={(e) => { e.stopPropagation(); handleArchive(s.id, s.schedule_name); }}>Archive</Button>
                 )}
-                <Button variant="ghost" size="sm" style={{ color: 'var(--danger)' }} onClick={(e) => { e.stopPropagation(); handleDelete(s.id, s.schedule_name); }}>Delete</Button>
+                {canDelete && (
+                  <Button variant="ghost" size="sm" style={{ color: 'var(--danger)' }} onClick={(e) => { e.stopPropagation(); handleDelete(s.id, s.schedule_name); }}>Delete</Button>
+                )}
               </div>,
             ];
           })}
@@ -342,6 +401,75 @@ export default function SchedulesClient(
           }
         />
       </Card>
+
+      {/* ── Deleted schedules (admins only) ─────────────────────────────
+          A deleted schedule is hidden, never erased (patch62). This is where
+          an admin finds one and puts it back. Collapsed by default: it is a
+          recovery tool, not part of the daily read, and a permanently-open
+          list of deleted things invites treating deletion as reversible
+          housekeeping rather than a decision. */}
+      {canSeeDeleted && (
+        <Card style={{ marginTop: 'var(--space-4)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                const next = !showDeleted;
+                setShowDeleted(next);
+                if (next) loadDeleted();
+              }}
+            >
+              {showDeleted ? '▾' : '▸'} Deleted schedules
+            </Button>
+            {showDeleted && deletedRows.length > 0 && (
+              <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-dim)' }}>
+                {deletedRows.length} recoverable
+              </span>
+            )}
+          </div>
+
+          {showDeleted && (
+            <div style={{ marginTop: 'var(--space-3)' }}>
+              {deletedError ? (
+                <Banner tone="error">{deletedError}</Banner>
+              ) : deletedRows.length === 0 ? (
+                <p style={{
+                  margin: 0, fontSize: 'var(--fs-sm)', color: 'var(--text-dim)',
+                }}>
+                  Nothing has been deleted.
+                </p>
+              ) : (
+                deletedRows.map(d => (
+                  <div key={d.id} style={{
+                    display: 'flex', alignItems: 'center', gap: 'var(--space-3)',
+                    padding: '8px 0', borderBottom: '1px solid var(--border-faint)',
+                  }}>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: 'var(--fs-sm)', fontWeight: 600 }}>
+                        {d.schedule_name}
+                      </div>
+                      <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-dim)' }}>
+                        {d.sites?.short_name || d.sites?.name || '—'}
+                        {' · '}{formatDate(d.date_start)} — {formatDate(d.date_end)}
+                        {' · '}{scheduleStatusLabel(d.status)} when deleted
+                      </div>
+                    </div>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      style={{ color: 'var(--blue)' }}
+                      onClick={() => handleRestore(d.id, d.schedule_name)}
+                    >
+                      Restore
+                    </Button>
+                  </div>
+                ))
+              )}
+            </div>
+          )}
+        </Card>
+      )}
 
       {/* Request-intake window management (patch29) — kept below the table so
           the schedule list stays the page's focus; see RequestWindowCard for

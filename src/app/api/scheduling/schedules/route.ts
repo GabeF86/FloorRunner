@@ -3,6 +3,10 @@ import { sbSchedulingServer } from '@/lib/supabaseScheduling';
 import { derivedDayTypeFor, slateForDayType, templateSlotCount } from '@/lib/templateSlots';
 import { defaultScheduleName, parseScheduleName } from '@/lib/scheduleName';
 import { listSchedules, scheduleFiltersFrom } from '@/lib/queries/roster';
+import { currentScheduleActor } from '@/lib/auth/scheduleActor';
+import {
+  visibleSchedules, canSeeDeleted, type ScheduleStatus,
+} from '@/lib/auth/schedulePermissions';
 import {
   HOLIDAY_CALL_TYPE,
   planHolidayCallSeeds,
@@ -17,10 +21,35 @@ export async function GET(req: NextRequest) {
   // Query logic lives in lib/queries/roster.ts so the server component that
   // renders this same list cannot drift from it.
   const { searchParams } = new URL(req.url);
-  const result = await listSchedules(sbSchedulingServer(), scheduleFiltersFrom(searchParams));
+  const sb = sbSchedulingServer();
+  const actor = await currentScheduleActor(sb);
+
+  // The recycle view. The flag is only ever honoured for an admin — asked for
+  // here, granted in visibleSchedules, so a query string cannot open it.
+  const wantsDeleted = searchParams.get('deleted') === 'true';
+  const onlyDeleted = wantsDeleted && canSeeDeleted(actor);
+
+  const result = await listSchedules(sb, {
+    ...scheduleFiltersFrom(searchParams),
+    onlyDeleted,
+  });
   if (!result.ok) return NextResponse.json({ error: result.error }, { status: result.status });
   for (const w of result.warnings ?? []) console.warn(`[schedules] ${w}`);
-  return NextResponse.json(result.rows);
+
+  // SCOPE TO WHAT THIS CALLER MAY SEE. A provider gets published schedules
+  // only; drafts belong to admins, the chief of that site, schedule makers and
+  // back office. Filtered here rather than in the SQL because the rule is
+  // per-row and lives in one tested place.
+  const rows = onlyDeleted ? result.rows : visibleSchedules(
+    actor,
+    result.rows.map(r => ({
+      ...r,
+      siteId: String(r.site_id ?? ''),
+      status: String(r.status ?? 'draft') as ScheduleStatus,
+      deletedAt: (r.deleted_at as string | null) ?? null,
+    })),
+  );
+  return NextResponse.json(rows);
 }
 
 export async function POST(req: NextRequest) {
