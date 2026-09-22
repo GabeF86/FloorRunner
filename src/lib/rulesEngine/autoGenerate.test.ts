@@ -99,7 +99,7 @@ function loneSundayCtx(over: Partial<GenerationContext> = {}): GenerationContext
 describe('autoGenerate — neuro report wiring', () => {
   it('surfaces neuroReport and a shortfall warning when the pattern states a config', async () => {
     holder.ctx = loneSundayCtx();
-    const result = await autoGenerate({} as never, 'ver-1', { optimize: false });
+    const result = await autoGenerate({} as never, 'ver-1', { optimize: false, fillMode: 'all' });
     expect(result.ok).toBe(true);
     // Credit came from a REAL placement, not an empty plan.
     expect(result.assignments.map(a => a.slot_id)).toEqual(['sun-c3']);
@@ -112,7 +112,7 @@ describe('autoGenerate — neuro report wiring', () => {
 
   it('a pattern with NO neuroWeekend config carries no neuroReport key (additive shape)', async () => {
     holder.ctx = buildCtx([callSlot('sun-c3', SUN, 'C3', 'sunday')], [prov('three4', 0.75)]);
-    const result = await autoGenerate({} as never, 'ver-1', { optimize: false });
+    const result = await autoGenerate({} as never, 'ver-1', { optimize: false, fillMode: 'all' });
     expect(result.ok).toBe(true);
     expect('neuroReport' in result).toBe(false);
     expect(result.warnings.some(w => w.includes('neuro weekend'))).toBe(false);
@@ -122,7 +122,7 @@ describe('autoGenerate — neuro report wiring', () => {
     holder.ctx = buildCtx(
       [callSlot('sat-c3', SAT, 'C3', 'saturday'), callSlot('sun-c3', SUN, 'C3', 'sunday')],
       [prov('three4', 0.75)], { callPattern: NEURO_DOC, warnings: [] });
-    const result = await autoGenerate({} as never, 'ver-1', { optimize: false });
+    const result = await autoGenerate({} as never, 'ver-1', { optimize: false, fillMode: 'all' });
     expect(result.neuroReport).toEqual([
       { provider_id: 'three4', fte: 0.75, owed: 1, credited: 1, short: 0 },
     ]);
@@ -145,7 +145,7 @@ describe('autoGenerate — neuro report wiring', () => {
     });
     holder.ctx = buildCtx([], [prov('three4', 0.75)],
       { callPattern: NEURO_DOC, warnings: [], seedAssignments: [seed(SAT), seed(SUN)] });
-    const result = await autoGenerate({} as never, 'ver-1', { optimize: false });
+    const result = await autoGenerate({} as never, 'ver-1', { optimize: false, fillMode: 'all' });
     expect(result.ok).toBe(true);
     expect(result.assignments).toEqual([]); // nothing re-solved: credit is seed-only
     expect(result.neuroReport).toEqual([
@@ -172,7 +172,7 @@ describe('autoGenerate — neuro report wiring', () => {
       })]]),
       seedAssignments: [seed(SAT), seed(SUN)],
     });
-    const result = await autoGenerate({} as never, 'ver-1', { optimize: false });
+    const result = await autoGenerate({} as never, 'ver-1', { optimize: false, fillMode: 'all' });
     expect(result.ok).toBe(true);
     expect(result.neuroReport).toEqual([
       { provider_id: 'three4', fte: 0.75, owed: 1, credited: 1, short: 0 },
@@ -185,7 +185,7 @@ describe('autoGenerate — neuro report wiring', () => {
   it('never mutates ctx.warnings when appending shortfall warnings', async () => {
     const ctx = loneSundayCtx();
     holder.ctx = ctx;
-    const result = await autoGenerate({} as never, 'ver-1', { optimize: false });
+    const result = await autoGenerate({} as never, 'ver-1', { optimize: false, fillMode: 'all' });
     expect(result.warnings.length).toBeGreaterThan(0);
     expect(ctx.warnings).toEqual([]);
   });

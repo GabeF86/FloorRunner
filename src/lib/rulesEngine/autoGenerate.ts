@@ -30,6 +30,9 @@ export interface AutoGenerateOptions {
   callsOnly?: boolean;
   /** Restrict the main loop to weekday or weekend call slots. */
   dayScope?: 'weekday' | 'weekend';
+  /** Run the neuro weekends on their own, or hold them back for a separate
+   *  run. Composes with dayScope and any fill mode. */
+  neuroScope?: 'only' | 'exclude';
   // The version's parent schedule id, when the caller already holds it (the
   // generate route's path param). Threaded to loadGenerationContext to skip
   // its redundant schedule_versions round trip; absent → looked up as before.
@@ -73,8 +76,21 @@ export function resolveOptimizeEnabled(flag: boolean | undefined): boolean {
 // everything else — absent, 'all', wrong case, wrong type — degrades to the
 // default 'all'. Shared by the generate route's body parsing and the engine
 // option resolution.
+/**
+ * OBLIGATORY IS THE DEFAULT (Gabriel 2026-09-22).
+ *
+ * It used to be 'all', so a Generate with no stated mode filled every slot the
+ * engine legally could — including the calls above everybody's obligation,
+ * which are the ones meant to be left open for call-takers to pick up after
+ * publication. The pickup layer only exists if the engine stops at the
+ * obligation, and asking for that by name is the wrong way round: the safe
+ * mode should be the one you get by saying nothing.
+ *
+ * 'all' is still reachable and still the right choice for finishing a board —
+ * it is what the staged weekend-only Continue asks for by name.
+ */
 export function resolveFillMode(v: unknown): FillMode {
-  return v === 'obligatory' || v === 'weekend-only' ? v : 'all';
+  return v === 'all' || v === 'weekend-only' ? v : 'obligatory';
 }
 
 // Pure: explicit param wins, then the env var; undefined lets optimize()
@@ -200,6 +216,19 @@ export async function autoGenerate(
   const ctx = load.ctx;
   result.warnings = ctx.warnings ?? [];
 
+  // A neuro scope this site's pattern cannot honour. 'only' would place
+  // nothing and 'exclude' would be a label over a no-op, so the run covers the
+  // whole block — said out loud rather than silently ignored. NEW array:
+  // result.warnings aliases ctx.warnings here and pushing would mutate the
+  // context.
+  if (options.neuroScope && !ctx.callPattern?.neuroWeekend) {
+    result.warnings = [
+      ...result.warnings,
+      `Neuro scope '${options.neuroScope}' was requested, but this site's call pattern `
+      + 'states no neuro weekend code. The run covered the whole block instead.',
+    ];
+  }
+
   let plan;
   let commit;
   let seedMetrics;
@@ -219,6 +248,7 @@ export async function autoGenerate(
         fillMode,
         callsOnly: options.callsOnly,
         dayScope: options.dayScope,
+        neuroScope: options.neuroScope,
         optimizeEnabled: resolveOptimizeEnabled(options.optimize),
         wallClockMs: resolveWallClockMs(options.wallClockMs, process.env.SCHEDULING_OPTIMIZE_WALL_MS),
       });
@@ -226,7 +256,10 @@ export async function autoGenerate(
       seedMetrics = multiStart.seedMetrics;
       if (multiStart.optimizeStats) result.optimizeStats = multiStart.optimizeStats;
     } else {
-      const seedPlan = solve(ctx, { fillMode, callsOnly: options.callsOnly, dayScope: options.dayScope });
+      const seedPlan = solve(ctx, {
+        fillMode, callsOnly: options.callsOnly,
+        dayScope: options.dayScope, neuroScope: options.neuroScope,
+      });
       seedMetrics = scoreSolution(seedPlan, ctx);
       // Only 'all' optimizes. Obligatory and weekend-only both return the
       // deterministic greedy plan — see the AutoGenerateOptions.fillMode note
@@ -235,6 +268,7 @@ export async function autoGenerate(
         const optimized = optimize(ctx, {
           callsOnly: options.callsOnly,
           dayScope: options.dayScope,
+        neuroScope: options.neuroScope,
           wallClockMs: resolveWallClockMs(options.wallClockMs, process.env.SCHEDULING_OPTIMIZE_WALL_MS),
         });
         plan = optimized.plan;

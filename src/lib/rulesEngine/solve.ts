@@ -219,6 +219,23 @@ export function solve(ctx: GenerationContext, opts: SolveOptions = {}): Solution
   const weekendOnly = opts.fillMode === 'weekend-only';
   const callsOnly = opts.callsOnly === true;
   const dayScope = opts.dayScope;
+
+  // NEURO SCOPE. Matched on the PARENT call code, like every other consumer
+  // of the neuro config, so a split neuro segment scopes with its parent
+  // rather than escaping the filter under its own name.
+  const neuroScope = opts.neuroScope;
+  const neuroCode = doc.neuroWeekend?.code;
+  const isNeuroSlot = (slot: SlotToFill): boolean =>
+    neuroCode != null && slot.shift_type_category === 'call'
+    && parentCallCodeOf(slot.shift_type_code, ctx.shiftTypes?.get(slot.shift_type_code)) === neuroCode;
+  // A pattern with no neuro config cannot honour a neuro scope: 'only' would
+  // place nothing and 'exclude' would be a no-op wearing a label. The guard is
+  // INERT here and the refusal lives at the route, which is where a message
+  // reaches a human — solve() has no user-facing warning channel that is not
+  // already lazily materialized for the golden pins.
+  const inNeuroScope = (slot: SlotToFill): boolean =>
+    !neuroScope || neuroCode == null ? true
+      : neuroScope === 'only' ? isNeuroSlot(slot) : !isNeuroSlot(slot);
   // In-scope predicate for the main loop. weekend-only keeps its own gate
   // (staged mode); dayScope is the general one and composes with any fillMode.
   const inDayScope = (dt: string): boolean =>
@@ -226,10 +243,16 @@ export function solve(ctx: GenerationContext, opts: SolveOptions = {}): Solution
       : dayScope === 'weekday' ? !WEEKEND_ONLY_DAY_TYPES.has(dt)
         : true;
   // Slots deliberately deferred (out of scope), NOT failures. Populated for
-  // weekend-only staging and for any dayScope run, so the banner can report
-  // "N left for a later run" instead of silently doing less than asked.
+  // weekend-only staging, for any dayScope run, and for any neuroScope run —
+  // so the banner can report "N left for a later run" instead of silently
+  // doing less than asked.
+  //
+  // THIS LIST IS ALSO THE SWITCH. The main loop only skips an out-of-scope
+  // slot when there is somewhere to record it; a scope that did not appear
+  // here was computed and then ignored, which is exactly how the first cut of
+  // neuroScope placed every call it was told to hold back.
   const awaitingContinue: AwaitingContinueSlot[] | null =
-    weekendOnly || dayScope ? [] : null;
+    weekendOnly || dayScope || neuroScope ? [] : null;
   if (awaitingContinue) plan.awaitingContinue = awaitingContinue;
   const obligationByPid = obligatory ? computeObligations(ctx) : null;
   // Segment seeds (call splits, 2026-07-22) consume the obligation cap and the
@@ -314,9 +337,12 @@ export function solve(ctx: GenerationContext, opts: SolveOptions = {}): Solution
     // override resolution (overrides are an optimizer seam; the optimizer
     // never runs in weekend-only mode). Deferred slots are counted, never
     // reported as unfilled failures.
-    const outOfScope = weekendOnly
+    const outOfScope = (weekendOnly
       ? !WEEKEND_ONLY_DAY_TYPES.has(slot.derived_day_type)
-      : !inDayScope(slot.derived_day_type);
+      : !inDayScope(slot.derived_day_type))
+      // Neuro scope composes with whichever day scope is in force: a slot is
+      // out if EITHER filter excludes it.
+      || !inNeuroScope(slot);
     if (awaitingContinue && outOfScope) {
       awaitingContinue.push({
         slot_id: slot.slot_id, slot_date: slot.slot_date,

@@ -27,8 +27,9 @@ export const maxDuration = 300;
 // fills) already committed to the DB, which lets it (a) avoid same-day
 // conflicts with a Day Doc who somehow ended up in a call slot and (b) use
 // the existing assignments for fairness seeding.
-// Body (optional JSON): { fillMode?: 'all' | 'obligatory' | 'weekend-only' }.
-// 'all' (default) fills every fillable call slot; 'obligatory' caps each
+// Body (optional JSON): { fillMode?: 'all' | 'obligatory' | 'weekend-only',
+//                          neuroScope?: 'only' | 'exclude' }.
+// 'obligatory' (THE DEFAULT since 2026-09-22) caps each
 // provider at their rounded total obligation and leaves the rest open
 // ('obligation-cap'). Both apply to the CALL engine only — day-shift gen is
 // unaffected by design. 'weekend-only' (2026-07-21) is the STAGED weekend
@@ -36,7 +37,14 @@ export const maxDuration = 300;
 // the day-shift pass is SKIPPED too — the whole rest of the schedule waits
 // for the Continue generation (a follow-up POST with fillMode 'all'), which
 // sees the committed weekend placements as seeds. Unknown/absent values
-// degrade to 'all' (resolveFillMode).
+// degrade to 'obligatory' (resolveFillMode) — the safe mode is the one you
+// get by saying nothing, because it is the one that leaves the pickup layer
+// open. 'all' remains reachable by name and is what the staged Continue asks
+// for.
+//
+// neuroScope (Gabriel 2026-09-22) runs the neuro weekends on their own
+// ('only') or holds them back for a separate run ('exclude'). It composes
+// with any fill mode and with dayScope.
 export async function POST(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> },
@@ -49,13 +57,17 @@ export async function POST(
   let bodyProviderIds: unknown;
   let bodyCallsOnly: unknown;
   let bodyDayScope: unknown;
+  let bodyNeuroScope: unknown;
   try {
-    const body = (await req.json()) as
-      { fillMode?: unknown; providerIds?: unknown; callsOnly?: unknown; dayScope?: unknown } | null;
+    const body = (await req.json()) as {
+      fillMode?: unknown; providerIds?: unknown; callsOnly?: unknown;
+      dayScope?: unknown; neuroScope?: unknown;
+    } | null;
     bodyFillMode = body?.fillMode;
     bodyProviderIds = body?.providerIds;
     bodyCallsOnly = body?.callsOnly;
     bodyDayScope = body?.dayScope;
+    bodyNeuroScope = body?.neuroScope;
   } catch { /* no JSON body — default */ }
 
   // DAY SCOPE (Gabriel 2026-07-30: "Is there a way to autofill only the weekday
@@ -69,6 +81,10 @@ export async function POST(
   // day-shift pass; the call slots and their structurally chained day slots
   // still fill. Only `true` counts — anything else is the ordinary full run.
   const callsOnly = bodyCallsOnly === true;
+
+  // NEURO SCOPE. Anything but the two known values is the whole block.
+  const neuroScope: 'only' | 'exclude' | undefined =
+    bodyNeuroScope === 'only' || bodyNeuroScope === 'exclude' ? bodyNeuroScope : undefined;
 
   // TARGETED RUN (Gabriel 2026-08): "the ability to create a schedule one
   // provider at a time ... autogenerate the havildar placements first since i
@@ -155,7 +171,8 @@ export async function POST(
   // version.id was selected by schedule_id, so scheduleId IS its parent —
   // passing it down saves each engine's schedule_versions parent lookup.
   const result = await autoGenerate(sb, version.id, {
-    overrideProviderIds, fillMode, callsOnly, dayScope, parentScheduleId: scheduleId,
+    overrideProviderIds, fillMode, callsOnly, dayScope, neuroScope,
+    parentScheduleId: scheduleId,
   });
   // Call-gen hard-failed: surface immediately; don't run day-shift gen on a
   // context that couldn't even load. The result already carries warnings,
@@ -163,7 +180,7 @@ export async function POST(
   // trimmed to keep the payload proportional to what the UI shows.
   if (!result.ok) {
     return NextResponse.json(
-      { ...result, unfilled: trimUnfilled(result.unfilled), fillMode, dayScope: dayScope ?? null, undoActionId, targetedProviderIds: targeted ? overrideProviderIds ?? [] : null },
+      { ...result, unfilled: trimUnfilled(result.unfilled), fillMode, dayScope: dayScope ?? null, neuroScope: neuroScope ?? null, undoActionId, targetedProviderIds: targeted ? overrideProviderIds ?? [] : null },
       { status: statusForResult(result) },
     );
   }
@@ -178,7 +195,7 @@ export async function POST(
   // what it is for.
   if (fillMode === 'weekend-only' || callsOnly || dayScope === 'weekend') {
     return NextResponse.json(
-      { ...result, unfilled: trimUnfilled(result.unfilled), fillMode, callsOnly, dayScope: dayScope ?? null, undoActionId, targetedProviderIds: targeted ? overrideProviderIds ?? [] : null },
+      { ...result, unfilled: trimUnfilled(result.unfilled), fillMode, callsOnly, dayScope: dayScope ?? null, neuroScope: neuroScope ?? null, undoActionId, targetedProviderIds: targeted ? overrideProviderIds ?? [] : null },
       { status: statusForResult(result) },
     );
   }
@@ -205,7 +222,7 @@ export async function POST(
       // mode the caller did not ask for must never be invisible.
       fillMode,
       callsOnly,
-      dayScope: dayScope ?? null,
+      dayScope: dayScope ?? null, neuroScope: neuroScope ?? null,
       undoActionId,
       targetedProviderIds: targeted ? overrideProviderIds ?? [] : null,
     },

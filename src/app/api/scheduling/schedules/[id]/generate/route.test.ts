@@ -189,16 +189,25 @@ describe('POST /api/scheduling/schedules/:id/generate — fillMode param (2026-0
     expect(genFillMode()).toBe('obligatory');
   });
 
-  it("defaults to 'all' when the request has no body", async () => {
+  // OBLIGATORY IS THE DEFAULT since 2026-09-22 (Gabriel). Fill-all also fills
+  // the calls above everybody's obligation, and those are the ones meant to
+  // stay open for pickup — so a Generate that states no mode must be the one
+  // that stops at the obligation.
+  it("defaults to 'obligatory' when the request has no body", async () => {
     await post();
-    expect(genFillMode()).toBe('all');
+    expect(genFillMode()).toBe('obligatory');
   });
 
-  it("defaults to 'all' for an empty body and for unknown values", async () => {
+  it("defaults to 'obligatory' for an empty body and for unknown values", async () => {
     await post({});
     await post({ fillMode: 'everything' });
-    expect((holder.genOptions[0] as { fillMode?: string }).fillMode).toBe('all');
-    expect((holder.genOptions[1] as { fillMode?: string }).fillMode).toBe('all');
+    expect((holder.genOptions[0] as { fillMode?: string }).fillMode).toBe('obligatory');
+    expect((holder.genOptions[1] as { fillMode?: string }).fillMode).toBe('obligatory');
+  });
+
+  it("still honours an explicit 'all'", async () => {
+    await post({ fillMode: 'all' });
+    expect(genFillMode()).toBe('all');
   });
 
   it('the day-shift engine never receives a fill mode (unaffected by design)', async () => {

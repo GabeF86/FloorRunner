@@ -231,6 +231,9 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
   // "obligatory + weekday only" is expressible — the combination Gabriel wants
   // after entering the weekend schedule by hand.
   const [dayScope, setDayScope] = useState<'' | 'weekday' | 'weekend'>('');
+  // Neuro weekends as their own run (Gabriel 2026-09-22). '' = together with
+  // everything else, which is the pre-existing behaviour.
+  const [neuroScope, setNeuroScope] = useState<'' | 'only' | 'exclude'>('');
   const [showAssistant, setShowAssistant] = useState(false);
   // Inline rename (Gabriel 2026-07-22): the header pencil PATCHes
   // schedule_name (route-validated: trimmed, non-empty, ≤ 120). Local grid
@@ -1253,11 +1256,20 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
   // weekend. Persisted per browser; hydrated after mount to avoid an SSR
   // mismatch (BoardClient precedent).
   const FILL_MODE_STORAGE_KEY = 'scheduling.generateFillMode';
-  const [genFillMode, setGenFillMode] = useState<GenFillMode>('all');
+  // OBLIGATORY IS THE DEFAULT (Gabriel 2026-09-22). Filling every slot the
+  // engine legally can also fills the calls above everybody's obligation —
+  // and those are precisely the ones meant to stay open for call-takers to
+  // pick up after publication. 'all' is one click away and is what the staged
+  // Continue runs; the safe mode is the one you get by not choosing.
+  const [genFillMode, setGenFillMode] = useState<GenFillMode>('obligatory');
   useEffect(() => {
     try {
       const stored = localStorage.getItem(FILL_MODE_STORAGE_KEY);
-      if (stored === 'obligatory' || stored === 'weekend-only') setGenFillMode(stored);
+      // 'all' is listed explicitly now that it is no longer the default —
+      // without it a saved 'all' preference silently reverted to obligatory.
+      if (stored === 'all' || stored === 'obligatory' || stored === 'weekend-only') {
+        setGenFillMode(stored);
+      }
     } catch { /* storage unavailable — keep default */ }
   }, []);
   const changeGenFillMode = (v: GenFillMode) => {
@@ -1307,6 +1319,7 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
           ...(providerIds?.length ? { providerIds } : {}),
           ...(callsOnly ? { callsOnly: true } : {}),
           ...(scope ? { dayScope: scope } : {}),
+          ...(neuroScope ? { neuroScope } : {}),
         }),
       });
       const data = await res.json();
@@ -2063,6 +2076,40 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
               <option value="">Whole block</option>
               <option value="weekday">Weekday calls (M–Th)</option>
               <option value="weekend">Weekend calls (Fri–Sun)</option>
+            </select>
+            {/* Neuro weekends as a SEPARATE run (Gabriel 2026-09-22). A third
+                control rather than more options on the day scope, because this
+                filters on the CODE and that one filters on the DAY — and the
+                useful sequence is "everything except neuro" now, "neuro only"
+                afterwards, which one enum could not hold.
+
+                At a site whose pattern states no neuro code the run covers
+                the whole block and says so in a warning on the result banner
+                — the refusal lives in autoGenerate, where the pattern is
+                actually loaded, rather than being guessed at here. */}
+            <select
+              value={neuroScope}
+              onChange={e => setNeuroScope(
+                e.target.value === 'only' || e.target.value === 'exclude' ? e.target.value : '')}
+              disabled={generating}
+              aria-label="Neuro weekend scope"
+              className="fr-field"
+              title={neuroScope === 'only'
+                ? 'Attempt ONLY the neuro weekend calls. Everything else is left for another run.'
+                : neuroScope === 'exclude'
+                  ? 'Attempt every call EXCEPT neuro. The neuro weekends stay open for their own run.'
+                  : 'Neuro weekends fill along with everything else (default).'}
+              style={{
+                padding: '7px 10px', fontSize: 12.5, fontWeight: 600,
+                borderRadius: 'var(--radius-md)',
+                background: 'var(--bg-surface)', color: 'var(--text-muted)',
+                border: '1px solid var(--border)',
+                cursor: generating ? 'not-allowed' : 'pointer',
+              }}
+              >
+              <option value="">Neuro with the rest</option>
+              <option value="exclude">Exclude neuro</option>
+              <option value="only">Neuro only</option>
             </select>
             <Button
               variant="secondary"

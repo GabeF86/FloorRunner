@@ -446,6 +446,18 @@ export interface SolveOptions {
   // comparator is byte-identical to the pre-change engine and the golden
   // parity pins hold. Set only by the measurement harness today.
   candidateTier?: CandidateTierStrategy;
+  // NEURO SCOPE (Gabriel 2026-09-22: "add the option to run the neuro call
+  // weekend as a separate run"). Which call slots the main loop attempts,
+  // by whether they carry the pattern's neuro code:
+  //   'only'    — the neuro weekends and nothing else
+  //   'exclude' — everything EXCEPT neuro, leaving those weekends for a
+  //               separate run
+  // Absent = the whole block, byte-identical to before.
+  //
+  // Separate from dayScope rather than folded into it: neuro is a CODE, the
+  // day scope is a DAY, and the useful combination is obligatory + exclude
+  // now, neuro-only later. A single enum could not express both at once.
+  neuroScope?: 'only' | 'exclude';
   fillMode?: FillMode;
   // Multi-start tie-break rotation (2026-07-26, scenario spacing): a nonzero
   // seed permutes ONLY scoreCall's FINAL provider-id tiebreak via a

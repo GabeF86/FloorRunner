@@ -33,6 +33,10 @@ export interface OptimizeOptions {
   wallClockMs?: number;
   // EXPERIMENTAL candidate ordering; absent/'none' is inert (candidateTier.ts).
   candidateTier?: CandidateTierStrategy;
+  // Neuro scope rides into every trial re-solve for the same reason callsOnly
+  // does: a trial solved over a different slot set than the seed would be
+  // scored against an unlike plan.
+  neuroScope?: 'only' | 'exclude';
   // Fill mode threaded into the seed solve AND every trial re-solve
   // (2026-07-24). autoGenerate never optimizes non-'all' plans (its gate is
   // pinned in autoGenerateFillMode.test.ts) — this exists so a DIRECT caller
@@ -117,12 +121,14 @@ function evaluate(
   fillMode?: FillMode, tieBreakSeed?: number, callsOnly?: boolean,
   dayScope?: 'weekday' | 'weekend',
   candidateTier?: CandidateTierStrategy,
+  neuroScope?: 'only' | 'exclude',
 ): { plan: SolutionPlan; metrics: SolutionMetrics } {
   // The tier rides into every trial re-solve. A trial solved under a
   // DIFFERENT candidate order than the seed would be scored against an unlike
   // plan — the same argument callsOnly already makes above.
   const plan = solve(ctx, {
-    callOverrides: callAssign, fillMode, tieBreakSeed, callsOnly, dayScope, candidateTier,
+    callOverrides: callAssign, fillMode, tieBreakSeed, callsOnly, dayScope,
+    candidateTier, neuroScope,
   });
   return { plan, metrics: scoreSolution(plan, ctx) };
 }
@@ -144,6 +150,7 @@ export function optimize(ctx: GenerationContext, opts: OptimizeOptions = {}): Op
   const callsOnly = opts.callsOnly;
   const dayScope = opts.dayScope;
   const candidateTier = opts.candidateTier;
+  const neuroScope = opts.neuroScope;
   const doc = ctx.callPattern ?? CLASSIC_PATTERN;
   const providerIds = ctx.providers.map(p => p.id).sort();
   const providerById = ctx.providerById ?? new Map(ctx.providers.map(p => [p.id, p]));
@@ -285,7 +292,7 @@ export function optimize(ctx: GenerationContext, opts: OptimizeOptions = {}): Op
             trial.set(uId, pid);   // P fills the gap
             trial.set(sId, qid);   // Q takes P's vacated slot
             resolvesUsed++;
-            const { plan, metrics } = evaluate(ctx, trial, fillMode, tieBreakSeed, callsOnly, dayScope, candidateTier);
+            const { plan, metrics } = evaluate(ctx, trial, fillMode, tieBreakSeed, callsOnly, dayScope, candidateTier, neuroScope);
             if (keepsEveryIncumbentFill(plan) && withinCallCaps(plan)
               && withinObligations(plan)
               && compareMetrics(metrics, bestMetrics) < 0) {
@@ -317,7 +324,7 @@ export function optimize(ctx: GenerationContext, opts: OptimizeOptions = {}): Op
         const trial = new Map(bestAssign);
         trial.set(sId, pid);
         resolvesUsed++;
-        const { plan, metrics } = evaluate(ctx, trial, fillMode, tieBreakSeed, callsOnly, dayScope, candidateTier);
+        const { plan, metrics } = evaluate(ctx, trial, fillMode, tieBreakSeed, callsOnly, dayScope, candidateTier, neuroScope);
         if (keepsEveryIncumbentFill(plan) && withinCallCaps(plan)
           && withinObligations(plan)
           && compareMetrics(metrics, bestMetrics) < 0) {

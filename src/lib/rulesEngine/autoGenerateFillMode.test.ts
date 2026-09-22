@@ -6,8 +6,12 @@ import type { GenerationContext, ShiftTypeInfo } from './genTypes';
 // ── resolveFillMode (pure) ───────────────────────────────────────────────────
 
 describe('resolveFillMode', () => {
-  it("defaults to 'all' when unset", () => {
-    expect(resolveFillMode(undefined)).toBe('all');
+  // OBLIGATORY IS THE DEFAULT since 2026-09-22. Filling every slot the engine
+  // legally can also fills the calls above everybody's obligation, and those
+  // are the ones meant to stay open for pickup — so the mode you get by
+  // saying nothing has to be the one that stops at the obligation.
+  it("defaults to 'obligatory' when unset", () => {
+    expect(resolveFillMode(undefined)).toBe('obligatory');
   });
   it("accepts the exact string 'obligatory'", () => {
     expect(resolveFillMode('obligatory')).toBe('obligatory');
@@ -15,14 +19,19 @@ describe('resolveFillMode', () => {
   it("accepts the exact string 'weekend-only'", () => {
     expect(resolveFillMode('weekend-only')).toBe('weekend-only');
   });
-  it("any other value degrades to 'all'", () => {
+  it("accepts the exact string 'all'", () => {
     expect(resolveFillMode('all')).toBe('all');
-    expect(resolveFillMode('OBLIGATORY')).toBe('all');
-    expect(resolveFillMode('WEEKEND-ONLY')).toBe('all');
-    expect(resolveFillMode('weekend')).toBe('all');
-    expect(resolveFillMode(5)).toBe('all');
-    expect(resolveFillMode(null)).toBe('all');
-    expect(resolveFillMode({})).toBe('all');
+  });
+  it("any other value degrades to 'obligatory'", () => {
+    // Case matters, as it always has: a garbled mode must land on the SAFE
+    // one, and the safe one is now obligatory.
+    expect(resolveFillMode('OBLIGATORY')).toBe('obligatory');
+    expect(resolveFillMode('WEEKEND-ONLY')).toBe('obligatory');
+    expect(resolveFillMode('ALL')).toBe('obligatory');
+    expect(resolveFillMode('weekend')).toBe('obligatory');
+    expect(resolveFillMode(5)).toBe('obligatory');
+    expect(resolveFillMode(null)).toBe('obligatory');
+    expect(resolveFillMode({})).toBe('obligatory');
   });
 });
 
@@ -70,8 +79,11 @@ beforeEach(() => {
 });
 
 describe('autoGenerate — fillMode threading', () => {
-  it('default mode optimizes and relaxes the quota (control)', async () => {
-    const result = await autoGenerate({}, 'ver-1');
+  it("fill-all optimizes and relaxes the quota (control)", async () => {
+    // Was "default mode" and passed no fillMode. The default is obligatory
+    // now, and the optimizer runs on fill-all only — so the mode this test is
+    // actually about is named rather than assumed.
+    const result = await autoGenerate({}, 'ver-1', { fillMode: 'all' });
     expect(result.ok).toBe(true);
     expect(holder.optimizeCalls).toBe(1);
     // seedMetrics reflect the REAL greedy solve: relaxation filled the slot.
@@ -154,7 +166,10 @@ describe('autoGenerate — fillMode threading', () => {
         ]),
       },
     );
-    const result = await autoGenerate({}, 'ver-1', { optimize: false });
+    // Seed eviction is a FILL-ALL behaviour — obligatory stops at the cap
+    // before it ever reaches the stale seed. Named rather than inherited now
+    // that obligatory is the default.
+    const result = await autoGenerate({}, 'ver-1', { optimize: false, fillMode: 'all' });
     expect(result.ok).toBe(true);
     expect(result.evictions).toEqual([expect.objectContaining({
       date: '2026-09-30', code: 'D3',
@@ -169,7 +184,7 @@ describe('autoGenerate — fillMode threading', () => {
       [prov('p1')],
       { providerLimits: { p1: { calls: { C1: 1 } } } },
     );
-    const result = await autoGenerate({}, 'ver-1', { optimize: false });
+    const result = await autoGenerate({}, 'ver-1', { optimize: false, fillMode: 'all' });
     expect(result.ok).toBe(true);
     expect(result.providerCapSummary).toEqual({
       rows: [{ provider_id: 'p1', provider_name: 'p1', code: 'C1', cap: 1, placed: 1 }],

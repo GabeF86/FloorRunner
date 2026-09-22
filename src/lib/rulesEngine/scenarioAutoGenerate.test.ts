@@ -40,7 +40,11 @@ describe('autoGenerate — scenario multi-start wiring', () => {
 
   it('scenario + fill-all runs multi-start (K threads through) and surfaces scenarioReport', async () => {
     holder.ctx = scenarioCtx();
-    const result = await autoGenerate({} as never, 'ver1', { optimize: false, multiStartK: 2 });
+    // Multi-start runs on FILL-ALL only (the same gate autoGenerate applies
+    // to the optimizer), and obligatory is the default since 2026-09-22 — so
+    // the mode this test is about is named rather than inherited.
+    const result = await autoGenerate(
+      {} as never, 'ver1', { optimize: false, multiStartK: 2, fillMode: 'all' });
     expect(result.ok).toBe(true);
     expect(result.scenarioReport).toBeTruthy();
     expect(result.scenarioReport!.multiStart).toMatchObject({ k: 2 });

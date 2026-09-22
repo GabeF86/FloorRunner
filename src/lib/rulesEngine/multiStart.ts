@@ -18,6 +18,8 @@ export interface MultiStartOptions {
   /** Calls only — rides into every start's solve and optimize. */
   callsOnly?: boolean;
   dayScope?: 'weekday' | 'weekend';
+  /** Rides into every start's solve and optimize, like callsOnly/dayScope. */
+  neuroScope?: 'only' | 'exclude';
   k?: number;                // number of starts (seeds 0..k-1); default 8
   fillMode?: FillMode;
   // Run the bounded hill-climb per start (fill-all only — the same rule as
@@ -59,13 +61,17 @@ export function solveMultiStart(
   const startScores: StartScore[] = [];
 
   for (let seed = 0; seed < k; seed++) {
-    const greedy = solve(ctx, { fillMode, tieBreakSeed: seed, callsOnly: opts.callsOnly, dayScope: opts.dayScope });
+    const greedy = solve(ctx, {
+      fillMode, tieBreakSeed: seed, callsOnly: opts.callsOnly,
+      dayScope: opts.dayScope, neuroScope: opts.neuroScope,
+    });
     const seedMetrics = scoreSolution(greedy, ctx);
     let plan = greedy;
     let optimizeStats: OptimizeStats | undefined;
     if (optimizeEnabled) {
       const optimized = optimize(ctx, {
-        fillMode, tieBreakSeed: seed, callsOnly: opts.callsOnly, dayScope: opts.dayScope,
+        fillMode, tieBreakSeed: seed, callsOnly: opts.callsOnly,
+        dayScope: opts.dayScope, neuroScope: opts.neuroScope,
         wallClockMs: opts.wallClockMs, maxResolves: opts.maxResolves,
       });
       plan = optimized.plan;
