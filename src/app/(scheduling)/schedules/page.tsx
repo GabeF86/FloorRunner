@@ -21,11 +21,22 @@ import SchedulesClient from './SchedulesClient';
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
 
-export default async function SchedulesPage() {
+export default async function SchedulesPage(
+  { searchParams }: { searchParams: Promise<Record<string, string | string[] | undefined>> },
+) {
   const sb = sbSchedulingServer();
+
+  // A site chosen in the nav arrives as ?site_id=. Applied HERE as well as in
+  // the client, so the first paint is already the filtered list — reading it
+  // only on the client would render every site's schedules and then replace
+  // them, which is the waterfall this page was converted to remove.
+  const sp = await searchParams;
+  const rawSite = sp.site_id;
+  const siteId = (Array.isArray(rawSite) ? rawSite[0] : rawSite) || '';
 
   let orgId = '';
   let schedules: never[] = [];
+  let allSchedules: never[] = [];
   let sites: never[] = [];
   let loadError: string | null = null;
   // Who is reading, so the list can be scoped and the delete control only
@@ -48,31 +59,42 @@ export default async function SchedulesPage() {
       orgId = org.rows[0]?.id ?? '';
     }
     if (orgId) {
-      // The client starts with NO filters set, so the server renders the
-      // unfiltered list — the same list the client believes it is showing.
-      // That also means the table and the board start from one read rather
-      // than two: the board is deliberately unfiltered, and with no filters
-      // applied the two lists are identical.
-      const [s, si] = await Promise.all([
-        listSchedules(sb, { orgId }),
+      // TWO lists, and they are not interchangeable:
+      //   · the TABLE honours the site filter the nav arrived with
+      //   · the BOARD below it is deliberately unfiltered and always shows
+      //     real state across the group
+      // With no site chosen they are the same query, so only one read is made
+      // — the page was converted away from a waterfall and a second identical
+      // round trip would put part of it back.
+      const [s, all, si] = await Promise.all([
+        listSchedules(sb, { orgId, siteId: siteId || null }),
+        siteId ? listSchedules(sb, { orgId }) : Promise.resolve(null),
         listSites(sb, orgId),
       ]);
+
+      // A PROVIDER SEES PUBLISHED SCHEDULES ONLY. Scoped on the server, in the
+      // request that renders the page — not hidden in the client, where the
+      // rows would still have been shipped to the browser.
+      const scope = (rows: Array<Record<string, unknown>>) => visibleSchedules(
+        actor,
+        rows.map(r => ({
+          ...r,
+          siteId: String(r.site_id ?? ''),
+          status: String(r.status ?? 'draft') as ScheduleStatus,
+          deletedAt: (r.deleted_at as string | null) ?? null,
+        })),
+      ) as never[];
+
       if (!s.ok) loadError = s.error;
       else {
-        // A PROVIDER SEES PUBLISHED SCHEDULES ONLY. Scoped on the server, in
-        // the request that renders the page — not hidden in the client, where
-        // the rows would still have been shipped to the browser.
-        schedules = visibleSchedules(
-          actor,
-          s.rows.map(r => ({
-            ...r,
-            siteId: String(r.site_id ?? ''),
-            status: String(r.status ?? 'draft') as ScheduleStatus,
-            deletedAt: (r.deleted_at as string | null) ?? null,
-          })),
-        ) as never[];
+        schedules = scope(s.rows);
         for (const w of s.warnings ?? []) console.warn(`[schedules] ${w}`);
       }
+      // The board falls back to the filtered list rather than rendering empty
+      // if its own read failed — showing less is better than showing nothing,
+      // and loadError already carries the failure when the table's read broke.
+      allSchedules = all && all.ok ? scope(all.rows) : schedules;
+
       // A failed SITES read costs the filter dropdown, not the list itself.
       if (si.ok) sites = si.rows as never[];
     }
@@ -83,10 +105,11 @@ export default async function SchedulesPage() {
   return (
     <SchedulesClient
       initialSchedules={schedules}
-      initialAllSchedules={schedules}
+      initialAllSchedules={allSchedules}
       initialSites={sites}
       orgId={orgId}
       loadError={loadError}
+      initialSiteFilter={siteId}
       // Whether to render the delete control at all. The route checks the same
       // rule again — this only avoids offering a button that would 403.
       canDelete={schedules.some(r => canDeleteSchedule(actor, {

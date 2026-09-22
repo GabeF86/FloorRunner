@@ -2,11 +2,12 @@
 
 // The Schedules nav row and the panel of locations it opens.
 //
-// ── THE SITE DASHBOARDS MOVED OUT (Gabriel 2026-09-22) ─────────────────────
-// This panel used to carry every per-site dashboard, because this row was a
-// flyout and Dashboard was a plain link — so reaching Paoli's dashboard meant
-// opening a menu called Schedules. They now live under DashboardFlyout, where
-// they are named. This row holds schedules.
+// ── WHAT THIS PANEL HOLDS (Gabriel 2026-09-22) ─────────────────────────────
+// The per-site entries here used to link to each site's DASHBOARD, because
+// this row was a flyout and Dashboard was a plain link — so reaching Paoli's
+// dashboard meant opening a menu called Schedules. The dashboards now live
+// under DashboardFlyout, where they are named, and the site list here stayed:
+// it points at each site's SCHEDULES, which is what the row says.
 //
 // ── CLICK, NOT HOVER (Gabriel 2026-09-16) ──────────────────────────────────
 // It used to open on hover. It no longer does: the row is a BUTTON and the
@@ -24,6 +25,7 @@
 import { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
+import { useOrgAndSites } from '@/components/useOrgAndSites';
 
 interface Props {
   collapsed: boolean;
@@ -33,6 +35,19 @@ const HREF = '/schedules';
 
 export function SchedulesFlyout({ collapsed }: Props) {
   const pathname = usePathname();
+  const { sites, error, sitesLoaded } = useOrgAndSites();
+  // Which site the page is currently filtered to, for the highlight.
+  //
+  // NOT useSearchParams: this component sits inside AppShell, so it renders on
+  // EVERY page, and that hook opts every static page out of prerendering —
+  // /requests, /reports, /staffing-calculator and /grid-calculator/print all
+  // failed to prerender when it was used here. The build still reported
+  // "compiled successfully", which is exactly how it would have shipped.
+  //
+  // Read from the address bar instead, when the panel opens. It is only needed
+  // to bold one row, it costs no hook, and a stale value between renders is
+  // invisible because the panel closes on navigation anyway.
+  const [activeSite, setActiveSite] = useState('');
   const [open, setOpen] = useState(false);
   const wrap = useRef<HTMLDivElement>(null);
 
@@ -57,6 +72,12 @@ export function SchedulesFlyout({ collapsed }: Props) {
   // Navigating closes it — otherwise the panel hangs over the page you just
   // asked for.
   useEffect(() => { setOpen(false); }, [pathname]);
+
+  // Refreshed each time the panel opens, which is the only moment it is read.
+  useEffect(() => {
+    if (!open) return;
+    setActiveSite(new URLSearchParams(window.location.search).get('site_id') ?? '');
+  }, [open]);
 
   return (
     <div ref={wrap} style={{ position: 'relative' }}>
@@ -121,9 +142,45 @@ export function SchedulesFlyout({ collapsed }: Props) {
             );
           })}
 
+          <div style={{
+            fontSize: 'var(--fs-xs)', textTransform: 'uppercase', letterSpacing: 1,
+            color: 'var(--text-dim)', fontWeight: 700,
+            padding: '10px var(--space-2) 6px',
+          }}>
+            By site
+          </div>
+
+          {/* Three distinguishable states. An outright failure must never read
+              as "this group has no sites". */}
+          {error ? (
+            <div style={noteStyle}>Sites could not be loaded.</div>
+          ) : !sitesLoaded ? (
+            <div style={noteStyle}>Loading sites…</div>
+          ) : sites.length === 0 ? (
+            <div style={noteStyle}>No sites configured yet.</div>
+          ) : (
+            sites.map(s => {
+              const href = `${HREF}?site_id=${s.id}`;
+              return (
+                <Link
+                  key={s.id}
+                  href={href}
+                  role="menuitem"
+                  className="fr-nav-sub fr-focus"
+                  data-active={pathname === HREF && activeSite === s.id}
+                >
+                  {s.short_name ? `${s.short_name} — ${s.name}` : s.name}
+                </Link>
+              );
+            })
+          )}
+
         </div>
       )}
     </div>
   );
 }
 
+const noteStyle: React.CSSProperties = {
+  padding: '7px var(--space-2)', fontSize: 'var(--fs-sm)', color: 'var(--text-dim)',
+};

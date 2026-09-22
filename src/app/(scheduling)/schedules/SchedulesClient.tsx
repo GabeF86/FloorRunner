@@ -71,6 +71,11 @@ export interface SchedulesClientProps {
   initialSites: Site[];
   orgId: string;
   loadError: string | null;
+  /** The site the nav arrived with (?site_id=). Seeded into the filter so the
+   *  control agrees with the list the server already rendered — a dropdown
+   *  reading "All sites" above a single site's schedules is a screen that
+   *  contradicts itself. */
+  initialSiteFilter?: string;
   /** Render the delete control at all. The route re-checks the same rule — this
    *  only avoids offering a button that would come back 403. */
   canDelete?: boolean;
@@ -81,7 +86,7 @@ export interface SchedulesClientProps {
 export default function SchedulesClient(
   {
     initialSchedules, initialAllSchedules, initialSites, orgId, loadError,
-    canDelete = false, canSeeDeleted = false,
+    initialSiteFilter = '', canDelete = false, canSeeDeleted = false,
   }: SchedulesClientProps,
 ) {
   // The recycle view: deleted schedules, admins only.
@@ -93,7 +98,7 @@ export default function SchedulesClient(
   // Starts FALSE — the rows are already on screen, and a spinner over visible
   // data is the flash this conversion removes.
   const [loading, setLoading] = useState(false);
-  const [siteFilter, setSiteFilter] = useState('');
+  const [siteFilter, setSiteFilter] = useState(initialSiteFilter);
   const [typeFilter, setTypeFilter] = useState('');
   const [groupFilter, setGroupFilter] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
