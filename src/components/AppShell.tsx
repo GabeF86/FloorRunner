@@ -6,6 +6,7 @@ import Link from 'next/link';
 import { Button } from '@/components/ui';
 import { SignOutButton } from '@/components/SignOutButton';
 import { SchedulesFlyout } from '@/components/SchedulesFlyout';
+import { DashboardFlyout } from '@/components/DashboardFlyout';
 
 interface NavItem {
   href: string;
@@ -214,6 +215,9 @@ export default function AppShell({ fullBleed, children }: { fullBleed?: boolean;
                 // would silently never appear.
                 if (item.href === '/schedules') {
                   return <SchedulesFlyout key={item.href} collapsed={collapsed} />;
+                }
+                if (item.href === '/dashboard') {
+                  return <DashboardFlyout key={item.href} collapsed={collapsed} />;
                 }
 
                 return (

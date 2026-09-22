@@ -2,6 +2,12 @@
 
 // The Schedules nav row and the panel of locations it opens.
 //
+// ── THE SITE DASHBOARDS MOVED OUT (Gabriel 2026-09-22) ─────────────────────
+// This panel used to carry every per-site dashboard, because this row was a
+// flyout and Dashboard was a plain link — so reaching Paoli's dashboard meant
+// opening a menu called Schedules. They now live under DashboardFlyout, where
+// they are named. This row holds schedules.
+//
 // ── CLICK, NOT HOVER (Gabriel 2026-09-16) ──────────────────────────────────
 // It used to open on hover. It no longer does: the row is a BUTTON and the
 // panel opens only when you click it. A hover menu on the primary nav opens
@@ -18,7 +24,6 @@
 import { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { useOrgAndSites } from '@/components/useOrgAndSites';
 
 interface Props {
   collapsed: boolean;
@@ -28,12 +33,12 @@ const HREF = '/schedules';
 
 export function SchedulesFlyout({ collapsed }: Props) {
   const pathname = usePathname();
-  const { sites, error, sitesLoaded } = useOrgAndSites();
   const [open, setOpen] = useState(false);
   const wrap = useRef<HTMLDivElement>(null);
 
-  const active = pathname === HREF || pathname.startsWith(HREF + '/')
-    || pathname.startsWith('/dashboard/');
+  // No longer claims /dashboard: that row is its own flyout now, and two nav
+  // rows lit at once says the page belongs to both.
+  const active = pathname === HREF || pathname.startsWith(HREF + '/');
 
   useEffect(() => {
     if (!open) return;
@@ -94,51 +99,9 @@ export function SchedulesFlyout({ collapsed }: Props) {
             All schedules
           </Link>
 
-          <div style={{
-            fontSize: 'var(--fs-xs)', textTransform: 'uppercase', letterSpacing: 1,
-            color: 'var(--text-dim)', fontWeight: 700,
-            padding: '10px var(--space-2) 6px',
-          }}>
-            Site dashboards
-          </div>
-
-          {/* Three distinguishable states. An outright failure must never read
-              as "this group has no sites". */}
-          {error ? (
-            <div style={noteStyle}>Sites could not be loaded.</div>
-          ) : !sitesLoaded ? (
-            <div style={noteStyle}>Loading sites…</div>
-          ) : sites.length === 0 ? (
-            <div style={noteStyle}>No sites configured yet.</div>
-          ) : (
-            sites.map(s => {
-              const href = `/dashboard/${s.id}`;
-              return (
-                <Link
-                  key={s.id}
-                  href={href}
-                  role="menuitem"
-                  className="fr-nav-sub fr-focus"
-                  data-active={pathname === href}
-                >
-                  {s.short_name ? `${s.short_name} — ${s.name}` : s.name}
-                </Link>
-              );
-            })
-          )}
-
-          <div style={{ borderTop: '1px solid var(--border-faint)', marginTop: 6, paddingTop: 6 }}>
-            <Link href="/dashboard" role="menuitem" className="fr-nav-sub fr-focus"
-                  data-active={pathname === '/dashboard'}>
-              All sites (UAS)
-            </Link>
-          </div>
         </div>
       )}
     </div>
   );
 }
 
-const noteStyle: React.CSSProperties = {
-  padding: '7px var(--space-2)', fontSize: 'var(--fs-sm)', color: 'var(--text-dim)',
-};

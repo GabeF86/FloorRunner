@@ -761,6 +761,14 @@ export interface BoardPerson {
   /** Hours as scheduled, e.g. "24 h"; blank when the times are not set. */
   hours: string;
   providerType: string;
+  /** call_rank for a call shift — 1 = first call. null for a day shift.
+   *  Carried through so the card can tint C1/C2/C3 apart instead of painting
+   *  every call chip the same red, which made three different jobs on one card
+   *  read as one. */
+  callRank: number | null;
+  /** Shift start as scheduled, "HH:MM:SS" or null. The ordering key for the
+   *  day list — see the sort below. */
+  startTime: string | null;
 }
 
 export interface SiteDayBoard {
@@ -846,6 +854,8 @@ export function siteDayBoard(input: {
           code: st.code,
           hours: shiftHours(st.start_time, st.end_time),
           providerType: provider?.provider_type || '',
+          callRank: st.category === 'call' ? (st.call_rank ?? null) : null,
+          startTime: st.start_time ?? null,
         };
         if (person.providerType === 'crna') crnaCount++; else mdCount++;
         if (st.category === 'call') {
@@ -857,8 +867,20 @@ export function siteDayBoard(input: {
     }
 
     onCall.sort((a, b) => a.rank - b.rank || a.name.localeCompare(b.name));
+    // BY SHIFT, NOT BY NAME (Gabriel 2026-09-22). Alphabetical order scatters
+    // the 7-3s among the D-shifts and the late starts, so the one question the
+    // card is opened with — "who is on days" — has to be answered by reading
+    // every line. Sorting on start time puts the day block together, then the
+    // later starts, and identical codes land adjacent. Name only breaks ties
+    // inside one code, where it is genuinely the useful order.
+    //
+    // A missing start time sorts LAST rather than first: several imported
+    // types state none, and a null is "unknown", which does not belong at the
+    // head of a list that reads as a timeline.
     inRooms.sort((a, b) =>
-      (a.providerType === 'crna' ? 1 : 0) - (b.providerType === 'crna' ? 1 : 0)
+      (a.startTime ?? '99').localeCompare(b.startTime ?? '99')
+      || a.code.localeCompare(b.code)
+      || (a.providerType === 'crna' ? 1 : 0) - (b.providerType === 'crna' ? 1 : 0)
       || a.name.localeCompare(b.name));
 
     return {

@@ -729,11 +729,16 @@ export function OperationsView({ data, fatal }: { data: OperationsData | null; f
                         <div key={p.providerId + p.code} style={{
                           display: 'flex', alignItems: 'center', gap: 6, marginBottom: 3,
                         }}>
-                          <span style={{
-                            ...mono, fontSize: 10, fontWeight: 600, padding: '1px 5px',
-                            borderRadius: 'var(--radius-sm)',
-                            background: 'var(--danger-bg)', color: 'var(--danger)',
-                          }}>{p.code}</span>
+                          <span
+                            title={p.callRank !== null ? `Call rank ${p.callRank}` : undefined}
+                            style={{
+                              ...mono, fontSize: 10, fontWeight: 600, padding: '1px 5px',
+                              borderRadius: 'var(--radius-sm)',
+                              background: callTint(p.callRank).bg,
+                              color: callTint(p.callRank).fg,
+                              border: `1px solid color-mix(in srgb, ${callTint(p.callRank).fg} 25%, transparent)`,
+                            }}
+                          >{p.code}</span>
                           <span style={{ fontSize: 'var(--fs-sm)', fontWeight: 600 }}>{p.name}</span>
                           <span style={{ marginLeft: 'auto', ...mono, fontSize: 10, color: 'var(--text-dim)' }}>
                             {p.hours}
@@ -841,6 +846,34 @@ function FilterChip(
       }}>{count}</span>
     </button>
   );
+}
+
+/**
+ * Call chips, tinted by call_rank.
+ *
+ * Every call chip used to be `--danger` — first call, second call and the
+ * neuro doctor all painted identically, so a card showing three different jobs
+ * read as one repeated three times (Gabriel 2026-09-22).
+ *
+ * The hues come from the EXISTING status tokens rather than new hex values:
+ * this palette has four legitimate homes and adding a fifth is how the ramp
+ * drifts out of contrast. Each token already carries a matched pair and flips
+ * correctly between themes, which a hand-picked colour would not.
+ *
+ * First call keeps the red it has always had — it is the one being carried
+ * tonight, and the ranks descend in urgency from there. Rank 4 and anything
+ * unranked fall back to neutral ink: an invented fourth colour would imply a
+ * distinction the data does not make.
+ */
+const CALL_TINT: Record<number, { bg: string; fg: string }> = {
+  1: { bg: 'var(--danger-bg)', fg: 'var(--danger)' },
+  2: { bg: 'var(--warn-bg)', fg: 'var(--warn)' },
+  3: { bg: 'var(--info-bg)', fg: 'var(--info)' },
+};
+
+function callTint(rank: number | null): { bg: string; fg: string } {
+  return (rank !== null && CALL_TINT[rank])
+    || { bg: 'var(--bg-deep)', fg: 'var(--text-muted)' };
 }
 
 /** A board tab. Underlined when active, quiet when not — the same contract the

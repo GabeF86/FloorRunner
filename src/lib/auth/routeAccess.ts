@@ -159,9 +159,33 @@ export function classifyRoute(pathname: string): Access {
   // matters: /api/board/assistant must not inherit the '/api/board' allowance,
   // so it is excluded explicitly below rather than by list ordering.
   if (ASSISTANT_PREFIXES.some(p => underPrefix(path, p))) return 'admin';
+  if (ADMIN_EXACT.includes(path)) return 'admin';
   for (const p of STAFF_PREFIXES) if (underPrefix(path, p)) return 'staff';
   return 'admin';
 }
+
+/**
+ * Routes that are admin-only AT THAT EXACT PATH, while everything BELOW them
+ * stays on the staff list.
+ *
+ * `/dashboard` is the whole-group roll-up — every site's staffing, every
+ * provider, in one view (Gabriel 2026-09-22: UAS Master, admins only).
+ * `/dashboard/<siteId>` is one hospital's day and stays open to staff.
+ *
+ * A prefix entry cannot express that: `underPrefix('/dashboard/abc',
+ * '/dashboard')` is true, so removing the prefix from the staff list would
+ * take every per-site dashboard with it. Hence exact matching, and hence this
+ * is checked BEFORE the staff list — the same ordering rule ASSISTANT_PREFIXES
+ * relies on, so a carve-out cannot be defeated by adding a broader prefix
+ * later.
+ *
+ * Note this is the REAL gate. Hiding the link in the navigation is a courtesy
+ * to the reader, not a control: the URL is guessable and the page would render
+ * for anyone who typed it.
+ */
+const ADMIN_EXACT: readonly string[] = [
+  '/dashboard',
+] as const;
 
 /**
  * Routes that sit UNDER an allowed staff prefix but must stay admin-only.

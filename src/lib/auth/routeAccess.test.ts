@@ -47,7 +47,12 @@ describe('classifyRoute — deny by default', () => {
   it('classifies the operational surface as staff', () => {
     for (const p of [
       '/schedules', '/schedules/abc-123', '/providers', '/providers/abc-123',
-      '/board', '/sites', '/reports', '/requests', '/dashboard',
+      '/board', '/sites', '/reports', '/requests',
+      // '/dashboard' EXACTLY is no longer staff — it is the UAS Master
+      // roll-up, admin-only since 2026-09-22 (see the ADMIN_EXACT block
+      // below). A site's own dashboard is still staff, which is the whole
+      // point of matching it exactly rather than by prefix.
+      '/dashboard/abc-123',
       '/block-prep', '/grid-calculator', '/staffing-calculator', '/operations',
       '/api/scheduling/providers',
       '/api/scheduling/providers/abc-123/burden',
@@ -281,5 +286,45 @@ describe('the staff tier cannot reach anything structural', () => {
     for (const p of ['/api/auth/users', '/api/scheduling/users', '/api/scheduling/roles']) {
       expect(classifyRoute(p), p).toBe('admin');
     }
+  });
+});
+
+describe('UAS Master is admin-only, its per-site dashboards are not', () => {
+  // Gabriel 2026-09-22: the whole-group roll-up is for admins; a site's own
+  // dashboard stays open to back office. Expressing that needed EXACT matching
+  // — a prefix entry cannot separate a path from its own children.
+
+  it('/dashboard itself is admin-only', () => {
+    expect(classifyRoute('/dashboard')).toBe('admin');
+    expect(isAllowed(classifyRoute('/dashboard'), 'staff')).toBe(false);
+    expect(isAllowed(classifyRoute('/dashboard'), 'provider')).toBe(false);
+    expect(isAllowed(classifyRoute('/dashboard'), 'anonymous')).toBe(false);
+    expect(isAllowed(classifyRoute('/dashboard'), 'admin')).toBe(true);
+  });
+
+  it('a trailing slash is the same route, not a way around the gate', () => {
+    expect(classifyRoute('/dashboard/')).toBe('admin');
+  });
+
+  it('a query string does not open it either', () => {
+    expect(classifyRoute('/dashboard?site=all')).toBe('admin');
+  });
+
+  it('a SITE dashboard stays reachable by staff', () => {
+    const p = '/dashboard/2ddd2427-22fb-4290-9c4c-03a957e5af4e';
+    expect(classifyRoute(p)).toBe('staff');
+    expect(isAllowed(classifyRoute(p), 'staff')).toBe(true);
+  });
+
+  it('the exact carve-out does not swallow a sibling route that merely starts the same', () => {
+    // '/dashboards' is a different path and must not inherit the carve-out by
+    // string prefix — it falls to the admin default for its own reason.
+    expect(classifyRoute('/dashboards')).toBe('admin');
+  });
+
+  it('still denies a provider the per-site dashboard', () => {
+    // Narrowing the roll-up must not accidentally widen anything below it.
+    const p = '/dashboard/abc';
+    expect(isAllowed(classifyRoute(p), 'provider')).toBe(false);
   });
 });

@@ -337,8 +337,11 @@ describe('siteDayBoard', () => {
     });
     expect(board[0].onCall.map(p => p.code)).toEqual(['C1', 'C2']);
     expect(board[0].onCall[0]).toMatchObject({ name: 'Farkas', hours: '16 h' });
-    // Physicians before CRNAs in the rooms.
-    expect(board[0].inRooms.map(p => p.providerType)).toEqual(['physician', 'crna']);
+    // Rooms are ordered BY SHIFT since 2026-09-22 — shift code outranks
+    // provider type, so these two land 7-3 then 7-5 regardless of who is in
+    // them. Type still breaks ties WITHIN one code; that is asserted in "the
+    // day list is ordered by SHIFT, not by name" below.
+    expect(board[0].inRooms.map(p => p.code)).toEqual(['7-3', '7-5']);
     expect(board[0]).toMatchObject({ mdCount: 3, crnaCount: 1 });
   });
 
@@ -1153,5 +1156,76 @@ describe('the average covers the schedule we HOLD, not the calendar year', () =>
       providers: [], profiles: [], credentials: [], availability: [], slots: [], sites: [],
     });
     expect(b.averageFrom).toBe('2026-01-01');
+  });
+});
+
+describe('the day list is ordered by SHIFT, not by name', () => {
+  // Gabriel 2026-09-22. Alphabetical order scatters the 7-3s among the
+  // D-shifts, so "who is on days" has to be answered by reading every line.
+  const sites = [{ id: 's1', name: 'Paoli', short_name: 'PH' }];
+  const people: OpsProviderRow[] = [
+    { id: 'a', last_name: 'Adams', provider_type: 'physician' },
+    { id: 'm', last_name: 'Miller', provider_type: 'physician' },
+    { id: 'z', last_name: 'Zhao', provider_type: 'physician' },
+    { id: 'c', last_name: 'Barnes', provider_type: 'crna' },
+  ];
+
+  it('groups identical shifts together, earliest start first', () => {
+    const b = siteDayBoard({
+      date: TUE, sites, providers: people,
+      slots: [
+        slot('s1', TUE, '9a-7p', { start: '09:00:00', held: ['a'] }),
+        slot('s1', TUE, '7-3', { start: '07:00:00', held: ['z'] }),
+        slot('s1', TUE, '7-3', { start: '07:00:00', held: ['m'] }),
+      ],
+    });
+    // Alphabetically this would be Adams, Miller, Zhao — splitting the two
+    // 7-3s around the 09:00 start.
+    expect(b[0].inRooms.map(p => [p.code, p.name])).toEqual([
+      ['7-3', 'Miller'], ['7-3', 'Zhao'], ['9a-7p', 'Adams'],
+    ]);
+  });
+
+  it('sorts a shift with NO start time last, not first', () => {
+    // null is "unknown", and unknown does not belong at the head of a list
+    // that reads as a timeline.
+    const b = siteDayBoard({
+      date: TUE, sites, providers: people,
+      slots: [
+        slot('s1', TUE, 'DAY', { held: ['a'] }),
+        slot('s1', TUE, '7-3', { start: '07:00:00', held: ['z'] }),
+      ],
+    });
+    expect(b[0].inRooms.map(p => p.code)).toEqual(['7-3', 'DAY']);
+  });
+
+  it('still puts the MD before the CRNA inside one shift code', () => {
+    const b = siteDayBoard({
+      date: TUE, sites, providers: people,
+      slots: [
+        slot('s1', TUE, '7-3', { start: '07:00:00', group: 'both', held: ['c'] }),
+        slot('s1', TUE, '7-3', { start: '07:00:00', held: ['z'] }),
+      ],
+    });
+    expect(b[0].inRooms.map(p => p.providerType)).toEqual(['physician', 'crna']);
+  });
+
+  it('carries call_rank so the card can tint C1/C2/C3 apart', () => {
+    const b = siteDayBoard({
+      date: TUE, sites, providers: people,
+      slots: [
+        slot('s1', TUE, 'C2', { category: 'call', rank: 2, held: ['m'] }),
+        slot('s1', TUE, 'C1', { category: 'call', rank: 1, held: ['a'] }),
+      ],
+    });
+    expect(b[0].onCall.map(p => [p.code, p.callRank])).toEqual([['C1', 1], ['C2', 2]]);
+  });
+
+  it('leaves callRank null on a DAY shift, so it never picks up a call tint', () => {
+    const b = siteDayBoard({
+      date: TUE, sites, providers: people,
+      slots: [slot('s1', TUE, '7-3', { start: '07:00:00', rank: 3, held: ['z'] })],
+    });
+    expect(b[0].inRooms[0].callRank).toBeNull();
   });
 });
