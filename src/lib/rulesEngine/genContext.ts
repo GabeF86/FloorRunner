@@ -716,6 +716,24 @@ export async function loadGenerationContext(
     .select('id, provider_type, short_display_name', { count: 'exact' })
     .in('id', providerIds)
     .eq('status', 'active')
+    // PHYSICIAN-ONLY (restored 2026-09-22). Call generation is physician-only
+    // by design (ALGORITHM.md §3 documents this filter) and the query had
+    // never carried it — the pool is selected on home_site_id + call_taker,
+    // and a CRNA flagged call_taker at the site landed in it.
+    //
+    // WHY THAT WAS NOT CAUGHT BY THE ELIGIBILITY GATE: the group check reads
+    // `schedule_slots.provider_group`, which is 'both' on all 5,841 slots in
+    // this database — slots do not inherit the restriction from their shift
+    // type, so the gate has never fired for any slot. Two independent defects
+    // that are each harmless alone: with the pool filtered, a permissive slot
+    // has no CRNA candidate; with slots carrying their type's group, an
+    // unfiltered pool is gated at placement. Together they put 63 of 146
+    // Paoli call placements (43%) on a CRNA in a live measurement.
+    //
+    // No live schedule is affected — every one was imported, and humans put
+    // the right people in the right slots. This fires the first time the
+    // engine generates at a site where a CRNA is flagged call_taker.
+    .eq('provider_type', 'physician')
     .order('id');
   countQ();
   const credsQ = sb
