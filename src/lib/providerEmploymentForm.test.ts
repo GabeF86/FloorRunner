@@ -21,6 +21,7 @@ function state(over: Partial<EmploymentFormState> = {}): EmploymentFormState {
     isDayDoc: false,
     isIcuDoc: false,
     callTaker: true,
+    scheduleMaker: false,
     partialCallTaker: false,
     homeSiteId: '',
     schedulingNotes: '',
@@ -195,5 +196,29 @@ describe('employmentStatusOptions', () => {
       const opt = employmentStatusOptions(v).find(o => o.value === v)!;
       expect(opt.label, `${v} has no human label`).not.toBe(v);
     }
+  });
+});
+
+describe('Schedule Maker (patch62)', () => {
+  it('is written straight through', () => {
+    expect(employmentSavePayload(state({ scheduleMaker: true })).schedule_maker).toBe(true);
+  });
+
+  it('SURVIVES an employment-status change, unlike min_monthly_shifts', () => {
+    // The two flags look alike and behave oppositely on purpose. A monthly
+    // minimum is a term of PER-DIEM employment and is cleared when somebody
+    // leaves that status. Being the person who builds the schedule is a job:
+    // revoking it because a colleague's hours changed would drop them out of
+    // the draft they are working on, silently.
+    for (const s of ['full_time', 'part_time', 'per_diem', 'locums', 'retired']) {
+      const p = employmentSavePayload(state({ employmentStatus: s, scheduleMaker: true }));
+      expect(p.schedule_maker, s).toBe(true);
+    }
+    expect(employmentSavePayload(state({ employmentStatus: 'full_time', minMonthlyShifts: '4' }))
+      .min_monthly_shifts).toBeNull();
+  });
+
+  it('is a column the API will actually accept', () => {
+    expect(PROFILE_COLUMNS).toContain('schedule_maker');
   });
 });

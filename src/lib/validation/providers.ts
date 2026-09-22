@@ -119,6 +119,9 @@ export const PROFILE_COLUMNS = [
   // Per-diem contracted minimum (patch61). NULL = none stated, never flagged.
   'min_monthly_shifts',
   'call_taker', 'partial_call_taker', 'holiday_call_eligible',
+  // May build/edit drafts and delete schedules (patch62). A job, not a grade
+  // of employment — never cleared by an employment-status change.
+  'schedule_maker',
   'weekend_call_eligible', 'night_call_eligible', 'backup_call_eligible',
   'late_shift_eligible', 'can_supervise_crnas', 'can_work_solo',
   'can_cover_offsite', 'home_site_id', 'fellowship_primary', 'fellowships',

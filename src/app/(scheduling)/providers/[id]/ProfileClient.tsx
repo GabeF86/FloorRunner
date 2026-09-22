@@ -102,6 +102,7 @@ const EMPTY_PROFILE: EmploymentProfile = {
   max_weekly_hours: null,
   call_taker: false,
   partial_call_taker: false,
+  schedule_maker: false,
   home_site_id: null,
   fellowship_primary: null,
   fellowships: [],

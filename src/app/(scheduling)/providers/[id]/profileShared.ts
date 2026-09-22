@@ -58,6 +58,9 @@ export interface EmploymentProfile {
   min_monthly_shifts: number | null;
   call_taker: boolean;
   partial_call_taker: boolean;
+  /** May build and edit draft schedules, and delete schedules. Assigned by an
+   *  admin or a site chief; can be anyone (patch62). */
+  schedule_maker: boolean;
   home_site_id: string | null;
   fellowship_primary: string | null;
   fellowships: string[];

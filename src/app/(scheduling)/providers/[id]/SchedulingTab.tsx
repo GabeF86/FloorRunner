@@ -73,6 +73,7 @@ export function SchedulingTab({ profile, sites, saveState, onSave }: { profile: 
   const [isDayDoc, setIsDayDoc] = useState(profile.is_day_doc);
   const [isIcuDoc, setIsIcuDoc] = useState(profile.is_icu_doc);
   const [callTaker, setCallTaker] = useState(profile.call_taker);
+  const [scheduleMaker, setScheduleMaker] = useState(profile.schedule_maker);
   const [partialCall, setPartialCall] = useState(profile.partial_call_taker);
   const [schedulingNotes, setSchedulingNotes] = useState(profile.scheduling_notes || '');
   const [homeSite, setHomeSite] = useState(profile.home_site_id || '');
@@ -96,6 +97,7 @@ export function SchedulingTab({ profile, sites, saveState, onSave }: { profile: 
     setIsDayDoc(profile.is_day_doc);
     setIsIcuDoc(profile.is_icu_doc);
     setCallTaker(profile.call_taker);
+    setScheduleMaker(profile.schedule_maker);
     setPartialCall(profile.partial_call_taker);
     setSchedulingNotes(profile.scheduling_notes || '');
     setHomeSite(profile.home_site_id || '');
@@ -140,6 +142,7 @@ export function SchedulingTab({ profile, sites, saveState, onSave }: { profile: 
     isDayDoc,
     isIcuDoc,
     callTaker,
+    scheduleMaker,
     partialCallTaker: partialCall,
     homeSiteId: homeSite,
     schedulingNotes,
@@ -255,6 +258,27 @@ export function SchedulingTab({ profile, sites, saveState, onSave }: { profile: 
               the ICU Rotation entry section on the Availability tab. */}
           <Toggle label="ICU Doc" checked={isIcuDoc} onChange={setIsIcuDoc} />
         </div>
+
+        {/* A job, not a grade of employment — which is why it sits on its own
+            rather than among the call flags below. It confers the right to
+            build and edit DRAFT schedules at every site, and to delete
+            schedules; the rules are in lib/auth/schedulePermissions.ts. */}
+        <SectionLabel>Scheduling duties</SectionLabel>
+        <div style={{ display: 'flex', gap: 'var(--space-2)', flexWrap: 'wrap' }}>
+          <Toggle
+            label="Schedule Maker"
+            checked={scheduleMaker}
+            onChange={setScheduleMaker}
+          />
+        </div>
+        <p style={{
+          margin: '4px 0 0', fontSize: 'var(--fs-xs)', color: 'var(--text-dim)',
+          lineHeight: 1.5,
+        }}>
+          Builds and edits drafts at any site, and may delete schedules.
+          Assigned by an admin or a site chief. Site chiefs already work drafts
+          at their own hospital without this.
+        </p>
 
         <SectionLabel>Call eligibility</SectionLabel>
         <div style={{ display: 'flex', gap: 'var(--space-2)', flexWrap: 'wrap' }}>

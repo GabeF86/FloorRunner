@@ -126,6 +126,7 @@ export interface EmploymentFormState {
   isDayDoc: boolean;
   isIcuDoc: boolean;
   callTaker: boolean;
+  scheduleMaker: boolean;
   partialCallTaker: boolean;
   homeSiteId: string;
   schedulingNotes: string;
@@ -167,6 +168,11 @@ export function employmentSavePayload(s: EmploymentFormState): Record<string, un
     is_icu_doc: s.isIcuDoc,
     call_taker: s.callTaker,
     partial_call_taker: s.partialCallTaker,
+    // Unlike min_monthly_shifts this is NOT cleared by any status change: the
+    // person who builds the schedule need not be a particular kind of
+    // employee, and silently revoking it on an unrelated edit would break the
+    // draft they are in the middle of.
+    schedule_maker: s.scheduleMaker,
     home_site_id: s.homeSiteId || null,
     scheduling_notes: s.schedulingNotes.trim() || null,
     // Day-Doc-only fields, reset when the role is off so a former day doc
