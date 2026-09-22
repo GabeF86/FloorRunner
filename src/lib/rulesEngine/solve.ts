@@ -269,6 +269,7 @@ export function solve(ctx: GenerationContext, opts: SolveOptions = {}): Solution
   // slot honestly: the chain source is NOT unfilled and no link was severed.
   const run: SolverRun = {
     ctx, doc, plan, state, budget,
+    candidateTier: opts.candidateTier ?? 'none',
     isOverlay, callRank, reliefCodes,
     obligatory, obligationByPid, callCountByPid,
     callCaps, callCodeTally,

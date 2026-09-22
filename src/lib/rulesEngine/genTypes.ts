@@ -436,8 +436,16 @@ export type FillMode = 'all' | 'obligatory' | 'weekend-only';
 // fillMode 'obligatory'), the obligation cap wins over the pin (2026-07-24,
 // Gabriel: the engine must never auto-place past the cap on ANY path; the
 // refused slot stays open, reported 'obligation-cap').
+import type { CandidateTierStrategy } from './candidateTier';
+export type { CandidateTierStrategy };
+
 export interface SolveOptions {
   callOverrides?: Map<string, string>;
+  // EXPERIMENTAL availability-aware candidate tier (candidateTier.ts).
+  // Absent / 'none' = the term returns 0 for every candidate, so the
+  // comparator is byte-identical to the pre-change engine and the golden
+  // parity pins hold. Set only by the measurement harness today.
+  candidateTier?: CandidateTierStrategy;
   fillMode?: FillMode;
   // Multi-start tie-break rotation (2026-07-26, scenario spacing): a nonzero
   // seed permutes ONLY scoreCall's FINAL provider-id tiebreak via a

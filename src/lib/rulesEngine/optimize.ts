@@ -5,6 +5,7 @@ import { mergedCallCapsForCtx, planWithinCallCaps } from './providerCaps';
 import { computeObligations, planWithinObligations } from './obligation';
 import { CLASSIC_PATTERN } from './callPattern';
 import type { CallPatternDoc } from './callPattern';
+import type { CandidateTierStrategy } from './candidateTier';
 import type {
   GenerationContext, SolutionPlan, SolutionMetrics, SlotToFill, UnfilledSlot,
   FillMode,
@@ -30,6 +31,8 @@ export interface OptimizeOptions {
   maxIterations?: number;
   maxResolves?: number;
   wallClockMs?: number;
+  // EXPERIMENTAL candidate ordering; absent/'none' is inert (candidateTier.ts).
+  candidateTier?: CandidateTierStrategy;
   // Fill mode threaded into the seed solve AND every trial re-solve
   // (2026-07-24). autoGenerate never optimizes non-'all' plans (its gate is
   // pinned in autoGenerateFillMode.test.ts) — this exists so a DIRECT caller
@@ -113,8 +116,14 @@ function evaluate(
   ctx: GenerationContext, callAssign: Map<string, string>,
   fillMode?: FillMode, tieBreakSeed?: number, callsOnly?: boolean,
   dayScope?: 'weekday' | 'weekend',
+  candidateTier?: CandidateTierStrategy,
 ): { plan: SolutionPlan; metrics: SolutionMetrics } {
-  const plan = solve(ctx, { callOverrides: callAssign, fillMode, tieBreakSeed, callsOnly, dayScope });
+  // The tier rides into every trial re-solve. A trial solved under a
+  // DIFFERENT candidate order than the seed would be scored against an unlike
+  // plan — the same argument callsOnly already makes above.
+  const plan = solve(ctx, {
+    callOverrides: callAssign, fillMode, tieBreakSeed, callsOnly, dayScope, candidateTier,
+  });
   return { plan, metrics: scoreSolution(plan, ctx) };
 }
 
@@ -134,6 +143,7 @@ export function optimize(ctx: GenerationContext, opts: OptimizeOptions = {}): Op
   // plan does not have would be scored against an unlike plan.
   const callsOnly = opts.callsOnly;
   const dayScope = opts.dayScope;
+  const candidateTier = opts.candidateTier;
   const doc = ctx.callPattern ?? CLASSIC_PATTERN;
   const providerIds = ctx.providers.map(p => p.id).sort();
   const providerById = ctx.providerById ?? new Map(ctx.providers.map(p => [p.id, p]));
@@ -275,7 +285,7 @@ export function optimize(ctx: GenerationContext, opts: OptimizeOptions = {}): Op
             trial.set(uId, pid);   // P fills the gap
             trial.set(sId, qid);   // Q takes P's vacated slot
             resolvesUsed++;
-            const { plan, metrics } = evaluate(ctx, trial, fillMode, tieBreakSeed, callsOnly, dayScope);
+            const { plan, metrics } = evaluate(ctx, trial, fillMode, tieBreakSeed, callsOnly, dayScope, candidateTier);
             if (keepsEveryIncumbentFill(plan) && withinCallCaps(plan)
               && withinObligations(plan)
               && compareMetrics(metrics, bestMetrics) < 0) {
@@ -307,7 +317,7 @@ export function optimize(ctx: GenerationContext, opts: OptimizeOptions = {}): Op
         const trial = new Map(bestAssign);
         trial.set(sId, pid);
         resolvesUsed++;
-        const { plan, metrics } = evaluate(ctx, trial, fillMode, tieBreakSeed, callsOnly, dayScope);
+        const { plan, metrics } = evaluate(ctx, trial, fillMode, tieBreakSeed, callsOnly, dayScope, candidateTier);
         if (keepsEveryIncumbentFill(plan) && withinCallCaps(plan)
           && withinObligations(plan)
           && compareMetrics(metrics, bestMetrics) < 0) {

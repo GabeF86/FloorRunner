@@ -7,6 +7,9 @@
 // solve.ts builds the run and orchestrates; the pass modules (passes/) and
 // the main loop consume these functions.
 import { addDays, daysBetween, dayTypeBucketOn, datesOverlap, dayOfWeekUTC } from './shared';
+import {
+  tierKeyFor, type CandidateTierStrategy,
+} from './candidateTier';
 import { evaluateEligibility } from './eligibility';
 import { dayChainsFor, blockChainsFor } from './callPattern';
 import { mayEvictPreFill, preFillCodes, shiftRank } from './preFillEviction';
@@ -36,6 +39,8 @@ import type {
 // plan.chainAnchorSlotIds (same array references).
 export interface SolverRun {
   ctx: GenerationContext;
+  // EXPERIMENTAL candidate ordering; 'none' (the default) is inert.
+  candidateTier: CandidateTierStrategy;
   doc: CallPatternDoc;
   plan: SolutionPlan;
   state: SolveState;
@@ -565,6 +570,13 @@ export function scoreCall(run: SolverRun, cands: CandidateProvider[], slot: Slot
       neuroShort: neuroShortOf(p.id, p.fte_value),
       ratio: targetRatio ?? (lifetime / Math.max(p.fte_value, 0.01)),
       recency: daysSinceLastCall(state, p.id, slot.slot_date),
+      // Availability-aware tier. Inert (0 for everyone) under 'none'.
+      avail: tierKeyFor(
+        run.candidateTier,
+        ctx.availByPid.get(p.id) ?? [],
+        ctx.scheduleDates ?? [],
+        slot.slot_date,
+      ),
     };
   }).sort((a, b) =>
     a.tier - b.tier ||
@@ -572,6 +584,10 @@ export function scoreCall(run: SolverRun, cands: CandidateProvider[], slot: Slot
     a.violated - b.violated ||
     a.prefTier - b.prefTier ||
     b.neuroShort - a.neuroShort ||   // most-short first; 0 for everyone off-neuro
+    // Sits directly ABOVE fairness: of two candidates with equal standing,
+    // the more availability-constrained one goes first. Below the request
+    // tiers so a human's stated preference still outranks the heuristic.
+    a.avail - b.avail ||
     a.ratio - b.ratio ||
     b.recency - a.recency ||
     (seed ? (tieHash(seed, a.p.id) - tieHash(seed, b.p.id)) : 0) ||
