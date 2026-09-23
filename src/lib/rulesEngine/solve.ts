@@ -1,4 +1,5 @@
 import { addDays, datesOverlap, isActiveNoCallRequest, isActiveCallRequest } from './shared';
+import { applySlotOrder } from './slotOrder';
 import { evaluateEligibility } from './eligibility';
 import { computeObligations } from './obligation';
 import { computeSequenceOwnedSlotIds } from './sequenceOwnership';
@@ -112,6 +113,10 @@ export function solve(ctx: GenerationContext, opts: SolveOptions = {}): Solution
       (dateSeq.get(a.slot_date)! - dateSeq.get(b.slot_date)!)
       || (callRank(a.shift_type_code) - callRank(b.shift_type_code)));
   }
+
+  // Multi-start diversification over the COMMITMENT order. Identity unless a
+  // non-forward order is asked for, so the default path is unchanged.
+  slotsToFill = applySlotOrder(slotsToFill, opts.slotOrder, ctx);
 
   // Seed pre-existing assignments into state (shared with optimize's pre-gate).
   const state = seedSolveState(ctx, doc);
@@ -293,6 +298,7 @@ export function solve(ctx: GenerationContext, opts: SolveOptions = {}): Solution
   const run: SolverRun = {
     ctx, doc, plan, state, budget,
     candidateTier: opts.candidateTier ?? 'none',
+    callPriority: opts.callPriority ?? 'fairness-first',
     isOverlay, callRank, reliefCodes,
     obligatory, obligationByPid, callCountByPid,
     callCaps, callCodeTally,

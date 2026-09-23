@@ -8,7 +8,7 @@ import type { CallPatternDoc } from './callPattern';
 import type { CandidateTierStrategy } from './candidateTier';
 import type {
   GenerationContext, SolutionPlan, SolutionMetrics, SlotToFill, UnfilledSlot,
-  FillMode,
+  FillMode, SlotOrder, CallPriority,
 } from './genTypes';
 
 const MAX_ITERATIONS = 200; // bound on accepted moves (hill-climb is monotone)
@@ -54,7 +54,15 @@ export interface OptimizeOptions {
   ruinRounds?: number;
   /** Which categories fill-monotonicity judges. 'all' (default) is the strict
    *  original; 'call' scopes it to what callOverrides actually controls. */
-  fillMonotonicityScope?: 'all' | 'call';
+  fillMonotonicityScope?: 'all' | 'call' | 'count';
+  // Commitment order for the greedy (slotOrder.ts). Rides into every trial
+  // re-solve for the reason stated on candidateTier below: a trial solved
+  // under a different order than its seed is scored against an unlike plan.
+  slotOrder?: SlotOrder;
+  // Candidate ordering — rides into every trial re-solve for the same reason
+  // candidateTier does: a trial ordered differently from its seed is scored
+  // against an unlike plan.
+  callPriority?: CallPriority;
   // Fill mode threaded into the seed solve AND every trial re-solve
   // (2026-07-24). autoGenerate never optimizes non-'all' plans (its gate is
   // pinned in autoGenerateFillMode.test.ts) — this exists so a DIRECT caller
@@ -139,6 +147,23 @@ export function filledSlotIds(plan: SolutionPlan): Set<string> {
   return ids;
 }
 
+/** Filled slots per shift-type category. */
+function categoryCounts(plan: SolutionPlan): Map<string, number> {
+  const m = new Map<string, number>();
+  for (const a of plan.assignments) {
+    if (!a.provider_id) continue;
+    const k = a.shift_type_category ?? '?';
+    m.set(k, (m.get(k) ?? 0) + 1);
+  }
+  return m;
+}
+
+/** Slots left empty because a PINNED provider turned out ineligible — the
+ *  signature of a trade made through a self-rejecting pin. */
+function forcedIneligible(plan: SolutionPlan): number {
+  return plan.unfilled.filter(u => u.reason === 'Forced provider ineligible').length;
+}
+
 // Re-solve from a (perturbed) call assignment and score it. The caller's
 // fillMode rides along so an obligatory trial re-solves under the same
 // obligation-cap gates as its seed (undefined = 'all', the pre-change byte);
@@ -149,13 +174,15 @@ function evaluate(
   dayScope?: 'weekday' | 'weekend',
   candidateTier?: CandidateTierStrategy,
   neuroScope?: 'only' | 'exclude',
+  slotOrder?: SlotOrder,
+  callPriority?: CallPriority,
 ): { plan: SolutionPlan; metrics: SolutionMetrics } {
   // The tier rides into every trial re-solve. A trial solved under a
   // DIFFERENT candidate order than the seed would be scored against an unlike
   // plan — the same argument callsOnly already makes above.
   const plan = solve(ctx, {
     callOverrides: callAssign, fillMode, tieBreakSeed, callsOnly, dayScope,
-    candidateTier, neuroScope,
+    candidateTier, neuroScope, slotOrder, callPriority,
   });
   return { plan, metrics: scoreSolution(plan, ctx) };
 }
@@ -205,12 +232,16 @@ export function optimize(ctx: GenerationContext, opts: OptimizeOptions = {}): Op
   const isCallUnfilled = (u: UnfilledSlot): boolean =>
     (u.shift_type_category ?? ctx.shiftTypes?.get(u.shift_type_code)?.category) === 'call';
 
-  let best = solve(ctx, { fillMode, tieBreakSeed, callsOnly, dayScope });
+  const slotOrder = opts.slotOrder;
+  const callPriority = opts.callPriority;
+  let best = solve(ctx, { fillMode, tieBreakSeed, callsOnly, dayScope, slotOrder, callPriority });
   let bestMetrics = scoreSolution(best, ctx);
   let bestAssign = extractCallAssignment(best);
   let bestFilled = filledSlotIds(best);
   let bestCallFilled = new Set(best.assignments
     .filter(a => a.provider_id && a.shift_type_category === 'call').map(a => a.slot_id));
+  let incumbentCounts = categoryCounts(best);
+  let incumbentForcedIneligible = forcedIneligible(best);
   let resolvesUsed = 0;
   let gatedSkips = 0;
   const budgetExhausted = () =>
@@ -236,8 +267,56 @@ export function optimize(ctx: GenerationContext, opts: OptimizeOptions = {}): Op
   // 'call' scopes the gate to what the mechanism controls. Default stays
   // 'all' — the strict behaviour PROOF defect 1 asked for — so nothing
   // changes unless a caller asks.
-  const fillScope = opts.fillMonotonicityScope ?? 'all';
+  // DEFAULT 'count' since 2026-09-22. Measured across 8 synthetic PTO blocks
+  // on the real Paoli October context: 'all' compares by SLOT ID, and an
+  // equally-good re-solve relocates a derived slot, so it rejected every
+  // trial — 528/528 and 1698/1698 on fill-monotonicity, none on the
+  // objective. 'count' keeps exactly the protection PROOF defect 1 asked for
+  // (no category may end with fewer filled slots) without refusing plans that
+  // are not worse. Pass 'all' explicitly to restore the strict original.
+  const fillScope = opts.fillMonotonicityScope ?? 'count';
   const keepsEveryIncumbentFill = (trial: SolutionPlan): boolean => {
+    // 'count': no CATEGORY may end with fewer filled slots than the incumbent.
+    //
+    // The identity re-solve does not LOSE a fill — it RELOCATES one. Measured:
+    // pinning the incumbent and changing nothing yields 382 filled before and
+    // 382 after, dropping 2026-12-02 D2 and gaining 2026-11-03 D2, same
+    // provider, same code, same d-chain source. callOverrides forces the calls
+    // up front, which changes the order the day chains fire in, so a derived
+    // slot lands on a different date in an equally good plan.
+    //
+    // Comparing by slot IDENTITY reads that lateral move as a lost fill and
+    // rejects the trial. Comparing by COUNT PER CATEGORY keeps exactly the
+    // protection PROOF defect 1 asked for — the optimizer still cannot open a
+    // hole — without refusing plans that are not worse.
+    if (fillScope === 'count') {
+      // Counts alone are NOT enough. A trial can keep the total and still
+      // empty a slot by pinning a provider who then self-rejects — the
+      // optimize.test 'quota-starved block' case trades a filled s3 for the
+      // s2 hole at equal count and equal skips. That is PROOF defect 1
+      // itself, not a relocation, and it has a precise signature: the trial
+      // reports the slot unfilled with 'Forced provider ineligible'.
+      //
+      // So: counts preserved AND no new self-rejecting pin. That accepts the
+      // lateral move (a derived slot re-deriving onto a different date, same
+      // provider, same code) and still refuses the trade.
+      const t = categoryCounts(trial);
+      let gains = false;
+      for (const cat of new Set([...incumbentCounts.keys(), ...t.keys()])) {
+        const was = incumbentCounts.get(cat) ?? 0;
+        const now = t.get(cat) ?? 0;
+        if (now < was) return false;      // a net hole, in any category
+        if (now > was) gains = true;
+      }
+      // Counts equal in every category: the trial has RELOCATED something
+      // rather than filled anything. That is the s3/s2 trade — equal fills,
+      // equal skips, better stdev, and one slot emptied by a pin that
+      // self-rejected. PROOF defect 1 says no. Allow an equal-count trial
+      // ONLY when nothing was emptied that way, which is what a derived slot
+      // re-deriving onto a different date looks like.
+      if (!gains && forcedIneligible(trial) > incumbentForcedIneligible) return false;
+      return true;
+    }
     if (fillScope === 'call') {
       const trialCalls = new Set(trial.assignments
         .filter(a => a.provider_id && a.shift_type_category === 'call').map(a => a.slot_id));
@@ -357,7 +436,7 @@ export function optimize(ctx: GenerationContext, opts: OptimizeOptions = {}): Op
             trial.set(uId, pid);   // P fills the gap
             trial.set(sId, qid);   // Q takes P's vacated slot
             resolvesUsed++;
-            const { plan, metrics } = evaluate(ctx, trial, fillMode, tieBreakSeed, callsOnly, dayScope, candidateTier, neuroScope);
+            const { plan, metrics } = evaluate(ctx, trial, fillMode, tieBreakSeed, callsOnly, dayScope, candidateTier, neuroScope, slotOrder, callPriority);
             tally(moveReject, plan, metrics, bestMetrics);
             if (keepsEveryIncumbentFill(plan) && withinCallCaps(plan)
               && withinObligations(plan)
@@ -366,6 +445,8 @@ export function optimize(ctx: GenerationContext, opts: OptimizeOptions = {}): Op
               bestFilled = filledSlotIds(plan);
               bestCallFilled = new Set(plan.assignments
                 .filter(a => a.provider_id && a.shift_type_category === 'call').map(a => a.slot_id));
+              incumbentCounts = categoryCounts(plan);
+              incumbentForcedIneligible = forcedIneligible(plan);
               improved = true;
               break outer; // re-start scan from new best (monotone)
             }
@@ -392,7 +473,7 @@ export function optimize(ctx: GenerationContext, opts: OptimizeOptions = {}): Op
         const trial = new Map(bestAssign);
         trial.set(sId, pid);
         resolvesUsed++;
-        const { plan, metrics } = evaluate(ctx, trial, fillMode, tieBreakSeed, callsOnly, dayScope, candidateTier, neuroScope);
+        const { plan, metrics } = evaluate(ctx, trial, fillMode, tieBreakSeed, callsOnly, dayScope, candidateTier, neuroScope, slotOrder, callPriority);
         tally(moveReject, plan, metrics, bestMetrics);
         if (keepsEveryIncumbentFill(plan) && withinCallCaps(plan)
           && withinObligations(plan)
@@ -401,6 +482,8 @@ export function optimize(ctx: GenerationContext, opts: OptimizeOptions = {}): Op
           bestFilled = filledSlotIds(plan);
           bestCallFilled = new Set(plan.assignments
             .filter(a => a.provider_id && a.shift_type_category === 'call').map(a => a.slot_id));
+          incumbentCounts = categoryCounts(plan);
+              incumbentForcedIneligible = forcedIneligible(plan);
           improved = true;
           break swap;
         }
@@ -426,14 +509,25 @@ export function optimize(ctx: GenerationContext, opts: OptimizeOptions = {}): Op
   // are never touched. Acceptance runs the identical four gates: every
   // incumbent fill kept, caps respected, obligations respected, and a strict
   // improvement on the lexicographic objective.
-  if (opts.ruinRecreate) {
+  // DEFAULT ON since 2026-09-22. The two original moves are a 2-slot eviction
+  // and a single swap, so the search cannot cross a valley: at a 30-second
+  // budget it made the SAME 528 re-solves it makes at 2 seconds and found
+  // nothing. Together with the 'count' gate this is worth, on the hardest
+  // measured blocks, the difference between 6-of-10 and 10-of-10 providers
+  // reaching their obligation. Measured at the PRODUCTION 2000ms budget
+  // (not just at 10s), because solveMultiStart runs optimize K times.
+  if (opts.ruinRecreate ?? true) {
     const rounds = opts.ruinRounds ?? 40;
     // ITS OWN BUDGET. The first implementation shared the global one and, in
     // obligatory mode, never executed a single trial — the eviction and swap
     // phases had already spent it. A phase that silently does not run is
     // indistinguishable from a phase that runs and finds nothing, and the
     // first measurement could not tell those apart.
-    const ruinDeadline = Date.now() + Math.max(1_000, wallClockMs);
+    // Measured from HERE, so ruin still gets a fair share when the eviction
+    // and swap phases have spent the global budget — but never MORE than the
+    // caller allowed. An earlier Math.max(1_000, …) floor broke the
+    // wallClockMs:0 contract: a caller asking for no work got 6 resolves.
+    const ruinDeadline = Date.now() + wallClockMs;
     const ruinExhausted = () => Date.now() >= ruinDeadline;
     const movableNow = () => movableCallSlotIds(best, doc);
     // Deterministic pseudo-randomness. Math.random would make a plan
@@ -486,7 +580,8 @@ export function optimize(ctx: GenerationContext, opts: OptimizeOptions = {}): Op
         for (const id of ruin) trial.delete(id);
         resolvesUsed++;
         const { plan, metrics } = evaluate(
-          ctx, trial, fillMode, tieBreakSeed, callsOnly, dayScope, candidateTier, neuroScope);
+          ctx, trial, fillMode, tieBreakSeed, callsOnly, dayScope, candidateTier, neuroScope,
+          slotOrder, callPriority);
         // Diagnostic tally: which gate actually stops a ruin trial. Without
         // it "0 accepted" cannot distinguish "no better plan exists" from
         // "the acceptance test refuses to look at one".
@@ -502,6 +597,8 @@ export function optimize(ctx: GenerationContext, opts: OptimizeOptions = {}): Op
           bestFilled = filledSlotIds(plan);
           bestCallFilled = new Set(plan.assignments
             .filter(a => a.provider_id && a.shift_type_category === 'call').map(a => a.slot_id));
+          incumbentCounts = categoryCounts(plan);
+              incumbentForcedIneligible = forcedIneligible(plan);
           ruinAccepted++;
           improvedHere = true;
           break; // restart the round from the new incumbent (monotone)

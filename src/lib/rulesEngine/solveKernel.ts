@@ -13,6 +13,7 @@ import {
 import { evaluateEligibility } from './eligibility';
 import { dayChainsFor, blockChainsFor } from './callPattern';
 import { mayEvictPreFill, preFillCodes, shiftRank } from './preFillEviction';
+import { BURDEN_TIE_BAND } from './genTypes';
 import type { RankableShiftType } from './preFillEviction';
 import type { CallPatternDoc, PatternBlockLink } from './callPattern';
 import { creditWorkDay, markAssigned, markBlocked, incBucket, addCallDate, daysSinceLastCall, hadCallWithin } from './solveState';
@@ -29,8 +30,7 @@ import { WEIGHT_EPSILON, parentCallCodeOf } from '@/lib/callBurden';
 import type {
   GenerationContext, SlotToFill, CandidateProvider, SolutionPlan,
   PlacementSource, AssignmentExplanation, SkippedDerived, WorkDayBudget,
-  CandidateRejection,
-} from './genTypes';
+  CandidateRejection, CallPriority, } from './genTypes';
 
 // One solve() invocation's bundled context: immutable inputs (ctx, doc,
 // derived shift-type helpers, option-derived flags) plus the mutable products
@@ -41,6 +41,7 @@ export interface SolverRun {
   ctx: GenerationContext;
   // EXPERIMENTAL candidate ordering; 'none' (the default) is inert.
   candidateTier: CandidateTierStrategy;
+  callPriority: CallPriority;
   doc: CallPatternDoc;
   plan: SolutionPlan;
   state: SolveState;
@@ -538,6 +539,15 @@ export function scoreCall(run: SolverRun, cands: CandidateProvider[], slot: Slot
   // this reads stores parent codes, so a split neuro Saturday would otherwise
   // earn credit the tier could not see itself steering. Inert today — split
   // segments are manual_only — but the asymmetry would be silent.
+  const spacingFirst = run.callPriority === 'spacing-first';
+  // 'balanced' (Gabriel 2026-09-23): spacing-first measurably COSTS burden —
+  // obligations met got worse on 3 of 8 synthetic PTO blocks, one of them
+  // 10-of-10 down to 8-of-10 — which contradicts "burden should always
+  // outrank spacing" from the same message. This is the reading that honours
+  // both: burden still leads, but two candidates within one call of each
+  // other are treated as TIED on burden, and the longest-gap one wins between
+  // them. Exact ratio remains the discriminator once recency also ties.
+  const band = run.callPriority === 'balanced' ? BURDEN_TIE_BAND : 0;
   const neuroCfg = ctx.callPattern?.neuroWeekend;
   const neuroSlot = neuroCfg != null && slot.shift_type_category === 'call'
     && parentCallCodeOf(
@@ -583,13 +593,19 @@ export function scoreCall(run: SolverRun, cands: CandidateProvider[], slot: Slot
     a.granted - b.granted ||
     a.violated - b.violated ||
     a.prefTier - b.prefTier ||
+    // SPACING-FIRST (Gabriel 2026-09-23): recency jumps to directly under the
+    // request tiers, above neuro shortfall and the lifetime ratio. A human's
+    // stated call/no-call request still outranks it. Under 'fairness-first'
+    // (the default) both lines below are 0 and the tuple is unchanged.
+    (spacingFirst ? b.recency - a.recency : 0) ||
     b.neuroShort - a.neuroShort ||   // most-short first; 0 for everyone off-neuro
     // Sits directly ABOVE fairness: of two candidates with equal standing,
     // the more availability-constrained one goes first. Below the request
     // tiers so a human's stated preference still outranks the heuristic.
     a.avail - b.avail ||
+    (band > 0 && Math.abs(a.ratio - b.ratio) <= band ? 0 : a.ratio - b.ratio) ||
+    (spacingFirst ? 0 : b.recency - a.recency) ||
     a.ratio - b.ratio ||
-    b.recency - a.recency ||
     (seed ? (tieHash(seed, a.p.id) - tieHash(seed, b.p.id)) : 0) ||
     a.p.id.localeCompare(b.p.id),
   );

@@ -439,6 +439,19 @@ export type FillMode = 'all' | 'obligatory' | 'weekend-only';
 import type { CandidateTierStrategy } from './candidateTier';
 export type { CandidateTierStrategy };
 
+/** Commitment order for the greedy main loop; see slotOrder.ts. */
+export type SlotOrder = 'forward' | 'reverse' | 'outside-in' | 'constrained';
+
+/** Which term leads candidate ordering once the human-stated request tiers
+ *  have been applied. See scoreCall in solveKernel.ts. */
+export type CallPriority = 'fairness-first' | 'spacing-first' | 'balanced';
+
+/** 'balanced' treats two candidates whose lifetime call-per-FTE ratios are
+ *  within this many calls of each other as TIED on burden, so the longest-gap
+ *  candidate wins between them. One call is the smallest unit a chief would
+ *  call a real difference in burden. */
+export const BURDEN_TIE_BAND = 1;
+
 export interface SolveOptions {
   callOverrides?: Map<string, string>;
   // EXPERIMENTAL availability-aware candidate tier (candidateTier.ts).
@@ -465,6 +478,23 @@ export interface SolveOptions {
   // 0 / absent = the identity order, byte-identical to the pre-seed engine
   // (pinned). Same seed ⇒ same plan, always.
   tieBreakSeed?: number;
+  // SLOT ORDER (Gabriel 2026-09-22: "attack the schedule from both ends").
+  // The order the main loop COMMITS call slots in — see slotOrder.ts for why
+  // this is a per-start ordering rather than one bidirectional pass. Absent /
+  // 'forward' is the identity, byte-identical to the pre-change engine.
+  slotOrder?: SlotOrder;
+  // CANDIDATE ORDERING (Gabriel 2026-09-23: "I want longest gap first to
+  // outrank lifetime fairness ratio and neuro shortfall"). 'spacing-first'
+  // lifts recency to directly under the request tiers — a human's stated
+  // call/no-call request still wins. Absent / 'fairness-first' is the
+  // identity, byte-identical to the pre-change engine (golden parity holds).
+  //
+  // PLACEMENT HEURISTIC ONLY. The objective that grades one schedule against
+  // another (optimize's compareMetrics: skipped → fairnessStdev → burnout) is
+  // deliberately untouched, so BURDEN still outranks SPACING when judging a
+  // plan — Gabriel's second instruction in the same message. Choosing who to
+  // place and judging what got built are different questions.
+  callPriority?: CallPriority;
   // CALLS ONLY (Gabriel 2026-08). Skips the RELIEF and MOP-UP passes, so the
   // run places call slots and the day slots STRUCTURALLY chained to them
   // (a C2's +1 D1, a weekend anchor's −1 D4) and nothing else.

@@ -170,13 +170,25 @@ describe('optimize — eligibility pre-gate, wall-clock budget, movable day type
     });
     const seed = solve(ctx);
     expect(seed.unfilled.map(u => u.slot_id)).toEqual(['s2']); // scenario sanity
-    const { plan, stats } = optimize(ctx);
+    // The pre-gate belongs to the EVICTION and SWAP scan, so that is what the
+    // zero-resolve claim is about. Ruin-and-recreate (default on since
+    // 2026-09-22) is a third phase that rebuilds from scratch and legitimately
+    // spends resolves on any block with a movable slot — measuring it here
+    // would be measuring a different thing.
+    const { plan, stats } = optimize(ctx, { ruinRecreate: false });
     expect(stats.resolves).toBe(0);
     expect(stats.gatedSkips).toBeGreaterThan(0);
     expect(typeof stats.wallMs).toBe('number');
     // Gating skipped only no-improvement trials: outcome matches the seed.
     expect(plan.assignments.map(a => `${a.slot_id}:${a.provider_id}`).sort())
       .toEqual(seed.assignments.map(a => `${a.slot_id}:${a.provider_id}`).sort());
+
+    // And the point the pre-gate exists to protect must survive the phase
+    // that DOES spend resolves: a provider on leave for the whole block is
+    // never assigned, however many plans get rebuilt.
+    const withRuin = optimize(ctx).plan;
+    expect(withRuin.assignments.some(a => a.provider_id === 'pZ'),
+      'pZ is on PTO for the entire block').toBe(false);
   });
 
   it('a wallClockMs budget of 0 returns the seed plan unchanged', () => {
