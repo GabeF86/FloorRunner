@@ -28,3 +28,6 @@ private/
 # .agents, so both have to go or a clone gets dangling links.
 .agents/
 .claude/skills/
+
+# CP-SAT model/solution artefacts (derived; carry provider names)
+.cpsat/

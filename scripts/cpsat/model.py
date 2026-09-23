@@ -155,10 +155,24 @@ def build_and_solve(model_json, mode, seconds):
             if a in x and b in x:
                 m.Add(x[a] == x[b])
                 chain_eqs += 1
-            elif a in x:
-                # The anchor's holder is not eligible for the link — the chain
-                # cannot be honoured by them, so they cannot take the anchor.
-                m.Add(x[a] == 0)
+            # NOTE (2026-09-22): there used to be an `elif a in x: m.Add(x[a] == 0)`
+            # here — "the anchor's holder cannot honour the link, so they may
+            # not take the anchor". That is NOT what the engine does, and it
+            # made this model stricter than the thing it was measuring.
+            #
+            # Clinical invariant 4: a derived shift that cannot be honoured
+            # (D1 post-C2 blocked by PTO or a cross-site conflict) is left
+            # UNASSIGNED and RECORDED in plan.skippedDerived — the anchor is
+            # still filled. Forbidding the anchor cost the model real fills,
+            # and the effect grew with leave: on two synthetic PTO blocks the
+            # greedy engine beat this "proved optimal" solver outright, which
+            # is only possible when the model is over-constrained.
+            #
+            # No constraint is needed for the blocked case. The link variable
+            # does not exist for this provider, and every OTHER provider is
+            # tied to the anchor by the equality above, so the link simply
+            # goes unfilled — which is exactly the engine's behaviour for a
+            # sequence-owned slot whose chain breaks.
 
     # ── Per-provider totals ────────────────────────────────────────────────
     total = {}
