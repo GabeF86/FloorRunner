@@ -771,6 +771,35 @@ export interface BoardPerson {
   startTime: string | null;
 }
 
+/**
+ * Split a site card's people into MD and CRNA (Gabriel 2026-09-24).
+ *
+ * The predicate is `providerType === 'crna'`, which is EXACTLY the rule used
+ * a few lines below to compute the mdCount/crnaCount printed in the same
+ * card's header. A second, differently-worded rule — matching 'physician'
+ * instead, say — would let the header read "16 MD" over a column showing 15,
+ * and a resident or fellow would vanish from the card while still being
+ * counted in its header. One rule, stated once.
+ *
+ * Ordering inside each group is untouched: onCall is already sorted by call
+ * rank and inRooms by start time, and a filter preserves relative order.
+ *
+ * A single-discipline card returns ONE unlabelled group, so the caller renders
+ * a full-width list instead of an empty second column.
+ */
+export function disciplineGroups(
+  people: BoardPerson[],
+): Array<{ label: string; people: BoardPerson[] }> {
+  const crna = people.filter(p => p.providerType === 'crna');
+  if (crna.length === 0 || crna.length === people.length) {
+    return [{ label: '', people }];
+  }
+  return [
+    { label: GROUP_LABEL.physician, people: people.filter(p => p.providerType !== 'crna') },
+    { label: GROUP_LABEL.crna, people: crna },
+  ];
+}
+
 export interface SiteDayBoard {
   siteId: string;
   siteName: string;

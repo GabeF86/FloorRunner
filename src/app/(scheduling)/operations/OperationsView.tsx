@@ -26,7 +26,8 @@ import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { Card, Banner, PageHeader, SectionLabel, StatBlock, Badge } from '@/components/ui';
 import {
-  GROUP_LABEL, type CellStatus, type CoverageCell, type CoverageGroup,
+  GROUP_LABEL, disciplineGroups,
+  type BoardPerson, type CellStatus, type CoverageCell, type CoverageGroup,
 } from '@/lib/operationsBoard';
 import { DemandEntry } from './DemandEntry';
 import type { OperationsData } from './queries';
@@ -694,7 +695,11 @@ export function OperationsView({ data, fatal }: { data: OperationsData | null; f
 
         <div style={{
           display: 'grid', gap: 'var(--space-3)',
-          gridTemplateColumns: 'repeat(auto-fill, minmax(230px, 1fr))',
+          // Two columns of "name … code" need more than the 230px this grid
+          // used when the list was single-column, but 370 stretched to ~470
+          // on a wide screen and the cards read as slabs. 300 lands four per
+          // row at 1400px — about 340 each, a shade over the original width.
+          gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))',
           alignItems: 'start',
         }}>
           {data.boards.map(b => (
@@ -725,7 +730,7 @@ export function OperationsView({ data, fatal }: { data: OperationsData | null; f
                   {b.onCall.length > 0 && (
                     <>
                       <SectionLabel source="none" rule={false}>On call tonight</SectionLabel>
-                      {b.onCall.map(p => (
+                      <DisciplineColumns people={b.onCall} renderRow={p => (
                         <div key={p.providerId + p.code} style={{
                           display: 'flex', alignItems: 'center', gap: 6, marginBottom: 3,
                         }}>
@@ -733,18 +738,20 @@ export function OperationsView({ data, fatal }: { data: OperationsData | null; f
                             title={p.callRank !== null ? `Call rank ${p.callRank}` : undefined}
                             style={{
                               ...mono, fontSize: 10, fontWeight: 600, padding: '1px 5px',
-                              borderRadius: 'var(--radius-sm)',
+                              borderRadius: 'var(--radius-sm)', flexShrink: 0,
                               background: callTint(p.callRank).bg,
                               color: callTint(p.callRank).fg,
                               border: `1px solid color-mix(in srgb, ${callTint(p.callRank).fg} 25%, transparent)`,
                             }}
                           >{p.code}</span>
-                          <span style={{ fontSize: 'var(--fs-sm)', fontWeight: 600 }}>{p.name}</span>
-                          <span style={{ marginLeft: 'auto', ...mono, fontSize: 10, color: 'var(--text-dim)' }}>
+                          <span title={p.name} style={{ ...nameClip, fontSize: 'var(--fs-sm)', fontWeight: 600 }}>
+                            {p.name}
+                          </span>
+                          <span style={{ ...mono, fontSize: 10, color: 'var(--text-dim)', flexShrink: 0 }}>
                             {p.hours}
                           </span>
                         </div>
-                      ))}
+                      )} />
                     </>
                   )}
 
@@ -754,14 +761,14 @@ export function OperationsView({ data, fatal }: { data: OperationsData | null; f
                           and in what capacity, never which anaesthetising site
                           they stand in. Room assignment happens on the day. */}
                       <SectionLabel source="none" rule={false}>Working</SectionLabel>
-                      {b.inRooms.map(p => (
+                      <DisciplineColumns people={b.inRooms} renderRow={p => (
                         <div key={p.providerId + p.code} style={{
                           display: 'flex', gap: 6, fontSize: 'var(--fs-xs)', marginBottom: 2,
                         }}>
-                          <span style={{ flex: 1, minWidth: 0 }}>{p.name}</span>
-                          <span style={{ ...mono, color: 'var(--text-dim)' }}>{p.code}</span>
+                          <span title={p.name} style={nameClip}>{p.name}</span>
+                          <span style={{ ...mono, color: 'var(--text-dim)', flexShrink: 0 }}>{p.code}</span>
                         </div>
-                      ))}
+                      )} />
                     </div>
                   )}
 
@@ -869,6 +876,85 @@ const CALL_TINT: Record<number, { bg: string; fg: string }> = {
   1: { bg: 'var(--danger-bg)', fg: 'var(--danger)' },
   2: { bg: 'var(--warn-bg)', fg: 'var(--warn)' },
   3: { bg: 'var(--info-bg)', fg: 'var(--info)' },
+};
+
+/**
+ * MD and CRNA chip tints.
+ *
+ * Indigo for MD, blue for CRNA — the SAME pairing the staffing calculator
+ * already uses for the two disciplines. These are the two halves of one
+ * staffing picture and a chief moves between them all morning; a board where
+ * CRNA is blue here and green there costs a beat of re-reading every time.
+ *
+ * Built from the globals.css ramp rather than literals, so both survive the
+ * dark theme (--indigo and --blue are redefined there).
+ */
+const DISCIPLINE_TINT: Record<string, { fg: string; bg: string; bd: string }> = {
+  [GROUP_LABEL.physician]: {
+    fg: 'var(--indigo)',
+    bg: 'color-mix(in srgb, var(--indigo) 12%, transparent)',
+    bd: 'color-mix(in srgb, var(--indigo) 35%, transparent)',
+  },
+  [GROUP_LABEL.crna]: {
+    fg: 'var(--blue)',
+    bg: 'color-mix(in srgb, var(--blue) 12%, transparent)',
+    bd: 'color-mix(in srgb, var(--blue) 35%, transparent)',
+  },
+};
+
+function DisciplineChip({ label }: { label: string }) {
+  const t = DISCIPLINE_TINT[label];
+  return (
+    <span style={{
+      ...mono, fontSize: 9, fontWeight: 700, letterSpacing: 0.4,
+      padding: '1px 5px', borderRadius: 'var(--radius-sm)',
+      color: t.fg, background: t.bg, border: `1px solid ${t.bd}`,
+    }}>{label}</span>
+  );
+}
+
+/**
+ * MD on the left, CRNA on the right, inside one card section.
+ *
+ * Gabriel 2026-09-24, looking at the Lankenau card: 16 MDs and 16 CRNAs ran
+ * as one 31-row list, grouped only by the accident of the start-time sort
+ * putting every 7am doctor above every CRNA shift. Two columns separate them
+ * explicitly AND halve the card, which is the reason this beat a divider —
+ * the height was the complaint as much as the mixing.
+ *
+ * A single-discipline site renders ONE full-width list, not a column beside
+ * an empty one. Sites here range from 32 people to none.
+ *
+ * minWidth:0 on each column is load-bearing: grid children default to
+ * min-content, so without it a long name refuses to shrink and pushes the
+ * second column off the card instead of ellipsing.
+ */
+function DisciplineColumns({ people, renderRow }: {
+  people: BoardPerson[];
+  renderRow: (p: BoardPerson) => React.ReactNode;
+}) {
+  const groups = disciplineGroups(people);
+  if (groups.length === 1) return <>{groups[0].people.map(renderRow)}</>;
+  return (
+    <div style={{
+      display: 'grid', gridTemplateColumns: '1fr 1fr',
+      gap: 'var(--space-2)', alignItems: 'start',
+    }}>
+      {groups.map(g => (
+        <div key={g.label} style={{ minWidth: 0 }}>
+          <div style={{ marginBottom: 3 }}><DisciplineChip label={g.label} /></div>
+          {g.people.map(renderRow)}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/** A name that gives way before the card does. The full name stays reachable
+ *  on hover — in two columns there is not always room for "A. Rizzo Miller". */
+const nameClip = {
+  flex: 1, minWidth: 0,
+  overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' as const,
 };
 
 function callTint(rank: number | null): { bg: string; fg: string } {
