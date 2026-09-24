@@ -15,7 +15,7 @@ import {
 // there rather than being copied into each one).
 import {
   DAYS_SHORT, toDateStr, formatMMDD, formatDateRange, getDayOfWeek,
-  allDatesInRange, callCensusFromGrid, getWeekStart, colorWithAlpha,
+  allDatesInRange, callCensusFromGrid, getWeekStart, colorWithAlpha, parseDate,
   type Schedule, type ShiftTypeInfo, type ValidationFlag, type AssignmentInfo,
   type Slot, type Provider, type Holiday, type GridData, providerLabel, byProviderLabel } from './gridShared';
 import AssistantPanel from './AssistantPanel';
@@ -859,6 +859,7 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
 
   const todayStr = toDateStr(new Date());
 
+
   /* ── Assignment Actions ─────────────────────────────────────────────────── */
 
   // Patch API-returned assignment rows into grid state by slot id. The
@@ -1284,6 +1285,41 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
   // paint restores the level without a flash AND without an SSR mismatch
   // (the server-rendered Loading markup doesn't depend on this state).
   const [gridZoom, setGridZoom] = useState<GridZoomLevel>(() => loadGridZoom());
+
+  /* ── Land on the current week (?week=current) ───────────────────────────── */
+  // Set by the nav's site → discipline jump (/schedules/open). The FULL block
+  // still renders — 'month' is the default view and draws every date — but the
+  // grid opens scrolled to this week rather than to the block's first, which
+  // on a ten-week block is several screen-widths of history before today.
+  //
+  // Scroll arithmetic rather than scrollIntoView: the grid is a fixed 84px
+  // frozen column plus fixed-width date columns, so the offset is computable
+  // and cannot leave the target column parked underneath the sticky one.
+  // CSS `zoom` on the inner grid scales layout, so it scales this too.
+  //
+  // Runs ONCE. After landing, the week is the user's to move — an effect that
+  // kept re-anchoring would drag the grid back every time they scrolled away.
+  const gridScrollRef = useRef<HTMLDivElement>(null);
+  const anchoredWeek = useRef(false);
+  useEffect(() => {
+    if (anchoredWeek.current || allDates.length === 0) return;
+    anchoredWeek.current = true;
+    if (new URLSearchParams(window.location.search).get('week') !== 'current') return;
+    // Today outside this block is not an error — /schedules/open only adds
+    // ?week=current to a block that covers today, but a bookmarked URL can
+    // outlive that. Leave the grid where it naturally opens.
+    const idx = allDates.indexOf(todayStr);
+    if (idx < 0) return;
+    // getWeekStart counts weeks from the Sunday on or before the block start,
+    // so invert it for the Sunday on or before today.
+    const offset = Math.max(0, Math.round(
+      (idx - parseDate(todayStr).getDay() + parseDate(allDates[0]).getDay()) / 7));
+    setWeekOffset(offset);
+    const el = gridScrollRef.current;
+    if (!el) return;
+    el.scrollLeft = getWeekStart(allDates, offset)
+      * (viewMode === 'month' ? 82 : 74) * (gridZoom / 100);
+  }, [allDates, todayStr, viewMode, gridZoom]);
   const changeGridZoom = (level: GridZoomLevel) => {
     setGridZoom(level);
     saveGridZoom(level); // non-fatal on storage failure
@@ -2482,7 +2518,7 @@ export default function ScheduleGridPage({ params }: { params: { id: string } })
 
       {/* Grid Container — dark chrome (headers + shift labels), white data cells */}
       {viewMode !== 'calendar' && (
-      <div style={{
+      <div ref={gridScrollRef} style={{
         flex: 1, overflow: 'auto', borderRadius: 8,
         border: '1px solid var(--border)',
         background: gridTokens.bodyCell, // data cell background

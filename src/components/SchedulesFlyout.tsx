@@ -20,6 +20,17 @@
 // destination that used to be reachable from this row still is; it now takes
 // one deliberate click rather than an accidental one.
 //
+// ── SITE → DISCIPLINE (Gabriel 2026-09-24) ─────────────────────────────────
+// A site row used to go to /schedules?site_id=…, the list of every site's
+// cards filtered down — two more clicks and a hunt from the thing actually
+// wanted. Clicking a site now expands it into Physicians / CRNAs, and either
+// goes straight to that site's CURRENT block, opened at this week
+// (/schedules/open resolves which schedule that is).
+//
+// The filtered list is kept as a third row rather than dropped. This panel's
+// own rule, three paragraphs up: every destination reachable before is still
+// reachable.
+//
 // Escape closes it, a click outside closes it, and navigating closes it.
 
 import { useEffect, useRef, useState } from 'react';
@@ -49,6 +60,9 @@ export function SchedulesFlyout({ collapsed }: Props) {
   // invisible because the panel closes on navigation anyway.
   const [activeSite, setActiveSite] = useState('');
   const [open, setOpen] = useState(false);
+  // Which site row is expanded. One at a time: the panel is a menu, not a
+  // tree, and two sites open at once pushes the rest off the screen.
+  const [openSite, setOpenSite] = useState<string | null>(null);
   const wrap = useRef<HTMLDivElement>(null);
 
   // No longer claims /dashboard: that row is its own flyout now, and two nav
@@ -72,6 +86,10 @@ export function SchedulesFlyout({ collapsed }: Props) {
   // Navigating closes it — otherwise the panel hangs over the page you just
   // asked for.
   useEffect(() => { setOpen(false); }, [pathname]);
+
+  // A closed panel forgets which site was expanded; reopening it half-expanded
+  // shows a state the user did not leave it in.
+  useEffect(() => { if (!open) setOpenSite(null); }, [open]);
 
   // Refreshed each time the panel opens, which is the only moment it is read.
   useEffect(() => {
@@ -160,17 +178,57 @@ export function SchedulesFlyout({ collapsed }: Props) {
             <div style={noteStyle}>No sites configured yet.</div>
           ) : (
             sites.map(s => {
-              const href = `${HREF}?site_id=${s.id}`;
+              const expanded = openSite === s.id;
               return (
-                <Link
-                  key={s.id}
-                  href={href}
-                  role="menuitem"
-                  className="fr-nav-sub fr-focus"
-                  data-active={pathname === HREF && activeSite === s.id}
-                >
-                  {s.short_name ? `${s.short_name} — ${s.name}` : s.name}
-                </Link>
+                <div key={s.id}>
+                  <button
+                    type="button"
+                    aria-expanded={expanded}
+                    onClick={() => setOpenSite(cur => (cur === s.id ? null : s.id))}
+                    className="fr-nav-sub fr-focus"
+                    data-active={pathname === HREF && activeSite === s.id}
+                    style={{
+                      width: '100%', display: 'flex', alignItems: 'center',
+                      justifyContent: 'space-between', gap: 'var(--space-2)',
+                      background: 'none', border: 0, cursor: 'pointer',
+                      font: 'inherit', color: 'inherit', textAlign: 'left',
+                    }}
+                  >
+                    <span>{s.short_name ? `${s.short_name} — ${s.name}` : s.name}</span>
+                    <span aria-hidden="true" style={{
+                      fontSize: 9, color: 'var(--text-dim)',
+                      transform: expanded ? 'rotate(90deg)' : 'none',
+                      transition: 'transform 0.12s',
+                    }}>▸</span>
+                  </button>
+
+                  {expanded && (
+                    <div style={{
+                      paddingLeft: 'var(--space-3)',
+                      borderLeft: '1px solid var(--border-faint)',
+                      marginLeft: 'var(--space-2)',
+                    }}>
+                      {([['physician', 'Physicians'], ['crna', 'CRNAs']] as const).map(([g, gl]) => (
+                        <Link
+                          key={g}
+                          href={`${HREF}/open?site_id=${s.id}&group=${g}`}
+                          role="menuitem"
+                          className="fr-nav-sub fr-focus"
+                        >
+                          {gl}
+                        </Link>
+                      ))}
+                      <Link
+                        href={`${HREF}?site_id=${s.id}`}
+                        role="menuitem"
+                        className="fr-nav-sub fr-focus"
+                        style={{ color: 'var(--text-dim)' }}
+                      >
+                        All schedules
+                      </Link>
+                    </div>
+                  )}
+                </div>
               );
             })
           )}
