@@ -262,6 +262,38 @@ export function PoolSelectorModal({
     return entries;
   }, [providers, homeSiteByPid, sites, scheduleSiteId]);
 
+  // ── Other sites are collapsed (Gabriel 2026-09-24) ──────────────────────
+  // "I just tried creating a schedule for Paoli and the call pool listed every
+  // physician in the group." It did: this panel lists the whole organisation
+  // grouped by home site, with this site's call takers pre-ticked. That is a
+  // real capability — an override pool has NO home-site filter, so a
+  // deliberately picked cross-site call taker genuinely joins the pool — but
+  // it is the rare case, and putting ~85 names from six other hospitals in
+  // front of someone building Paoli's block buries the twelve that matter.
+  //
+  // So the other sites are still reachable, one click away, instead of open
+  // by default.
+  const [showOtherSites, setShowOtherSites] = useState(false);
+  const otherCount = useMemo(
+    () => groups.filter(g => g.siteId !== scheduleSiteId)
+      .reduce((n, g) => n + g.providers.length, 0),
+    [groups, scheduleSiteId]);
+  // A SAVED pool that already reaches outside this site must never be hidden:
+  // the panel would then show a selection that disagrees with what is stored,
+  // and unticking-by-invisibility is exactly the silent edit this codebase
+  // keeps guarding against. Fires once, so the user can still collapse it.
+  const revealedForSaved = useRef(false);
+  useEffect(() => {
+    if (revealedForSaved.current) return;
+    const outsideChecked = groups.some(g => g.siteId !== scheduleSiteId
+      && g.providers.some(p => checked.has(p.id)));
+    if (outsideChecked) { revealedForSaved.current = true; setShowOtherSites(true); }
+  }, [groups, checked, scheduleSiteId]);
+
+  const visibleGroups = useMemo(
+    () => (showOtherSites ? groups : groups.filter(g => g.siteId === scheduleSiteId)),
+    [groups, showOtherSites, scheduleSiteId]);
+
   const toggle = (pid: string) => {
     setChecked(prev => {
       const next = new Set(prev);
@@ -621,7 +653,7 @@ export function PoolSelectorModal({
               No physicians in this organization.
             </div>
           ) : (
-            groups.map(group => {
+            visibleGroups.map(group => {
               const groupIds = group.providers.map(p => p.id);
               const allSelected = groupIds.every(id => checked.has(id));
               const someSelected = !allSelected && groupIds.some(id => checked.has(id));
@@ -703,6 +735,22 @@ export function PoolSelectorModal({
                 </div>
               );
             })
+          )}
+          {otherCount > 0 && (
+            <button
+              type="button"
+              onClick={() => setShowOtherSites(v => !v)}
+              style={{
+                width: '100%', padding: '9px 12px', textAlign: 'left',
+                background: 'transparent', border: 0, cursor: 'pointer',
+                fontSize: 12, fontWeight: 600, color: 'var(--blue)',
+                fontFamily: 'inherit',
+              }}
+            >
+              {showOtherSites
+                ? 'Hide providers from other sites'
+                : `Show ${otherCount} provider${otherCount === 1 ? '' : 's'} from other sites`}
+            </button>
           )}
         </div>
         )}
