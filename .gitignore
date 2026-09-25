@@ -31,3 +31,6 @@ private/
 
 # CP-SAT model/solution artefacts (derived; carry provider names)
 .cpsat/
+
+# Design mocks — carry real physician names and FTEs. This repo is PUBLIC.
+.design/
