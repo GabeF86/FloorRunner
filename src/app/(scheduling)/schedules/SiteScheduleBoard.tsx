@@ -10,7 +10,7 @@
 import Link from 'next/link';
 import { Card, Badge, Button, Banner, scheduleStatusTone, scheduleStatusLabel } from '@/components/ui';
 import {
-  buildScheduleBoard, boxSummary, GROUP_LABELS,
+  buildScheduleBoard, boxSummary, GROUP_LABELS, isCurrentBlock,
   type BoardGroup, type BoardSchedule, type BoardSite,
 } from '@/lib/scheduleBoard';
 
@@ -32,13 +32,27 @@ function formatRange(start: string, end: string): string {
 }
 
 function ScheduleLink({ s }: { s: BoardSchedule }) {
+  // The block covering today is the one a chief is nearly always reaching for,
+  // and on a board of eight sites it was previously indistinguishable from the
+  // six blocks either side of it. Ringed rather than tinted: these cards
+  // already carry a status Badge in colour, and a second fill would compete
+  // with it for the same meaning.
+  const current = isCurrentBlock(s);
   return (
     <Link
       href={`/schedules/${s.id}`}
       className="fr-chip"
+      title={current ? 'This block covers today' : undefined}
       style={{
-        display: 'block', padding: '7px 9px', borderRadius: 'var(--radius-sm)',
-        border: '1px solid var(--border)', background: 'var(--bg-deep)',
+        display: 'block', borderRadius: 'var(--radius-sm)',
+        border: current ? '2px solid var(--navy)' : '1px solid var(--border)',
+        // Padding absorbs the extra pixel the thicker border adds, so a ringed
+        // card does not sit a pixel out of line with its neighbours.
+        padding: current ? '6px 8px' : '7px 9px',
+        background: 'var(--bg-deep)',
+        boxShadow: current
+          ? '0 0 0 3px color-mix(in srgb, var(--navy) 14%, transparent)'
+          : undefined,
         textDecoration: 'none', marginBottom: 5,
       }}
     >
