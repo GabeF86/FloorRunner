@@ -51,7 +51,10 @@ function ScheduleLink({ s }: { s: BoardSchedule }) {
       <div style={{
         display: 'flex', alignItems: 'center', gap: 6, marginTop: 3, flexWrap: 'wrap',
       }}>
-        <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text-dim)' }}>
+        {/* The block's dates identify it — which stretch of the year this
+            schedule IS — so they carry foreground weight rather than the
+            secondary grey they shared with every other caption. */}
+        <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--navy)', fontWeight: 700 }}>
           {formatRange(s.date_start, s.date_end)}
         </span>
         <Badge tone={scheduleStatusTone(s.status)}>{scheduleStatusLabel(s.status)}</Badge>

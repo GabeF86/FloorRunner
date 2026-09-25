@@ -58,6 +58,13 @@
   /* Brand accents — deeper on light surfaces so small accent text meets AA */
   --blue:    #0284c7;
   --indigo:  #4f46e5;
+  /* Schedule block dates (Gabriel 2026-09-24: "dark navy blue instead of the
+     grey — I want people to easily tell what the schedule block is"). The
+     date range identifies the block, so it is foreground text, not the
+     secondary-grey chrome it used to sit in. Its own token rather than
+     --blue: --blue is the interactive/link colour on this surface, and a
+     date range is not a link. */
+  --navy:    #1e3a8a;
   /* The ring that marks a partner on a staffing chip. Its own token rather
      than --warn: --warn is amber-700, a brown-leaning advisory colour, and
      partnership is an identity marker, not a warning. Orange-600 reads as
@@ -145,6 +152,11 @@
   /* Brand accents — brighter on dark surfaces */
   --blue:    #0ea5e9;
   --indigo:  #6366f1;
+  /* Chosen for CONTRAST against a dark surface, not by mirroring the light
+     value's darkness — a #1e3a8a navy on --bg-surface is all but invisible,
+     which is exactly how this ramp has gone wrong before. Still unmistakably
+     the blue family, so both themes read as the same idea. */
+  --navy:    #93c5fd;
   --partner-ring: #fb923c; /* orange-400 — carries on a dark surface */
 
   /* Semantic status — brighter tones for dark surfaces */

@@ -381,7 +381,9 @@ export default function SchedulesClient(
                 background: tc.bg, color: tc.color, whiteSpace: 'nowrap',
               }}>{tc.label}</span>,
               <span key="group" style={{ textTransform: 'capitalize' }}>{groupLabel}</span>,
-              `${formatDate(s.date_start)} — ${formatDate(s.date_end)}`,
+              <span key="dates" style={{ color: 'var(--navy)', fontWeight: 700 }}>
+                {formatDate(s.date_start)} — {formatDate(s.date_end)}
+              </span>,
               <Badge key="status" tone={scheduleStatusTone(s.status)}>{scheduleStatusLabel(s.status)}</Badge>,
               <div key="actions" style={{ display: 'flex', gap: 'var(--space-2)', alignItems: 'center' }}>
                 <Link href={`/schedules/${s.id}`} style={{ textDecoration: 'none' }}>
