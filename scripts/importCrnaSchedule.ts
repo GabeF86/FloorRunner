@@ -31,6 +31,7 @@ import { createClient } from '@supabase/supabase-js';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import { parseCrnaCsv, parseCrnaCode, duplicateRows } from '../src/lib/scheduleImport/crnaCsv';
+import { derivedDayTypeFor } from '../src/lib/templateSlots';
 
 function loadEnv() {
   try {
@@ -257,7 +258,37 @@ async function main() {
     }).select('id').single();
     if (vErr) { console.error(`  ${short}: ${vErr.message}`); continue; }
 
+    // Holidays for the block, so a major/federal holiday gets its own day
+    // type rather than falling through to its day of week. Org-wide rows have
+    // site_id NULL — the same predicate the slot generator uses.
+    const holidayBy = new Map<string, { is_major_holiday: boolean }>();
+    if (dates.length > 0) {
+      const { data: hols, error: hErr } = await sb
+        .from('holiday_calendars')
+        .select('holiday_date, is_major_holiday')
+        .gte('holiday_date', from)
+        .lte('holiday_date', to);
+      // A failed holiday read must not silently downgrade Christmas to
+      // 'friday' — that would be a wrong value written confidently, which is
+      // worse than the null this patch exists to remove.
+      if (hErr) { console.error(`  ${short} holidays: ${hErr.message}`); continue; }
+      for (const h of hols ?? []) {
+        holidayBy.set(h.holiday_date as string,
+          { is_major_holiday: h.is_major_holiday === true });
+      }
+    }
+
     // One slot per (date, shift type, occurrence) and one assignment each.
+    //
+    // derived_day_type is NOT optional (fixed 2026-09-24, patch65). The first
+    // run of this importer left it null on all 2,308 slots, and every consumer
+    // that counts call by category DROPS a slot without one — buildProviderOverview
+    // does `if (!bucket) continue;`, so a CRNA read "No call on record this
+    // year" beside a panel reporting their call hours. Dropped, not zeroed.
+    //
+    // derivedDayTypeFor is the single-homed rule the slot generator uses
+    // (templateSlots.ts); deriving it a second way here is exactly the drift
+    // that caused the original bug to be invisible.
     const slotRows = entries.map(e => ({
       schedule_version_id: ver.id,
       site_id: site.id,
@@ -265,6 +296,7 @@ async function main() {
       shift_type_id: typeBy.get(typeKey(site.id, e.shiftCode)),
       required_count: 1,
       slot_index: 0,
+      derived_day_type: derivedDayTypeFor(e.date, holidayBy.get(e.date)),
     }));
     let made = 0;
     for (let i = 0; i < slotRows.length; i += 500) {
